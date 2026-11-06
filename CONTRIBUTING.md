@@ -365,7 +365,7 @@ The `test-results` branch holds these files:
   to bisect, and each bisect's log.
 
 A night's verdict is `green` when both canary legs reported and no test is confirmed,
-`incomplete` when a leg left no usable report, and `red` otherwise. A flaky test
+`incomplete` when a canary leg left no usable report, and `red` otherwise. A flaky test
 doesn't change the verdict.
 
 The 3.14 leg tracks a Python version that aelfrice doesn't support yet. It has the
@@ -388,7 +388,9 @@ print(len(nights))
 ```
 
 The command reads each run's `status` for the leg, and any status other than
-`green` starts the count again. Two green runs on one date count as one night.
+`green` starts the count again. Two green runs on one date count as one night. A
+night with no line in the index neither counts nor starts the count again, so check
+the dates for gaps before you rely on the count.
 
 Each event key says what the canary found:
 
