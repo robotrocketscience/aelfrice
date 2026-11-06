@@ -115,9 +115,10 @@ def test_the_jobs_and_their_needs_are_only_the_ones_that_exist() -> None:
     assert _key("report", "needs") == "publish"
 
 
-def test_the_suite_runs_only_the_canary_legs_on_the_pinned_image() -> None:
+def test_the_suite_runs_the_canary_legs_and_one_report_only_leg_on_the_pinned_image() -> None:
     lines = [line.strip() for line in _job("suite")]
-    assert "leg: ['3.12', '3.13']" in lines
+    assert _matrix_rows() == [("3.12", "true"), ("3.13", "true"), ("3.14", "false")]
+    assert _key("suite", "continue-on-error") == "${{ !matrix.canary }}"
     assert "fail-fast: false" in lines
     assert _key("suite", "runs-on") == _ci_key("runs-on")
 
@@ -146,6 +147,12 @@ def test_every_step_has_a_cap_and_the_caps_fit_under_the_job(job: str) -> None:
     assert missing == []
     total = sum(_cap(s) or 0 for s in steps)
     assert total < int(_key(job, "timeout-minutes")), total
+
+
+def _matrix_rows() -> list[tuple[str, str]]:
+    """(leg, canary) of each row under the suite's `matrix: include:`."""
+    text = "\n".join(_job("suite"))
+    return re.findall(r"- leg: '([\d.]+)'\n\s+canary: (\w+)", text)
 
 
 def test_only_main_reaches_each_job() -> None:
@@ -287,7 +294,7 @@ def test_the_record_gets_a_stable_date_and_the_canary_legs() -> None:
     assert 'actions/runs/$GITHUB_RUN_ID" --jq .created_at' in step
     assert '--created-at "$created_at"' in step
     assert "--canary-legs 3.12,3.13" in step
-    assert "--leg 3.12=bundles:canary --leg 3.13=bundles:canary" in step
+    assert "--leg 3.12=bundles:canary --leg 3.13=bundles:canary --leg 3.14=bundles:extra" in step
 
 
 def test_the_first_night_makes_the_folder_regressions_requires() -> None:
@@ -536,14 +543,16 @@ def test_a_regression_that_still_fails_does_not_close_as_stale() -> None:
 
 
 def _leg_bundle(directory: Path, outcomes: dict[str, str]) -> None:
-    """A leg's bundle as the suite job leaves it on a run with no red test."""
+    """A leg's bundle as the suite job leaves it, with no rerun."""
     directory.mkdir(parents=True)
     cases = "".join(
-        f'<testcase classname="{test.partition("::")[0]}" name="{test.partition("::")[2]}" time="0" />' for test in outcomes
+        f'<testcase classname="{test.partition("::")[0]}" name="{test.partition("::")[2]}" time="0">'
+        f'{"<failure />" if outcome == "failed" else ""}</testcase>'
+        for test, outcome in outcomes.items()
     )
     report = f'<testsuites><testsuite name="pytest">{cases}</testsuite></testsuites>'
     (directory / "junit.xml").write_text(report, encoding="utf-8")
-    verdict = nc.classify_leg(0, outcomes, None)
+    verdict = nc.classify_leg(1 if "failed" in outcomes.values() else 0, outcomes, None)
     (directory / "verdict.json").write_text(json.dumps(verdict), encoding="utf-8")
     (directory / "env.json").write_text("{}", encoding="utf-8")
 
@@ -585,6 +594,164 @@ def test_an_incomplete_night_fails_publish_and_report_still_opens_canary_broken(
     assert [(a["action"], a["key"], a["title"]) for a in actions] == [
         ("create", "canary-broken", f"nightly: the canary produced no usable result on 3.13 ({sha[:7]})"),
     ]
+
+
+def _workflow_flags() -> tuple[list[str], str, str]:
+    """The `--leg` values `record` gets, and the `--canary-legs` of each step."""
+    record = _step("triage", "Build the night's record")
+    compare = _step("triage", "Compare with the last green night")
+    legs = re.findall(r"--leg (\S+)", record)
+    return legs, *(re.search(r"--canary-legs (\S+)", s).group(1) for s in (record, compare))  # type: ignore[union-attr]
+
+
+def test_the_workflow_gives_each_matrix_leg_a_role_and_only_canary_legs_count() -> None:
+    legs, on_record, on_regressions = _workflow_flags()
+    rows = _matrix_rows()
+    assert legs == [f"{leg}=bundles:{'canary' if canary == 'true' else 'extra'}" for leg, canary in rows]
+    canary = ",".join(leg for leg, flag in rows if flag == "true")
+    assert on_record == canary
+    assert on_regressions == canary
+
+
+class _Nights:
+    """Nights run through the real `record`, `regressions` and `publish`, with the
+    workflow's own flags, on a real repository that plays main."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        self.root = tmp_path
+        self.main = tmp_path / "main"
+        self.main.mkdir()
+        self.branch = tmp_path / "branch"
+        self.branch.mkdir()
+        _git(self.main, "init", "-q")
+        (self.main / "tests").mkdir()
+        (self.main / "tests" / "test_a.py").write_text("", encoding="utf-8")
+        _git(self.main, "add", "-A")
+        self.run_id = 100
+
+    def night(
+        self, date: str, *, on_313: str = "passed", on_314: str | None = "passed",
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
+        """One night; `on_314=None` is a leg that uploaded nothing. The record, the
+        triage, `last-green.json` after publishing, and the night's commit."""
+        self.run_id += 1
+        _git(self.main, "commit", "-q", "--allow-empty", "-m", f"night {self.run_id}")
+        sha = _git(self.main, "rev-parse", "HEAD")
+        bundles = self.root / f"bundles-{self.run_id}"
+        test = "tests.test_a::test_one"
+        _leg_bundle(bundles / f"nightly-3.12-{sha}-a1", {test: "passed"})
+        _leg_bundle(bundles / f"nightly-3.13-{sha}-a1", {test: on_313})
+        if on_314 is not None:
+            _leg_bundle(bundles / f"nightly-3.14-{sha}-a1", {test: on_314})
+        legs, on_record, on_regressions = _workflow_flags()
+        night = self.root / f"night-{self.run_id}"
+        leg_args = [a for leg in legs for a in ("--leg", leg.replace("=bundles:", f"={bundles}:"))]
+        assert nc.main([
+            "record", *leg_args, "--sha", sha, "--run-id", str(self.run_id), "--run-attempt", "1",
+            "--created-at", f"{date}T02:17:03Z", "--canary-legs", on_record, "--out", str(night / "record.json"),
+        ]) == 0
+        assert nc.main([
+            "regressions", "--current", str(night / "record.json"), "--last-green-dir", str(self.branch),
+            "--canary-legs", on_regressions, "--repo-root", str(self.main), "--out", str(night / "triage.json"),
+        ]) == 0
+        assert nc.main([
+            "publish", "--record", str(night / "record.json"), "--triage", str(night / "triage.json"),
+            "--branch-dir", str(self.branch), "--main-repo", str(self.main), "--main-ref", "HEAD",
+        ]) == 0
+        read = lambda path: json.loads(path.read_text(encoding="utf-8"))  # noqa: E731
+        return read(night / "record.json"), read(night / "triage.json"), read(self.branch / "last-green.json"), sha
+
+    def issues(self, record: dict[str, Any], triage: dict[str, Any]) -> list[dict[str, Any]]:
+        facts = {**nc.night_facts(record), "run_id": self.run_id, "run_url": "https://github.com/o/r/actions/runs/1", "repo": "o/r"}
+        return nc.plan_actions([], nc.night_events(record, triage), facts)
+
+
+@pytest.mark.parametrize("on_314", ["failed", None], ids=["3.14 red", "3.14 bundle missing"])
+def test_a_report_only_leg_changes_nothing_about_the_night(tmp_path: Path, on_314: str | None) -> None:
+    """With a baseline in place, so a 3.14 failure would be a candidate if it counted."""
+    nights = _Nights(tmp_path)
+    _record0, _triage0, green0, sha0 = nights.night("2026-11-06")
+    assert green0["canary"]["sha"] == sha0
+    assert green0["legs"]["3.14"]["sha"] == sha0
+
+    record, triage, green, sha = nights.night("2026-11-07", on_314=on_314)
+    assert record["nightly"]["roles"]["3.14"] == "extra"
+    assert record["nightly"]["status"]["3.14"] == ("red" if on_314 else "missing")
+    assert record["nightly"]["verdict"] == "green"
+    assert triage["events"] == []
+    assert triage["candidates"] == []
+    assert triage["new_failing"] == []
+    assert triage["collection_errors"] == []
+    assert triage["drift_check"] is None
+    assert nights.issues(record, triage) == []
+    sort_dir = tmp_path / "sort"
+    sort_dir.mkdir()
+    _after, outputs = _sort(sort_dir, triage, {})
+    assert outputs["legs"] == ""
+    assert not (sort_dir / "stub.log").exists()
+    assert green["canary"]["sha"] == sha
+    assert green["legs"]["3.14"]["sha"] == sha0
+
+
+def test_a_failure_on_a_canary_leg_and_on_3_14_is_checked_and_bisected_on_the_canary_leg_only(tmp_path: Path) -> None:
+    nights = _Nights(tmp_path)
+    nights.night("2026-11-06")
+    _record, triage, _green, _sha = nights.night("2026-11-07", on_313="failed", on_314="failed")
+    assert [c["legs"] for c in triage["candidates"]] == [["3.13"]]
+    assert list(triage["drift_check"]["legs"]) == ["3.13"]
+    sort_dir = tmp_path / "sort"
+    sort_dir.mkdir()
+    _repo(sort_dir)
+    triage["drift_check"]["sha"] = triage["last_green"]["sha"] = _git(sort_dir, "rev-parse", "HEAD")
+    _after, outputs = _sort(sort_dir, triage, {"3.13": []})
+    assert outputs["legs"] == "3.13"
+    log = [json.loads(line) for line in (sort_dir / "stub.log").read_text(encoding="utf-8").splitlines()]
+    assert [e["python"] for e in log] == ["3.13"]
+
+
+def test_the_docs_leave_promoting_the_leg_to_an_operator() -> None:
+    text = " ".join(_CONTRIBUTING.read_text(encoding="utf-8").split())
+    assert "An operator decides whether to promote the leg after 14 green nights, and nothing promotes it automatically." in text
+
+
+def _streak_command() -> str:
+    """The Python the CONTRIBUTING streak command hands python3."""
+    text = _CONTRIBUTING.read_text(encoding="utf-8")
+    match = re.search(r"git show origin/test-results:index\.jsonl \| python3 -c '\n(.*?)\n'\n```", text, re.S)
+    assert match
+    return match.group(1)
+
+
+def _streak(branch: Path) -> int:
+    done = subprocess.run(
+        [sys.executable, "-c", _streak_command()], input=(branch / "index.jsonl").read_text(encoding="utf-8"),
+        capture_output=True, text=True, timeout=30, check=True,
+    )
+    return int(done.stdout)
+
+
+def test_the_documented_command_reads_the_streak_from_the_index(tmp_path: Path) -> None:
+    nights = _Nights(tmp_path)
+    nights.night("2026-11-06")
+    assert _streak(nights.branch) == 1
+    nights.night("2026-11-07")
+    assert _streak(nights.branch) == 2
+    nights.night("2026-11-07")
+    assert _streak(nights.branch) == 2, "two runs on one date are one night"
+    nights.night("2026-11-08", on_314="failed")
+    assert _streak(nights.branch) == 0
+    nights.night("2026-11-09")
+    assert _streak(nights.branch) == 1
+    nights.night("2026-11-10", on_314=None)
+    assert _streak(nights.branch) == 0
+    lines = [json.loads(line) for line in (nights.branch / "index.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [line["status"]["3.14"] for line in lines] == ["green", "green", "green", "red", "green", "missing"]
+    assert {line["verdict"] for line in lines} == {"green"}
+
+
+def test_a_line_from_before_the_leg_breaks_no_streak_read(tmp_path: Path) -> None:
+    (tmp_path / "index.jsonl").write_text(json.dumps({"date": "2026-11-06", "status": {"3.13": "green"}}) + "\n", encoding="utf-8")
+    assert _streak(tmp_path) == 0
 
 
 def test_the_documents_describe_the_workflow() -> None:

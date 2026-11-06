@@ -1,7 +1,7 @@
 name: nightly-canary
 
 # The full suite on main every night (#1786). `suite` runs the canary legs and
-# reruns each leg's failures once. `triage` builds the night's record, checks
+# a report-only 3.14 leg, and reruns each leg's failures once. `triage` builds the night's record, checks
 # whether what failed still fails on the last green commit, and bisects the
 # rest. `publish` writes the night to the `test-results` branch. `report` opens,
 # updates and closes the night's `nightly-regression` issues.
@@ -42,10 +42,19 @@ jobs:
     # its cap ends `failure`, and the jobs after it still run. Green legs take
     # 12.5 to 14 minutes.
     timeout-minutes: 52
+    # The report-only leg's failure doesn't fail the run. An operator decides on
+    # promoting it after 14 green nights, and nothing here does that by itself.
+    continue-on-error: ${{ !matrix.canary }}
     strategy:
       fail-fast: false
       matrix:
-        leg: ['3.12', '3.13']
+        include:
+          - leg: '3.12'
+            canary: true
+          - leg: '3.13'
+            canary: true
+          - leg: '3.14'
+            canary: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 2
@@ -178,6 +187,8 @@ jobs:
         with:
           pattern: nightly-*-${{ github.sha }}-a*
           path: bundles
+      # `extra` keeps 3.14 out of the night's verdict, its events, the drift check,
+      # the bisect and the canary pointer. The record still holds its outcomes.
       # The run's `created_at` is the same at every retry, so a retry writes the
       # same record and `publish` accepts it. The clock is only for a failed
       # lookup: a record with a later date beats no record.
@@ -193,7 +204,7 @@ jobs:
             created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           fi
           python3 scripts/nightly_canary.py record \
-            --leg 3.12=bundles:canary --leg 3.13=bundles:canary \
+            --leg 3.12=bundles:canary --leg 3.13=bundles:canary --leg 3.14=bundles:extra \
             --sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --created-at "$created_at" --canary-legs 3.12,3.13 --out night/record.json
       # `ls-remote` exits 2 when the branch does not exist, the first night. Any

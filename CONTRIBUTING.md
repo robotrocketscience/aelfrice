@@ -307,8 +307,9 @@ branch tests nothing.
 
 The workflow runs these jobs:
 
-- `suite` runs the `pytest` job's command on Python 3.12 and 3.13, then reruns
-  each leg's failures once. A test that passes on the rerun is flaky. A test
+- `suite` runs the `pytest` job's command on the canary legs, Python 3.12 and
+  3.13, and on a report-only leg, Python 3.14. It then reruns each leg's failures
+  once. A test that passes on the rerun is flaky. A test
   that fails again is confirmed. It also runs the producer check, which the
   `pytest` job leaves to the `derived-figures` job.
 - `triage` reruns the confirmed failures on the last green commit, under the
@@ -320,7 +321,7 @@ The workflow runs these jobs:
 - `report` opens, updates, and closes the night's issues. It runs even when an
   earlier job failed, and it runs no test.
 
-A red leg fails the `suite` job, and an `incomplete` night fails the `publish`
+A red canary leg fails the `suite` job, and an `incomplete` night fails the `publish`
 job after it writes the night, so the Actions tab shows both as a failed run.
 
 The canary opens issues with the `nightly-regression` label, and creates the
@@ -354,8 +355,8 @@ git show origin/test-results:index.jsonl | tail -n 1
 
 The `test-results` branch holds these files:
 
-- `index.jsonl` has one line for each night: the run, the commit, the verdict,
-  the flaky tests on each leg, and the event keys.
+- `index.jsonl` has one line for each run: the run, the date, the commit, the
+  verdict, each leg's `status`, the flaky tests on each leg, and the event keys.
 - `last-green.json` names the newest green commit. It moves only on a green
   night.
 - `runs/<date>-<run_id>-a<attempt>/record.json` holds the outcome of every test
@@ -363,9 +364,31 @@ The `test-results` branch holds these files:
 - `runs/<date>-<run_id>-a<attempt>/triage.json` holds the events, the tests left
   to bisect, and each bisect's log.
 
-A night's verdict is `green` when both legs reported and no test is confirmed,
+A night's verdict is `green` when both canary legs reported and no test is confirmed,
 `incomplete` when a leg left no usable report, and `red` otherwise. A flaky test
 doesn't change the verdict.
+
+The 3.14 leg tracks a Python version that aelfrice doesn't support yet. It has the
+`extra` role in the record, so a red, broken, or missing 3.14 leg doesn't change
+the verdict or fail the run. The leg opens no issue, gets no drift check or
+bisect, and never moves the `canary` entry in `last-green.json`.
+
+An operator decides whether to promote the leg after 14 green nights, and nothing
+promotes it automatically. To read the current streak, in nights, run this command:
+
+```bash
+git show origin/test-results:index.jsonl | python3 -c '
+import json, sys
+nights = set()
+for line in sys.stdin:
+    run = json.loads(line)
+    nights = nights | {run["date"]} if run["status"].get("3.14") == "green" else set()
+print(len(nights))
+'
+```
+
+The command reads each run's `status` for the leg, and any status other than
+`green` starts the count again. Two green runs on one date count as one night.
 
 Each event key says what the canary found:
 
