@@ -243,6 +243,22 @@ def _expand_anchor(text: str, start: int, end: int) -> str:
     return text[new_start:new_end].strip()
 
 
+def _line_spans(text: str) -> list[tuple[int, int]]:
+    """`(start, end)` of each line of `text`, terminator included.
+
+    `str.splitlines` breaks on every line separator `\\s` can match, so a
+    match inside one span can't join two lines. The offsets index `text`,
+    which keeps a match's anchor context free to read past its line.
+    """
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for line in text.splitlines(keepends=True):
+        end = start + len(line)
+        spans.append((start, end))
+        start = end
+    return spans
+
+
 def extract_triples(
     text: str, *, constrain_collision_verbs: bool = False
 ) -> list[Triple]:
@@ -255,31 +271,35 @@ def extract_triples(
 
     `constrain_collision_verbs` selects the ingest-constrained bank
     (`_INGEST_PATTERNS`): the six single-token templates that double as
-    plural nouns are dropped and TESTS' two passive forms are added. It
-    defaults to False so the read path is unchanged — operator ruling of
-    2026-08-06 scopes #1376 to the write path, and `context_rebuilder`
-    calls this on every prompt with behaviour that was never measured.
-    Only `hook_commit_ingest` passes True.
+    plural nouns are dropped and TESTS' two passive forms are added. Each
+    match stays on one line of `text` (#1874). It defaults to False so the read path is unchanged — operator
+    ruling of 2026-08-06 scopes #1376 to the write path, and
+    `context_rebuilder` calls this on every prompt with behaviour that was
+    never measured. Only `hook_commit_ingest` passes True.
     """
     if not text:
         return []
-    patterns = _INGEST_PATTERNS if constrain_collision_verbs else _PATTERNS
+    if constrain_collision_verbs:
+        patterns, spans = _INGEST_PATTERNS, _line_spans(text)
+    else:
+        patterns, spans = _PATTERNS, [(0, len(text))]
     triples: list[Triple] = []
     for pat in patterns:
-        for m in pat.regex.finditer(text):
-            subj_raw = m.group("subject")
-            obj_raw = m.group("object")
-            subj = _normalize_phrase(subj_raw)
-            obj = _normalize_phrase(obj_raw)
-            if not subj or not obj:
-                continue
-            anchor = _expand_anchor(text, m.start(), m.end())
-            if pat.swap:
-                subj, obj = obj, subj
-            triples.append(Triple(
-                subject=subj, relation=pat.edge_type,
-                object=obj, anchor_text=anchor,
-            ))
+        for span_start, span_end in spans:
+            for m in pat.regex.finditer(text, span_start, span_end):
+                subj_raw = m.group("subject")
+                obj_raw = m.group("object")
+                subj = _normalize_phrase(subj_raw)
+                obj = _normalize_phrase(obj_raw)
+                if not subj or not obj:
+                    continue
+                anchor = _expand_anchor(text, m.start(), m.end())
+                if pat.swap:
+                    subj, obj = obj, subj
+                triples.append(Triple(
+                    subject=subj, relation=pat.edge_type,
+                    object=obj, anchor_text=anchor,
+                ))
     triples.sort(key=lambda t: text.find(t.anchor_text))
     return triples
 

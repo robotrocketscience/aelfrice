@@ -31,7 +31,8 @@ are the before/after precision pair.
 most of the junk but does not make precision positive, because the fires that
 remain come from templates the #1376 ruling does not cover and fail for a
 different reason — the noun-phrase capture is unanchored and runs across
-clause and line boundaries. That is #1159 §2's territory, not this leaf's.
+clause boundaries. That is #1159 §2's territory, not this leaf's. Since #1874
+the ingest bank's verb case is exact and its matches stay on one line.
 
 Usage::
 
@@ -53,6 +54,7 @@ from aelfrice.triple_extractor import (
     _INGEST_EXCLUDED_TEMPLATES,
     _INGEST_PATTERNS,
     _PATTERNS,
+    _line_spans,
     extract_triples,
 )
 
@@ -75,22 +77,24 @@ def _commit_bodies(limit: int, ref: str, root: Path) -> list[str]:
 
 
 def _fires_by_template(
-    bodies: list[str], patterns: tuple[Any, ...]
+    bodies: list[str], patterns: tuple[Any, ...], *, per_line: bool = False
 ) -> tuple[collections.Counter[str], dict[str, list[str]]]:
     counts: collections.Counter[str] = collections.Counter()
     samples: dict[str, list[str]] = {}
     for text in bodies:
+        spans = _line_spans(text) if per_line else [(0, len(text))]
         for pat in patterns:
-            for hit in pat.regex.finditer(text):
-                subj = " ".join(hit.group("subject").split())
-                obj = " ".join(hit.group("object").split())
-                if not subj or not obj:
-                    continue
-                key = f"{pat.template} -> {pat.edge_type}"
-                counts[key] += 1
-                samples.setdefault(key, [])
-                if len(samples[key]) < 5:
-                    samples[key].append(f"({subj[:50]!r}, {obj[:50]!r})")
+            for start, end in spans:
+                for hit in pat.regex.finditer(text, start, end):
+                    subj = " ".join(hit.group("subject").split())
+                    obj = " ".join(hit.group("object").split())
+                    if not subj or not obj:
+                        continue
+                    key = f"{pat.template} -> {pat.edge_type}"
+                    counts[key] += 1
+                    samples.setdefault(key, [])
+                    if len(samples[key]) < 5:
+                        samples[key].append(f"({subj[:50]!r}, {obj[:50]!r})")
     return counts, samples
 
 
@@ -109,7 +113,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     before_counts, before_samples = _fires_by_template(bodies, _PATTERNS)
-    after_counts, after_samples = _fires_by_template(bodies, _INGEST_PATTERNS)
+    after_counts, after_samples = _fires_by_template(
+        bodies, _INGEST_PATTERNS, per_line=True
+    )
 
     # Cross-check the per-pattern walk against the public entry point, so a
     # divergence between this script's replica loop and `extract_triples`

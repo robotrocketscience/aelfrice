@@ -286,6 +286,7 @@ def _ingest_message(
     # verbs collide with plural nouns ("Two tests that …"), and this is a
     # write path — a fragment minted here is an irreversible belief. The
     # read path in `context_rebuilder` deliberately does not pass this.
+    # #1874: it also keeps each match on one line of the message.
     triples = extract_triples(body, constrain_collision_verbs=True)
     if not triples:
         return  # no relations => nothing to record
