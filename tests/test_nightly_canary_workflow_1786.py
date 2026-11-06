@@ -21,12 +21,16 @@ from typing import Any
 
 import pytest
 
-from tests.test_workflow_supply_chain_1786 import _jobs, _step_lines, _step_uses, _steps, _with_input
+from tests.test_workflow_supply_chain_1786 import _jobs, _permissions_block, _step_lines, _step_uses, _steps, _with_input
 
 # The slowest test here, a real temporary repository, took 1.8 s on 2026-11-05.
 pytestmark = pytest.mark.timeout(30)
 
 _REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_REPO / "scripts"))
+
+import nightly_canary as nc  # noqa: E402
+
 _WORKFLOW = _REPO / ".github" / "workflows" / "nightly-canary.yml"
 _CI = _REPO / ".github" / "workflows" / "ci.yml"
 _CONTRIBUTING = _REPO / "CONTRIBUTING.md"
@@ -104,9 +108,10 @@ def _ci_suite_tokens() -> list[str]:
 
 
 def test_the_jobs_and_their_needs_are_only_the_ones_that_exist() -> None:
-    assert set(_jobs(_text())) == {"suite", "triage", "publish"}
+    assert set(_jobs(_text())) == {"suite", "triage", "publish", "report"}
     assert _key("triage", "needs") == "suite"
     assert _key("publish", "needs") == "[suite, triage]"
+    assert _key("report", "needs") == "publish"
 
 
 def test_the_suite_runs_only_the_canary_legs_on_the_pinned_image() -> None:
@@ -130,7 +135,7 @@ def _cap(step: str) -> int | None:
     return None
 
 
-@pytest.mark.parametrize("job", ["suite", "triage", "publish"])
+@pytest.mark.parametrize("job", ["suite", "triage", "publish", "report"])
 def test_every_step_has_a_cap_and_the_caps_fit_under_the_job(job: str) -> None:
     """A job past its cap ends `cancelled`, and so does the run, and `triage` and
     `publish` then lose the night. A step past its cap ends `failure` instead."""
@@ -148,6 +153,7 @@ def test_only_main_reaches_each_job() -> None:
     assert _key("suite", "if") == "github.ref == 'refs/heads/main'"
     assert _key("triage", "if") == _MAIN_ONLY
     assert _key("publish", "if") == _MAIN_ONLY
+    assert _key("report", "if") == _MAIN_ONLY
 
 
 def test_a_branch_dispatch_cannot_replace_a_pending_night() -> None:
@@ -451,6 +457,55 @@ def test_an_unreadable_input_stops_publish_before_a_commit() -> None:
     check = re.search(r'if \[ "\$published" -gt 1 \]; then\n\s*exit "\$published"\n', step)
     assert check
     assert check.start() < step.index("git add -A")
+
+
+# --- report ------------------------------------------------------------------
+
+
+_REPORT_STEP = "Open, update and close the night's issues"
+
+
+def test_report_holds_only_the_permissions_it_uses() -> None:
+    block = _permissions_block(_job("report"), 4)
+    assert block is not None
+    assert [line.strip() for line in block.splitlines() if line.strip()] == ["contents: read", "issues: write"]
+
+
+def test_no_other_job_and_not_the_workflow_can_write_issues() -> None:
+    """The jobs that run repository tests must not get this token."""
+    assert "issues" not in (_permissions_block(_text().splitlines(), 0) or "")
+    for job in ("suite", "triage", "publish"):
+        assert "issues:" not in (_permissions_block(_job(job), 4) or ""), job
+
+
+def test_report_is_hardened_keeps_no_token_and_installs_nothing() -> None:
+    steps = _steps(_job("report"))
+    assert (_step_uses(steps[0]) or "").startswith("step-security/harden-runner@")
+    assert _with_input(_checkout("report"), "persist-credentials") == "false"
+    text = "".join(steps)
+    for word in ("setup-uv", "uv sync", "uv run", "uvx", "pytest", "nightly_bisect"):
+        assert word not in text, word
+
+
+def test_only_the_issues_step_gets_the_token() -> None:
+    holding = [s for s in _steps(_job("report")) if "GH_TOKEN" in s or "github.token" in s]
+    assert holding == [_step("report", _REPORT_STEP)]
+    assert "GH_TOKEN: ${{ github.token }}" in holding[0]
+
+
+def test_report_reads_the_night_and_a_failed_download_still_reports() -> None:
+    download = next(s for s in _steps(_job("report")) if "download-artifact" in s)
+    assert "continue-on-error: true" in download
+    assert _with_input(download, "name") == "nightly-triage-${{ github.sha }}"
+    assert _with_input(download, "path") == "night"
+    step = _step("report", _REPORT_STEP)
+    assert "mkdir -p night" in step
+    assert 'python3 scripts/nightly_canary.py issues --events night --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"' in step
+    assert "RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" in step
+
+
+def test_the_run_url_the_workflow_builds_is_one_the_script_accepts() -> None:
+    assert nc._RUN_URL.fullmatch("https://github.com/o/r/actions/runs/123")
 
 
 def test_the_documents_describe_the_workflow() -> None:

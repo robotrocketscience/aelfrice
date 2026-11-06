@@ -3,7 +3,8 @@ name: nightly-canary
 # The full suite on main every night (#1786). `suite` runs the canary legs and
 # reruns each leg's failures once. `triage` builds the night's record, checks
 # whether what failed still fails on the last green commit, and bisects the
-# rest. `publish` writes the night to the `test-results` branch.
+# rest. `publish` writes the night to the `test-results` branch. `report` opens,
+# updates and closes the night's `nightly-regression` issues.
 # scripts/nightly_canary.py and scripts/nightly_bisect.py hold the rules, and
 # CONTRIBUTING.md says how to read the results.
 
@@ -484,3 +485,46 @@ jobs:
             echo "::error::the night is incomplete: a canary leg left no usable report"
             exit 1
           fi
+
+  report:
+    needs: publish
+    # `!cancelled()` so a failed `suite`, `triage` or `publish` still reports, and
+    # a night with no record opens its issue. The ref test because a skipped
+    # `publish` does not skip this job under `!cancelled()`, and a dispatch from a
+    # branch opens nothing.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # `gh issue create`, `edit`, `comment` and `close`, and `gh label create`.
+      issues: write
+    # No setup-uv and no `uv sync`: `nightly_canary.py` is standard library only,
+    # and this job holds the issues token, so it installs nothing and runs no test.
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        timeout-minutes: 2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
+        with:
+          persist-credentials: false
+      # `publish` reads this same artifact, so the branch has nothing it lacks. A
+      # failed download is a night with no record, and `issues` opens that issue.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          name: nightly-triage-${{ github.sha }}
+          path: night
+      # A killed step leaves what it wrote, and a re-run plans only what is left.
+      - name: Open, update and close the night's issues
+        timeout-minutes: 7
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p night
+          python3 scripts/nightly_canary.py issues --events night --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
