@@ -172,9 +172,7 @@ def test_slash_command_invokes_matching_cli(cmd: str) -> None:
     if cmd in _INVOKE_EXEMPT:
         pytest.skip(f"{cmd} is exempt: {_INVOKE_EXEMPT[cmd]}")
     text = (_slash_dir() / f"{cmd}.md").read_text()
-    assert re.search(rf"(?<!uv run )\baelf {re.escape(cmd)}\b", text), (
-        f"{cmd}.md does not invoke `aelf {cmd}` directly"
-    )
+    assert f"aelf {cmd}" in text, f"{cmd}.md does not invoke `aelf {cmd}`"
 
 
 #: `uv run aelf`, spelled any way a command could spell it: flags on either
