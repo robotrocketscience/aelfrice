@@ -55,9 +55,10 @@ step is this script's `step` subcommand, invoked by its absolute path, because
 commit's files. `--step-cmd` replaces the step command; the tests use it to run
 a fake in place of uv and pytest.
 
-The temporary location cannot be inside `--repo-root`, where `uv` and `pytest`
-looking upward find the caller's project, or hold a colon, which splits
-`GIT_CEILING_DIRECTORIES`. Either exits 2 before any work. That location
+The temporary location cannot be inside `--repo-root`, or in or below a folder
+holding a `pyproject.toml`, where `uv` and `pytest` looking upward from a merge
+point with none find the caller's project, or hold a colon, which splits
+`GIT_CEILING_DIRECTORIES`. Any of these exits 2 before any work. That location
 and `--repo-root` are read from `pwd -P`, so a link or another spelling of a name on
 a case-insensitive disk reads as git reports it.
 
@@ -1338,10 +1339,10 @@ def _real_path(path: Path) -> Path:
 
 
 def _temp_location(root: Path) -> Path:
-    """The real path of the temporary location, which `root` must not contain."""
+    """The real path of the temporary location, which neither `root` nor a project may contain."""
     temp = _real_path(Path(tempfile.gettempdir()))
-    if temp.is_relative_to(root):
-        raise ValueError(f"the temporary location {temp} is inside {root}; set TMPDIR elsewhere")
+    if temp.is_relative_to(root) or any((folder / "pyproject.toml").exists() for folder in (temp, *temp.parents)):
+        raise ValueError(f"the temporary location {temp} is inside {root} or a project; set TMPDIR elsewhere")
     if ":" in str(temp):
         raise ValueError(f"the temporary location {temp} holds a colon; set TMPDIR elsewhere")
     return temp

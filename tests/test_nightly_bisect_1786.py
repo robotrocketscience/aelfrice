@@ -1455,19 +1455,28 @@ def test_a_run_touches_no_other_folder(env: Env, tmp_path: Path, run_bisect: Run
 
 
 @pytest.mark.parametrize("dry", [False, True], ids=["run", "dry-run"])
-@pytest.mark.parametrize("location", ["inside", "through-a-link", "the-root", "colon"])
+@pytest.mark.parametrize(
+    "location", ["inside", "through-a-link", "the-root", "colon", "under-a-project", "holding-a-project"],
+)
 def test_a_temporary_location_the_ceiling_cannot_cover_exits_2(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str], location: str, dry: bool,
 ) -> None:
     """Inside the repository a step's `uv` found the caller's project and wrote
-    `.venv` there, and a colon split the ceiling, which then moved the caller."""
+    `.venv` there, and a colon split the ceiling, which then moved the caller.
+    From a merge point with no `pyproject.toml`, `uv sync` rewrites the `.venv` of
+    the project it walks up to, as with a linked worktree and a temporary location
+    in the main checkout."""
     shas = env.repo(["", "a"])
     repo = tmp_path / "repo"
     temp = {
         "inside": repo / "tmp", "through-a-link": tmp_path / "link", "the-root": repo, "colon": tmp_path / "a:b",
+        "under-a-project": tmp_path / "main" / "tmp", "holding-a-project": tmp_path / "main",
     }[location]
     (repo / "tmp").mkdir()
+    if location.endswith("-a-project"):
+        (tmp_path / "main").mkdir()
+        _written(tmp_path / "main" / "pyproject.toml", "[project]\n")
     if location == "through-a-link":
         temp.symlink_to(repo / "tmp")
     temp.mkdir(exist_ok=True)
