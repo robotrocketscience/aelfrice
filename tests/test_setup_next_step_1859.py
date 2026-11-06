@@ -264,6 +264,21 @@ def test_a_corrupt_store_exits_0_with_no_next_step(
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("host", ["claude", "codex"])
+def test_a_store_path_under_a_file_exits_0_with_no_next_step(
+    env: Path, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    """`aelf onboard .` can't create this store, so calling it empty and
+    sending the user there ends in a traceback."""
+    _folder(env, repo=True, monkeypatch=monkeypatch)
+    (env / "blocker").write_text("a file, not a folder", encoding="utf-8")
+    monkeypatch.setenv("AELFRICE_DB", str(env / "blocker" / "memory.db"))
+    code, lines = _setup(host)
+    assert code == 0
+    assert lines == []
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("host", ["claude", "codex"])
 def test_a_broken_marker_exits_0_with_no_next_step(
     env: Path, monkeypatch: pytest.MonkeyPatch, host: str
 ) -> None:

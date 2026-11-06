@@ -226,7 +226,6 @@ from aelfrice.db_paths import (
     open_user_store,
     open_user_store_if_present,
     resolve_store,
-    store_file_present,
     user_db_path,
 )
 from aelfrice.store import MemoryStore, ReadOnlyStoreUnavailable
@@ -5948,6 +5947,29 @@ _ONBOARD_IN_CODEX: Final[str] = "`$aelf-onboard .` in Codex"
 _ONBOARD_IN_TERMINAL: Final[str] = "`aelf onboard .`"
 
 
+def _belief_count_without_writing(path: Path) -> int:
+    """How many beliefs the store at `path` holds, leaving it unchanged.
+
+    The handle is `read_only=True` rather than `open_store_for_read()`,
+    whose writable first attempt migrates the store and sweeps expired
+    locks. Codex setup opens no other store, and `AELFRICE_DB` can name
+    a file aelfrice doesn't own. A store too old to read raises.
+
+    Only a missing file counts as empty, and it isn't created, because
+    Codex setup has never made one. A parent that is a file raises
+    `NotADirectoryError`, since `aelf onboard` can't create that store.
+    """
+    try:
+        os.stat(path)
+    except FileNotFoundError:
+        return 0
+    store = MemoryStore(str(path), read_only=True)
+    try:
+        return store.count_beliefs()
+    finally:
+        store.close()
+
+
 def _print_setup_next_step(out: object, onboard: str) -> None:
     """One-line next-step hint when the active store is empty.
 
@@ -5959,25 +5981,13 @@ def _print_setup_next_step(out: object, onboard: str) -> None:
     A folder outside any git repository has no project to onboard, so
     the hint sends the user to one first. A `[store]` marker gives a
     folder its own store without git, so that folder counts as a
-    project. A store file that isn't there counts as empty and isn't
-    created, because Codex setup has never made one. Skips the hint when
-    the store already has beliefs and when reading the store fails,
-    because anything that breaks should never derail setup itself.
-
-    The handle is `read_only=True` rather than `open_store_for_read()`,
-    whose writable first attempt migrates the store and sweeps expired
-    locks. Codex setup opens no other store, and `AELFRICE_DB` can name
-    a file aelfrice doesn't own. A store too old to read prints no line.
+    project. Skips the hint when the store already has beliefs and when
+    reading the store fails, because anything that breaks should never
+    derail setup itself.
     """
     try:
         selection = resolve_store()
-        n = 0
-        if store_file_present(selection.path):
-            store = MemoryStore(str(selection.path), read_only=True)
-            try:
-                n = store.count_beliefs()
-            finally:
-                store.close()
+        n = _belief_count_without_writing(selection.path)
     except Exception:  # pragma: no cover - defensive
         return
     if n != 0:
