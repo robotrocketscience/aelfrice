@@ -178,9 +178,9 @@ def _cap(step: str) -> int | None:
 
 @pytest.mark.parametrize("job", ["suite", "suite-macos", "triage", "publish", "report"])
 def test_every_step_has_a_cap_and_the_caps_fit_under_the_job(job: str) -> None:
-    """A job past its cap ends `cancelled`, and so does the run, and whether `triage`
-    and `publish` still run then is unverified. A step past its cap ends `failure`
-    instead."""
+    """A job past its cap ends `cancelled`, and so does the run, which hides whether
+    the night was red, and the job's bundle is lost. The jobs after it still run, as
+    on run 42176049962. A step past its cap ends `failure` instead."""
     steps = _steps(_job(job))
     assert steps
     missing = [s.splitlines()[0].strip() for s in steps if _cap(s) is None]
@@ -657,6 +657,9 @@ def test_the_workflow_gives_each_matrix_leg_a_role_and_only_canary_legs_count() 
     assert on_regressions == canary
 
 
+_CUT_SHORT = "cut short"
+
+
 class _Nights:
     """Nights run through the real `record`, `regressions` and `publish`, with the
     workflow's own flags, on a real repository that plays main."""
@@ -674,21 +677,24 @@ class _Nights:
         self.run_id = 100
 
     def night(
-        self, date: str, *, on_313: str = "passed", on_314: str | None = "passed", on_macos: str | None = "passed",
+        self, date: str, *, on_313: str | None = "passed", on_314: str | None = "passed", on_macos: str | None = "passed",
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
-        """One night; a report-only leg given None uploaded nothing. The record, the
-        triage, `last-green.json` after publishing, and the night's commit."""
+        """One night; a leg given None uploaded nothing, and one given `_CUT_SHORT` uploaded
+        what a job killed before its verdict holds. The record, the triage,
+        `last-green.json` after publishing, and the night's commit."""
         self.run_id += 1
         _git(self.main, "commit", "-q", "--allow-empty", "-m", f"night {self.run_id}")
         sha = _git(self.main, "rev-parse", "HEAD")
         bundles = self.root / f"bundles-{self.run_id}"
         test = "tests.test_a::test_one"
         _leg_bundle(bundles / f"nightly-3.12-{sha}-a1", {test: "passed"})
-        _leg_bundle(bundles / f"nightly-3.13-{sha}-a1", {test: on_313})
-        if on_314 is not None:
-            _leg_bundle(bundles / f"nightly-3.14-{sha}-a1", {test: on_314})
-        if on_macos is not None:
-            _leg_bundle(bundles / f"nightly-macos-3.13-{sha}-a1", {test: on_macos})
+        for leg, outcome in (("3.13", on_313), ("3.14", on_314), ("macos-3.13", on_macos)):
+            directory = bundles / f"nightly-{leg}-{sha}-a1"
+            if outcome == _CUT_SHORT:
+                directory.mkdir(parents=True)
+                (directory / "env.json").write_text("{}", encoding="utf-8")
+            elif outcome is not None:
+                _leg_bundle(directory, {test: outcome})
         legs, on_record, on_regressions = _workflow_flags()
         night = self.root / f"night-{self.run_id}"
         leg_args = [a for leg in legs for a in ("--leg", leg.replace("=bundles:", f"={bundles}:"))]
@@ -769,6 +775,33 @@ def test_a_failure_on_a_canary_leg_and_on_the_report_only_legs_is_checked_and_bi
     assert outputs["legs"] == "3.13"
     log = [json.loads(line) for line in (sort_dir / "stub.log").read_text(encoding="utf-8").splitlines()]
     assert [e["python"] for e in log] == ["3.13"]
+
+
+@pytest.mark.parametrize("left", [None, _CUT_SHORT], ids=["no bundle", "bundle with no report"])
+def test_a_canary_leg_cancelled_at_its_cap_makes_the_night_incomplete(tmp_path: Path, left: str | None) -> None:
+    nights = _Nights(tmp_path)
+    _record0, _triage0, _green0, sha0 = nights.night("2026-11-06")
+
+    record, triage, green, _sha = nights.night("2026-11-07", on_313=left)
+    assert record["nightly"]["status"]["3.13"] == "missing"
+    assert record["nightly"]["verdict"] == "incomplete"
+    assert [event["key"] for event in triage["events"]] == ["canary-broken"]
+    assert green["canary"]["sha"] == sha0
+    assert [(a["action"], a["key"]) for a in nights.issues(record, triage)] == [("create", "canary-broken")]
+
+
+@pytest.mark.parametrize("left", [None, _CUT_SHORT], ids=["no bundle", "bundle with no report"])
+def test_a_macos_leg_cancelled_at_its_cap_reads_as_missing_and_the_night_stays_green(tmp_path: Path, left: str | None) -> None:
+    nights = _Nights(tmp_path)
+    _record0, _triage0, _green0, sha0 = nights.night("2026-11-06")
+
+    record, triage, green, sha = nights.night("2026-11-07", on_macos=left)
+    assert record["nightly"]["status"]["macos-3.13"] == "missing"
+    assert record["nightly"]["verdict"] == "green"
+    assert triage["events"] == []
+    assert nights.issues(record, triage) == []
+    assert green["canary"]["sha"] == sha
+    assert green["legs"]["macos-3.13"]["sha"] == sha0
 
 
 def test_the_docs_leave_promoting_a_report_only_leg_to_an_operator() -> None:

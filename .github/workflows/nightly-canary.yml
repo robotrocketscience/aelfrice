@@ -37,15 +37,14 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     # A job that reaches its cap ends `cancelled`, and so does the run, whatever
-    # `continue-on-error` says: mutation.yml's 60-minute timeouts on runs
-    # 41401037793 and 39564214136 ended that way. The other jobs in those runs were
-    # skipped an hour before the cap, so they show nothing about a job waiting under
-    # `!cancelled()`. Whether `triage` and `publish` would still run is unverified,
-    # and the night is lost if they don't. So every step here and in those
-    # jobs carries its own `timeout-minutes`, and a job's step caps add up to
-    # less than its own, with room left for the actions' post steps. A step past
-    # its cap ends `failure`, and the jobs after it still run. Green legs take
-    # 12.5 to 14 minutes.
+    # `continue-on-error` says. The jobs after it still run: on run 42176049962, jobs
+    # needing a job capped at one minute ran and printed
+    # `needs.<job>.result=cancelled`. What the cap costs is that job's bundle, and a
+    # run that reads `cancelled`, which hides whether the night was red. So every
+    # step here and in those jobs carries its own `timeout-minutes`, and a job's
+    # step caps add up to less than its own, with room left for the actions' post
+    # steps. A step past its cap ends `failure`, and the jobs after it still run.
+    # Green legs take 12.5 to 14 minutes.
     timeout-minutes: 52
     # The report-only leg's failure doesn't fail the run. An operator decides on
     # promoting it after 14 green nights, and nothing here does that by itself.
@@ -160,11 +159,11 @@ jobs:
     # nights, and nothing here does that by itself.
     if: github.ref == 'refs/heads/main'
     runs-on: macos-15
-    # Red, or dead at a step, this leg doesn't fail the run. That doesn't cover a job
-    # past its own cap, which the `suite` job's comment describes, so the step caps
-    # add up to 61 of these 70 minutes. The suite step gets 40 because nothing has
-    # timed this suite on the image yet. The `suite` job's comments say why each step
-    # has its shape, and a test holds the steps equal to that job's.
+    # Red, or dead at a step, this leg doesn't fail the run. Past its own cap, it makes
+    # the run read `cancelled` even with green canary legs, as the `suite` job's comment
+    # says, so the step caps add up to 61 of these 70 minutes. The suite step gets 40
+    # because nothing has timed this suite on the image yet. The `suite` job's comments
+    # say why each step has its shape, and a test holds the steps equal to that job's.
     timeout-minutes: 70
     continue-on-error: true
     steps:
