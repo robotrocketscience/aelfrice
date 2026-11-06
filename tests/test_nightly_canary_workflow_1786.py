@@ -327,6 +327,86 @@ def test_the_incomplete_check_is_the_last_step_and_reads_the_real_field(monkeypa
     assert record["nightly"]["verdict"] == "incomplete"
 
 
+def _key_is(step: str, key: str, value: str) -> bool:
+    """Whether the step's own `key` holds `value`, not a line inside its `run:`."""
+    key_indent, lines = _step_lines(step)
+    return any(indent == key_indent and text == f"{key}: {value}" for indent, text in lines)
+
+
+@pytest.mark.parametrize(
+    ("job", "name", "minutes"),
+    [
+        ("suite", "Run the suite", 25),
+        ("suite", "Rerun the failed tests once", 5),
+        ("triage", "Bisect what the last green commit still passes", 21),
+    ],
+)
+def test_the_caps_that_matter_stay_where_they_are(job: str, name: str, minutes: int) -> None:
+    """The bisect's cap has to cover its 1200 s budget and its 15 s margin."""
+    assert _cap(_step(job, name)) == minutes
+
+
+@pytest.mark.parametrize("name", ["Run the suite", "Rerun the failed tests once"])
+def test_a_step_past_its_cap_still_reaches_the_verdict(name: str) -> None:
+    assert _key_is(_step("suite", name), "continue-on-error", "true")
+
+
+def test_a_suite_step_killed_by_its_cap_reads_as_broken() -> None:
+    assert '--rc "${SUITE_RC:-124}"' in _step("suite", "Sort the red tests into flaky and confirmed")
+
+
+def test_a_failed_download_still_builds_a_record() -> None:
+    downloads = [s for s in _steps(_job("triage")) if "download-artifact" in s]
+    assert len(downloads) == 1, downloads
+    assert _key_is(downloads[0], "continue-on-error", "true")
+
+
+def test_triage_can_read_the_merged_prs() -> None:
+    lines = [line.strip() for line in _job("triage")]
+    start = lines.index("permissions:")
+    block = lines[start + 1 : lines.index("steps:")]
+    assert "pull-requests: read" in block
+    assert "actions: read" in block
+    assert "contents: read" in block
+
+
+def test_a_running_night_is_not_cancelled_by_the_next() -> None:
+    lines = _text().splitlines()
+    start = lines.index("concurrency:")
+    assert lines[start + 2] == "  cancel-in-progress: false"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Check the last green commit and split what is left by leg", "Bisect what the last green commit still passes"],
+)
+def test_the_steps_that_run_repository_tests_hold_no_token(name: str) -> None:
+    assert "GH_TOKEN" not in _step("triage", name)
+
+
+def test_only_the_api_steps_hold_the_token() -> None:
+    holders = [s.splitlines()[0].strip() for s in _steps(_job("triage")) if "GH_TOKEN" in s]
+    assert holders == ["- name: Build the night's record", "- name: List the merge points"]
+    outside = _text().partition("\njobs:\n")[0]
+    assert "GH_TOKEN" not in outside
+    assert not any(line.startswith("    env:") for line in _job("triage"))
+
+
+def test_a_landed_push_exits_with_what_publish_said() -> None:
+    """`publish` exits 1 after its writes when a pointer needs attention, so the
+    night lands and the job still fails."""
+    step = _step("publish", "Write the night to test-results")
+    assert re.search(r'if git push origin HEAD:test-results; then\n\s*exit "\$published"\n', step)
+    assert re.search(r'if git diff --cached --quiet; then\n.*\n\s*exit "\$published"\n', step)
+
+
+def test_an_unreadable_input_stops_publish_before_a_commit() -> None:
+    step = _step("publish", "Write the night to test-results")
+    check = re.search(r'if \[ "\$published" -gt 1 \]; then\n\s*exit "\$published"\n', step)
+    assert check
+    assert check.start() < step.index("git add -A")
+
+
 def test_the_documents_describe_the_workflow() -> None:
     text = _CONTRIBUTING.read_text(encoding="utf-8")
     start = text.index("### The nightly canary")
