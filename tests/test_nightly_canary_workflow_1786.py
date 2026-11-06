@@ -465,6 +465,12 @@ def test_an_unreadable_input_stops_publish_before_a_commit() -> None:
 _REPORT_STEP = "Open, update and close the night's issues"
 
 
+def test_report_has_its_own_cap_and_the_pinned_image() -> None:
+    assert _key("report", "runs-on") == _ci_key("runs-on")
+    assert _key("report", "timeout-minutes") == "15"
+    assert _cap(_step("report", _REPORT_STEP)) == 7
+
+
 def test_report_holds_only_the_permissions_it_uses() -> None:
     block = _permissions_block(_job("report"), 4)
     assert block is not None
@@ -500,7 +506,8 @@ def test_report_reads_the_night_and_a_failed_download_still_reports() -> None:
     assert _with_input(download, "path") == "night"
     step = _step("report", _REPORT_STEP)
     assert "mkdir -p night" in step
-    assert 'python3 scripts/nightly_canary.py issues --events night --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"' in step
+    lines = [line.strip() for line in step.splitlines()]
+    assert 'python3 scripts/nightly_canary.py issues --events night --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"' in lines
     assert "RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" in step
 
 
