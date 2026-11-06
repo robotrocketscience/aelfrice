@@ -229,6 +229,7 @@ def test_pinning_did_not_move_a_tag_checkout_to_an_older_release() -> None:
 _PUSHING_CHECKOUTS = {
     ("bench-canonical.yml", "canonical"): "pushes the results snapshot to bench-canonical-results",
     ("merge-train.yml", "merge"): "fast-forwards main with `git push origin`",
+    ("nightly-canary.yml", "publish"): "pushes the night's record to test-results",
     ("replay-soak.yml", "soak"): "pushes the soak record to replay-soak-status",
 }
 _GIT_PUSH = re.compile(r"\bgit\s+push\b")

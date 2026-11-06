@@ -1,0 +1,422 @@
+name: nightly-canary
+
+# The full suite on main every night (#1786). `suite` runs the canary legs and
+# reruns each leg's failures once. `triage` builds the night's record, checks
+# whether what failed still fails on the last green commit, and bisects the
+# rest. `publish` writes the night to the `test-results` branch.
+# scripts/nightly_canary.py and scripts/nightly_bisect.py hold the rules, and
+# CONTRIBUTING.md says how to read the results.
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # #1472. Unscaled test budgets: this is a dedicated runner, and a looser
+  # timeout only takes longer to notice a hang.
+  AELF_TEST_TIMEOUT_SCALE: "1"
+
+concurrency:
+  group: nightly-canary
+  cancel-in-progress: false
+
+jobs:
+  suite:
+    # A dispatch from any other branch would test a commit main never had.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    # Green legs take 12.5 to 14 minutes. The suite and the rerun carry their
+    # own caps, below this one, because a step past its cap ends `failure` and
+    # the steps after it still run, while a job past its cap ends `cancelled`.
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: ${{ matrix.leg }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --group dev --extra archive --extra onboard-llm
+      - name: The [archive] extra must be present, or the archive tests skip
+        run: uv run python -c "import cryptography"
+      - name: The [onboard-llm] extra must be present, or the SDK contract tests skip
+        run: uv run python -c "import anthropic"
+      # Under `uv run`, or it records the runner's Python and not the leg's.
+      - name: Record the leg's environment
+        run: uv run python scripts/nightly_canary.py env --out bundle/env.json
+      # `continue-on-error` is for the cap: a hang still gets a verdict and an
+      # upload. A test failure is an exit status here and fails nothing yet.
+      - name: Run the suite
+        id: suite
+        timeout-minutes: 25
+        continue-on-error: true
+        run: |
+          rc=0
+          uv run pytest tests/ --ignore=tests/e2e -q -rfEsxX --durations=25 --deselect tests/test_derived_figures_1469.py::test_the_repo_passes_the_producer_checks --junitxml=bundle/junit.xml || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+      # Exit 1 means nothing to rerun, which is not a failure of this step.
+      # The verdict reads a bad report on its own.
+      - name: List the failed tests
+        id: failed
+        if: steps.suite.outputs.rc == '1'
+        run: |
+          rc=0
+          uv run python scripts/nightly_canary.py failed-ids --junit bundle/junit.xml --repo-root . --out bundle/failed-ids.txt --github-output "$GITHUB_OUTPUT" || rc=$?
+          echo "failed-ids exited $rc"
+      # Only on `rerun == 'true'`: pytest given an empty `@file` runs the whole
+      # suite, and given a missing one exits 4.
+      - name: Rerun the failed tests once
+        id: rerun
+        if: steps.failed.outputs.rerun == 'true'
+        timeout-minutes: 5
+        continue-on-error: true
+        run: |
+          rc=0
+          uv run pytest @bundle/failed-ids.txt -p no:cacheprovider -q --junitxml=bundle/rerun.xml || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+      # An empty rc is a step its cap killed. 124 stands in for it: not 0 or 1,
+      # so the leg reads as broken and the rerun does not count.
+      - name: Sort the red tests into flaky and confirmed
+        env:
+          SUITE_RC: ${{ steps.suite.outputs.rc }}
+          RERAN: ${{ steps.failed.outputs.rerun }}
+          RERUN_RC: ${{ steps.rerun.outputs.rc }}
+        run: |
+          set -euo pipefail
+          args=(--rc "${SUITE_RC:-124}" --junit bundle/junit.xml --out bundle/verdict.json)
+          if [ "$RERAN" = true ]; then
+            args+=(--rerun bundle/rerun.xml --rerun-rc "${RERUN_RC:-124}")
+          fi
+          uv run python scripts/nightly_canary.py verdict "${args[@]}"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nightly-${{ matrix.leg }}-${{ github.sha }}-a${{ github.run_attempt }}
+          path: bundle/
+          retention-days: 30
+
+  triage:
+    needs: suite
+    # `!cancelled()` so a red leg reaches its record. The ref test because a
+    # skipped `suite` does not skip this job under `!cancelled()`.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    # The step caps below add up to less than this.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # The run's `created_at`.
+      actions: read
+      # The merged PRs the bisect stops at.
+      pull-requests: read
+    steps:
+      # Full history: `nightly_bisect.py` clones this checkout with `--shared`,
+      # and that clone needs `--good`, `--bad`, and every commit between them.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # No Python here: the drift check and the bisect name the leg's with
+      # `--python`, and the scripts run on the image's python3.
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      # A failed download is a leg with no bundle, which the record reads as
+      # missing. Each artifact lands in a folder of its own name.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: nightly-*-${{ github.sha }}-a*
+          path: bundles
+      # The run's `created_at` is the same at every retry, so a retry writes the
+      # same record and `publish` accepts it. The clock is only for a failed
+      # lookup: a record with a later date beats no record.
+      - name: Build the night's record
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          created_at=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at) || created_at=""
+          if [ -z "$created_at" ]; then
+            echo "::warning::could not read the run's created_at, so the record carries this step's time"
+            created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          fi
+          python3 scripts/nightly_canary.py record \
+            --leg 3.12=bundles:canary --leg 3.13=bundles:canary \
+            --sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --created-at "$created_at" --canary-legs 3.12,3.13 --out night/record.json
+      # `ls-remote` exits 2 when the branch does not exist, the first night. Any
+      # other failure stops here: reading it as a first night would lose the
+      # baseline. `regressions` exits 2 on a missing folder, so that night makes
+      # an empty one.
+      - name: Compare with the last green night
+        run: |
+          set -euo pipefail
+          rc=0
+          git ls-remote --exit-code --heads origin test-results >/dev/null || rc=$?
+          case "$rc" in
+            0)
+              git fetch --no-tags origin +refs/heads/test-results:refs/remotes/origin/test-results
+              git worktree add --detach "$RUNNER_TEMP/last-green" refs/remotes/origin/test-results
+              ;;
+            2)
+              echo "no test-results branch yet"
+              mkdir -p "$RUNNER_TEMP/last-green"
+              ;;
+            *)
+              exit "$rc"
+              ;;
+          esac
+          python3 scripts/nightly_canary.py regressions \
+            --current night/record.json --last-green-dir "$RUNNER_TEMP/last-green" \
+            --canary-legs 3.12,3.13 --repo-root . --out night/triage.json
+      # A test that also fails on the last green commit is drift: the code did
+      # not change it, so it leaves the triage and gets no bisect. What stays is
+      # split by leg, since a test failing on one Python passes on the other.
+      # A mass failure samples its candidates. When every sample fails, the
+      # whole leg reads as drift.
+      - name: Check the last green commit and split what is left by leg
+        id: sort
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import time
+          from pathlib import Path
+
+          BUDGET_SECONDS = 300
+          EXTRAS = ["--extra", "archive", "--extra", "onboard-llm"]
+          LISTS = ("candidates", "new_failing", "collection_errors")
+
+          night = Path("night").resolve()
+          triage = json.loads((night / "triage.json").read_text(encoding="utf-8"))
+          check = triage["drift_check"]
+          drifted: dict[str, set[str]] = {}
+          if check:
+              tree = Path(os.environ["RUNNER_TEMP"]) / "last-green-tree"
+              subprocess.run(["git", "worktree", "add", "--detach", str(tree), check["sha"]], check=True, timeout=120)
+              script = Path("scripts/nightly_bisect.py").resolve()
+              deadline = time.monotonic() + BUDGET_SECONDS
+              for leg, asked in check["legs"].items():
+                  ids = [*asked["node_ids"], *asked["collection_errors"]]
+                  if not ids:
+                      continue
+                  listed = night / f"drift-{leg}.txt"
+                  failed = night / f"drift-{leg}-failed.txt"
+                  listed.write_text("".join(f"{i}\n" for i in ids), encoding="utf-8")
+                  rc = subprocess.run(
+                      [sys.executable, str(script), "step", "--tests", str(listed), "--deadline", str(deadline),
+                       "--failed-out", str(failed), "--python", leg, *EXTRAS],
+                      cwd=tree, check=False, timeout=BUDGET_SECONDS + 30,
+                  ).returncode
+                  print(f"drift check on {leg}: step exited {rc}")
+                  # A step that judged nothing leaves no file, and its tests stay to bisect.
+                  said = failed.read_text(encoding="utf-8").splitlines() if failed.is_file() else []
+                  rows = [r for r in triage["candidates"] if leg in r["legs"]]
+                  by_id = {r["node_id"]: r["test"] for r in rows if r["node_id"]}
+                  by_id |= {r["module"]: r["test"] for r in triage["collection_errors"] if leg in r["legs"]}
+                  tests = {by_id[i] for i in said if i in by_id}
+                  if len(asked["tests"]) < len(rows) and set(asked["tests"]) <= tests:
+                      tests |= {r["test"] for r in rows}
+                  drifted[leg] = tests
+                  asked["failed"] = sorted(tests)
+          failures = []
+          for key in LISTS:
+              kept = []
+              for row in triage[key]:
+                  gone = [leg for leg in row["legs"] if row["test"] in drifted.get(leg, ())]
+                  if gone:
+                      failures.append({"test": row["test"], "node_id": row.get("node_id"), "legs": gone})
+                  row["legs"] = [leg for leg in row["legs"] if leg not in gone]
+                  if row["legs"]:
+                      kept.append(row)
+              triage[key] = kept
+          if failures:
+              triage["events"].append({
+                  "key": f"drift-{check['sha'][:12]}", "kind": "drift", "tests": sorted(f["test"] for f in failures),
+                  "legs": sorted({leg for f in failures for leg in f["legs"]}), "failures": failures,
+              })
+          # With no baseline, or on its commit, that night's event already holds the collection errors.
+          green = (triage["last_green"] or {}).get("sha")
+          parts: dict[str, dict] = {}
+          if green and green != triage["sha"]:
+              for key in LISTS:
+                  for row in triage[key]:
+                      part = parts.setdefault(max(row["legs"]), {"format": triage["format"], **{k: [] for k in LISTS}})
+                      part[key].append(row)
+          for leg, part in parts.items():
+              (night / f"bisect-{leg}.json").write_text(json.dumps(part, indent=1), encoding="utf-8")
+          (night / "triage.json").write_text(json.dumps(triage, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"legs={' '.join(sorted(parts))}\n")
+              out.write(f"good={green or ''}\n")
+          PY
+      # An empty file is no merge-point data, and the bisect then tests every
+      # commit, so a script that cannot run costs time and loses nothing.
+      - name: List the merge points
+        if: steps.sort.outputs.legs != ''
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GOOD: ${{ steps.sort.outputs.good }}
+        run: |
+          python3 scripts/nightly_bisect.py merge-points --good "$GOOD" --bad "$GITHUB_SHA" \
+            --repo "$GITHUB_REPOSITORY" --out night/points.json || echo '{}' > night/points.json
+      # One run per leg under that leg's Python, sharing the 1200 s budget. Each
+      # run clones into a folder under TMPDIR, which puts the clone and its
+      # .venv on the workspace disk. Exit 1 is a range event in the result.
+      - name: Bisect what the last green commit still passes
+        if: steps.sort.outputs.legs != ''
+        timeout-minutes: 21
+        env:
+          TMPDIR: ${{ runner.temp }}
+          GOOD: ${{ steps.sort.outputs.good }}
+          LEGS: ${{ steps.sort.outputs.legs }}
+        run: |
+          set -euo pipefail
+          count=$(echo "$LEGS" | wc -w)
+          for leg in $LEGS; do
+            rc=0
+            python3 scripts/nightly_bisect.py run --good "$GOOD" --bad "$GITHUB_SHA" \
+              --triage "night/bisect-$leg.json" --points night/points.json \
+              --python "$leg" --extra archive --extra onboard-llm \
+              --budget-seconds "$((1200 / count))" --out "night/bisect-$leg-result.json" || rc=$?
+            if [ "$rc" -gt 1 ]; then
+              echo "::warning::the bisect on $leg exited $rc"
+            fi
+          done
+      # After a bisect that died too: a test no result names gets a range event.
+      - name: Add the bisect's events to the triage
+        if: ${{ !cancelled() && steps.sort.outputs.legs != '' }}
+        env:
+          GOOD: ${{ steps.sort.outputs.good }}
+          LEGS: ${{ steps.sort.outputs.legs }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "scripts")
+          from nightly_bisect import add_event, event_for_range
+
+          night = Path("night")
+          triage = json.loads((night / "triage.json").read_text(encoding="utf-8"))
+          triage["bisect"] = {}
+          for leg in os.environ["LEGS"].split():
+              part = json.loads((night / f"bisect-{leg}.json").read_text(encoding="utf-8"))
+              found = night / f"bisect-{leg}-result.json"
+              result = json.loads(found.read_text(encoding="utf-8")) if found.is_file() else {}
+              events = result.get("events", [])
+              for event in events:
+                  add_event(triage["events"], event)
+              named = {t for event in events for t in event["tests"]}
+              rows = [row for key in ("candidates", "new_failing", "collection_errors") for row in part[key]]
+              lost = [row["test"] for row in rows if row["test"] not in named]
+              if lost:
+                  add_event(triage["events"], event_for_range(os.environ["GOOD"], os.environ["GITHUB_SHA"], lost, "no result"))
+              triage["bisect"][leg] = {k: result.get(k) for k in ("complete", "merge_points", "rounds", "reset_errors")}
+          (night / "triage.json").write_text(json.dumps(triage, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+      # One name for every attempt, so a re-run job replaces it and `publish`
+      # reads the newest. A failed step above still keeps the record.
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nightly-triage-${{ github.sha }}
+          path: night/
+          overwrite: true
+          retention-days: 30
+
+  publish:
+    needs: [suite, triage]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    # No setup-uv: `nightly_canary.py` is standard library only, and this job
+    # holds the write token, so it installs nothing and runs no test.
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      # Full history: `publish` moves `last-green.json` only to a commit on main
+      # that descends from the old one, and reads that from this checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: nightly-triage-${{ github.sha }}
+          path: night
+      # Each try starts from the branch as it is now, so a night that lost a
+      # push race is written again on top of the winner. `publish` exits 1 after
+      # its writes when a pointer needs attention, so the night lands and then
+      # the job fails.
+      - name: Write the night to test-results
+        env:
+          # Unsigned: the main ruleset's signature rule does not cover this branch.
+          GIT_AUTHOR_NAME: aelfrice-nightly-bot
+          GIT_AUTHOR_EMAIL: aelfrice-nightly-bot@users.noreply.github.com
+          GIT_COMMITTER_NAME: aelfrice-nightly-bot
+          GIT_COMMITTER_EMAIL: aelfrice-nightly-bot@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          results="$RUNNER_TEMP/results"
+          for try in 1 2 3 4 5; do
+            git worktree remove --force "$results" 2>/dev/null || true
+            rc=0
+            git ls-remote --exit-code --heads origin test-results >/dev/null || rc=$?
+            case "$rc" in
+              0)
+                git fetch --no-tags origin +refs/heads/test-results:refs/remotes/origin/test-results
+                git worktree add --detach "$results" refs/remotes/origin/test-results
+                ;;
+              2)
+                git worktree add --detach "$results" HEAD
+                git -C "$results" switch --orphan "new-test-results-$try"
+                ;;
+              *)
+                exit "$rc"
+                ;;
+            esac
+            published=0
+            python3 scripts/nightly_canary.py publish --record night/record.json --triage night/triage.json \
+              --branch-dir "$results" --main-repo . || published=$?
+            if [ "$published" -gt 1 ]; then
+              exit "$published"
+            fi
+            cd "$results"
+            git add -A
+            if git diff --cached --quiet; then
+              echo "the night is already on test-results"
+              exit "$published"
+            fi
+            git commit -m "audit(nightly): run $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT"
+            if git push origin HEAD:test-results; then
+              exit "$published"
+            fi
+            cd "$GITHUB_WORKSPACE"
+            sleep "$((try * 5))"
+          done
+          echo "::error::could not push to test-results"
+          exit 1
