@@ -216,12 +216,16 @@ from aelfrice.setup import (
 from aelfrice.db_paths import (
     DEFAULT_DB_DIR,
     DEFAULT_DB_FILENAME,
+    GIT_STATE_OUTSIDE,
+    GIT_STATE_UNKNOWN,
+    GIT_STATE_WORK_TREE,
     STORE_RULE_MARKER,
     StoreMarkerError,
     _ensure_parent_dir,
     _git_common_dir,
     _open_store,
     db_path,
+    git_folder_state,
     open_store_for_read,
     open_user_store,
     open_user_store_if_present,
@@ -5987,12 +5991,13 @@ def _print_setup_next_step(
     folder `--project-root` named, when it names one, and the hint
     describes that folder instead of the current one.
 
-    A folder outside any git repository has no project to onboard, so
-    the hint sends the user to one first. A `[store]` marker gives a
-    folder its own store without git, so that folder counts as a
-    project. Skips the hint when the store already has beliefs and when
-    reading the store fails, because anything that breaks should never
-    derail setup itself.
+    A folder with no git work tree has no project to onboard, so the
+    hint sends the user to one first. A `[store]` marker gives a folder
+    its own store without git, so that folder counts as a project. Skips
+    the hint when the store already has beliefs, when reading the store
+    fails, and when git gives no answer about the folder, because
+    anything that breaks should never derail setup itself and a real
+    repository must not be told it isn't one.
     """
     try:
         selection = resolve_store(start)
@@ -6001,21 +6006,26 @@ def _print_setup_next_step(
         return
     if n != 0:
         return
-    if (
-        selection.rule == STORE_RULE_MARKER
-        or _git_common_dir(start) is not None
-    ):
+    state = (
+        GIT_STATE_WORK_TREE
+        if selection.rule == STORE_RULE_MARKER
+        else git_folder_state(start)
+    )
+    if state == GIT_STATE_UNKNOWN:
+        return
+    if state == GIT_STATE_WORK_TREE:
         print(
             "next step: this project's belief store is empty. "
             f"Run {onboard} to populate it.",
             file=out,  # type: ignore[arg-type]
         )
-    else:
-        print(
-            "next step: this folder isn't in a git repository. "
-            f"Open a project first, then run {onboard}.",
-            file=out,  # type: ignore[arg-type]
-        )
+        return
+    where = "repository" if state == GIT_STATE_OUTSIDE else "work tree"
+    print(
+        f"next step: this folder isn't in a git {where}. "
+        f"Open a project first, then run {onboard}.",
+        file=out,  # type: ignore[arg-type]
+    )
 
 
 _CLAUDE_PROJECTS_DIR: Final[Path] = Path.home() / ".claude" / "projects"

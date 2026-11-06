@@ -150,6 +150,54 @@ def _lookup_git_common_dir(start: Path | None = None) -> Path | None:
     return Path(raw).resolve()
 
 
+#: The answers `git_folder_state()` gives.
+GIT_STATE_WORK_TREE: Final[str] = "work-tree"
+GIT_STATE_NO_WORK_TREE: Final[str] = "no-work-tree"
+GIT_STATE_OUTSIDE: Final[str] = "outside"
+GIT_STATE_UNKNOWN: Final[str] = "unknown"
+
+#: What git prints when it searched and found no repository. It says
+#: `not a git repository: '<path>'` for a bad `GIT_DIR`, which is no answer
+#: about the folder, so the text runs up to the parenthesis.
+_GIT_NO_REPOSITORY_TEXT: Final[str] = "not a git repository (or any"
+
+
+def git_folder_state(start: Path | None = None) -> str:
+    """Where git places the cwd, or `start` when given (#1859).
+
+    `GIT_STATE_NO_WORK_TREE` is a bare repository or the inside of a
+    `.git` folder. `_git_common_dir()` answers None for "no repository"
+    and for "git gave no answer" alike, which is enough for choosing a
+    store but not for telling someone they aren't in a repository.
+    `GIT_STATE_UNKNOWN` covers a timeout, a missing `git`, a folder that
+    doesn't exist, and a repository git refuses to read, such as one with
+    dubious ownership. The locale is pinned because the "outside" answer
+    is read from git's message.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=5,
+            cwd=start,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return GIT_STATE_UNKNOWN
+    answer = result.stdout.strip()
+    if result.returncode == 0 and answer == "true":
+        return GIT_STATE_WORK_TREE
+    if result.returncode == 0 and answer == "false":
+        return GIT_STATE_NO_WORK_TREE
+    if result.returncode != 0 and _GIT_NO_REPOSITORY_TEXT in result.stderr:
+        return GIT_STATE_OUTSIDE
+    return GIT_STATE_UNKNOWN
+
+
 def main_checkout_path(path: Path) -> Path:
     """``path`` with a linked worktree's root swapped for its main checkout.
 

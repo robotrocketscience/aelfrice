@@ -26,7 +26,7 @@ from aelfrice.cli import (
     build_parser,
     main,
 )
-from aelfrice.db_paths import _open_store
+from aelfrice.db_paths import GIT_STATE_OUTSIDE, _open_store, git_folder_state
 from aelfrice.models import Belief
 
 IN_AGENT = "`/aelf:onboard .` in your agent"
@@ -36,6 +36,10 @@ IN_TERMINAL = "`aelf onboard .`"
 PROJECT_LINE = "next step: this project's belief store is empty. Run {} to populate it."
 OUTSIDE_LINE = (
     "next step: this folder isn't in a git repository. "
+    "Open a project first, then run {}."
+)
+NO_WORK_TREE_LINE = (
+    "next step: this folder isn't in a git work tree. "
     "Open a project first, then run {}."
 )
 
@@ -430,6 +434,105 @@ def test_the_shared_store_outside_git_says_to_open_a_project(
     code, lines = _setup("codex")
     assert code == 0
     assert lines == [OUTSIDE_LINE.format(IN_CODEX)]
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("host", "onboard"), [("claude", IN_AGENT), ("codex", IN_CODEX)]
+)
+def test_a_bare_repository_is_not_called_a_project(
+    env: Path, monkeypatch: pytest.MonkeyPatch, host: str, onboard: str
+) -> None:
+    bare = env / "bare.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True, timeout=30)
+    monkeypatch.chdir(bare)
+    code, lines = _setup(host)
+    assert code == 0
+    assert lines == [NO_WORK_TREE_LINE.format(onboard)]
+
+
+@pytest.mark.timeout(60)
+def test_the_inside_of_a_git_folder_is_not_called_a_project(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = _folder(env, repo=True, monkeypatch=monkeypatch)
+    monkeypatch.chdir(folder / ".git")
+    code, lines = _setup("codex")
+    assert code == 0
+    assert lines == [NO_WORK_TREE_LINE.format(IN_CODEX)]
+
+
+@pytest.mark.timeout(60)
+def test_a_repository_git_refuses_is_not_called_outside_one(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = _folder(env, repo=True, monkeypatch=monkeypatch)
+    monkeypatch.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+    refused = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=folder, capture_output=True, text=True, timeout=30, check=False,
+    )
+    if refused.returncode == 0:
+        pytest.skip("this git has no ownership check")
+    code, lines = _setup("codex")
+    assert code == 0
+    assert lines == []
+
+
+@pytest.mark.timeout(60)
+def test_a_bad_git_dir_is_no_answer_about_the_folder(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _folder(env, repo=False, monkeypatch=monkeypatch)
+    monkeypatch.setenv("GIT_DIR", str(env / "no-such-git-dir"))
+    code, lines = _setup("codex")
+    assert code == 0
+    assert lines == []
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(subprocess.TimeoutExpired(["git"], 5), id="timeout"),
+        pytest.param(FileNotFoundError("git"), id="no-git"),
+    ],
+)
+def test_git_giving_no_answer_prints_no_next_step(
+    env: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    _folder(env, repo=True, monkeypatch=monkeypatch)
+    real_run = subprocess.run
+
+    def run(argv: list[str], *a: object, **k: object) -> object:
+        if "--is-inside-work-tree" in argv:
+            raise failure
+        return real_run(argv, *a, **k)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(subprocess, "run", run)
+    code, lines = _setup("codex")
+    assert code == 0
+    assert lines == []
+
+
+@pytest.mark.timeout(60)
+def test_git_is_asked_in_the_c_locale(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The "outside" answer is read from git's message, which translates."""
+    seen: dict[str, object] = {}
+    real_run = subprocess.run
+
+    def run(argv: list[str], *a: object, **k: object) -> object:
+        seen.update(k)
+        return real_run(argv, *a, **k)  # type: ignore[call-overload]
+
+    folder = _folder(env, repo=False, monkeypatch=monkeypatch)
+    monkeypatch.setattr(subprocess, "run", run)
+    assert git_folder_state(folder) == GIT_STATE_OUTSIDE
+    env_used = seen["env"]
+    assert isinstance(env_used, dict)
+    assert env_used["LC_ALL"] == "C"
 
 
 @pytest.mark.timeout(60)
