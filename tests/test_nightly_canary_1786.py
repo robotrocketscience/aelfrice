@@ -3944,6 +3944,51 @@ def test_issues_a_reattempt_adds_nothing_for_a_collection_error_its_own_partial_
     assert nc.plan_actions(issues, [event], _base()) == []
 
 
+def _ran_full(run_id: int = 201) -> dict[str, Any]:
+    still = {"::tests.test_broken": tor.ERROR}
+    return {**_base(run_id=run_id), "results": {"3.12": still, "3.13": still}, "ran_full": True}
+
+
+def test_issues_a_partial_issue_keeps_a_collection_error_its_marker_holds_when_a_night_rewrites_it() -> None:
+    """Dropping it would leave the module in no issue, and the next plan would open one."""
+    module = "::tests.test_broken"
+    issues = _land([], nc.plan_actions([], [_pr_event(*_many(5000)), _collection(module)], _base()))
+    tonight = [_pr_event(_A), _collection(module)]
+    actions = nc.plan_actions(issues, tonight, _ran_full())
+    assert _kinds(actions) == ["edit", "comment"]
+    assert _marker_tests(actions[0]["body"]) == sorted([module, _A])
+    landed = _land(issues, actions)
+    assert nc.plan_actions(landed, tonight, _ran_full()) == []
+    assert nc.plan_actions(landed, tonight, _ran_full(202)) == []
+
+
+def test_issues_a_collection_error_issue_beside_a_partial_takes_none_of_the_partials_ids() -> None:
+    """The first attempt opens the issue for the new module. A later attempt finds it
+    under this key, and the module the partial holds still belongs to the partial."""
+    held, new = "::tests.test_broken", "::tests.test_new"
+    issues = _land([], nc.plan_actions([], [_pr_event(*_many(5000)), _collection(held)], _base()))
+    tonight = [_pr_event(*_many(5000)), _collection(held, new)]
+    night = {**_ran_full(), "results": {"3.12": {held: tor.ERROR, new: tor.ERROR}, "3.13": {held: tor.ERROR, new: tor.ERROR}}}
+    actions = nc.plan_actions(issues, tonight, night)
+    assert [(a["action"], a["tests"]) for a in actions] == [("create", [new])]
+    assert nc.plan_actions(_land(issues, actions), tonight, night) == []
+
+
+def test_issues_the_same_merged_night_again_leaves_a_partial_issue_alone() -> None:
+    """Its digest covers the collection error, so tonight has to read the same."""
+    events = [_pr_event(*_many(5000)), _collection("::tests.test_broken")]
+    issues = _land([], nc.plan_actions([], events, _base()))
+    assert nc.plan_actions(issues, events, _ran_full()) == []
+
+
+def test_issues_a_partial_issue_under_a_collection_key_keeps_its_ids_when_a_night_rewrites_it() -> None:
+    event = _collection(*_many(5000, "::tests.m"))
+    issues = _land([], nc.plan_actions([], [event], _base()))
+    actions = nc.plan_actions(issues, [event, _pr_event(_A)], _ran_full())
+    assert _kinds(actions) == ["edit", "comment"]
+    assert "total=5001" in actions[0]["body"]
+
+
 def test_issues_a_new_collection_error_opens_its_own_issue_beside_a_partial_that_holds_another() -> None:
     held, new = "::tests.test_held", "::tests.test_new"
     other = {**_collection(new), "key": f"collection-error-{SHA1[:12]}"}

@@ -1708,8 +1708,8 @@ def plan_actions(
             actions.append({"action": "comment", "number": issue["number"], "body": _recovered_comment(night)})
         actions.append({"action": "close", "number": issue["number"]})
     partial = next((i for i in alive if i["total"] is not None and i["key"] != KEY_BROKEN), None)
-    # A collection error stays out of a partial issue on a later night, but a merge
-    # can have put it there. The digest needs `held` whole, so this set stays apart.
+    # A new collection error opens its own issue, but a partial issue keeps the ones
+    # it holds: by its key, or in its marker after a merge.
     in_partial = set(partial["tests"] or []) if partial is not None else set()
     by_key: dict[str, dict[str, Any]] = {}
     for issue in alive:
@@ -1725,17 +1725,18 @@ def plan_actions(
         kind = key_kind(event["key"])[0]
         fresh = [test for test in event["tests"] if test not in covered]
         owner = by_key.get(event["key"])
+        if kind == KEY_COLLECTION:
+            held.extend(test for test in fresh if test in in_partial)
+            fresh = [test for test in fresh if test not in in_partial]
         if owner is not None and owner["total"] is None:
             added[owner["number"]] = [test for test in fresh if test not in (owner["tests"] or [])]
             reasons[owner["number"]] = event.get("reasons", {})
-        elif owner is not None and kind in (KEY_BROKEN, KEY_COLLECTION):
+        elif owner is not None and kind == KEY_BROKEN:
             continue
-        elif partial is not None and kind not in (KEY_BROKEN, KEY_COLLECTION):
+        elif partial is not None and kind != KEY_BROKEN and (kind != KEY_COLLECTION or owner is not None):
             held.extend(fresh)
-        elif kind == KEY_BROKEN:
+        elif fresh or kind == KEY_BROKEN:
             groups.append((event, fresh))
-        elif set(fresh) - in_partial:
-            groups.append((event, [test for test in fresh if test not in in_partial]))
     for issue in alive:
         if issue["total"] is not None:
             continue
