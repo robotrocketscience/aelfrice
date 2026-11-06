@@ -231,7 +231,7 @@ process that leaves the group cannot hold a pipe open. A step that receives
 SIGTERM kills its own children first. Other git calls are plain children with a
 120 s timeout, outside that margin, and killing one leaves running anything it
 started, such as a hook. Process groups make this script POSIX only; the canary
-runs it on Linux and macOS.
+runs it on Linux.
 
 SIGTERM or SIGINT to `run` ends the running child's group, deletes the folder,
 saves the partial result with the rest of the tests under the reason `stopped`,
