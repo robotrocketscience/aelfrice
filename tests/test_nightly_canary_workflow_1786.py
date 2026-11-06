@@ -23,6 +23,9 @@ import pytest
 
 from tests.test_workflow_supply_chain_1786 import _jobs, _step_lines, _step_uses, _steps, _with_input
 
+# The slowest test here, a real temporary repository, took 1.8 s on 2026-11-05.
+pytestmark = pytest.mark.timeout(30)
+
 _REPO = Path(__file__).resolve().parents[1]
 _WORKFLOW = _REPO / ".github" / "workflows" / "nightly-canary.yml"
 _CI = _REPO / ".github" / "workflows" / "ci.yml"
