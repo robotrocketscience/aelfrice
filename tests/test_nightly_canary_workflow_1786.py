@@ -527,6 +527,58 @@ def test_a_regression_that_still_fails_does_not_close_as_stale() -> None:
     assert nc.LABEL in labels.strip('"').split(",")
 
 
+def _leg_bundle(directory: Path, outcomes: dict[str, str]) -> None:
+    """A leg's bundle as the suite job leaves it on a run with no red test."""
+    directory.mkdir(parents=True)
+    cases = "".join(
+        f'<testcase classname="{test.partition("::")[0]}" name="{test.partition("::")[2]}" time="0" />' for test in outcomes
+    )
+    report = f'<testsuites><testsuite name="pytest">{cases}</testsuite></testsuites>'
+    (directory / "junit.xml").write_text(report, encoding="utf-8")
+    verdict = nc.classify_leg(0, outcomes, None)
+    (directory / "verdict.json").write_text(json.dumps(verdict), encoding="utf-8")
+    (directory / "env.json").write_text("{}", encoding="utf-8")
+
+
+def test_an_incomplete_night_fails_publish_and_report_still_opens_canary_broken(tmp_path: Path) -> None:
+    """One leg left no usable report: its bundle has a green verdict and no junit.
+    The record and triage are what `record` and `regressions` write."""
+    sha = "c" * 40
+    test = "tests.test_a::test_one"
+    bundles = tmp_path / "bundles"
+    _leg_bundle(bundles / f"nightly-3.12-{sha}-a1", {test: "passed"})
+    _leg_bundle(bundles / f"nightly-3.13-{sha}-a1", {test: "passed"})
+    (bundles / f"nightly-3.13-{sha}-a1" / "junit.xml").unlink()
+    night = tmp_path / "night"
+    assert nc.main([
+        "record", "--leg", f"3.12={bundles}:canary", "--leg", f"3.13={bundles}:canary", "--sha", sha,
+        "--run-id", "9", "--run-attempt", "1", "--created-at", "2026-11-06T02:17:03Z", "--out", str(night / "record.json"),
+    ]) == 0
+    branch = tmp_path / "branch"
+    branch.mkdir()
+    assert nc.main([
+        "regressions", "--current", str(night / "record.json"), "--last-green-dir", str(branch),
+        "--repo-root", str(tmp_path), "--out", str(night / "triage.json"),
+    ]) == 0
+    record = json.loads((night / "record.json").read_text(encoding="utf-8"))
+    assert record["nightly"]["verdict"] == "incomplete"
+
+    step = _step("publish", "Fail the job on an incomplete night")
+    body = textwrap.dedent(step.partition("run: |\n")[2])
+    done = subprocess.run(["bash", "-e", "-c", body], cwd=tmp_path, capture_output=True, timeout=30, check=False)
+    assert done.returncode == 1
+
+    # `needs: publish` under `!cancelled()`: a failed `publish` doesn't skip `report`.
+    assert _key("report", "needs") == "publish"
+    assert _key("report", "if") == _MAIN_ONLY
+    triage = json.loads((night / "triage.json").read_text(encoding="utf-8"))
+    facts = {**nc.night_facts(record), "run_id": 9, "run_url": "https://github.com/o/r/actions/runs/9", "repo": "o/r"}
+    actions = nc.plan_actions([], nc.night_events(record, triage), facts)
+    assert [(a["action"], a["key"], a["title"]) for a in actions] == [
+        ("create", "canary-broken", f"nightly: the canary produced no usable result on 3.13 ({sha[:7]})"),
+    ]
+
+
 def test_the_documents_describe_the_workflow() -> None:
     text = _CONTRIBUTING.read_text(encoding="utf-8")
     start = text.index("### The nightly canary")
