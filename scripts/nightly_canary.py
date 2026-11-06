@@ -1369,8 +1369,9 @@ def night_events(record: dict[str, Any], triage: dict[str, Any] | None) -> list[
 def night_facts(record: dict[str, Any]) -> dict[str, Any]:
     """What recovery reads from a record. `results` holds each canary leg's
     full-run outcomes, and stays empty unless the record reached every canary
-    leg. `ran_full`: pytest exited 0 or 1 on each. `clean`: every one is green with
-    exit 0, so no test went red there."""
+    leg. `ran_full`: pytest exited 0 or 1 on each, and none is broken, as with an
+    empty report after exit 1. `clean`: every one is green with exit 0, so no test
+    went red there."""
     nightly = record["nightly"]
     roles: dict[str, str] = nightly["roles"]
     status: dict[str, str] = nightly["status"]
@@ -1385,7 +1386,7 @@ def night_facts(record: dict[str, Any]) -> dict[str, Any]:
     }
     if reached:
         facts["results"] = {leg: legs[leg]["tests"] for leg in canary}
-        facts["ran_full"] = all(rcs.get(leg) in _TEST_RC for leg in canary)
+        facts["ran_full"] = all(rcs.get(leg) in _TEST_RC and status[leg] != BROKEN for leg in canary)
         facts["clean"] = all(rcs.get(leg) == 0 and status[leg] == GREEN for leg in canary)
     return facts
 

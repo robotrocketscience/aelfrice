@@ -3504,6 +3504,29 @@ def test_issues_a_collection_error_recovers_when_neither_leg_reports_it_and_pyte
     assert "close" not in _kinds(nc.plan_actions(issues, [], _facts(stopped)))
 
 
+def _empty_report_night() -> dict[str, Any]:
+    """Pytest exited 1 on 3.12 and its report holds no test."""
+    record = _night(SHA2, {"3.12": ({}, None), "3.13": ({_A: tor.PASSED}, None)}, rcs={"3.12": 1})
+    assert record["nightly"]["status"]["3.12"] == nc.BROKEN
+    return record
+
+
+def test_issues_an_empty_report_on_a_broken_leg_is_not_a_full_run() -> None:
+    facts = nc.night_facts(_empty_report_night())
+    assert facts["ran_full"] is False and facts["clean"] is False and facts["results"]
+
+
+def test_issues_a_collection_error_stays_open_when_a_leg_broke_with_an_empty_report() -> None:
+    issues = _opened(_collection("::tests.test_x"))
+    assert nc.plan_actions(issues, [], _facts(_empty_report_night())) == []
+
+
+def test_issues_a_broken_leg_cannot_rewrite_a_partial_marker() -> None:
+    issues = _opened(_pr_event(*_many(5000)))
+    tonight = _pr_event(_A, pr=8)
+    assert nc.plan_actions(issues, [tonight], _facts(_empty_report_night())) == []
+
+
 def test_issues_a_collection_error_is_not_closed_on_a_leg_that_did_not_report() -> None:
     issues = _opened(_collection("::tests.test_x"))
     record = _night(SHA2, {"3.12": ({_A: tor.PASSED}, None), "3.13": (None, None)})
