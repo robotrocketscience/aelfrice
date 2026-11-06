@@ -125,9 +125,9 @@ class LLMRouter(Protocol):
 
     Contract: `classify` returns one route per candidate in input
     order. The router is responsible for batching, telemetry, and
-    regex fallback on transient failure. Auth failures and token-cap
-    aborts are signalled to the caller by raising — scanner does not
-    catch them so the cli wrapper can map to exit codes.
+    regex fallback on transient failure. Auth failures, SDK mismatches,
+    and token-cap aborts are signalled to the caller by raising. Scanner
+    does not catch them so the cli wrapper can map to exit codes.
     """
 
     def classify(

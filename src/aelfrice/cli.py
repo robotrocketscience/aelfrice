@@ -120,6 +120,7 @@ from aelfrice.llm_classifier import (
     ENV_API_KEY as _LLM_ENV_API_KEY,
     LLMAuthError as _LLMAuthError,
     LLMConfig as _LLMConfig,
+    LLMSDKMismatchError as _LLMSDKMismatchError,
     LLMTokenCapExceeded as _LLMTokenCapExceeded,
     ScannerRouter as _LLMScannerRouter,
     Sentinel as _LLMSentinel,
@@ -903,7 +904,8 @@ def _run_llm_onboard(
 ) -> int:
     """Run scan_repo with an LLMScannerRouter installed.
 
-    Maps router exceptions (auth, cap) to exit-1 codes per spec § 7.
+    Maps router exceptions (auth, SDK mismatch, cap) to exit-1 codes per
+    spec § 7.
     Telemetry is printed to stdout after the scan completes.
     """
     api_key = os.environ.get(_LLM_ENV_API_KEY, "")
@@ -927,6 +929,15 @@ def _run_llm_onboard(
         print(
             f"aelf: Anthropic auth failure ({exc}). No beliefs inserted. "
             f"Verify {_LLM_ENV_API_KEY}.",
+            file=sys.stderr,
+        )
+        return 1
+    except _LLMSDKMismatchError as exc:
+        print(
+            f"aelf: the installed LLM SDK can't make the classifier call "
+            f"({exc}). No beliefs inserted. Reinstall the [onboard-llm] extra "
+            "to get a supported SDK, or pass --llm-classify=false to use the "
+            "regex classifier.",
             file=sys.stderr,
         )
         return 1
@@ -8894,6 +8905,14 @@ def _cmd_doctor_classify_orphans(
         print(
             f"aelf: Anthropic auth failure ({exc}). No beliefs updated. "
             f"Verify {_LLM_ENV_API_KEY}.",
+            file=sys.stderr,
+        )
+        return 1
+    except _LLMSDKMismatchError as exc:
+        print(
+            f"aelf: the installed LLM SDK can't make the classifier call "
+            f"({exc}). No beliefs updated. Reinstall the [onboard-llm] extra "
+            "to get a supported SDK.",
             file=sys.stderr,
         )
         return 1

@@ -2730,6 +2730,11 @@ def classify_orphans(
         from aelfrice.llm_classifier import LLMAuthError  # noqa: PLC0415
         raise LLMAuthError(batch.auth_error)
 
+    # SDK mismatch: propagate so CLI can exit 1.
+    if batch.sdk_mismatch_error is not None:
+        from aelfrice.llm_classifier import LLMSDKMismatchError  # noqa: PLC0415
+        raise LLMSDKMismatchError(batch.sdk_mismatch_error)
+
     # Token cap: propagate so CLI can exit 1.
     if batch.token_cap_exceeded:
         from aelfrice.llm_classifier import LLMTokenCapExceeded  # noqa: PLC0415

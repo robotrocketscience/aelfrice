@@ -502,6 +502,19 @@ user took the explicit step of setting `ANTHROPIC_API_KEY` and turning
 on `--llm-classify`; if the key is bad we want them to see that, not
 silently degrade to a regex run that they didn't ask for.
 
+### SDK-mismatch behavior
+
+Any exception from the SDK call that isn't a network fault or an API
+response also exits 1, with no candidates classified and no beliefs
+inserted. The SDK wraps every failure of the HTTP send in an `APIError`
+subclass, so a `TypeError` or an `AttributeError` means the call doesn't
+match the installed SDK, and a re-run fails the same way. The error names
+the exception. `aelf doctor --classify-orphans` shares the call and exits
+1 the same way, with no beliefs updated.
+
+Other rejected 4xx responses, such as 400 and 404, aren't in the trigger
+list above, but they also fall back.
+
 ### Token-cap behaviour
 
 Distinct from the above: the per-run `max_tokens` cap aborts the run

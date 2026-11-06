@@ -38,6 +38,10 @@ Failure semantics (docs/design/llm_classifier.md § 7):
     insertion tagged `onboard.llm.fallback:<reason>`.
   - 401/403 (auth) → DO NOT fall back. Exit 1, no beliefs inserted,
     error message names Anthropic auth.
+  - Any other exception from the SDK call, such as a `TypeError` when the
+    installed SDK doesn't take the classifier's keywords → DO NOT fall
+    back. Exit 1, no beliefs inserted, error message names the exception.
+    Rejected 4xx responses other than 401/403 still fall back.
   - Token cap exceeded → exit 1 with partial-insertion message; the
     deterministic belief id ensures a re-run resumes from the cap-hit
     point.
@@ -735,6 +739,10 @@ class LLMTransientError(Exception):
     """Raised on connect/timeout/429/5xx/malformed. Triggers regex fallback."""
 
 
+class LLMSDKMismatchError(Exception):
+    """Raised when the SDK call itself fails. Causes a hard exit; no fallback."""
+
+
 class LLMTokenCapExceeded(Exception):
     """Raised when running tokens exceed the configured cap mid-stream."""
 
@@ -828,6 +836,8 @@ def _call_anthropic(
 
     Raises:
       LLMAuthError on 401/403.
+      LLMSDKMismatchError on anything that isn't a network fault or an
+        API response, such as a keyword the installed SDK doesn't take.
       LLMTransientError on connect / timeout / 429 / 5xx / parse.
     """
     if sdk_module is None:
@@ -851,6 +861,8 @@ def _call_anthropic(
     except Exception as exc:  # noqa: BLE001 — SDK exception classes vary
         if _is_auth_error(exc):
             raise LLMAuthError(str(exc)) from exc
+        if not _falls_back(exc):
+            raise LLMSDKMismatchError(f"{type(exc).__name__}: {exc}") from exc
         raise LLMTransientError(str(exc)) from exc
 
     text = _extract_text_from_response(resp)
@@ -877,6 +889,22 @@ def _is_auth_error(exc: BaseException) -> bool:
     if status in (401, 403):
         return True
     return False
+
+
+def _falls_back(exc: BaseException) -> bool:
+    """Return True for a network fault or an API response.
+
+    The SDK wraps every failure of the HTTP send in an `APIError` subclass,
+    and raises one for every 4xx or 5xx response. Anything else means the
+    call itself failed, and a re-run would fail the same way. Like
+    `_is_auth_error`, this checks names and attributes to avoid importing
+    the SDK at module load.
+    """
+    if isinstance(exc, OSError):
+        return True
+    if getattr(exc, "status_code", None) is not None:
+        return True
+    return any(cls.__name__ == "APIError" for cls in type(exc).__mro__)
 
 
 def _extract_text_from_response(resp: Any) -> str:
@@ -923,8 +951,9 @@ class BatchResult:
 
     `classifications` indexes into the input candidate list.
     `fallback_used=True` means every candidate was reclassified by
-    the regex fallback. `auth_error` is non-None for 401/403; the
-    caller exits 1 in that case.
+    the regex fallback. `auth_error` is non-None for 401/403, and
+    `sdk_mismatch_error` is non-None when the SDK call itself failed;
+    the caller exits 1 in both cases.
     """
 
     classifications: list[CandidateClassification] = field(
@@ -934,6 +963,7 @@ class BatchResult:
     fallback_used: bool = False
     fallback_reason: str | None = None
     auth_error: str | None = None
+    sdk_mismatch_error: str | None = None
     token_cap_exceeded: bool = False
     token_cap_consumed: int = 0
 
@@ -950,7 +980,8 @@ def classify_batch(
 
     Returns a BatchResult. The caller composites with the regex
     fallback when `fallback_used=True` and exits 1 when
-    `auth_error is not None` or `token_cap_exceeded=True`.
+    `auth_error` or `sdk_mismatch_error` is not None, or
+    `token_cap_exceeded=True`.
 
     Sharding is single-request at v1.3.0 (spec § 5: implementation
     choice; acceptance only requires correct telemetry). A 200k
@@ -988,6 +1019,9 @@ def classify_batch(
         )
     except LLMAuthError as exc:
         result.auth_error = str(exc)
+        return result
+    except LLMSDKMismatchError as exc:
+        result.sdk_mismatch_error = str(exc)
         return result
     except LLMTransientError as exc:
         result.fallback_used = True
@@ -1054,6 +1088,8 @@ class ScannerRouter:
 
     Raises (during `classify`):
       LLMAuthError on 401/403 — the caller must exit 1.
+      LLMSDKMismatchError when the SDK call itself failed. The caller
+        must exit 1.
       LLMTokenCapExceeded when the running token total exceeds the
         configured cap mid-run — caller must exit 1, partial inserts
         already in the store will be picked up on a re-run via the
@@ -1111,6 +1147,9 @@ class ScannerRouter:
         # scan_repo does not insert anything from this batch.
         if batch.auth_error is not None:
             raise LLMAuthError(batch.auth_error)
+        # SDK mismatch: same contract as the auth failure above.
+        if batch.sdk_mismatch_error is not None:
+            raise LLMSDKMismatchError(batch.sdk_mismatch_error)
         # Token-cap abort: re-raise so the caller exits 1.
         if batch.token_cap_exceeded:
             raise LLMTokenCapExceeded(
@@ -1236,6 +1275,7 @@ __all__ = [
     "GateResult",
     "LLMAuthError",
     "LLMConfig",
+    "LLMSDKMismatchError",
     "LLMTokenCapExceeded",
     "LLMTransientError",
     "PromptResult",
