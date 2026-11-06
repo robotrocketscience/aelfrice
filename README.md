@@ -20,7 +20,7 @@ By default, aelfrice checks PyPI for updates and runs your `claude` CLI in the b
 
 ## Beliefs
 
-Each belief records its source, type, and Bayesian confidence score. Every 12 logged lines (about six prompts and replies), aelfrice stores each sentence of your prompts as a fact, correction, preference, or requirement, with inline code, code blocks, and URLs removed. It skips noise, hedged ideas such as "maybe we could", sentences that end in a question mark, and the model's replies.
+Each belief records its source, type, and Bayesian confidence score. Every 12 logged lines (about six prompts and replies), aelfrice stores each sentence of your prompts as a fact, correction, preference, or requirement, with code blocks removed. A sentence keeps its inline code and URLs, so you can search for a command or a link. It skips noise, hedged ideas such as "maybe we could", sentences that end in a question mark, lines that hold only inline code or URLs, and the model's replies.
 
 `/aelf:confirm` and `aelf feedback` change a belief's confidence, as does praise such as "perfect" for an answer it informed. Complaints such as "that's wrong" count only with [negative sentiment feedback](docs/user/CONFIG.md) on.
 
