@@ -12,7 +12,7 @@
 
 **aelfrice gives an AI coding agent a local memory: before the model reads each prompt, a hook adds your locked beliefs and the best-ranked matches to it.** An agent forgets your corrections between sessions, so you repeat them.
 
-- aelfrice stores your turns and commits as beliefs; a belief becomes ground truth only when you lock it with `/aelf:lock`.
+- aelfrice stores sentences from your prompts as beliefs, plus both sides of a phrase such as "X supersedes Y" in a commit message; a belief becomes ground truth only when you lock it with `/aelf:lock`.
 - Retrieval uses an entity index and BM25 over local SQLite and needs no account, telemetry, embeddings, or LLM.
 
 By default, aelfrice checks PyPI for updates and runs your `claude` CLI in the background to label new core beliefs, and `/aelf:onboard` classifies with your agent's model. See the [privacy document](docs/user/PRIVACY.md).
@@ -155,7 +155,7 @@ Every belief has one type. A rule-based classifier types transcript text; `/aelf
 | `preference` | How you like things done. | Contains "I prefer", "always use", or similar. |
 | `speculative` | A phantom: a guess that isn't trusted yet. | `/aelf:wonder` writes it. |
 
-Edges link a source belief to a target belief. Today, only `TEMPORAL_NEXT` and `DERIVED_FROM` are written for every conversation. The commit hook reads the agent's `git commit` messages and matches only unambiguous phrasings: "is supported by" counts, and "supports" doesn't.
+Edges link a source belief to a target belief. Today, only `TEMPORAL_NEXT` and `DERIVED_FROM` are written for every conversation. The commit hook reads each commit message in the repository and matches only unambiguous phrasings: "is supported by" counts, and "supports" doesn't. A match stores the noun phrase on each side as a belief, with an edge between them. A message with no match stores nothing.
 
 | Edge | Meaning | Written by | Default |
 |---|---|---|---|
