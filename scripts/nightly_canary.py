@@ -1284,16 +1284,15 @@ def _tests_lines(tests: list[str]) -> str:
 
 
 def _shown_reasons(body: str) -> dict[str, str]:
-    """What the list in `body` shows after each test's code span that has a reason,
-    by the line's start. An edit reads this, since only some events carry reasons."""
+    """What the list in `body` shows after each test's code span, by the line's
+    start. An edit reads this, since only some events carry reasons."""
     block = _LIST_BLOCK.search(body)
     if block is None:
         return {}
     shown: dict[str, str] = {}
     for line in block.group(0).splitlines():
         start, sep, rest = line.partition(_REASON_START)
-        if line.startswith("- ") and sep:
-            shown[start] = sep + rest
+        shown[start] = sep + rest
     return shown
 
 
@@ -1620,7 +1619,7 @@ def updated_body(body: str, tests: list[str], reasons: dict[str, Any]) -> str:
     if over <= 0:
         return updated
     room = len(listing.encode("utf-8")) - over - _LIST_FIXED_TEXT
-    return with_list(_list_block(tests, reasons, shown, max(room, 0)))
+    return with_list(_list_block(tests, reasons, shown, room))
 
 
 def _bullets(tests: list[str]) -> str:

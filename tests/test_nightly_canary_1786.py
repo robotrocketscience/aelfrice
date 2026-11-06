@@ -4040,6 +4040,17 @@ def test_issues_an_edit_shortens_the_list_for_a_persons_long_note_and_keeps_ever
     assert _marker_tests(body) == sorted(tests)
 
 
+def test_issues_an_edit_with_room_to_spare_still_stops_the_list_at_its_budget() -> None:
+    """The room a short body leaves doesn't raise the list's own budget."""
+    tests = _many(5000)
+    created = nc.plan_actions([], [_pr_event(*tests)], _base())[0]["body"]
+    issues = _opened(_pr_event(*tests[:10]))
+    body = nc.plan_actions(issues, [_pr_event(*tests)], _base(run_id=201))[0]["body"]
+    shown = len(re.findall(r"^- `", body, flags=re.M))
+    assert shown == len(re.findall(r"^- `", created, flags=re.M))
+    assert f"This list leaves out {5000 - shown} of 5000 test(s)." in body
+
+
 def test_issues_an_edit_with_a_long_note_that_still_fits_shortens_nothing() -> None:
     tests = _many(10)
     issues = [_with_note(_opened(_pr_event(*tests[:9]))[0], "z" * 40000)]
@@ -4316,6 +4327,24 @@ def test_issues_cmd_opens_the_first_issue_on_a_repo_with_no_such_label(tmp_path:
     assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 0
     assert fake_gh.writes() == ["label create", "issue create"]
     assert len(fake_gh.issues()) == 1
+
+
+def test_issues_a_label_list_of_one_blank_line_also_reads_as_no_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later `gh` could end its empty output with a newline."""
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if argv[1] == "api":
+            return subprocess.CompletedProcess(argv, 1, "", "gh: Not Found (HTTP 404)")
+        printed = "[]\n" if argv[1:3] == ["issue", "list"] else "\n"
+        return subprocess.CompletedProcess(argv, 0, printed, "")
+
+    monkeypatch.setattr(nc.subprocess, "run", run)
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 0
+    assert [c[1:3] for c in calls][-3:] == [["label", "list"], ["label", "create"], ["issue", "create"]]
 
 
 def test_issues_empty_output_from_issue_list_is_still_a_failed_call(tmp_path: Path, fake_gh: _FakeGh) -> None:
