@@ -229,11 +229,13 @@ A confirmed test in an open issue gets no new issue, unless that issue is the
 tests go to the open issue with their event's key, or to one new issue per key.
 A test in two events goes to the first in the order of `_KIND_ORDER`. A night
 with more than `MASS_FAILURE_THRESHOLD` tests for new issues opens one issue,
-under the key with the most tests. Extra legs open and close nothing: an event
+under the key with the most tests. When that issue holds more than one key, its
+title and intro name no culprit and its body lists the keys. Extra legs open and
+close nothing: an event
 naming only extra legs is ignored, and recovery reads only canary legs. A
 confirmed test no event names, as after a triage step died, gets a range event
 with the reason `no result`, or the `canary-broken` issue when there is no
-triage at all. A range event's reasons are shown as they are, so a reason this
+triage at all, which then gives each leg's status. A range event's reasons are shown as they are, so a reason this
 script has never seen still opens an issue.
 
 A test has recovered when its outcome is `passed` in the full run on every canary
@@ -247,20 +249,23 @@ drops them with one comment, and when all do, the canary comments `recovered at
 `canary-broken` issue also needs a night with no such event. A re-run of a run
 older than the newest in `index.jsonl` on `test-results`, or older than a run that
 wrote to an open issue, changes no issue, and a lookup that fails exits 1 with no
-write. Each comment carries
-a `<!-- nightly-canary-run run_id=<id> kind=<kind> -->` line, and the body one with
-the kind `opened`, so a re-attempt of a run neither comments nor edits again.
+write. Each comment carries a `<!-- nightly-canary-run run_id=<id> kind=<kind> -->`
+line, and the body one with the kind `opened`, so a re-attempt of a run neither
+comments nor edits again.
 A comment that landed before a failed close leaves only the close to do.
 
 A body stays under `BODY_LIMIT`, since GitHub refuses one over 65536 characters.
-The visible list says how many tests it left out. The marker can't always hold
+The visible list says how many tests it left out, and an edit shortens it to make
+room for a person's note. Their text and the marker stay whole, so a note too long
+to fit beside a full marker fails that edit. The marker can't always hold
 every id either: a night can fail thousands of tests. A marker that is cut holds
 the first sorted ids and comes with a `nightly-canary-partial total=<n>
 digest=<hex>` line, and the closing and dedupe rules work from that part: the
 issue closes only on a night where both canary legs are green with pytest exit 0,
 so no test at all went red. While it is open it holds every test no complete
-issue holds, except collection errors and `canary-broken` tests, so a long mass
-failure stays one issue. A night whose tests differ from the digest replaces its
+issue holds, except new collection errors and `canary-broken` tests, so a long
+mass failure stays one issue. For that reason it names no culprit from the start,
+unless it is `canary-broken`, which takes in no other event's tests. A night whose tests differ from the digest replaces its
 list with one comment, if pytest exited 0 or 1 on both legs, and a list that then
 fits makes it an ordinary issue again.
 
