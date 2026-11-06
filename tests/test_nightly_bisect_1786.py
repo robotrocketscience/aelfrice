@@ -1852,6 +1852,23 @@ def test_the_clone_borrows_objects_has_no_remote_and_sits_at_good(env: Env, tmp_
     assert _git(clone, "symbolic-ref", "-q", "HEAD").returncode != 0
 
 
+def test_a_tree_past_bad_that_cannot_be_checked_out_does_not_stop_the_run(
+    env: Env, tmp_path: Path, run_bisect: Runner,
+) -> None:
+    """The clone's first tree is `--good`, not the caller's HEAD."""
+    shas = env.repo(["", "a"])
+    repo = tmp_path / "repo"
+    _written(repo / ".gitattributes", "*.dat filter=broken\n")
+    _written(repo / "x.dat", "x\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "past bad")
+    Path(os.environ["GIT_CONFIG_GLOBAL"]).write_text(
+        '[filter "broken"]\n\tsmudge = false\n\trequired = true\n', encoding="utf-8",
+    )
+    rc, result = run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7})
+    assert rc == 0, result
+
+
 def test_a_global_default_remote_name_does_not_stop_the_clone(env: Env, tmp_path: Path) -> None:
     """`git remote remove origin` failed under `clone.defaultRemoteName`."""
     shas = env.repo(["", "a"])
