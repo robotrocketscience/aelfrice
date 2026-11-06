@@ -1440,10 +1440,18 @@ def _modules(tests: list[str]) -> str:
     return shown if len(names) <= 3 else f"{shown} and {len(names) - 3} more"
 
 
+def _shared(event: dict[str, Any]) -> bool:
+    """Whether the issue holds tests no one event explains, so its title and
+    intro can't name what one event says."""
+    return bool(event.get("merged"))
+
+
 def issue_title(event: dict[str, Any], tests: list[str], night: dict[str, Any]) -> str:
     kind, parts = key_kind(str(event["key"]))
     count = f"{len(tests)} test(s)"
-    if kind == KEY_PR:
+    if _shared(event):
+        title = f"nightly: {count} fail on main in a mass failure ({str(night.get('sha', ''))[:7]})"
+    elif kind == KEY_PR:
         title = f"nightly: {count} fail on main since #{parts[0]} ({str(event.get('sha', ''))[:7]})"
     elif kind == KEY_COMMIT:
         title = f"nightly: {count} fail on main since commit {parts[0][:7]}"
@@ -1469,6 +1477,12 @@ def _intro(event: dict[str, Any], tests: list[str], night: dict[str, Any]) -> st
     """What the event means to a reader. It holds no test output: the reports
     stay in the run's artifacts."""
     kind, parts = key_kind(str(event["key"]))
+    if _shared(event):
+        return (
+            f"These tests failed at {_code(str(night.get('sha', ''))[:12])} in a mass failure, so they share this "
+            "issue. No one commit explains them all: `triage.json` in the run's `nightly-triage-<sha>` artifact "
+            "says which event holds which test."
+        )
     if kind in (KEY_PR, KEY_COMMIT):
         sha, before = _code(str(event.get("sha", ""))[:12]), _code(str(event.get("preceding", ""))[:12])
         name = f"#{parts[0]}" if kind == KEY_PR else f"commit {sha}"
@@ -1509,7 +1523,7 @@ def _closing(event: dict[str, Any]) -> str:
     kind = key_kind(str(event["key"]))[0]
     if kind == KEY_BROKEN:
         return "The canary closes it on a night that reaches both canary legs, once any tests here pass on both."
-    if kind == KEY_COLLECTION:
+    if kind == KEY_COLLECTION and not _shared(event):
         return "The canary closes it when pytest gets past collecting on both canary legs and reports none of these."
     return (
         "The canary closes it when every test here passes in the full run on both canary legs. If you remove, "
@@ -1520,15 +1534,17 @@ def _closing(event: dict[str, Any]) -> str:
 def issue_body(
     event: dict[str, Any], tests: list[str], night: dict[str, Any], others: list[tuple[str, int]],
 ) -> str:
-    """A new issue's body. `others` names the events merged into it on a mass failure."""
+    """A new issue's body. `others` names each event in it when a mass failure merged several."""
     head = [f"<!-- nightly-canary-event v1 key={event['key']} -->"]
     if night.get("run_id") is not None:
         head.append(f"<!-- nightly-canary-run run_id={night['run_id']} kind=opened -->")
     head.append(_tests_lines(tests))
     paragraphs = ["\n".join(head), _intro(event, tests, night)]
-    if others:
+    if _shared(event):
         shown = ", ".join(f"{_code(key)} ({count})" for key, count in others[:_COMMENT_LIST])
-        paragraphs.append(f"This mass failure holds {len(tests)} tests in one issue, including these events: {shown}.")
+        if len(others) > _COMMENT_LIST:
+            shown += f", and {len(others) - _COMMENT_LIST} more"
+        paragraphs.append(f"The night's event keys, each with its test count: {shown}.")
     paragraphs.append(_list_block(tests, event.get("reasons", {})))
     paragraphs.append(f"The [nightly run]({night.get('run_url', '')}) opened this issue. {_closing(event)}")
     return "\n\n".join(paragraphs) + "\n"
@@ -1594,9 +1610,9 @@ def _edit_actions(
 def _merged_groups(
     groups: list[tuple[dict[str, Any], list[str]]],
 ) -> tuple[list[tuple[dict[str, Any], list[str]]], list[tuple[str, int]]]:
-    """One group for a mass failure, under the key with the most tests, and the
-    other keys it took in. The `canary-broken` group says something else, so it
-    stays apart. Below the threshold, `groups` as they are."""
+    """One group for a mass failure, under the key with the most tests, and every
+    key it holds when there is more than one. The `canary-broken` group says
+    something else, so it stays apart. Below the threshold, `groups` as they are."""
     plain = [group for group in groups if key_kind(group[0]["key"])[0] != KEY_BROKEN]
     if sum(len(tests) for _, tests in plain) <= MASS_FAILURE_THRESHOLD:
         return groups, []
@@ -1606,8 +1622,8 @@ def _merged_groups(
         reasons.update(event.get("reasons", {}))
     everything = sorted(test for _, tests in plain for test in tests)
     apart = [group for group in groups if key_kind(group[0]["key"])[0] == KEY_BROKEN]
-    others = [(str(event["key"]), len(tests)) for event, tests in plain[1:]]
-    return [({**plain[0][0], "reasons": reasons}, everything), *apart], others
+    keys = [(str(event["key"]), len(tests)) for event, tests in plain] if len(plain) > 1 else []
+    return [({**plain[0][0], "reasons": reasons, "merged": bool(keys)}, everything), *apart], keys
 
 
 def plan_actions(

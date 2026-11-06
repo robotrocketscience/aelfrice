@@ -3679,9 +3679,47 @@ def test_issues_mass_failure_across_events_opens_one_issue_with_every_reason() -
     assert _kinds(actions) == ["create"]
     assert actions[0]["key"] == events[0]["key"]
     assert actions[0]["tests"] == sorted(tests)
-    assert actions[0]["title"].startswith("nightly: 120 test(s) fail on main between")
-    assert "`pr-7` (10)" in actions[0]["body"] and "`pr-8` (10)" in actions[0]["body"]
+    assert actions[0]["title"] == f"nightly: 120 test(s) fail on main in a mass failure ({SHA2[:7]})"
+    flat = " ".join(actions[0]["body"].split())
+    assert f"The night's event keys, each with its test count: `{events[0]['key']}` (100), `pr-7` (10), `pr-8` (10)." in flat
     assert "(reason: `cap`)" in actions[0]["body"]
+
+
+def test_issues_a_merge_of_several_keys_states_no_keys_culprit_for_every_test() -> None:
+    """`pr-20` holds the most tests here, and "The bisect points at #20" is false for the rest."""
+    drift = {"key": f"drift-{SHA1[:12]}", "kind": "drift", "legs": ["3.12"], "tests": ["tests.test_d::test_d"]}
+    events = [_pr_event(*_many(40), pr=20), _pr_event(*_many(20, "tests.test_b::test_b"), pr=30), drift]
+    action = nc.plan_actions([], events, _base())[0]
+    flat = " ".join(action["body"].split())
+    assert action["key"] == "pr-20"
+    for false_for_some in ("#20", "#30", "since", "bisect points", "merged as", "last green commit", "environment"):
+        assert false_for_some not in action["title"] and false_for_some not in flat
+    assert f"These tests failed at `{SHA2[:12]}` in a mass failure, so they share this issue." in flat
+    assert "`pr-20` (40), `pr-30` (20)" in flat and f"`drift-{SHA1[:12]}` (1)" in flat
+
+
+def test_issues_a_merge_led_by_a_collection_error_says_how_a_shared_issue_closes() -> None:
+    """Most of the tests are ordinary here, so "reports none of these" would be false."""
+    modules = [f"::tests.test_m{i:03d}" for i in range(40)]
+    action = nc.plan_actions([], [_collection(*modules), _pr_event(*_many(20))], _base())[0]
+    flat = " ".join(action["body"].split())
+    assert action["key"] == _collection()["key"]
+    assert "can't be collected" not in action["title"]
+    assert "reports none of these" not in flat
+    assert "passes in the full run on both canary legs" in flat
+
+
+def test_issues_a_merge_names_how_many_keys_it_left_out() -> None:
+    events = [_pr_event(f"tests.test_m::test_{i}a", f"tests.test_m::test_{i}b", pr=i) for i in range(1, 31)]
+    flat = " ".join(nc.plan_actions([], events, _base())[0]["body"].split())
+    assert f"and {30 - nc._COMMENT_LIST} more." in flat
+
+
+def test_issues_one_key_past_the_threshold_keeps_its_culprit() -> None:
+    action = nc.plan_actions([], [_pr_event(*_many(60))], _base())[0]
+    assert action["title"].startswith("nightly: 60 test(s) fail on main since #7")
+    flat = " ".join(action["body"].split())
+    assert "The bisect points at #7" in flat and "event keys" not in flat
 
 
 def test_issues_the_threshold_is_what_merges_events() -> None:
@@ -3694,8 +3732,10 @@ def test_issues_the_threshold_is_what_merges_events() -> None:
 
 def test_issues_a_mass_failure_keeps_canary_broken_apart() -> None:
     broken = {"key": "canary-broken", "legs": ["3.12"], "tests": []}
-    keys = [a["key"] for a in nc.plan_actions([], [_pr_event(*_many(60)), broken], _base())]
-    assert keys == [_PR_KEY, "canary-broken"]
+    actions = nc.plan_actions([], [_pr_event(*_many(30)), _pr_event(*_many(30, "tests.test_b::t"), pr=8), broken], _base())
+    assert [a["key"] for a in actions] == [_PR_KEY, "canary-broken"]
+    assert "event keys" in actions[0]["body"] and "event keys" not in actions[1]["body"]
+    assert "no usable result" in actions[1]["title"] and "These legs left no usable result" in actions[1]["body"]
 
 
 def test_issues_a_large_canary_broken_group_is_not_a_mass_failure() -> None:

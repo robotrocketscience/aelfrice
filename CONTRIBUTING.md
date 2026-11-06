@@ -325,7 +325,8 @@ job after it writes the night, so the Actions tab shows both as a failed run.
 
 The canary opens issues with the `nightly-regression` label, and creates the
 label if it's missing. A test already in an open issue gets no new issue, and a
-mass failure opens one issue. An open issue stays quiet unless its tests change.
+mass failure opens one issue, which lists the night's event keys and names no
+culprit. An open issue stays quiet unless its tests change.
 The canary then edits the test list and adds one comment. Re-running a run adds
 nothing, and re-running a run older than the newest one on `test-results` changes
 no issue. The `stale` workflow skips this label, so a regression that still fails
