@@ -1494,7 +1494,10 @@ def test_a_temporary_location_the_ceiling_cannot_cover_exits_2(
     extra = ("--dry-run",) if dry else ()
     rc, _ = run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7}, extra=extra)
     assert rc == 2
-    assert "set TMPDIR elsewhere" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "set TMPDIR elsewhere" in err
+    if location.endswith("-a-project"):
+        assert f"{(tmp_path / 'main').resolve()}, which holds a pyproject.toml" in err
     assert env.stepped() == []
     assert _tree_state(repo) == tree
 

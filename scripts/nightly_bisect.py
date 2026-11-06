@@ -168,7 +168,9 @@ clone that lost its `.git` then gives "not a git repository", and git cannot fin
 a repository above it, even with the temporary folder inside one. The step and its
 children also run without the variables that point `uv` at another project, and
 with `TMPDIR` at the clone's parent, so what `uv` and pytest leave there, such as
-`uv`'s lock file for that clone, goes with the run.
+`uv`'s lock file for that clone, goes with the run. With no `--python`, a step uses
+`uv`'s default rather than an environment named by `UV_PROJECT_ENVIRONMENT`; the
+canary always passes `--python`.
 
 The step. It first deletes what the commit before left in the clone, ignored files
 too, with `git clean -ffdxq --exclude=.venv`, so each commit is judged on its own
@@ -1349,8 +1351,13 @@ def _real_path(path: Path) -> Path:
 def _temp_location(root: Path) -> Path:
     """The real path of the temporary location, which neither `root` nor a project may contain."""
     temp = _real_path(Path(tempfile.gettempdir()))
-    if temp.is_relative_to(root) or any((folder / "pyproject.toml").exists() for folder in (temp, *temp.parents)):
-        raise ValueError(f"the temporary location {temp} is inside {root} or a project; set TMPDIR elsewhere")
+    if temp.is_relative_to(root):
+        raise ValueError(f"the temporary location {temp} is inside {root}; set TMPDIR elsewhere")
+    for folder in (temp, *temp.parents):
+        if (folder / "pyproject.toml").exists():
+            raise ValueError(
+                f"the temporary location {temp} is in or below {folder}, which holds a pyproject.toml; set TMPDIR elsewhere",
+            )
     if ":" in str(temp):
         raise ValueError(f"the temporary location {temp} holds a colon; set TMPDIR elsewhere")
     return temp
