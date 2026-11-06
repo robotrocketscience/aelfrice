@@ -27,7 +27,7 @@ higher-quality path out of reach for that population. v1.5.0 makes
 `/aelf:onboard` orchestrate the four-class classifier through the
 host's own Task dispatch against the cheapest model in its stack:
 
-1. `uv run aelf onboard <path> --emit-candidates` — persists a
+1. `aelf onboard <path> --emit-candidates` — persists a
    PENDING `onboard_sessions` row, prints
    `{session_id, n_already_present, sentences[]}` as JSON. No
    network.
@@ -35,7 +35,7 @@ host's own Task dispatch against the cheapest model in its stack:
    one Task per batch with the four-class classification template.
    Each batch returns
    `[{index, belief_type, persist}, ...]`.
-3. `uv run aelf onboard --accept-classifications --session-id <id>
+3. `aelf onboard --accept-classifications --session-id <id>
    --classifications-file -` — reads the aggregated classifications
    from stdin, applies them via `accept_classifications`, prints an
    `AcceptOnboardResult` JSON summary. No network.
