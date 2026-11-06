@@ -3977,6 +3977,47 @@ def test_issues_an_id_longer_than_the_marker_budget_cannot_overrun_it() -> None:
     assert "leaves out 1 of 1" in body
 
 
+def _with_note(issue: dict[str, Any], note: str) -> dict[str, Any]:
+    return {**issue, "body": f"{issue['body']}\n{note}\n"}
+
+
+def test_issues_an_edit_shortens_the_list_for_a_persons_long_note_and_keeps_every_word() -> None:
+    tests = _many(300)
+    note = "note " + "z" * 30000
+    issues = [_with_note(_opened(_pr_event(*tests[:290]))[0], note)]
+    body = nc.plan_actions(issues, [_pr_event(*tests)], _base(run_id=201))[0]["body"]
+    assert note in body
+    assert len(body.encode("utf-8")) <= nc.BODY_LIMIT
+    shown = len(re.findall(r"^- `", body, flags=re.M))
+    assert 0 < shown < 300
+    assert f"This list leaves out {300 - shown} of 300 test(s)." in body
+    # The cut touches only the list, so the canary still tracks every test.
+    assert _marker_tests(body) == sorted(tests)
+
+
+def test_issues_an_edit_with_a_long_note_that_still_fits_shortens_nothing() -> None:
+    tests = _many(10)
+    issues = [_with_note(_opened(_pr_event(*tests[:9]))[0], "z" * 40000)]
+    body = nc.plan_actions(issues, [_pr_event(*tests)], _base(run_id=201))[0]["body"]
+    assert len(re.findall(r"^- `", body, flags=re.M)) == 10 and "leaves out" not in body
+
+
+def test_issues_an_edit_counts_a_note_in_bytes_like_the_list() -> None:
+    tests = _many(300)
+    issues = [_with_note(_opened(_pr_event(*tests[:290]))[0], "\u00e9" * 15000)]
+    body = nc.plan_actions(issues, [_pr_event(*tests)], _base(run_id=201))[0]["body"]
+    assert len(body.encode("utf-8")) <= nc.BODY_LIMIT and "leaves out" in body
+
+
+def test_issues_an_edit_with_no_room_lists_no_test_and_keeps_the_person_s_text() -> None:
+    tests = _many(5)
+    note = "z" * 70000
+    issues = [_with_note(_opened(_pr_event(*tests[:4]))[0], note)]
+    body = nc.plan_actions(issues, [_pr_event(*tests)], _base(run_id=201))[0]["body"]
+    assert note in body and not re.search(r"^- `", body, flags=re.M)
+    assert "This list leaves out 5 of 5 test(s)." in body
+
+
 def test_issues_a_comment_lists_at_most_its_cap() -> None:
     issues = _opened(_pr_event(_A))
     comment = nc.plan_actions(issues, [_pr_event(_A, *_many(30))], _base())[1]["body"]

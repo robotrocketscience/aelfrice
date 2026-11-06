@@ -370,6 +370,8 @@ LABEL = "nightly-regression"
 BODY_LIMIT = 65000
 _MARKER_BUDGET = 30000
 _LIST_BUDGET = 28000
+#: The most a list block holds beyond its test lines: its two markers and its notes.
+_LIST_FIXED_TEXT = 500
 _REASON_LIMIT = 200
 _TITLE_LIMIT = 250
 _COMMENT_LIST = 20
@@ -1290,7 +1292,9 @@ def _shown_reasons(body: str) -> dict[str, str]:
     return shown
 
 
-def _list_block(tests: list[str], reasons: dict[str, Any], shown: dict[str, str] | None = None) -> str:
+def _list_block(
+    tests: list[str], reasons: dict[str, Any], shown: dict[str, str] | None = None, budget: int = _LIST_BUDGET,
+) -> str:
     """The visible test list, with a test's reason when tonight gave one or the
     old list in `shown` held one, and how many tests it left out."""
     ordered = sorted(tests)
@@ -1303,7 +1307,7 @@ def _list_block(tests: list[str], reasons: dict[str, Any], shown: dict[str, str]
         elif shown:
             line += shown.get(line, "")
         used += len(line.encode("utf-8")) + 1
-        if used > _LIST_BUDGET:
+        if used > budget:
             break
         lines.append(line)
     left = len(ordered) - len(lines)
@@ -1589,7 +1593,9 @@ def issue_body(
 
 
 def updated_body(body: str, tests: list[str], reasons: dict[str, Any]) -> str:
-    """`body` with its markers and list replaced and everything else kept."""
+    """`body` with its markers and list replaced and everything else kept. When a
+    person's note leaves too little room, the list gets shorter and says how many
+    tests it left out. Their text stays whole, even when that can't fit."""
     shown = _shown_reasons(body)
     body = _PARTIAL_MARKER.sub("", body)
     lines = _tests_lines(tests)
@@ -1597,10 +1603,19 @@ def updated_body(body: str, tests: list[str], reasons: dict[str, Any]) -> str:
         body = _TESTS_MARKER.sub(lambda _: lines, body, count=1)
     else:
         body = _KEY_MARKER.sub(lambda m: f"{m.group(0).rstrip()}\n{lines}", body, count=1)
+
+    def with_list(listing: str) -> str:
+        if _LIST_BLOCK.search(body):
+            return _LIST_BLOCK.sub(lambda _: listing, body, count=1)
+        return f"{body.rstrip()}\n\n{listing}\n"
+
     listing = _list_block(tests, reasons, shown)
-    if _LIST_BLOCK.search(body):
-        return _LIST_BLOCK.sub(lambda _: listing, body, count=1)
-    return f"{body.rstrip()}\n\n{listing}\n"
+    updated = with_list(listing)
+    over = len(updated.encode("utf-8")) - BODY_LIMIT
+    if over <= 0:
+        return updated
+    room = len(listing.encode("utf-8")) - over - _LIST_FIXED_TEXT
+    return with_list(_list_block(tests, reasons, shown, max(room, 0)))
 
 
 def _bullets(tests: list[str]) -> str:
