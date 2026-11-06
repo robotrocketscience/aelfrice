@@ -886,7 +886,7 @@ def cmd_step(args: argparse.Namespace) -> int:
                 try:
                     failed += failing_ids(junit.read_text(encoding="utf-8"), present)
                 except ElementTree.ParseError:
-                    pass
+                    pass  # The exit code still decides, and a bad step naming no test confirms no culprit.
         return step_verdict(
             past_deadline=False, collect_rc=collect_rc, present=present, run_rc=run_rc, module_rcs=module_rcs,
         )
@@ -1278,7 +1278,7 @@ def _remove_folder(folder: Path) -> None:
         try:
             print(f"::warning::{folder} could not be removed", file=sys.stderr)
         except OSError:
-            pass
+            pass  # A closed stderr has no way to carry the warning.
 
 
 def _read_json(path: Path) -> Any:
