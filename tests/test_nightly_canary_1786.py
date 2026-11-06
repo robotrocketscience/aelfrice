@@ -679,6 +679,26 @@ def test_the_record_takes_each_legs_newest_attempt(tmp_path: Path) -> None:
     assert record["legs"]["3.1"] is None
 
 
+def test_the_macos_leg_and_the_canary_leg_of_the_same_python_read_their_own_bundles(tmp_path: Path) -> None:
+    """All three legs read one download folder, and `macos-3.13` ends in the canary
+    leg's name, so a loose match would hand macOS's green report to the 3.13 leg."""
+    root = tmp_path / "artifacts"
+    _bundle(root / f"nightly-3.12-{SHA1}-a1", {_A: tor.PASSED})
+    _bundle(root / f"nightly-macos-3.13-{SHA1}-a1", {_A: tor.PASSED})
+    rc, record = _record_cmd(tmp_path, f"3.12={root}", f"3.13={root}", f"macos-3.13={root}:extra")
+    assert rc == 0 and record is not None
+    assert record["nightly"]["status"] == {"3.12": nc.GREEN, "3.13": nc.MISSING, "macos-3.13": nc.GREEN}
+    assert record["nightly"]["verdict"] == nc.INCOMPLETE
+
+    _bundle(root / f"nightly-3.13-{SHA1}-a1", {_A: tor.FAILED})
+    (root / f"nightly-macos-3.13-{SHA1}-a1" / "junit.xml").unlink()
+    rc, record = _record_cmd(tmp_path, f"3.12={root}", f"3.13={root}", f"macos-3.13={root}:extra")
+    assert rc == 0 and record is not None
+    assert record["nightly"]["status"] == {"3.12": nc.GREEN, "3.13": nc.RED, "macos-3.13": nc.MISSING}
+    assert record["nightly"]["roles"]["macos-3.13"] == nc.EXTRA
+    assert record["nightly"]["verdict"] == nc.RED
+
+
 @pytest.mark.parametrize(
     ("legs", "verdict"),
     [
@@ -687,8 +707,11 @@ def test_the_record_takes_each_legs_newest_attempt(tmp_path: Path) -> None:
         ({"3.12": {_A: tor.PASSED}, "3.13": None}, nc.INCOMPLETE),
         ({"3.12": {_A: tor.PASSED}, "3.13": {_A: tor.PASSED}, "3.14": {_A: tor.FAILED}}, nc.GREEN),
         ({"3.12": {_A: tor.PASSED}, "3.13": {_A: tor.PASSED}, "3.14": None}, nc.GREEN),
+        ({"3.12": {_A: tor.PASSED}, "3.13": {_A: tor.PASSED}, "macos-3.13": {_A: tor.FAILED}}, nc.GREEN),
+        ({"3.12": {_A: tor.PASSED}, "3.13": {_A: tor.PASSED}, "macos-3.13": None}, nc.GREEN),
+        ({"3.12": {_A: tor.PASSED}, "3.13": {_A: tor.FAILED}, "macos-3.13": {_A: tor.PASSED}}, nc.RED),
     ],
-    ids=["green", "red", "missing-canary", "red-extra", "missing-extra"],
+    ids=["green", "red", "missing-canary", "red-extra", "missing-extra", "red-macos", "missing-macos", "red-canary-green-macos"],
 )
 def test_the_night_is_green_only_when_every_canary_leg_is(
     tmp_path: Path, legs: dict[str, dict[str, str] | None], verdict: str,
@@ -698,7 +721,7 @@ def test_the_night_is_green_only_when_every_canary_leg_is(
         directory = tmp_path / leg
         if outcomes is not None:
             _bundle(directory, outcomes)
-        specs.append(f"{leg}={directory}" + (":extra" if leg == "3.14" else ""))
+        specs.append(f"{leg}={directory}" + (":extra" if leg in {"3.14", "macos-3.13"} else ""))
     rc, record = _record_cmd(tmp_path, *specs)
     assert rc == 0 and record is not None
     assert record["nightly"]["verdict"] == verdict
