@@ -872,7 +872,7 @@ def test_the_documents_describe_the_workflow() -> None:
     section = text[start : text.index("\n### ", start + 1)]
     for name in (
         "`suite`", "`suite-macos`", "`macos-15`", "`macos-3.13`", "`triage`", "`publish`", "`report`", "`test-results`", "02:17",
-        "`last-green.json`", "`index.jsonl`",
+        "`last-green.json`", "`index.jsonl`", "A report-only leg opens no issue", "never moves the `canary` entry",
         "`nightly-regression`", "`recovered at <sha7> (<run url>)`", "The `stale` workflow skips this label",
         "`<!-- nightly-canary-event v1 key=<key> -->`",
     ):
@@ -887,7 +887,8 @@ def test_the_user_docs_say_where_the_suite_runs() -> None:
     install = " ".join((_REPO / "docs" / "user" / "INSTALL.md").read_text(encoding="utf-8").split())
     pyproject = re.sub(r"\n\s*# ", " ", (_REPO / "pyproject.toml").read_text(encoding="utf-8"))
     assert f"on every pull request that changes code (`ci.yml` on `{_ci_key('runs-on')}`, Python 3.12 and 3.13)" in limits
-    assert f"(`nightly-canary.yml` on `{_key('suite-macos', 'runs-on')}`, Python 3.13), and no pull request runs it." in limits
+    assert f"once a night (`nightly-canary.yml` on `{_key('suite-macos', 'runs-on')}`, Python 3.13), and no pull request runs it." in limits
+    assert "a failure there blocks no merge and opens no issue" in limits
     assert "isn't a supported-tier promise" in limits
     assert "Linux runs the full test suite on every pull request that changes code" in install
     assert "a nightly job runs the full test suite on macOS as a report that blocks nothing" in install
