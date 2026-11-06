@@ -10,7 +10,8 @@ dots, brackets, spaces and `::`, and a collection error with an empty
 classname), and run its subcommands against temporary files and a temporary
 git repository. Two tests run real pytest over a small project, so the
 synthetic shapes cannot drift from what pytest writes without one of them
-failing. Nothing here calls the network or `gh`.
+failing. Nothing here calls the network. The `issues` tests put a fake `gh` on
+PATH that holds its issues in a file and logs each call.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,7 @@ _REPO = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO / "scripts" / "nightly_canary.py"
 sys.path.insert(0, str(_REPO / "scripts"))
 
+import nightly_bisect as nb  # noqa: E402
 import nightly_canary as nc  # noqa: E402
 import test_outcome_record as tor  # noqa: E402
 
@@ -2935,3 +2938,1344 @@ def test_the_functions_the_docstring_calls_pure_do_no_io() -> None:
                 impure.append(f"{node.name}: .{sub.attr}")
     assert impure == []
     assert len(defs[: names.index(m.group(1))]) > 15
+
+
+# ------------------------------------------------------------------ issues
+
+_REPO_NAME = "o/r"
+_TRIAGE_FIXTURE = _REPO / "tests" / "fixtures" / "nightly_triage_1786.json"
+_GOOD = "a" * 40
+_BAD = "b" * 40
+_PR_KEY = "pr-7"
+
+
+def _run_url(run_id: int) -> str:
+    return f"https://github.com/o/r/actions/runs/{run_id}"
+
+
+def _both(outcomes: dict[str, str]) -> dict[str, tuple[dict[str, str] | None, dict[str, str] | None]]:
+    return {"3.12": (outcomes, None), "3.13": (outcomes, None)}
+
+
+def _facts(record: dict[str, Any], run_id: int = 200) -> dict[str, Any]:
+    return {**nc.night_facts(record), "run_id": run_id, "run_url": _run_url(run_id), "repo": _REPO_NAME}
+
+
+def _base(run_id: int = 200, sha: str = SHA2) -> dict[str, Any]:
+    """A night with no result to recover on, as after one with no record."""
+    return {"sha": sha, "run_id": run_id, "run_url": _run_url(run_id), "repo": _REPO_NAME}
+
+
+def _pr_event(*tests: str, pr: int = 7) -> dict[str, Any]:
+    return {"key": f"pr-{pr}", "kind": "pr", "pr": pr, "sha": SHA2, "preceding": SHA1, "tests": list(tests)}
+
+
+def _range_event(reasons: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "key": f"range-{_GOOD[:12]}-{_BAD[:12]}", "kind": "range", "good": _GOOD, "bad": _BAD,
+        "reasons": reasons, "tests": list(reasons),
+    }
+
+
+def _land(issues: list[dict[str, Any]], actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The open issues once `actions` landed, as GitHub would hold them."""
+    state = [{**issue, "comments": list(issue.get("comments", []))} for issue in issues]
+    for action in actions:
+        if action["action"] == "create":
+            number = max((i["number"] for i in state), default=0) + 1
+            state.append({"number": number, "title": action["title"], "body": action["body"], "comments": []})
+            continue
+        issue = next(i for i in state if i["number"] == action["number"])
+        if action["action"] == "edit":
+            issue["body"] = action["body"]
+            issue["title"] = action.get("title", issue["title"])
+        elif action["action"] == "comment":
+            issue["comments"].append({"body": action["body"]})
+        else:
+            state.remove(issue)
+    return state
+
+
+def _opened(*events: dict[str, Any]) -> list[dict[str, Any]]:
+    return _land([], nc.plan_actions([], events, _base(run_id=100)))
+
+
+def _kinds(actions: list[dict[str, Any]]) -> list[str]:
+    return [action["action"] for action in actions]
+
+
+def _parsed(issue: dict[str, Any]) -> dict[str, Any]:
+    parsed = nc.parse_issue(issue)
+    assert parsed is not None
+    return parsed
+
+
+def _marker_tests(body: str) -> list[str]:
+    tests = _parsed({"number": 1, "body": body})["tests"]
+    assert tests is not None
+    return tests
+
+
+def test_issues_a_new_event_opens_one_issue_with_both_markers() -> None:
+    actions = nc.plan_actions([], [_pr_event(_B, _A)], _base())
+    assert _kinds(actions) == ["create"]
+    body = actions[0]["body"]
+    assert "<!-- nightly-canary-event v1 key=pr-7 -->\n" in body
+    assert _marker_tests(body) == [_A, _B]
+    assert f"- `{_A}`" in body and f"- `{_B}`" in body
+    assert actions[0]["key"] == _PR_KEY
+
+
+def test_issues_uncovered_tests_group_by_key_and_each_key_opens_one_issue() -> None:
+    actions = nc.plan_actions([], [_pr_event(_A), _pr_event(_B, pr=8)], _base())
+    assert [(a["action"], a["key"], a["tests"]) for a in actions] == [
+        ("create", "pr-7", [_A]), ("create", "pr-8", [_B]),
+    ]
+
+
+def test_issues_a_test_in_an_open_issue_gets_no_new_issue_under_another_key() -> None:
+    """A range or no-baseline key names tonight's commit, so it changes every night."""
+    issues = _opened(_range_event({_A: "budget"}))
+    later = {"key": f"range-{_GOOD[:12]}-{SHA2[:12]}", "kind": "range", "reasons": {_A: "budget"}, "tests": [_A]}
+    assert nc.plan_actions(issues, [later], _base()) == []
+
+
+def test_issues_a_new_test_under_another_key_opens_only_for_that_test() -> None:
+    issues = _opened(_pr_event(_A))
+    actions = nc.plan_actions(issues, [_pr_event(_A, _B, pr=8)], _base())
+    assert [(a["action"], a["tests"]) for a in actions] == [("create", [_B])]
+
+
+def test_issues_an_issue_with_no_event_marker_is_not_the_canarys() -> None:
+    other = {"number": 9, "title": "t", "body": f'<!-- nightly-canary-tests ["{_A}"] -->\n', "comments": []}
+    assert _kinds(nc.plan_actions([other], [_pr_event(_A)], _base())) == ["create"]
+
+
+def test_issues_unchanged_is_silent_and_a_change_is_one_edit_and_one_comment() -> None:
+    issues = _opened(_pr_event(_A))
+    assert nc.plan_actions(issues, [_pr_event(_A)], _base()) == []
+    actions = nc.plan_actions(issues, [_pr_event(_A, _B)], _base())
+    assert _kinds(actions) == ["edit", "comment"]
+    assert actions[0]["number"] == actions[1]["number"] == issues[0]["number"]
+    assert _marker_tests(actions[0]["body"]) == [_A, _B]
+    assert f"`{_B}`" in actions[1]["body"]
+    assert "run_id=200 kind=changed" in actions[1]["body"]
+    assert "2 test(s)" in actions[0]["title"]
+
+
+def test_issues_a_person_retitling_keeps_their_title() -> None:
+    issues = _opened(_pr_event(_A))
+    issues[0]["title"] = "the login tests are broken"
+    assert "title" not in nc.plan_actions(issues, [_pr_event(_A, _B)], _base())[0]
+
+
+def test_issues_full_recovery_comments_then_closes() -> None:
+    issues = _opened(_pr_event(_A, _B))
+    record = _night(SHA2, _both({_A: tor.PASSED, _B: tor.PASSED}))
+    actions = nc.plan_actions(issues, [], _facts(record))
+    assert _kinds(actions) == ["comment", "close"]
+    assert actions[0]["number"] == actions[1]["number"] == issues[0]["number"]
+    first, marker = actions[0]["body"].strip().split("\n\n")
+    assert first == f"recovered at {SHA2[:7]} ({_run_url(200)})"
+    assert marker == "<!-- nightly-canary-run run_id=200 kind=recovered -->"
+
+
+def test_issues_recovery_closes_only_the_issue_whose_tests_passed() -> None:
+    issues = _opened(_pr_event(_A), _pr_event(_C, pr=8))
+    record = _night(SHA2, _both({_A: tor.PASSED, _C: tor.FAILED}))
+    actions = nc.plan_actions(issues, [_pr_event(_C, pr=8)], _facts(record))
+    assert _kinds(actions) == ["comment", "close"]
+    assert actions[1]["number"] == next(i["number"] for i in issues if _A in i["body"])
+
+
+@pytest.mark.parametrize(
+    "legs",
+    [
+        {"3.12": ({_A: tor.FAILED}, {_A: tor.PASSED}), "3.13": ({_A: tor.PASSED}, None)},
+        {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.FAILED}, None)},
+        {"3.12": ({_A: tor.SKIPPED}, None), "3.13": ({_A: tor.PASSED}, None)},
+        {"3.12": ({_B: tor.PASSED}, None), "3.13": ({_A: tor.PASSED}, None)},
+        {"3.12": ({_A: tor.PASSED}, None), "3.13": (None, None)},
+        {"3.12": ({_A: tor.PASSED}, None)},
+    ],
+    ids=["flaky-pass", "fails-on-one", "skipped", "gone-from-one", "leg-missing", "leg-never-named"],
+)
+def test_issues_recovery_needs_a_full_run_pass_on_both_legs(legs: dict[str, Any]) -> None:
+    issues = _opened(_pr_event(_A))
+    assert nc.plan_actions(issues, [], _facts(_night(SHA2, legs))) == []
+
+
+def test_issues_a_red_night_closes_what_passed_on_both_legs() -> None:
+    issues = _opened(_pr_event(_A))
+    record = _night(SHA2, _both({_A: tor.PASSED, _C: tor.FAILED}))
+    assert record["nightly"]["verdict"] == nc.RED
+    assert _kinds(nc.plan_actions(issues, [], _facts(record))) == ["comment", "close"]
+
+
+def test_issues_an_incomplete_night_never_closes_even_with_passes_in_its_report() -> None:
+    """A verdict the reports contradict makes a leg `missing`, and its junit stays in the record."""
+    issues = _opened(_pr_event(_A))
+    record = _night(SHA2, _both({_A: tor.PASSED}))
+    record["nightly"]["status"]["3.13"] = nc.MISSING
+    record["nightly"]["verdict"] = nc.INCOMPLETE
+    assert record["legs"]["3.13"]["tests"][_A] == tor.PASSED
+    assert nc.plan_actions(issues, [], _facts(record)) == []
+
+
+def test_issues_a_night_with_no_facts_closes_nothing() -> None:
+    assert nc.plan_actions(_opened(_pr_event(_A)), []) == []
+
+
+def test_issues_some_tests_passing_drops_them_with_one_comment() -> None:
+    issues = _opened(_pr_event(_A, _B))
+    record = _night(SHA2, _both({_A: tor.PASSED, _B: tor.FAILED}))
+    actions = nc.plan_actions(issues, [_pr_event(_B)], _facts(record))
+    assert _kinds(actions) == ["edit", "comment"]
+    assert _marker_tests(actions[0]["body"]) == [_B]
+    assert "Passing again" in actions[1]["body"] and f"`{_A}`" in actions[1]["body"]
+    assert "Now also failing" not in actions[1]["body"]
+    assert nc.plan_actions(_land(issues, actions), [_pr_event(_B)], _facts(record, run_id=201)) == []
+
+
+def test_issues_a_person_breaking_the_tests_marker_blocks_closing_and_the_next_change_restores_it() -> None:
+    issues = _opened(_pr_event(_A))
+    issues[0]["body"] = issues[0]["body"].replace("nightly-canary-tests [", "nightly-canary-tests [[")
+    record = _night(SHA2, _both({_A: tor.PASSED}))
+    assert _parsed(issues[0])["tests"] is None
+    assert nc.plan_actions(issues, [], _facts(record)) == []
+    actions = nc.plan_actions(issues, [_pr_event(_A)], _base())
+    assert _marker_tests(actions[0]["body"]) == [_A]
+
+
+def test_issues_a_marker_holding_a_wrong_shape_reads_as_broken() -> None:
+    body = '<!-- nightly-canary-event v1 key=pr-7 -->\n<!-- nightly-canary-tests [1, 2] -->\n'
+    assert _parsed({"number": 1, "body": body})["tests"] is None
+
+
+def test_issues_a_person_deleting_the_tests_marker_and_list_loses_nothing_else() -> None:
+    issues = _opened(_pr_event(_A))
+    body = issues[0]["body"]
+    body = re.sub(r"^<!-- nightly-canary-tests .*$\n", "", body, flags=re.M)
+    body = re.sub(rf"^{nc._LIST_START}.*^{nc._LIST_END}$", "see the run", body, flags=re.M | re.S)
+    issues[0]["body"] = body
+    edit = nc.plan_actions(issues, [_pr_event(_A, _B)], _base())[0]
+    assert _marker_tests(edit["body"]) == [_A, _B]
+    assert "see the run" in edit["body"]
+    assert f"- `{_B}`" in edit["body"]
+    assert edit["body"].index("nightly-canary-event") < edit["body"].index("nightly-canary-tests")
+
+
+def test_issues_markers_survive_a_person_editing_the_body_with_crlf_line_endings() -> None:
+    """GitHub's web editor stores CRLF."""
+    issues = _opened(_pr_event(_A))
+    edited = "Triage: owner is on it.\n\n" + issues[0]["body"] + "\nMore notes.\n"
+    issues[0]["body"] = edited.replace("\n", "\r\n")
+    parsed = _parsed(issues[0])
+    assert parsed["key"] == _PR_KEY
+    assert parsed["tests"] == [_A]
+    assert (100, "opened") in parsed["runs"]
+    assert nc.plan_actions(issues, [_pr_event(_A)], _base()) == []
+    edit = nc.plan_actions(issues, [_pr_event(_A, _B)], _base())[0]
+    assert "Triage: owner is on it." in edit["body"]
+    assert "More notes." in edit["body"]
+    assert edit["body"].count(nc._LIST_START) == 1
+    assert _marker_tests(edit["body"]) == [_A, _B]
+
+
+_ODD_IDS = [
+    "tests.test_a::test_x[-->]",
+    'tests.test_a::test_x[a"b]',
+    "tests.test_a::test_x[`tick`]",
+    "tests.test_a::test_x[``]",
+    "`",
+    "tests.test_a::test_x[]]",
+    "tests.test_a::test_x[--]",
+    "tests.test_a::test_x[back\\slash]",
+    "tests.test_a::test_x[<!-- nightly-canary-event v1 key=pr-1 -->]",
+    "tests.test_a::test_x[\n<!-- nightly-canary-event v1 key=pr-2 -->\n]",
+    "tests.test_a::test_x[\n<!-- nightly-canary-list end -->\n]",
+    "tests.test_a::test_x[é世]",
+    " tests.test_a::spaced ",
+]
+_BACKTICKS = re.compile(r"`+")
+
+
+def _code_spans(line: str) -> list[str]:
+    """The code spans of a Markdown line, by the CommonMark rule: a backtick
+    string opens a span that the next string of the same length closes."""
+    spans: list[str] = []
+    at = 0
+    while True:
+        opening = _BACKTICKS.search(line, at)
+        if opening is None:
+            return spans
+        closing = next(
+            (m for m in _BACKTICKS.finditer(line, opening.end()) if len(m.group(0)) == len(opening.group(0))),
+            None,
+        )
+        assert closing is not None, line
+        text = line[opening.end() : closing.start()]
+        spans.append(text[1:-1] if text[:1] == text[-1:] == " " and text.strip() else text)
+        at = closing.end()
+
+
+def test_issues_odd_ids_cannot_break_the_marker_or_the_markdown() -> None:
+    body = nc.plan_actions([], [_pr_event(*_ODD_IDS)], _base())[0]["body"]
+    assert sorted(_marker_tests(body)) == sorted(_ODD_IDS)
+    assert _parsed({"number": 1, "body": body})["key"] == _PR_KEY
+    # Only the lines the canary wrote: an id can't end a marker or start another.
+    comments = re.findall(r"^<!--.*-->$", body, flags=re.M)
+    assert len(comments) == 5
+    assert all(c.count("-->") == 1 for c in comments)
+    block = nc._LIST_BLOCK.search(body)
+    assert block is not None
+    shown = [line for line in block.group(0).splitlines() if line.startswith("- ")]
+    assert len(shown) == len(_ODD_IDS)
+    spans = {_code_spans(line[2:])[0] for line in shown}
+    for test in _ODD_IDS:
+        assert test.replace("\n", "\\n") in spans, test
+
+
+def test_issues_odd_ids_round_trip_through_an_update_and_a_recovery() -> None:
+    issues = _opened(_pr_event(*_ODD_IDS))
+    assert nc.plan_actions(issues, [_pr_event(*_ODD_IDS)], _base()) == []
+    actions = nc.plan_actions(issues, [_pr_event(*_ODD_IDS, _A)], _base())
+    assert _kinds(actions) == ["edit", "comment"]
+    assert sorted(_marker_tests(actions[0]["body"])) == sorted([*_ODD_IDS, _A])
+    assert len(re.findall(rf"^{nc._LIST_END}$", actions[0]["body"], flags=re.M)) == 1
+    record = _night(SHA2, _both({_A: tor.PASSED}))
+    for leg in record["legs"].values():
+        leg["tests"].update(dict.fromkeys(_ODD_IDS, tor.PASSED))
+    assert _kinds(nc.plan_actions(_land(issues, actions), [], _facts(record))) == ["comment", "close"]
+
+
+_TITLES = [
+    (_pr_event(_A, _B), f"nightly: 2 test(s) fail on main since #7 ({SHA2[:7]})"),
+    ({"key": f"commit-{SHA2[:12]}", "kind": "commit", "sha": SHA2, "preceding": SHA1, "tests": [_A]},
+     f"nightly: 1 test(s) fail on main since commit {SHA2[:7]}"),
+    ({"key": f"drift-{SHA1[:12]}", "kind": "drift", "tests": [_A, _B], "legs": ["3.13"], "failures": []},
+     f"nightly: 2 test(s) fail on the last green commit {SHA1[:7]} (environment drift)"),
+    (_range_event({_A: "budget"}), f"nightly: 1 test(s) fail on main between {_GOOD[:7]} and {_BAD[:7]} (culprit not found)"),
+    ({"key": f"no-baseline-{SHA2[:12]}", "kind": "no-baseline", "tests": [_A], "legs": ["3.12"], "failures": []},
+     f"nightly: canary red with no green baseline at {SHA2[:7]}"),
+    ({"key": f"collection-error-{SHA2[:12]}", "kind": "collection-error", "legs": ["3.13"],
+      "tests": ["::tests.test_x", "::tests.test_y"]},
+     f"nightly: tests.test_x, tests.test_y can't be collected on main ({SHA2[:7]})"),
+    ({"key": "canary-broken", "kind": "canary-broken", "legs": ["3.13"], "tests": [], "failures": []},
+     f"nightly: the canary produced no usable result on 3.13 ({SHA2[:7]})"),
+    (nc.no_record_event("2026-11-05"), "nightly: the canary produced no record (2026-11-05)"),
+    ({"key": "new-kind-1", "tests": [_A]}, "nightly: 1 test(s) fail on main (new-kind-1)"),
+]
+
+
+@pytest.mark.parametrize(
+    ("event", "title"), _TITLES,
+    ids=["pr", "commit", "drift", "range", "no-baseline", "collection-error", "canary-broken", "no-record", "unknown"],
+)
+def test_issues_each_event_key_has_its_title_and_its_marker(event: dict[str, Any], title: str) -> None:
+    actions = nc.plan_actions([], [event], _base())
+    assert [a["title"] for a in actions] == [title]
+    assert f"<!-- nightly-canary-event v1 key={event['key']} -->\n" in actions[0]["body"]
+    assert _marker_tests(actions[0]["body"]) == sorted(event["tests"])
+
+
+def test_issues_a_title_stays_inside_githubs_limit_and_names_how_many_modules_it_left_out() -> None:
+    tests = [f"::tests.{'m' * 200}{i}" for i in range(5)]
+    event = {"key": f"collection-error-{SHA2[:12]}", "tests": tests}
+    title = nc.issue_title(event, tests, _base())
+    assert " and 2 more can't be collected" in title
+    assert title.count("m" * 54) == 3 and "m" * 55 not in title
+    assert len(nc.issue_title({"key": "x" * 300, "tests": []}, [], _base())) == nc._TITLE_LIMIT <= 256
+
+
+def test_issues_key_kind_reads_each_shape() -> None:
+    assert nc.key_kind("pr-12") == ("pr", ("12",))
+    assert nc.key_kind(f"range-{_GOOD[:12]}-{_BAD[:12]}") == ("range", (_GOOD[:12], _BAD[:12]))
+    assert nc.key_kind("canary-broken")[0] == "canary-broken"
+    assert nc.key_kind("pr-x")[0] == "unknown"
+
+
+def test_issues_a_culprit_issue_says_points_at_and_names_both_commits() -> None:
+    body = nc.plan_actions([], [_pr_event(_A)], _base())[0]["body"]
+    flat = " ".join(body.split())
+    assert f"The bisect points at #7, merged as `{SHA2[:12]}`." in flat
+    assert f"pass on `{SHA1[:12]}` and fail on `{SHA2[:12]}`" in flat
+    assert "broke between the two commits" in flat
+    assert "That doesn't prove #7 caused it" in flat
+    assert '"What the checks cannot detect"' in flat
+    assert "(https://github.com/o/r/blob/main/scripts/nightly_bisect.py)" in body
+
+
+def test_issues_a_commit_culprit_issue_says_points_at_too() -> None:
+    event = {"key": f"commit-{SHA2[:12]}", "kind": "commit", "sha": SHA2, "preceding": SHA1, "tests": [_A]}
+    flat = " ".join(nc.plan_actions([], [event], _base())[0]["body"].split())
+    assert f"The bisect points at commit `{SHA2[:12]}`. These tests" in flat
+    assert '"What the checks cannot detect"' in flat
+    assert "broke between the two commits" in flat
+
+
+def test_issues_the_section_the_issue_links_exists_in_the_bisect_script() -> None:
+    assert "What the checks cannot detect:" in (nb.__doc__ or "")
+
+
+@pytest.mark.parametrize(
+    ("event", "words"),
+    [
+        ({"key": f"drift-{SHA1[:12]}", "tests": [_A]}, f"rerun on the last green commit `{SHA1[:12]}`"),
+        (_range_event({_A: "budget"}), f"found no culprit between `{_GOOD[:12]}` and `{_BAD[:12]}`"),
+        ({"key": f"no-baseline-{SHA2[:12]}", "tests": [_A]}, "no green night to compare with"),
+        ({"key": f"collection-error-{SHA2[:12]}", "tests": ["::tests.x"]}, f"can't collect these at `{SHA2[:12]}`"),
+        (nc.no_record_event("2026-11-05"), "left no record"),
+        ({"key": "canary-broken", "legs": ["3.13"], "tests": []}, f"no usable result at `{SHA2[:12]}`: `3.13`"),
+        ({"key": "new-kind-1", "tests": [_A]}, "reports the event `new-kind-1` for 1 test(s)"),
+    ],
+    ids=["drift", "range", "no-baseline", "collection-error", "no-record", "canary-broken", "unknown"],
+)
+def test_issues_each_body_says_what_its_event_means(event: dict[str, Any], words: str) -> None:
+    assert words in " ".join(nc.plan_actions([], [event], _base())[0]["body"].split())
+
+
+def test_issues_a_body_links_its_run_and_says_how_it_closes() -> None:
+    flat = " ".join(nc.plan_actions([], [_pr_event(_A)], _base())[0]["body"].split())
+    assert f"[nightly run]({_run_url(200)})" in flat
+    assert "every test here passes in the full run on both canary legs" in flat
+    assert "remove, rename, or skip a test, close the issue yourself" in flat
+
+
+def test_issues_a_body_holds_no_test_output() -> None:
+    """An event's other fields never reach the body."""
+    event = {**_pr_event(_A), "failures": [{"test": _A, "output": "CAPTURED-TRACEBACK"}], "reason": "CAPTURED-REASON"}
+    body = nc.plan_actions([], [event], _base())[0]["body"]
+    assert "CAPTURED" not in body
+
+
+def test_issues_every_bisect_reason_reaches_the_body() -> None:
+    reasons = ["budget", "step aborted", "clone changed", "nonlinear", "unverified", "unmapped", "no result"]
+    tests = {f"tests.test_r::t{i}": reason for i, reason in enumerate(reasons)}
+    actions = nc.plan_actions([], [_range_event(tests)], _base())
+    assert _kinds(actions) == ["create"]
+    for test, reason in tests.items():
+        assert f"- `{test}` (reason: `{reason}`)" in actions[0]["body"]
+
+
+@pytest.mark.parametrize(
+    ("reason", "shown"),
+    [
+        ("a reason from next year", "`a reason from next year`"),
+        ("tick ` and <!-- -->", "``tick ` and <!-- -->``"),
+        (17, "`17`"),
+        ("x" * 500, "`" + "x" * 200 + "`"),
+    ],
+    ids=["words", "odd-characters", "not-a-string", "long"],
+)
+def test_issues_an_unknown_range_reason_still_opens_an_issue(reason: Any, shown: str) -> None:
+    actions = nc.plan_actions([], [_range_event({_A: reason})], _base())
+    assert _kinds(actions) == ["create"]
+    assert f"(reason: {shown})" in actions[0]["body"]
+    assert _marker_tests(actions[0]["body"]) == [_A]
+
+
+def test_issues_extra_legs_never_open_an_issue() -> None:
+    record = _night(
+        SHA2, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.PASSED}, None), "3.14": ({_A: tor.FAILED}, None)},
+        roles={"3.14": nc.EXTRA},
+    )
+    assert nc.night_events(record, {"events": []}) == []
+    assert nc.night_events(record, None) == []
+    events = [{"key": "canary-broken", "kind": "canary-broken", "legs": ["3.14"], "tests": [_A]},
+              {"key": f"no-baseline-{SHA2[:12]}", "kind": "no-baseline", "legs": ["3.14"], "tests": [_B]}]
+    assert nc.plan_actions([], events, _facts(record)) == []
+    assert nc.plan_actions([], events, _base()) == []
+
+
+def test_issues_an_extra_leg_neither_blocks_a_close_nor_stands_in_for_a_canary_leg() -> None:
+    issues = _opened(_pr_event(_A))
+    fails_on_extra = _night(
+        SHA2, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.PASSED}, None), "3.14": ({_A: tor.FAILED}, None)},
+        roles={"3.14": nc.EXTRA},
+    )
+    assert _kinds(nc.plan_actions(issues, [], _facts(fails_on_extra))) == ["comment", "close"]
+    passes_on_extra = _night(
+        SHA2, {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.FAILED}, None), "3.14": ({_A: tor.PASSED}, None)},
+        roles={"3.14": nc.EXTRA},
+    )
+    assert nc.plan_actions(issues, [], _facts(passes_on_extra)) == []
+    one_canary = _night(SHA2, _both({_A: tor.PASSED}), roles={"3.13": nc.EXTRA})
+    assert nc.plan_actions(issues, [], _facts(one_canary)) == []
+
+
+def test_issues_a_reattempt_of_the_run_adds_nothing() -> None:
+    first = nc.plan_actions([], [_pr_event(_A)], _base())
+    assert "run_id=200 kind=opened" in first[0]["body"]
+    issues = _land([], first)
+    assert nc.plan_actions(issues, [_pr_event(_A)], _base()) == []
+    assert nc.plan_actions(issues, [_pr_event(_A, _B)], _base()) == []
+    # A later run may change it, and then that run's attempt can't change it again.
+    later = nc.plan_actions(issues, [_pr_event(_A, _B)], _base(run_id=201))
+    assert _kinds(later) == ["edit", "comment"]
+    issues = _land(issues, later)
+    assert nc.plan_actions(issues, [_pr_event(_A, _B, _C)], _base(run_id=201)) == []
+    assert _kinds(nc.plan_actions(issues, [_pr_event(_A, _B, _C)], _base(run_id=202))) == ["edit", "comment"]
+
+
+def test_issues_a_reattempt_that_finds_the_comment_but_no_close_only_closes() -> None:
+    issues = _opened(_pr_event(_A))
+    record = _night(SHA2, _both({_A: tor.PASSED}))
+    actions = nc.plan_actions(issues, [], _facts(record))
+    assert _kinds(actions) == ["comment", "close"]
+    assert _kinds(nc.plan_actions(_land(issues, actions[:1]), [], _facts(record))) == ["close"]
+    other_run = nc.plan_actions(_land(issues, actions[:1]), [], _facts(record, run_id=201))
+    assert _kinds(other_run) == ["comment", "close"]
+
+
+def test_issues_a_green_reattempt_may_close_what_its_red_attempt_changed() -> None:
+    issues = _opened(_pr_event(_A))
+    changed = _land(issues, nc.plan_actions(issues, [_pr_event(_A, _B)], _base(run_id=200)))
+    record = _night(SHA2, _both({_A: tor.PASSED, _B: tor.PASSED}))
+    assert _kinds(nc.plan_actions(changed, [], _facts(record, run_id=200))) == ["comment", "close"]
+
+
+def test_issues_a_recovered_issue_takes_no_new_test_and_its_key_opens_again() -> None:
+    issues = _opened(_pr_event(_A))
+    record = _night(SHA2, _both({_A: tor.PASSED, _B: tor.FAILED}))
+    actions = nc.plan_actions(issues, [_pr_event(_B)], _facts(record))
+    assert _kinds(actions) == ["comment", "close", "create"]
+    assert actions[2]["tests"] == [_B]
+    assert actions[2]["key"] == _PR_KEY
+
+
+def _collection(*tests: str) -> dict[str, Any]:
+    return {"key": f"collection-error-{SHA2[:12]}", "kind": "collection-error", "legs": ["3.13"], "tests": list(tests)}
+
+
+def test_issues_a_collection_error_recovers_when_neither_leg_reports_it_and_pytest_got_past_collecting() -> None:
+    issues = _opened(_collection("::tests.test_x"))
+    fixed = _night(SHA2, _both({"tests.test_x::test_a": tor.PASSED}))
+    assert _kinds(nc.plan_actions(issues, [], _facts(fixed))) == ["comment", "close"]
+    still = _night(SHA2, _both({"::tests.test_x": tor.ERROR}), rcs={"3.12": 2, "3.13": 2})
+    assert nc.plan_actions(issues, [], _facts(still)) == []
+    # Another module stopped pytest, so this night says nothing about this one.
+    stopped = _night(SHA2, _both({"::tests.test_z": tor.ERROR}), rcs={"3.12": 2, "3.13": 2})
+    assert "close" not in _kinds(nc.plan_actions(issues, [], _facts(stopped)))
+
+
+def test_issues_a_collection_error_is_not_closed_on_a_leg_that_did_not_report() -> None:
+    issues = _opened(_collection("::tests.test_x"))
+    record = _night(SHA2, {"3.12": ({_A: tor.PASSED}, None), "3.13": (None, None)})
+    assert nc.plan_actions(issues, [], _facts(record)) == []
+
+
+def test_issues_canary_broken_closes_on_a_night_that_reached_both_legs_with_no_event() -> None:
+    issues = _opened(nc.no_record_event("2026-11-05"))
+    record = _night(SHA2, _both({_A: tor.PASSED}))
+    assert _kinds(nc.plan_actions(issues, [], _facts(record))) == ["comment", "close"]
+    broken = [{"key": "canary-broken", "legs": ["3.13"], "tests": []}]
+    assert nc.plan_actions(issues, broken, _facts(record)) == []
+    assert nc.plan_actions(issues, [], _base()) == []
+    assert nc.plan_actions(issues, [nc.no_record_event("2026-11-06")], _base()) == []
+
+
+def test_issues_canary_broken_needs_its_tests_to_pass_as_well() -> None:
+    issues = _opened({"key": "canary-broken", "legs": ["3.13"], "tests": [_A]})
+    assert _kinds(nc.plan_actions(issues, [], _facts(_night(SHA2, _both({_A: tor.PASSED}))))) == ["comment", "close"]
+    assert nc.plan_actions(issues, [], _facts(_night(SHA2, _both({_A: tor.FAILED, _B: tor.PASSED})))) == []
+
+
+def test_issues_canary_broken_does_not_cover_a_test_that_gets_a_real_event() -> None:
+    issues = _opened({"key": "canary-broken", "legs": ["3.13"], "tests": [_A]})
+    assert [a["key"] for a in nc.plan_actions(issues, [_pr_event(_A)], _base())] == [_PR_KEY]
+
+
+def test_issues_canary_broken_adds_a_new_test_to_its_open_issue() -> None:
+    issues = _opened({"key": "canary-broken", "legs": ["3.13"], "tests": [_A]})
+    actions = nc.plan_actions(issues, [{"key": "canary-broken", "legs": ["3.13"], "tests": [_A, _B]}], _base())
+    assert _kinds(actions) == ["edit", "comment"]
+    assert _marker_tests(actions[0]["body"]) == [_A, _B]
+
+
+def test_issues_an_empty_tests_marker_only_closes_for_canary_broken() -> None:
+    issues = [{"number": 1, "title": "t", "comments": [],
+               "body": '<!-- nightly-canary-event v1 key=pr-7 -->\n<!-- nightly-canary-tests [] -->\n'}]
+    assert nc.plan_actions(issues, [], _facts(_night(SHA2, _both({_A: tor.PASSED})))) == []
+
+
+def test_issues_a_test_in_two_events_goes_to_the_culprit() -> None:
+    drift = {"key": f"drift-{SHA1[:12]}", "kind": "drift", "legs": ["3.12"], "tests": [_A, _B]}
+    actions = nc.plan_actions([], [drift, _pr_event(_A)], _base())
+    assert [(a["key"], a["tests"]) for a in actions] == [(_PR_KEY, [_A]), (drift["key"], [_B])]
+
+
+def test_issues_events_with_one_key_merge_their_tests_and_reasons() -> None:
+    one, two = _range_event({_A: "budget"}), _range_event({_B: "unmapped"})
+    actions = nc.plan_actions([], [one, two], _base())
+    assert [a["tests"] for a in actions] == [[_A, _B]]
+    assert "(reason: `budget`)" in actions[0]["body"] and "(reason: `unmapped`)" in actions[0]["body"]
+
+
+# ---- what no event names
+
+def _night_with_confirmed(*tests: str, sha: str = SHA2) -> dict[str, Any]:
+    return _night(sha, _both(dict.fromkeys(tests, tor.FAILED)))
+
+
+def test_issues_a_confirmed_test_no_event_names_gets_a_range_event() -> None:
+    """The `triage` job died after `regressions`, so its candidates have no event."""
+    triage = {"last_green": {"sha": SHA1}, "events": [_pr_event(_A)]}
+    events = nc.night_events(_night_with_confirmed(_A, _B), triage)
+    assert events[0]["key"] == _PR_KEY
+    assert events[1]["key"] == f"range-{SHA1[:12]}-{SHA2[:12]}"
+    assert events[1]["tests"] == [_B]
+    assert events[1]["reasons"] == {_B: "no result"}
+
+
+def test_issues_every_confirmed_test_named_adds_no_event() -> None:
+    triage = {"last_green": {"sha": SHA1}, "events": [_pr_event(_A)]}
+    assert [e["key"] for e in nc.night_events(_night_with_confirmed(_A), triage)] == [_PR_KEY]
+
+
+@pytest.mark.parametrize("last_green", [None, {"sha": SHA2}], ids=["no-baseline", "same-commit"])
+def test_issues_with_no_range_to_name_the_lost_test_gets_a_no_baseline_event(last_green: Any) -> None:
+    events = nc.night_events(_night_with_confirmed(_A), {"last_green": last_green, "events": []})
+    assert [(e["key"], e["tests"]) for e in events] == [(f"no-baseline-{SHA2[:12]}", [_A])]
+
+
+def test_issues_a_record_with_no_triage_opens_canary_broken_with_its_confirmed_tests() -> None:
+    record = _night(SHA2, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.FAILED}, None)})
+    assert nc.night_events(record, None) == [{"key": "canary-broken", "kind": "canary-broken", "legs": ["3.13"], "tests": [_A]}]
+
+
+def test_issues_a_green_record_with_no_triage_has_no_event() -> None:
+    assert nc.night_events(_night(SHA2, _both({_A: tor.PASSED})), None) == []
+
+
+def test_issues_night_facts_reads_only_canary_legs() -> None:
+    record = _night(
+        SHA2, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.PASSED}, None), "3.14": ({_A: tor.FAILED}, None)},
+        roles={"3.14": nc.EXTRA},
+    )
+    facts = nc.night_facts(record)
+    assert sorted(facts["results"]) == ["3.12", "3.13"]
+    assert facts["ran_full"] is True
+    assert facts["clean"] is True
+    assert facts["sha"] == SHA2
+
+
+# ---- many tests
+
+def _many(count: int, prefix: str = "tests.test_many::test_case") -> list[str]:
+    return [f"{prefix}_{i:05d}[{'p' * 40}]" for i in range(count)]
+
+
+def test_issues_a_mass_failure_opens_one_issue_under_the_limit_and_says_what_it_left_out() -> None:
+    tests = _many(5000)
+    actions = nc.plan_actions([], [_pr_event(*tests)], _base())
+    assert _kinds(actions) == ["create"]
+    body = actions[0]["body"]
+    assert len(body.encode("utf-8")) < nc.BODY_LIMIT < 65536
+    shown = len(re.findall(r"^- `", body, flags=re.M))
+    assert 0 < shown < 5000
+    assert f"This list leaves out {5000 - shown} of 5000 test(s)." in body
+    assert actions[0]["title"].startswith("nightly: 5000 test(s)")
+    parsed = _parsed({"number": 1, "body": body})
+    assert parsed["total"] == 5000
+    assert 0 < len(parsed["tests"]) < 5000
+    assert parsed["tests"] == sorted(tests)[: len(parsed["tests"])]
+    assert "closes it only on a night when no test goes red" in " ".join(body.split())
+
+
+def test_issues_a_list_that_fits_has_no_partial_marker_and_no_left_out_line() -> None:
+    body = nc.plan_actions([], [_pr_event(*_many(60))], _base())[0]["body"]
+    assert "nightly-canary-partial" not in body
+    assert "leaves out" not in body
+    assert "closes it only" not in body
+    assert len(_marker_tests(body)) == 60
+
+
+def test_issues_non_ascii_ids_stay_under_the_limit_in_bytes() -> None:
+    tests = _many(5000, prefix="tests.test_many::test_世界世界")
+    body = nc.plan_actions([], [_pr_event(*tests)], _base())[0]["body"]
+    assert len(body.encode("utf-8")) < nc.BODY_LIMIT
+
+
+def test_issues_a_marker_budget_cut_keeps_a_prefix_a_digest_and_the_true_total() -> None:
+    tests = _many(5000)
+    lines = nc._tests_lines(tests)
+    assert len(lines) < nc._MARKER_BUDGET + 200
+    assert f"total=5000 digest={nc._digest(tests)}" in lines
+    assert nc._digest(tests) == nc._digest(list(reversed(tests)))
+    assert nc._digest(tests) != nc._digest(tests[1:])
+
+
+def test_issues_mass_failure_across_events_opens_one_issue_with_every_reason() -> None:
+    tests = _many(120)
+    events = [
+        _range_event({t: "cap" for t in tests[:100]}),
+        _pr_event(*tests[100:110]),
+        _pr_event(*tests[110:], pr=8),
+    ]
+    actions = nc.plan_actions([], events, _base())
+    assert _kinds(actions) == ["create"]
+    assert actions[0]["key"] == events[0]["key"]
+    assert actions[0]["tests"] == sorted(tests)
+    assert actions[0]["title"].startswith("nightly: 120 test(s) fail on main between")
+    assert "`pr-7` (10)" in actions[0]["body"] and "`pr-8` (10)" in actions[0]["body"]
+    assert "(reason: `cap`)" in actions[0]["body"]
+
+
+def test_issues_the_threshold_is_what_merges_events() -> None:
+    tests = _many(nc.MASS_FAILURE_THRESHOLD + 1)
+    at = [_pr_event(*tests[:25]), _pr_event(*tests[25:50], pr=8)]
+    assert _kinds(nc.plan_actions([], at, _base())) == ["create", "create"]
+    over = [_pr_event(*tests[:25]), _pr_event(*tests[25:], pr=8)]
+    assert _kinds(nc.plan_actions([], over, _base())) == ["create"]
+
+
+def test_issues_a_mass_failure_keeps_canary_broken_apart() -> None:
+    broken = {"key": "canary-broken", "legs": ["3.12"], "tests": []}
+    keys = [a["key"] for a in nc.plan_actions([], [_pr_event(*_many(60)), broken], _base())]
+    assert keys == [_PR_KEY, "canary-broken"]
+
+
+def test_issues_a_partial_issue_absorbs_the_next_mass_night_and_is_silent_when_nothing_changed() -> None:
+    tests = _many(5000)
+    issues = _opened(_pr_event(*tests))
+    event = {"key": f"range-{SHA1[:12]}-{SHA2[:12]}", "reasons": {}, "tests": tests}
+    record = _night(SHA2, _both(dict.fromkeys(tests[:2], tor.FAILED)))
+    assert nc.plan_actions(issues, [event], _facts(record, run_id=201)) == []
+
+
+def test_issues_a_partial_issue_takes_a_changed_mass_night_in_one_edit_and_one_comment() -> None:
+    tests = _many(5000)
+    issues = _opened(_pr_event(*tests))
+    record = _night(SHA2, _both(dict.fromkeys(tests[:2], tor.FAILED)))
+    actions = nc.plan_actions(issues, [_pr_event(*tests[:4000])], _facts(record, run_id=201))
+    assert _kinds(actions) == ["edit", "comment"]
+    assert actions[0]["number"] == issues[0]["number"]
+    assert "total=4000" in actions[0]["body"]
+    assert len(actions[0]["body"].encode("utf-8")) < nc.BODY_LIMIT
+    assert "- and 3980 more" in actions[1]["body"]
+    assert actions[0]["body"].count("nightly-canary-partial") == 1
+
+
+def test_issues_a_partial_issue_that_shrinks_until_it_fits_becomes_ordinary() -> None:
+    tests = _many(5000)
+    issues = _opened(_pr_event(*tests))
+    record = _night(SHA2, _both({tests[0]: tor.FAILED, _A: tor.PASSED}))
+    actions = nc.plan_actions(issues, [_pr_event(tests[0])], _facts(record, run_id=201))
+    assert _kinds(actions) == ["edit", "comment"]
+    assert "nightly-canary-partial" not in actions[0]["body"]
+    assert _marker_tests(actions[0]["body"]) == [tests[0]]
+    assert _parsed(_land(issues, actions)[0])["total"] is None
+
+
+def test_issues_a_partial_issue_changes_only_on_a_night_that_got_past_collecting() -> None:
+    tests = _many(5000)
+    issues = _opened(_pr_event(*tests))
+    stopped = _night(SHA2, _both({tests[0]: tor.FAILED}), rcs={"3.12": 2, "3.13": 2})
+    assert nc.plan_actions(issues, [_pr_event(tests[0])], _facts(stopped, run_id=201)) == []
+    incomplete = _night(SHA2, {"3.12": ({tests[0]: tor.FAILED}, None), "3.13": (None, None)})
+    assert nc.plan_actions(issues, [_pr_event(tests[0])], _facts(incomplete, run_id=201)) == []
+
+
+def test_issues_a_partial_issue_ignores_a_reattempt_of_the_run_that_changed_it() -> None:
+    tests = _many(5000)
+    issues = _opened(_pr_event(*tests))
+    record = _night(SHA2, _both({tests[0]: tor.FAILED}))
+    changed = _land(issues, nc.plan_actions(issues, [_pr_event(*tests[:4000])], _facts(record, run_id=201)))
+    assert nc.plan_actions(changed, [_pr_event(*tests[:3000])], _facts(record, run_id=201)) == []
+
+
+def test_issues_a_partial_issue_closes_only_on_a_night_with_no_red_test() -> None:
+    issues = _opened(_pr_event(*_many(5000)))
+    clean = _night(SHA2, _both({_A: tor.PASSED}))
+    assert _kinds(nc.plan_actions(issues, [], _facts(clean, run_id=201))) == ["comment", "close"]
+    flaky = _night(SHA2, {"3.12": ({_A: tor.FAILED}, {_A: tor.PASSED}), "3.13": ({_A: tor.PASSED}, None)})
+    assert nc.plan_actions(issues, [], _facts(flaky, run_id=201)) == []
+    red = _night(SHA2, _both({_C: tor.FAILED}))
+    assert nc.plan_actions(issues, [], _facts(red, run_id=201)) == []
+    nothing_ran = _night(SHA2, _both({_A: tor.SKIPPED}))
+    assert nothing_ran["nightly"]["rc"] == {"3.12": 0, "3.13": 0}
+    assert nc.plan_actions(issues, [], _facts(nothing_ran, run_id=201)) == []
+
+
+def test_issues_a_partial_issue_lets_collection_errors_and_canary_broken_open_their_own() -> None:
+    issues = _opened(_pr_event(*_many(5000)))
+    events = [_collection("::tests.test_x"), {"key": "canary-broken", "legs": ["3.13"], "tests": []}]
+    keys = [a["key"] for a in nc.plan_actions(issues, events, _base(run_id=201)) if a["action"] == "create"]
+    assert keys == [events[0]["key"], "canary-broken"]
+
+
+def test_issues_an_open_canary_broken_issue_cut_by_the_budget_opens_no_second_one() -> None:
+    tests = _many(5000)
+    issues = _opened({"key": "canary-broken", "legs": ["3.13"], "tests": tests})
+    assert _parsed(issues[0])["total"] == 5000
+    assert nc.plan_actions(issues, [{"key": "canary-broken", "legs": ["3.13"], "tests": tests}], _base(run_id=201)) == []
+    # It holds nothing for a real event, which opens its own issue.
+    assert _kinds(nc.plan_actions(issues, [_pr_event(_A)], _base(run_id=201))) == ["create"]
+
+
+def test_issues_growing_past_the_marker_budget_marks_the_issue_partial() -> None:
+    tests = _many(5000)
+    issues = _opened(_pr_event(*tests[:10]))
+    actions = nc.plan_actions(issues, [_pr_event(*tests)], _base(run_id=201))
+    assert _kinds(actions) == ["edit", "comment"]
+    assert "total=5000" in actions[0]["body"]
+
+
+def test_issues_an_id_longer_than_the_marker_budget_cannot_overrun_it() -> None:
+    long_id = "tests.test_a::" + "x" * (nc._MARKER_BUDGET + 10)
+    assert nc.marker_ids([long_id]) == []
+    body = nc.plan_actions([], [_pr_event(long_id)], _base())[0]["body"]
+    assert len(body) < nc.BODY_LIMIT
+    assert "leaves out 1 of 1" in body
+
+
+def test_issues_a_comment_lists_at_most_its_cap() -> None:
+    issues = _opened(_pr_event(_A))
+    comment = nc.plan_actions(issues, [_pr_event(_A, *_many(30))], _base())[1]["body"]
+    assert comment.count("\n- `") == nc._COMMENT_LIST
+    assert "- and 10 more" in comment
+
+
+def test_issues_validate_events_refuses_what_plan_actions_cannot_read() -> None:
+    good = {"key": "pr-7", "tests": [_A], "legs": ["3.12"], "reasons": {_A: 1}}
+    nc.validate_events([good], "t")
+    for bad in (
+        {**good, "key": "pr 7 -->"},
+        {**good, "tests": "abc"},
+        {k: v for k, v in good.items() if k != "tests"},
+        {**good, "legs": [1]},
+        {**good, "reasons": ["budget"]},
+    ):
+        with pytest.raises(ValueError):
+            nc.validate_events([bad], "t")
+
+
+# ---- the fake `gh`
+
+# The fake `gh` holds the issues in a JSON file and logs each call's arguments and
+# standard input. The file's `fail` list fails a command a number of times, after
+# applying it when `after` is set, as when a request times out after GitHub took it.
+_FAKE_GH = r'''
+import json, os, sys
+
+path = os.environ["FAKE_GH_STATE"]
+with open(path, encoding="utf-8") as fh:
+    state = json.load(fh)
+argv = sys.argv[1:]
+body = sys.stdin.read() if "--body-file" in argv else None
+state["calls"].append({"argv": argv, "body": body})
+command = " ".join(argv[:2])
+
+
+def flag(name):
+    return argv[argv.index(name) + 1] if name in argv else None
+
+
+def save():
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(state, fh)
+
+
+failing = next((f for f in state["fail"] if f["command"] == command and f["times"] > 0), None)
+if failing is not None and not failing.get("after"):
+    failing["times"] -= 1
+    save()
+    print("HTTP 502", file=sys.stderr)
+    sys.exit(1)
+out = ""
+if command == "issue list":
+    out = json.dumps([i for i in state["issues"] if i["state"] == "open"])
+elif command == "label list":
+    out = json.dumps([{"name": name} for name in state["labels"]])
+elif command == "label create":
+    state["labels"].append(argv[2])
+elif command == "issue create":
+    number = max([i["number"] for i in state["issues"]], default=0) + 1
+    state["issues"].append({
+        "number": number, "title": flag("--title"), "body": body, "comments": [], "state": "open", "reason": None,
+    })
+    out = f"https://github.com/o/r/issues/{number}"
+else:
+    issue = next(i for i in state["issues"] if i["number"] == int(argv[2]))
+    if command == "issue edit":
+        issue["body"] = body
+        issue["title"] = flag("--title") or issue["title"]
+    elif command == "issue comment":
+        issue["comments"].append({"body": body})
+    elif command == "issue close":
+        issue["state"] = "closed"
+        issue["reason"] = flag("--reason")
+    else:
+        print(f"unknown command {argv}", file=sys.stderr)
+        sys.exit(64)
+if failing is not None:
+    failing["times"] -= 1
+    save()
+    sys.exit(1)
+save()
+print(out)
+'''
+
+
+class _FakeGh:
+    def __init__(self, directory: Path) -> None:
+        self.state_file = directory / "gh_state.json"
+        self.write({"calls": [], "issues": [], "labels": [nc.LABEL], "fail": []})
+
+    def read(self) -> dict[str, Any]:
+        return json.loads(self.state_file.read_text(encoding="utf-8"))
+
+    def write(self, state: dict[str, Any]) -> None:
+        self.state_file.write_text(json.dumps(state), encoding="utf-8")
+
+    def set(self, **fields: Any) -> None:
+        self.write({**self.read(), **fields})
+
+    def calls(self, command: str | None = None) -> list[dict[str, Any]]:
+        calls: list[dict[str, Any]] = self.read()["calls"]
+        return [c for c in calls if command is None or " ".join(c["argv"][:2]) == command]
+
+    def writes(self) -> list[str]:
+        """Each call that changes something, as its first two words."""
+        names = [" ".join(c["argv"][:2]) for c in self.calls()]
+        return [name for name in names if name not in ("issue list", "label list")]
+
+    def issues(self, state: str = "open") -> list[dict[str, Any]]:
+        return [i for i in self.read()["issues"] if i["state"] == state]
+
+
+@pytest.fixture
+def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _FakeGh:
+    """A fake `gh` first on PATH, HOME in the sandbox, and no wait between tries."""
+    bin_dir = tmp_path / "fake_bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(f"#!{sys.executable}\n{_FAKE_GH}", encoding="utf-8")
+    gh.chmod(0o755)
+    fake = _FakeGh(tmp_path)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("FAKE_GH_STATE", str(fake.state_file))
+    monkeypatch.setattr(nc, "_GH_RETRY_SECONDS", 0)
+    return fake
+
+
+def _night_dir(tmp_path: Path, name: str, record: dict[str, Any] | None, triage: dict[str, Any] | None) -> Path:
+    directory = tmp_path / name
+    directory.mkdir()
+    if record is not None:
+        (directory / "record.json").write_text(json.dumps(record), encoding="utf-8")
+    if triage is not None:
+        (directory / "triage.json").write_text(json.dumps(triage), encoding="utf-8")
+    return directory
+
+
+def _issues_cmd(directory: Path, run_id: int = 200, *more: str) -> int:
+    return nc.main(["issues", "--events", str(directory), "--repo", _REPO_NAME, "--run-url", _run_url(run_id), *more])
+
+
+def _red_night(tmp_path: Path, *events: dict[str, Any]) -> Path:
+    record = _night(SHA2, _both({_A: tor.FAILED, _B: tor.PASSED}))
+    return _night_dir(tmp_path, "night", record, {"format": 1, "events": list(events), "last_green": {"sha": SHA1}})
+
+
+def test_issues_cmd_creates_through_gh_with_the_label_and_the_body_on_stdin(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 0
+    create = fake_gh.calls("issue create")
+    assert len(create) == 1
+    argv = create[0]["argv"]
+    assert argv[argv.index("--repo") + 1] == _REPO_NAME
+    assert argv[argv.index("--label") + 1] == nc.LABEL
+    assert argv[argv.index("--body-file") + 1] == "-"
+    assert _marker_tests(create[0]["body"]) == [_A]
+    assert fake_gh.issues()[0]["title"] == f"nightly: 1 test(s) fail on main since #7 ({SHA2[:7]})"
+
+
+def test_issues_cmd_lists_only_open_labeled_issues_with_their_comments(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    assert _issues_cmd(_red_night(tmp_path)) == 0
+    argv = fake_gh.calls("issue list")[0]["argv"]
+    assert argv[argv.index("--repo") + 1] == _REPO_NAME
+    assert argv[argv.index("--label") + 1] == nc.LABEL
+    assert argv[argv.index("--state") + 1] == "open"
+    assert argv[argv.index("--json") + 1] == "number,title,body,comments"
+
+
+def test_issues_cmd_creates_the_label_only_when_missing_and_needed(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    night = _red_night(tmp_path, _pr_event(_A))
+    fake_gh.set(labels=["bug", f"{nc.LABEL}-old"])
+    assert _issues_cmd(night) == 0
+    assert [c["argv"][2] for c in fake_gh.calls("label create")] == [nc.LABEL]
+    assert _issues_cmd(night, 201) == 0
+    assert fake_gh.writes() == ["label create", "issue create"]
+
+
+def test_issues_cmd_touches_no_label_when_nothing_opens(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    night = _night_dir(tmp_path, "night", _night(SHA2, _both({_A: tor.PASSED})), {"events": []})
+    fake_gh.set(labels=[])
+    assert _issues_cmd(night) == 0
+    assert fake_gh.calls("label list") == [] and fake_gh.calls("label create") == []
+
+
+def test_issues_cmd_comments_edits_and_closes_with_the_reason(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 0
+    night2 = _night_dir(tmp_path, "n2", _night(SHA2, _both({_A: tor.FAILED, _B: tor.FAILED})), {
+        "events": [_pr_event(_A, _B)], "last_green": {"sha": SHA1},
+    })
+    assert _issues_cmd(night2, 201) == 0
+    issue = fake_gh.issues()[0]
+    assert issue["title"] == f"nightly: 2 test(s) fail on main since #7 ({SHA2[:7]})"
+    assert _marker_tests(issue["body"]) == [_A, _B]
+    assert len(issue["comments"]) == 1
+    edit = fake_gh.calls("issue edit")[0]["argv"]
+    assert edit[2] == str(issue["number"])
+    assert edit[edit.index("--repo") + 1] == _REPO_NAME
+    night3 = _night_dir(tmp_path, "n3", _night(SHA2, _both({_A: tor.PASSED, _B: tor.PASSED})), {"events": []})
+    assert _issues_cmd(night3, 202) == 0
+    closed = fake_gh.issues("closed")
+    assert len(closed) == 1 and closed[0]["reason"] == "completed"
+    assert closed[0]["comments"][-1]["body"].startswith(f"recovered at {SHA2[:7]} ({_run_url(202)})")
+    close = fake_gh.calls("issue close")[0]["argv"]
+    assert close[close.index("--repo") + 1] == _REPO_NAME
+    comment = fake_gh.calls("issue comment")[0]["argv"]
+    assert comment[comment.index("--repo") + 1] == _REPO_NAME
+
+
+def test_issues_cmd_edit_without_a_title_change_passes_no_title(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 0
+    state = fake_gh.read()
+    state["issues"][0]["title"] = "renamed by a person"
+    fake_gh.write(state)
+    night2 = _night_dir(tmp_path, "n2", _night(SHA2, _both({_A: tor.FAILED, _B: tor.FAILED})), {
+        "events": [_pr_event(_A, _B)], "last_green": {"sha": SHA1},
+    })
+    assert _issues_cmd(night2, 201) == 0
+    assert "--title" not in fake_gh.calls("issue edit")[0]["argv"]
+    assert fake_gh.issues()[0]["title"] == "renamed by a person"
+
+
+def test_issues_dry_run_makes_no_gh_call_and_prints_the_plan(
+    tmp_path: Path, fake_gh: _FakeGh, capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A)), 200, "--dry-run") == 0
+    assert fake_gh.calls() == []
+    out = capsys.readouterr().out
+    assert "no gh call" in out
+    assert f"would create pr-7: nightly: 1 test(s) fail on main since #7 ({SHA2[:7]})" in out
+
+
+def test_issues_dry_run_needs_no_gh_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A)), 200, "--dry-run") == 0
+
+
+def test_issues_describe_names_each_action_kind() -> None:
+    assert nc._describe({"action": "close", "number": 3}) == "close #3"
+    assert nc._describe({"action": "edit", "number": 3, "body": "x"}) == "edit #3"
+    assert nc._describe({"action": "comment", "number": 3, "body": "first\nsecond"}) == "comment on #3: first"
+
+
+@pytest.mark.parametrize("command", ["issue list", "issue create", "label list"], ids=["read", "create", "label"])
+def test_issues_api_failure_retries_three_times_then_exits_1(tmp_path: Path, fake_gh: _FakeGh, command: str) -> None:
+    fake_gh.set(fail=[{"command": command, "times": 99}])
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 1
+    assert len(fake_gh.calls(command)) == 4
+
+
+def test_issues_gh_missing_from_path_exits_1(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(nc, "_GH_RETRY_SECONDS", 0)
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 1
+
+
+def test_issues_a_gh_that_hangs_is_a_failed_try(
+    tmp_path: Path, fake_gh: _FakeGh, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def hangs(*_args: Any, **kwargs: Any) -> None:
+        assert kwargs["timeout"] == nc._GH_TIMEOUT_SECONDS
+        raise subprocess.TimeoutExpired("gh", kwargs["timeout"])
+
+    monkeypatch.setattr(nc.subprocess, "run", hangs)
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 1
+
+
+def test_issues_a_failure_that_clears_exits_0_and_waits_longer_each_try(
+    tmp_path: Path, fake_gh: _FakeGh, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waits: list[float] = []
+    # Not `time.sleep` itself, which `subprocess` calls too.
+    monkeypatch.setattr(nc, "time", types.SimpleNamespace(sleep=waits.append))
+    monkeypatch.setattr(nc, "_GH_RETRY_SECONDS", 5)
+    fake_gh.set(fail=[{"command": "issue list", "times": 2}])
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 0
+    assert waits == [5, 10]
+    assert len(fake_gh.issues()) == 1
+
+
+@pytest.mark.parametrize(
+    "printed", ["not json", '{"a": 1}', "[1]", '[{"title": "no number"}]'],
+    ids=["text", "object", "list-of-numbers", "no-number"],
+)
+def test_issues_a_list_of_the_wrong_shape_exits_1_and_writes_nothing(
+    tmp_path: Path, printed: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, printed, "")
+
+    monkeypatch.setattr(nc.subprocess, "run", run)
+    monkeypatch.setattr(nc, "_GH_RETRY_SECONDS", 0)
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 1
+    assert {tuple(c[1:3]) for c in calls} == {("issue", "list")}
+
+
+def test_issues_a_create_that_landed_before_it_failed_opens_no_duplicate(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    fake_gh.set(fail=[{"command": "issue create", "times": 1, "after": True}])
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 0
+    assert len(fake_gh.issues()) == 1
+    assert len(fake_gh.calls("issue create")) == 1
+
+
+def test_issues_a_close_that_failed_is_retried_without_a_second_comment(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 0
+    fake_gh.set(fail=[{"command": "issue close", "times": 1}])
+    night = _night_dir(tmp_path, "n2", _night(SHA2, _both({_A: tor.PASSED})), {"events": []})
+    assert _issues_cmd(night, 201) == 0
+    closed = fake_gh.issues("closed")
+    assert len(closed) == 1
+    assert len(closed[0]["comments"]) == 1
+
+
+def test_issues_a_list_at_its_limit_exits_1_and_opens_nothing(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    rows = [{"number": n, "title": "t", "body": "", "comments": [], "state": "open"} for n in range(1, nc._LIST_LIMIT + 1)]
+    fake_gh.set(issues=rows)
+    night = _red_night(tmp_path, _pr_event(_A))
+    assert _issues_cmd(night) == 1
+    assert fake_gh.writes() == []
+    argv = fake_gh.calls("issue list")[0]["argv"]
+    assert argv[argv.index("--limit") + 1] == str(nc._LIST_LIMIT)
+    fake_gh.set(issues=rows[:-1])
+    assert _issues_cmd(night) == 0
+    assert fake_gh.writes() == ["issue create"]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--repo", "no-slash", "--run-url", _run_url(1)],
+        ["--repo", _REPO_NAME, "--run-url", "http://example.invalid/not-a-run"],
+        ["--repo", _REPO_NAME, "--run-url", _run_url(1) + " extra"],
+    ],
+    ids=["repo", "url", "url-with-space"],
+)
+def test_issues_bad_flags_exit_2_with_no_gh_call(tmp_path: Path, fake_gh: _FakeGh, args: list[str]) -> None:
+    assert nc.main(["issues", "--events", str(tmp_path), *args]) == 2
+    assert fake_gh.calls() == []
+
+
+def test_issues_missing_flag_is_a_usage_error() -> None:
+    with pytest.raises(SystemExit) as exc:
+        nc.main(["issues", "--repo", _REPO_NAME, "--run-url", _run_url(1)])
+    assert exc.value.code == 2
+
+
+def test_issues_events_that_is_no_folder_exits_2_with_no_gh_call(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    assert _issues_cmd(tmp_path / "missing") == 2
+    assert fake_gh.calls() == []
+
+
+def test_issues_a_run_url_with_an_attempt_still_names_the_run(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    night = _red_night(tmp_path, _pr_event(_A))
+    url = _run_url(555) + "/attempts/2"
+    assert nc.main(["issues", "--events", str(night), "--repo", _REPO_NAME, "--run-url", url]) == 0
+    assert "run_id=555 kind=opened" in fake_gh.issues()[0]["body"]
+
+
+def test_issues_a_folder_with_no_record_opens_canary_broken_and_exits_0(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    empty = _night_dir(tmp_path, "night", None, None)
+    assert _issues_cmd(empty) == 0
+    issue = fake_gh.issues()[0]
+    assert re.fullmatch(r"nightly: the canary produced no record \(\d{4}-\d{2}-\d{2}\)", issue["title"])
+    assert _issues_cmd(empty, 201) == 0
+    assert fake_gh.writes() == ["issue create"]
+
+
+def test_issues_a_triage_with_no_record_is_still_a_night_with_no_record(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    assert _issues_cmd(_night_dir(tmp_path, "night", None, {"events": [_pr_event(_A)]})) == 0
+    assert fake_gh.issues()[0]["title"].startswith("nightly: the canary produced no record")
+
+
+@pytest.mark.parametrize(
+    ("record", "triage"),
+    [
+        ("{not json", None),
+        ('{"sha": "abc"}', None),
+        (None, "{not json"),
+        (None, '{"events": "x"}'),
+        (None, '{"events": [{"key": "pr-7"}]}'),
+        (None, '{"events": [{"key": "pr 7 -->", "tests": []}]}'),
+    ],
+    ids=["record-text", "record-shape", "triage-text", "triage-shape", "event-no-tests", "event-bad-key"],
+)
+def test_issues_an_unreadable_night_opens_canary_broken_and_exits_2(
+    tmp_path: Path, fake_gh: _FakeGh, record: str | None, triage: str | None,
+) -> None:
+    good = _night(SHA2, _both({_A: tor.PASSED}))
+    directory = _night_dir(tmp_path, "night", good if record is None else None, None)
+    if record is not None:
+        (directory / "record.json").write_text(record, encoding="utf-8")
+    if triage is not None:
+        (directory / "triage.json").write_text(triage, encoding="utf-8")
+    assert _issues_cmd(directory) == 2
+    assert fake_gh.issues()[0]["title"].startswith("nightly: the canary produced no record")
+
+
+def test_issues_an_unreadable_night_on_a_dry_run_exits_2_with_no_gh_call(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    directory = _night_dir(tmp_path, "night", None, None)
+    (directory / "record.json").write_text("{not json", encoding="utf-8")
+    assert _issues_cmd(directory, 200, "--dry-run") == 2
+    assert fake_gh.calls() == []
+
+
+def test_issues_a_record_with_no_triage_reaches_gh_as_canary_broken(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    record = _night(SHA2, _both({_A: tor.FAILED}))
+    assert _issues_cmd(_night_dir(tmp_path, "night", record, None)) == 0
+    title = fake_gh.issues()[0]["title"]
+    assert title == f"nightly: the canary produced no usable result on 3.12, 3.13 ({SHA2[:7]})"
+    assert _marker_tests(fake_gh.issues()[0]["body"]) == [_A]
+
+
+def test_issues_a_many_tests_night_reaches_gh_as_one_issue_and_stays_quiet_the_next(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    tests = _many(3000)
+    record = _night(SHA2, _both(dict.fromkeys(tests, tor.FAILED)))
+    triage = {"events": [{"key": f"range-{_GOOD[:12]}-{SHA2[:12]}", "reasons": {}, "tests": tests}], "last_green": {"sha": _GOOD}}
+    assert _issues_cmd(_night_dir(tmp_path, "n1", record, triage)) == 0
+    assert fake_gh.writes() == ["issue create"]
+    assert len(fake_gh.issues()[0]["body"].encode("utf-8")) < nc.BODY_LIMIT
+    assert _issues_cmd(_night_dir(tmp_path, "n2", record, triage), 201) == 0
+    assert fake_gh.writes() == ["issue create"]
+
+
+# ---- every night in the fixture's shapes, then three nights
+
+def _bisect_result_events() -> list[dict[str, Any]]:
+    """What `nightly_bisect.py run` writes for the fixture's triage, in the shapes
+    tests/test_nightly_bisect_1786.py pins."""
+    shas = [f"{n}" * 40 for n in range(6)]
+    return [
+        nb.event_for_culprit(shas[2], 32, ["tests.test_x::test_a"], shas[1]),
+        nb.event_for_culprit(shas[3], None, ["::tests.sub", "::tests.test_y"], shas[2]),
+        nb.event_for_range(shas[0], shas[5], ["tests.test_x::test_b"], nb.REASON_BUDGET),
+        nb.event_for_range(shas[0], shas[5], ["tests.test_gone::test_a"], "no result"),
+    ]
+
+
+def test_issues_the_fixtures_record_and_triage_read_without_a_bisect_as_a_range_and_a_collection_error(
+    tmp_path: Path, fake_gh: _FakeGh,
+) -> None:
+    case = json.loads(_TRIAGE_FIXTURE.read_text(encoding="utf-8"))
+    assert _issues_cmd(_night_dir(tmp_path, "night", case["current"], case["triage"]), 101) == 0
+    by_key = {_parsed(i)["key"]: i for i in fake_gh.issues()}
+    sha = case["current"]["sha"]
+    good = case["triage"]["last_green"]["sha"]
+    assert set(by_key) == {f"collection-error-{sha[:12]}", f"range-{good[:12]}-{sha[:12]}"}
+    assert _marker_tests(by_key[f"collection-error-{sha[:12]}"]["body"]) == ["::tests.sub", "::tests.test_y"]
+    held = _marker_tests(by_key[f"range-{good[:12]}-{sha[:12]}"]["body"])
+    assert held == sorted(case["current"]["nightly"]["confirmed"]["3.12"])
+    assert "(reason: `no result`)" in by_key[f"range-{good[:12]}-{sha[:12]}"]["body"]
+
+
+def test_issues_the_fixtures_record_with_the_bisects_events_opens_one_issue_per_key(
+    tmp_path: Path, fake_gh: _FakeGh, capsys: pytest.CaptureFixture[str],
+) -> None:
+    case = json.loads(_TRIAGE_FIXTURE.read_text(encoding="utf-8"))
+    triage = {**case["triage"], "events": [*case["triage"]["events"], *_bisect_result_events()]}
+    night = _night_dir(tmp_path, "night", case["current"], triage)
+    assert _issues_cmd(night, 101, "--dry-run") == 0
+    planned = capsys.readouterr().out
+    assert fake_gh.calls() == []
+    assert _issues_cmd(night, 101) == 0
+    keys = sorted(_parsed(i)["key"] for i in fake_gh.issues())
+    assert keys == sorted(["pr-32", f"commit-{'3' * 12}", f"range-{'0' * 12}-{'5' * 12}"])
+    for issue in fake_gh.issues():
+        assert issue["title"] in planned
+    range_issue = next(i for i in fake_gh.issues() if "culprit not found" in i["title"])
+    assert "(reason: `budget`)" in range_issue["body"] and "(reason: `no result`)" in range_issue["body"]
+
+
+def _pipeline_night(
+    tmp_path: Path, repo: Path, branch: Path, name: str, sha: str, run_id: int,
+    outcomes: dict[str, str], rerun: dict[str, str] | None, bisect: list[dict[str, Any]],
+) -> Path:
+    """One night through the real `record`, `regressions` and `publish`, with the
+    bisect's events added the way the workflow's merge step adds them."""
+    bundles = tmp_path / f"{name}-bundles"
+    for leg in nc.DEFAULT_CANARY_LEGS:
+        _bundle(bundles / f"nightly-{leg}-{sha}-a1", outcomes, rerun=rerun)
+    night = tmp_path / name
+    assert nc.main([
+        "record", "--leg", f"3.12={bundles}:canary", "--leg", f"3.13={bundles}:canary", "--sha", sha,
+        "--run-id", str(run_id), "--run-attempt", "1", "--event", "schedule", "--created-at", CREATED,
+        "--out", str(night / "record.json"),
+    ]) == 0
+    assert nc.main([
+        "regressions", "--current", str(night / "record.json"), "--last-green-dir", str(branch),
+        "--repo-root", str(repo), "--out", str(night / "triage.json"),
+    ]) == 0
+    triage = json.loads((night / "triage.json").read_text(encoding="utf-8"))
+    for event in bisect:
+        nb.add_event(triage["events"], event)
+    (night / "triage.json").write_text(json.dumps(triage), encoding="utf-8")
+    assert nc.main([
+        "publish", "--record", str(night / "record.json"), "--triage", str(night / "triage.json"),
+        "--branch-dir", str(branch), "--main-repo", str(repo), "--main-ref", "main",
+    ]) == 0
+    return night
+
+
+def test_issues_three_nights_new_same_recovered(
+    tmp_path: Path, fake_gh: _FakeGh, capsys: pytest.CaptureFixture[str], main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, shas, _off_main = main_repo
+    branch = tmp_path / "branch"
+    branch.mkdir()
+    passing = {_A: tor.PASSED, _B: tor.PASSED}
+    red = {_A: tor.FAILED, _B: tor.PASSED}
+
+    night0 = _pipeline_night(tmp_path, repo, branch, "night0", shas[0], 100, passing, None, [])
+    assert _issues_cmd(night0, 100) == 0
+    assert fake_gh.writes() == []
+
+    event = nb.event_for_culprit(shas[1], 7, [_A], shas[0])
+    night1 = _pipeline_night(tmp_path, repo, branch, "night1", shas[1], 101, red, {_A: tor.FAILED}, [event])
+    capsys.readouterr()
+    assert _issues_cmd(night1, 101, "--dry-run") == 0
+    assert f"would create pr-7: nightly: 1 test(s) fail on main since #7 ({shas[1][:7]})" in capsys.readouterr().out
+    assert fake_gh.writes() == []
+    assert _issues_cmd(night1, 101) == 0
+    assert fake_gh.writes() == ["issue create"]
+    opened = fake_gh.issues()[0]
+    assert "The bisect points at #7" in opened["body"]
+    assert "run_id=101 kind=opened" in opened["body"]
+
+    night2 = _pipeline_night(tmp_path, repo, branch, "night2", shas[1], 102, red, {_A: tor.FAILED}, [event])
+    assert _issues_cmd(night2, 102) == 0
+    assert _issues_cmd(night2, 102) == 0
+    assert fake_gh.writes() == ["issue create"]
+    assert fake_gh.issues()[0]["comments"] == []
+
+    night3 = _pipeline_night(tmp_path, repo, branch, "night3", shas[2], 103, passing, None, [])
+    capsys.readouterr()
+    assert _issues_cmd(night3, 103, "--dry-run") == 0
+    assert "would comment" not in capsys.readouterr().out
+    assert _issues_cmd(night3, 103) == 0
+    assert fake_gh.writes() == ["issue create", "issue comment", "issue close"]
+    closed = fake_gh.issues("closed")[0]
+    assert closed["reason"] == "completed"
+    assert closed["comments"][0]["body"].startswith(f"recovered at {shas[2][:7]} ({_run_url(103)})")
+    assert _issues_cmd(night3, 103) == 0
+    assert fake_gh.writes() == ["issue create", "issue comment", "issue close"]
+    assert json.loads((branch / "last-green.json").read_text(encoding="utf-8"))["canary"]["sha"] == shas[2]

@@ -7,8 +7,9 @@ open an issue. Each leg reruns its failures once in the same job, so a
 failure that passes on the rerun is flaky and one that fails again is
 confirmed. This script turns each leg's bundle into one record, finds the
 confirmed failures that are new since the last green night, and writes the
-night to the `test-results` branch. It does not run pytest, git bisect or
-`gh`; the workflow and `scripts/nightly_bisect.py` do.
+night to the `test-results` branch. Then it opens, updates and closes the
+night's GitHub issues with `gh`. It does not run pytest or git bisect; the
+workflow and `scripts/nightly_bisect.py` do.
 
 Usage:
     nightly_canary.py env --out ENV.json [--dry-run]
@@ -23,11 +24,13 @@ Usage:
         [--canary-legs 3.12,3.13] [--repo-root .] --out TRIAGE.json [--dry-run]
     nightly_canary.py publish --record RECORD.json --triage TRIAGE.json
         --branch-dir DIR [--main-repo .] [--main-ref REF] [--dry-run]
+    nightly_canary.py issues --events DIR --repo OWNER/NAME --run-url URL [--dry-run]
 
 `--dry-run` writes no file and changes no git state. Each subcommand then
 prints what it would write, with the exit status a real run gives.
 `publish` still runs `git rev-parse` and `git merge-base --is-ancestor`,
-which read only.
+which read only. `issues` calls no `gh` at all, so it plans as if no issue
+were open and can only show issues it would open.
 
 A leg's bundle. The suite job of a leg writes `env.json` (from `env`, run
 under the leg's interpreter with `uv run`), `junit.xml` from the full run,
@@ -204,6 +207,60 @@ as a retired Python, is not checked and gets one `::notice::`; no night would
 ever move it, so exit 1 would never clear. Extra legs are report-only: a problem
 with an extra leg's entry prints as a `::notice::` and never sets the exit status.
 
+`issues` turns one night into GitHub issues labeled `nightly-regression`, and
+creates the label when it is missing. `--events` is a folder holding the night's
+`record.json` and `triage.json`, which is what the `nightly-triage-<sha>` artifact
+holds. A folder with no `record.json` is a night with no record: it opens the
+`canary-broken` issue and exits 0. A record or triage file that cannot be read
+does the same and exits 2, and a `--events` that is not a folder exits 2 with no
+API call. `plan_actions` decides everything, and each try reads the open issues
+again and plans again, so a try that died halfway does only what is left. Three
+failed retries exit 1.
+
+Each issue body holds one `<!-- nightly-canary-event v1 key=<key> -->` line and
+one `<!-- nightly-canary-tests ["id", ...] -->` line, each at the start of its
+line, and a person can edit anything around them. An issue with no event marker
+is not the canary's. The ids in the marker are JSON with `<`, `>` and `--`
+written as `\\uXXXX`, so no id can end the comment. An edit replaces only the
+marker lines and the list between the `nightly-canary-list` lines.
+
+A confirmed test in an open issue gets no new issue, unless that issue is the
+`canary-broken` one, which says the canary failed and not why a test did. Other
+tests go to the open issue with their event's key, or to one new issue per key.
+A test in two events goes to the first in the order of `_KIND_ORDER`. A night
+with more than `MASS_FAILURE_THRESHOLD` tests for new issues opens one issue,
+under the key with the most tests. Extra legs open and close nothing: an event
+naming only extra legs is ignored, and recovery reads only canary legs. A
+confirmed test no event names, as after a triage step died, gets a range event
+with the reason `no result`, or the `canary-broken` issue when there is no
+triage at all. A range event's reasons are shown as they are, so a reason this
+script has never seen still opens an issue.
+
+A test has recovered when its outcome is `passed` in the full run on every canary
+leg of a night whose record reached those legs, even on a red night. A flaky pass
+is not a pass, and neither is a test gone from the report. So a removed or
+renamed test holds its issue open until a person closes it, and the body says so.
+A collection error's id never passes: it has recovered when neither leg reports it
+and pytest exited 0 or 1 on both. When some of an issue's tests recover, the body
+drops them with one comment, and when all do, the canary comments `recovered at
+<sha7> (<run url>)` and closes the issue with `--reason completed`. The
+`canary-broken` issue also needs a night with no such event. Each comment carries
+a `<!-- nightly-canary-run run_id=<id> kind=<kind> -->` line, and the body one with
+the kind `opened`, so a re-attempt of a run neither comments nor edits again.
+A comment that landed before a failed close leaves only the close to do.
+
+A body stays under `BODY_LIMIT`, since GitHub refuses one over 65536 characters.
+The visible list says how many tests it left out. The marker can't always hold
+every id either: a night can fail thousands of tests. A marker that is cut holds
+the first sorted ids and comes with a `nightly-canary-partial total=<n>
+digest=<hex>` line, and the closing and dedupe rules work from that part: the
+issue closes only on a night where both canary legs are green with pytest exit 0,
+so no test at all went red. While it is open it holds every test no complete
+issue holds, except collection errors and `canary-broken` tests, so a long mass
+failure stays one issue. A night whose tests differ from the digest replaces its
+list with one comment, if pytest exited 0 or 1 on both legs, and a list that then
+fits makes it an ordinary issue again.
+
 What this does not catch, by design. A passing test that later skips or is
 deleted produces no event; the outcome ratchet in `test_outcome_record.py`
 covers skips. A regression that depends on test order, and is the only failure
@@ -216,7 +273,7 @@ a parameter id that differs per process, such as one holding a pid, names a test
 the rerun does not collect. Either makes the rerun exit 4, so the rerun does not
 count and every red test stays confirmed.
 
-Standard library only, so the publish job runs it on the runner's own
+Standard library only, so the publish and report jobs run it on the runner's own
 interpreter. It imports `parse_junit`, `build_record` and `diff_records`
 from `test_outcome_record.py` next to it. The functions above `uv_version`
 are pure and take their inputs as values; `tests/test_nightly_canary_1786.py`
@@ -225,7 +282,8 @@ against temporary files and a temporary git repository.
 
 Exit status: 0; 1 for a checked condition (`failed-ids` has nothing to
 rerun, `verdict` finds the leg is not green, `publish` left a pointer or a
-results-branch file it could not read); 2 for a usage error or an unreadable
+results-branch file it could not read, `issues` could not finish over the API
+or listed as many issues as its `--limit`); 2 for a usage error or an unreadable
 input, which includes JSON that parses but does not have the shape a record or
 a triage file has.
 """
@@ -233,6 +291,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -240,6 +299,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, cast
@@ -299,6 +359,57 @@ _RUN_DIR = re.compile(r"\d{4}-\d{2}-\d{2}-(\d+)-a(\d+)")
 
 _LEG_STATUSES = (GREEN, RED, BROKEN, MISSING)
 _NIGHT_VERDICTS = (GREEN, RED, INCOMPLETE)
+
+LABEL = "nightly-regression"
+
+#: GitHub refuses an issue body over 65536 characters. The budgets below and the
+#: fixed text add up to less than this.
+BODY_LIMIT = 65000
+_MARKER_BUDGET = 30000
+_LIST_BUDGET = 28000
+_REASON_LIMIT = 200
+_TITLE_LIMIT = 250
+_COMMENT_LIST = 20
+_LIST_LIMIT = 200
+
+_GH_TIMEOUT_SECONDS = 60
+_GH_RETRIES = 3
+_GH_RETRY_SECONDS = 5
+
+KEY_PR = "pr"
+KEY_COMMIT = "commit"
+KEY_RANGE = "range"
+KEY_COLLECTION = "collection-error"
+KEY_DRIFT = "drift"
+KEY_NO_BASELINE = "no-baseline"
+KEY_UNKNOWN = "unknown"
+KEY_BROKEN = "canary-broken"
+
+#: A test in two events goes to the first here: a named culprit says the most.
+_KIND_ORDER = (KEY_PR, KEY_COMMIT, KEY_RANGE, KEY_COLLECTION, KEY_DRIFT, KEY_NO_BASELINE, KEY_UNKNOWN, KEY_BROKEN)
+_KEY_SHAPES: dict[str, re.Pattern[str]] = {
+    KEY_PR: re.compile(r"pr-(\d+)"),
+    KEY_COMMIT: re.compile(r"commit-([0-9a-f]+)"),
+    KEY_RANGE: re.compile(r"range-([0-9a-f]+)-([0-9a-f]+)"),
+    KEY_COLLECTION: re.compile(r"collection-error-([0-9a-f]+)"),
+    KEY_DRIFT: re.compile(r"drift-([0-9a-f]+)"),
+    KEY_NO_BASELINE: re.compile(r"no-baseline-([0-9a-f]+)"),
+    KEY_BROKEN: re.compile(r"canary-broken()"),
+}
+_EVENT_KEY = re.compile(r"[A-Za-z0-9._-]+")
+_REPO_NAME = re.compile(r"[\w.-]+/[\w.-]+")
+_RUN_URL = re.compile(r"https://\S+/runs/(\d+)(?:/\S*)?")
+
+# Each marker starts a line. A test id in the visible list never does, since each
+# list line starts with `- ` and `_plain` escapes a newline in an id.
+_KEY_MARKER = re.compile(r"^<!-- nightly-canary-event v1 key=(\S+) -->[ \t]*\r?$", re.M)
+_TESTS_MARKER = re.compile(r"^<!-- nightly-canary-tests (\[.*\]) -->[ \t]*\r?$", re.M)
+_PARTIAL_MARKER = re.compile(r"^<!-- nightly-canary-partial total=(\d+) digest=([0-9a-f]+) -->[ \t]*\r?\n?", re.M)
+_RUN_MARKER = re.compile(r"^<!-- nightly-canary-run run_id=(\d+) kind=(\w+) -->[ \t]*\r?$", re.M)
+_LIST_START = "<!-- nightly-canary-list start -->"
+_LIST_END = "<!-- nightly-canary-list end -->"
+_LIST_BLOCK = re.compile(rf"^{_LIST_START}.*?^{_LIST_END}[ \t]*\r?$", re.M | re.S)
+_COUNT_IN_TITLE = re.compile(r"\b\d+ test\(s\)")
 
 
 # --------------------------------------------------------------- failed-ids
@@ -828,6 +939,21 @@ def _is_keyed(event: object) -> bool:
     return isinstance(event, dict) and _is_str(cast("dict[str, Any]", event).get("key"))
 
 
+def validate_events(events: list[dict[str, Any]], where: str) -> None:
+    """Raise ValueError unless each event has what `plan_actions` reads. A
+    reason can be anything, so a new one never stops a night."""
+    for event in events:
+        key = str(event["key"])
+        if _EVENT_KEY.fullmatch(key) is None:
+            raise ValueError(f"{where}: event key {key!r} cannot go in a marker")
+        if not _is_str_list(event.get("tests")):
+            raise ValueError(f"{where}: event {key} does not list its tests")
+        if not _is_str_list(event.get("legs", [])):
+            raise ValueError(f"{where}: event {key} does not list its legs")
+        if not isinstance(event.get("reasons", {}), dict):
+            raise ValueError(f"{where}: event {key} holds reasons that are not a map")
+
+
 def _is_event_list(value: object) -> bool:
     if not isinstance(value, list):
         return False
@@ -1084,6 +1210,461 @@ def next_last_green(
     report_only.extend(off_main_pointers(new_green, on_main, roles, EXTRA))
     notes.extend(f"::notice::last green {problem}" for problem in report_only)
     return new_green, notes, problems
+
+
+# -------------------------------------------------------------------- issues
+
+def key_kind(key: str) -> tuple[str, tuple[str, ...]]:
+    """The kind of an event key and the shas or number it holds."""
+    for kind, shape in _KEY_SHAPES.items():
+        m = shape.fullmatch(key)
+        if m:
+            return kind, m.groups()
+    return KEY_UNKNOWN, ()
+
+
+def _plain(text: str) -> str:
+    """`text` with what can't print escaped, so it stays on one line."""
+    return "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in text)
+
+
+def _code(text: str) -> str:
+    """`text` as a Markdown code span, with a fence longer than any backtick
+    run in it. It is padded when it starts or ends with a backtick or a space."""
+    shown = _plain(text)
+    fence = "`" * (max(map(len, re.findall(r"`+", shown)), default=0) + 1)
+    pad = " " if shown[:1] in ("`", " ") or shown[-1:] in ("`", " ") else ""
+    return f"{fence}{pad}{shown}{pad}{fence}"
+
+
+def _digest(tests: Iterable[str]) -> str:
+    return hashlib.sha256("\n".join(sorted(tests)).encode("utf-8", "backslashreplace")).hexdigest()[:16]
+
+
+def _marker_json(ids: list[str]) -> str:
+    """`ids` as JSON that can't end an HTML comment, whatever they hold."""
+    return json.dumps(ids).replace("<", "\\u003c").replace(">", "\\u003e").replace("--", "\\u002d\\u002d")
+
+
+def marker_ids(tests: Iterable[str]) -> list[str]:
+    """The first sorted ids whose marker fits `_MARKER_BUDGET`."""
+    kept: list[str] = []
+    used = 2
+    for test in sorted(tests):
+        used += len(_marker_json([test]))
+        if used > _MARKER_BUDGET:
+            break
+        kept.append(test)
+    return kept
+
+
+def _tests_lines(tests: list[str]) -> str:
+    """The tests marker, plus the partial marker when it could not hold them all."""
+    kept = marker_ids(tests)
+    line = f"<!-- nightly-canary-tests {_marker_json(kept)} -->"
+    if len(kept) < len(tests):
+        line += f"\n<!-- nightly-canary-partial total={len(tests)} digest={_digest(tests)} -->"
+    return line
+
+
+def _list_block(tests: list[str], reasons: dict[str, Any]) -> str:
+    """The visible test list, with a test's reason when it has one, and how
+    many tests it left out."""
+    ordered = sorted(tests)
+    lines: list[str] = []
+    used = 0
+    for test in ordered:
+        line = f"- {_code(test)}"
+        if test in reasons:
+            line += f" (reason: {_code(str(reasons[test])[:_REASON_LIMIT])})"
+        used += len(line.encode("utf-8")) + 1
+        if used > _LIST_BUDGET:
+            break
+        lines.append(line)
+    left = len(ordered) - len(lines)
+    if left:
+        lines.extend(["", f"This list leaves out {left} of {len(ordered)} test(s). The run's `record.json` names them all."])
+    if len(marker_ids(ordered)) < len(ordered):
+        lines.extend([
+            "",
+            "This issue holds too many tests to track each one, so the canary closes it only on a night "
+            "when no test goes red on either canary leg.",
+        ])
+    return "\n".join([_LIST_START, *lines, _LIST_END])
+
+
+def parse_issue(issue: dict[str, Any]) -> dict[str, Any] | None:
+    """What the markers of an open issue say, or None when it has no event
+    marker. `tests` is None when a person broke the tests marker, and `total`
+    is None unless the marker holds only part of the set."""
+    body = str(issue.get("body") or "")
+    key = _KEY_MARKER.search(body)
+    if key is None:
+        return None
+    tests: list[str] | None = None
+    found = _TESTS_MARKER.search(body)
+    if found is not None:
+        try:
+            value = json.loads(found.group(1))
+        except ValueError:
+            value = None
+        if _is_str_list(value):
+            tests = value
+    partial = _PARTIAL_MARKER.search(body)
+    comments: list[dict[str, Any]] = issue.get("comments") or []
+    texts = [body, *(str(comment.get("body") or "") for comment in comments)]
+    return {
+        "number": issue["number"],
+        "title": str(issue.get("title") or ""),
+        "body": body,
+        "key": key.group(1),
+        "tests": tests,
+        "total": int(partial.group(1)) if partial else None,
+        "digest": partial.group(2) if partial else None,
+        "runs": {(int(run), kind) for text in texts for run, kind in _RUN_MARKER.findall(text)},
+    }
+
+
+def no_record_event(date: str) -> dict[str, Any]:
+    return {"key": KEY_BROKEN, "kind": KEY_BROKEN, "tests": [], "no_record": True, "date": date}
+
+
+def night_events(record: dict[str, Any], triage: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The night's events, plus one for what no event names. A triage step that
+    died leaves its confirmed tests in `candidates` with no event."""
+    nightly = record["nightly"]
+    sha = str(record["sha"])
+    roles: dict[str, str] = nightly["roles"]
+    canary = sorted(leg for leg, role in roles.items() if role == CANARY)
+    events: list[dict[str, Any]] = [dict(event) for event in (triage or {}).get("events", [])]
+    named = {test for event in events for test in event["tests"]}
+    lost = sorted({test for leg in canary for test in nightly["confirmed"].get(leg, [])} - named)
+    if triage is None:
+        if nightly["verdict"] != GREEN:
+            legs = [leg for leg in canary if nightly["status"].get(leg) != GREEN]
+            events.append({"key": KEY_BROKEN, "kind": KEY_BROKEN, "legs": legs, "tests": lost})
+        return events
+    if not lost:
+        return events
+    good = str((triage.get("last_green") or {}).get("sha") or "")
+    if good and good != sha:
+        reasons = {test: "no result" for test in lost}
+        events.append({
+            "key": f"range-{good[:12]}-{sha[:12]}", "kind": KEY_RANGE, "good": good, "bad": sha,
+            "reasons": reasons, "tests": lost,
+        })
+    else:
+        events.append({"key": f"no-baseline-{sha[:12]}", "kind": KEY_NO_BASELINE, "legs": canary, "tests": lost})
+    return events
+
+
+def night_facts(record: dict[str, Any]) -> dict[str, Any]:
+    """What recovery reads from a record. `results` holds each canary leg's
+    full-run outcomes, and stays empty unless the record reached every canary
+    leg. `ran_full`: pytest exited 0 or 1 on each. `clean`: every one is green with
+    exit 0, so no test went red there."""
+    nightly = record["nightly"]
+    roles: dict[str, str] = nightly["roles"]
+    status: dict[str, str] = nightly["status"]
+    rcs: dict[str, Any] = nightly.get("rc", {})
+    legs: dict[str, Any] = record.get("legs") or {}
+    canary = sorted(leg for leg, role in roles.items() if role == CANARY)
+    reached = set(DEFAULT_CANARY_LEGS) <= set(canary) and all(
+        status.get(leg, MISSING) != MISSING and legs.get(leg) is not None for leg in canary
+    )
+    facts: dict[str, Any] = {
+        "sha": str(record["sha"]), "canary_legs": canary, "results": {}, "ran_full": False, "clean": False,
+    }
+    if reached:
+        facts["results"] = {leg: legs[leg]["tests"] for leg in canary}
+        facts["ran_full"] = all(rcs.get(leg) in _TEST_RC for leg in canary)
+        facts["clean"] = all(rcs.get(leg) == 0 and status[leg] == GREEN for leg in canary)
+    return facts
+
+
+def _passes(test: str, night: dict[str, Any]) -> bool:
+    """Whether the night shows `test` recovered. A collection error's id never
+    passes: it is gone, on legs where pytest got past collecting."""
+    results: dict[str, dict[str, str]] = night.get("results") or {}
+    if not results:
+        return False
+    if test.startswith("::"):
+        return bool(night.get("ran_full")) and all(test not in tests for tests in results.values())
+    return all(tests.get(test) == tor.PASSED for tests in results.values())
+
+
+def _recovered(issue: dict[str, Any], night: dict[str, Any], broken_tonight: bool) -> bool:
+    if issue["total"] is not None:
+        return bool(night.get("clean"))
+    tests: list[str] | None = issue["tests"]
+    if tests is None or not night.get("results"):
+        return False
+    if issue["key"] == KEY_BROKEN:
+        return not broken_tonight and all(_passes(test, night) for test in tests)
+    return bool(tests) and all(_passes(test, night) for test in tests)
+
+
+def _canary_events(events: Iterable[dict[str, Any]], night: dict[str, Any]) -> list[dict[str, Any]]:
+    """The events to act on, in `_KIND_ORDER`. Events with one key merge, an event
+    naming only extra legs is gone, and each test stays in the first event naming
+    it. An event left with no test is gone, unless it says the canary broke."""
+    canary = set(night.get("canary_legs") or DEFAULT_CANARY_LEGS)
+    merged: dict[str, dict[str, Any]] = {}
+    for event in events:
+        if "legs" in event and not canary & set(event["legs"]):
+            continue
+        key = str(event["key"])
+        if key in merged:
+            seen = merged[key]
+            seen["tests"] = [*seen["tests"], *event.get("tests", [])]
+            seen["reasons"] = {**event.get("reasons", {}), **seen.get("reasons", {})}
+        else:
+            merged[key] = {**event, "key": key, "tests": list(event.get("tests", []))}
+    placed: set[str] = set()
+    ordered: list[dict[str, Any]] = []
+    for key in sorted(merged, key=lambda k: (_KIND_ORDER.index(key_kind(k)[0]), k)):
+        event = merged[key]
+        tests = sorted(set(event["tests"]) - placed)
+        placed |= set(tests)
+        if tests or key_kind(key)[0] == KEY_BROKEN:
+            ordered.append({**event, "tests": tests})
+    return ordered
+
+
+def _modules(tests: list[str]) -> str:
+    """Up to three modules for a title, and how many more there are."""
+    names = [_plain(test.removeprefix("::"))[:60] for test in tests]
+    shown = ", ".join(names[:3])
+    return shown if len(names) <= 3 else f"{shown} and {len(names) - 3} more"
+
+
+def issue_title(event: dict[str, Any], tests: list[str], night: dict[str, Any]) -> str:
+    kind, parts = key_kind(str(event["key"]))
+    count = f"{len(tests)} test(s)"
+    if kind == KEY_PR:
+        title = f"nightly: {count} fail on main since #{parts[0]} ({str(event.get('sha', ''))[:7]})"
+    elif kind == KEY_COMMIT:
+        title = f"nightly: {count} fail on main since commit {parts[0][:7]}"
+    elif kind == KEY_DRIFT:
+        title = f"nightly: {count} fail on the last green commit {parts[0][:7]} (environment drift)"
+    elif kind == KEY_RANGE:
+        title = f"nightly: {count} fail on main between {parts[0][:7]} and {parts[1][:7]} (culprit not found)"
+    elif kind == KEY_NO_BASELINE:
+        title = f"nightly: canary red with no green baseline at {parts[0][:7]}"
+    elif kind == KEY_COLLECTION:
+        title = f"nightly: {_modules(tests)} can't be collected on main ({parts[0][:7]})"
+    elif kind == KEY_BROKEN and event.get("no_record"):
+        title = f"nightly: the canary produced no record ({event.get('date', '')})"
+    elif kind == KEY_BROKEN:
+        legs = ", ".join(_plain(str(leg)) for leg in event.get("legs", []))
+        title = f"nightly: the canary produced no usable result on {legs} ({str(night.get('sha', ''))[:7]})"
+    else:
+        title = f"nightly: {count} fail on main ({event['key']})"
+    return title[:_TITLE_LIMIT]
+
+
+def _intro(event: dict[str, Any], tests: list[str], night: dict[str, Any]) -> str:
+    """What the event means to a reader. It holds no test output: the reports
+    stay in the run's artifacts."""
+    kind, parts = key_kind(str(event["key"]))
+    if kind in (KEY_PR, KEY_COMMIT):
+        sha, before = _code(str(event.get("sha", ""))[:12]), _code(str(event.get("preceding", ""))[:12])
+        name = f"#{parts[0]}" if kind == KEY_PR else f"commit {sha}"
+        merged = f", merged as {sha}" if kind == KEY_PR else ""
+        docs = f"https://github.com/{night.get('repo', '')}/blob/main/scripts/nightly_bisect.py"
+        return (
+            f"The bisect points at {name}{merged}. These tests pass on {before} and fail on {sha}, so they broke "
+            f"between the two commits. That doesn't prove {name} caused it: read \"What the checks cannot detect\" "
+            f"in the [bisect script's docstring]({docs})."
+        )
+    if kind == KEY_DRIFT:
+        return (
+            f"These tests also fail when rerun on the last green commit {_code(parts[0])}, so the code may not have "
+            "changed them. Compare the environment in each night's `record.json` on the `test-results` branch."
+        )
+    if kind == KEY_RANGE:
+        return f"The bisect found no culprit between {_code(parts[0])} and {_code(parts[1])}. Each test below shows why."
+    if kind == KEY_NO_BASELINE:
+        return (
+            f"These tests fail at {_code(parts[0])}, and `test-results` has no green night to compare with, "
+            "so the canary can't say what broke them."
+        )
+    if kind == KEY_COLLECTION:
+        return f"pytest can't collect these at {_code(parts[0])}, so it stopped before it ran the suite on that leg."
+    if kind == KEY_BROKEN and event.get("no_record"):
+        return "This run left no record the canary could read, so it compared nothing tonight. Read the run's logs."
+    if kind == KEY_BROKEN:
+        legs = ", ".join(_code(str(leg)) for leg in event.get("legs", []))
+        return (
+            f"These legs left no usable result at {_code(str(night.get('sha', ''))[:12])}: {legs}. "
+            "Any tests below were red in what those legs reported, and no rerun confirmed them."
+        )
+    return f"The canary reports the event {_code(str(event['key']))} for {len(tests)} test(s)."
+
+
+def issue_body(
+    event: dict[str, Any], tests: list[str], night: dict[str, Any], others: list[tuple[str, int]],
+) -> str:
+    """A new issue's body. `others` names the events merged into it on a mass failure."""
+    head = [f"<!-- nightly-canary-event v1 key={event['key']} -->"]
+    if night.get("run_id") is not None:
+        head.append(f"<!-- nightly-canary-run run_id={night['run_id']} kind=opened -->")
+    head.append(_tests_lines(tests))
+    paragraphs = ["\n".join(head), _intro(event, tests, night)]
+    if others:
+        shown = ", ".join(f"{_code(key)} ({count})" for key, count in others[:_COMMENT_LIST])
+        paragraphs.append(f"This mass failure holds {len(tests)} tests in one issue, including these events: {shown}.")
+    paragraphs.append(_list_block(tests, event.get("reasons", {})))
+    paragraphs.append(
+        f"The [nightly run]({night.get('run_url', '')}) opened this issue. The canary closes it when every test here "
+        "passes in the full run on both canary legs. If you remove, rename, or skip a test, close the issue yourself, "
+        "because that test can't pass."
+    )
+    return "\n\n".join(paragraphs) + "\n"
+
+
+def updated_body(body: str, tests: list[str], reasons: dict[str, Any]) -> str:
+    """`body` with its markers and list replaced and everything else kept."""
+    body = _PARTIAL_MARKER.sub("", body)
+    lines = _tests_lines(tests)
+    if _TESTS_MARKER.search(body):
+        body = _TESTS_MARKER.sub(lambda _: lines, body, count=1)
+    else:
+        body = _KEY_MARKER.sub(lambda m: f"{m.group(0).rstrip()}\n{lines}", body, count=1)
+    listing = _list_block(tests, reasons)
+    if _LIST_BLOCK.search(body):
+        return _LIST_BLOCK.sub(lambda _: listing, body, count=1)
+    return f"{body.rstrip()}\n\n{listing}\n"
+
+
+def _bullets(tests: list[str]) -> str:
+    lines = [f"- {_code(test)}" for test in tests[:_COMMENT_LIST]]
+    if len(tests) > _COMMENT_LIST:
+        lines.append(f"- and {len(tests) - _COMMENT_LIST} more")
+    return "\n".join(lines)
+
+
+def _change_comment(added: list[str], passed: list[str], night: dict[str, Any]) -> str:
+    parts = [
+        f"[Run {night.get('run_id')}]({night.get('run_url', '')}) at {_code(str(night.get('sha', ''))[:7])} "
+        "changed this issue's tests."
+    ]
+    if added:
+        parts.append(f"Now also failing:\n\n{_bullets(sorted(added))}")
+    if passed:
+        parts.append(f"Passing again on both canary legs:\n\n{_bullets(sorted(passed))}")
+    parts.append(f"<!-- nightly-canary-run run_id={night.get('run_id')} kind=changed -->")
+    return "\n\n".join(parts) + "\n"
+
+
+def _recovered_comment(night: dict[str, Any]) -> str:
+    return (
+        f"recovered at {str(night.get('sha', ''))[:7]} ({night.get('run_url', '')})\n\n"
+        f"<!-- nightly-canary-run run_id={night.get('run_id')} kind=recovered -->\n"
+    )
+
+
+def _touched(issue: dict[str, Any], night: dict[str, Any]) -> bool:
+    """Whether an earlier attempt of this run already opened or changed the issue."""
+    run_id = night.get("run_id")
+    return run_id is not None and bool(issue["runs"] & {(run_id, "opened"), (run_id, "changed")})
+
+
+def _edit_actions(
+    issue: dict[str, Any], tests: list[str], reasons: dict[str, Any], comment: str,
+) -> list[dict[str, Any]]:
+    """The body first and the comment last, since a comment marks the run done."""
+    edit: dict[str, Any] = {"action": "edit", "number": issue["number"], "body": updated_body(issue["body"], tests, reasons)}
+    title = _COUNT_IN_TITLE.sub(f"{len(tests)} test(s)", issue["title"], count=1)
+    if title != issue["title"]:
+        edit["title"] = title
+    return [edit, {"action": "comment", "number": issue["number"], "body": comment}]
+
+
+def _merged_groups(
+    groups: list[tuple[dict[str, Any], list[str]]],
+) -> tuple[list[tuple[dict[str, Any], list[str]]], list[tuple[str, int]]]:
+    """One group for a mass failure, under the key with the most tests, and the
+    other keys it took in. The `canary-broken` group says something else, so it
+    stays apart. Below the threshold, `groups` as they are."""
+    plain = [group for group in groups if key_kind(group[0]["key"])[0] != KEY_BROKEN]
+    if sum(len(tests) for _, tests in plain) <= MASS_FAILURE_THRESHOLD:
+        return groups, []
+    plain.sort(key=lambda group: (-len(group[1]), str(group[0]["key"])))
+    reasons: dict[str, Any] = {}
+    for event, _ in plain:
+        reasons.update(event.get("reasons", {}))
+    everything = sorted(test for _, tests in plain for test in tests)
+    apart = [group for group in groups if key_kind(group[0]["key"])[0] == KEY_BROKEN]
+    others = [(str(event["key"]), len(tests)) for event, tests in plain[1:]]
+    return [({**plain[0][0], "reasons": reasons}, everything), *apart], others
+
+
+def plan_actions(
+    open_issues: list[dict[str, Any]], events: Iterable[dict[str, Any]], night: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """What to do about one night, as `create`, `edit`, `comment` and `close`
+    actions, in the order to apply them. `open_issues` is what `gh issue list`
+    returns. `night` is `night_facts` with the run's `run_id`, `run_url` and
+    `repo`; with none, nothing can close. Planning again once the actions landed
+    plans nothing, which is what makes a retry safe."""
+    night = night or {}
+    issues = sorted((p for p in map(parse_issue, open_issues) if p is not None), key=lambda p: p["number"])
+    tonight = _canary_events(events, night)
+    broken_tonight = any(key_kind(event["key"])[0] == KEY_BROKEN for event in tonight)
+    actions: list[dict[str, Any]] = []
+    alive: list[dict[str, Any]] = []
+    for issue in issues:
+        if not _recovered(issue, night, broken_tonight):
+            alive.append(issue)
+            continue
+        if (night.get("run_id"), "recovered") not in issue["runs"]:
+            actions.append({"action": "comment", "number": issue["number"], "body": _recovered_comment(night)})
+        actions.append({"action": "close", "number": issue["number"]})
+    partial = next((i for i in alive if i["total"] is not None and i["key"] != KEY_BROKEN), None)
+    by_key: dict[str, dict[str, Any]] = {}
+    for issue in alive:
+        by_key.setdefault(issue["key"], issue)
+    covered = {
+        test for issue in alive if issue["total"] is None and issue["key"] != KEY_BROKEN for test in issue["tests"] or []
+    }
+    added: dict[int, list[str]] = {}
+    reasons: dict[int, dict[str, Any]] = {}
+    held: list[str] = []
+    groups: list[tuple[dict[str, Any], list[str]]] = []
+    for event in tonight:
+        kind = key_kind(event["key"])[0]
+        fresh = [test for test in event["tests"] if test not in covered]
+        owner = by_key.get(event["key"])
+        if owner is not None and owner["total"] is None:
+            added[owner["number"]] = [test for test in fresh if test not in (owner["tests"] or [])]
+            reasons[owner["number"]] = event.get("reasons", {})
+        elif owner is not None and kind == KEY_BROKEN:
+            continue
+        elif partial is not None and kind not in (KEY_BROKEN, KEY_COLLECTION):
+            held.extend(fresh)
+        elif fresh or kind == KEY_BROKEN:
+            groups.append((event, fresh))
+    for issue in alive:
+        if issue["total"] is not None:
+            continue
+        before: list[str] = issue["tests"] or []
+        passed = [test for test in before if _passes(test, night)]
+        new = added.get(issue["number"], [])
+        after = sorted((set(before) - set(passed)) | set(new))
+        if after != sorted(before) and not _touched(issue, night):
+            comment = _change_comment(new, passed, night)
+            actions.extend(_edit_actions(issue, after, reasons.get(issue["number"], {}), comment))
+    if partial is not None and held and night.get("ran_full") and not _touched(partial, night):
+        if _digest(held) != partial["digest"]:
+            actions.extend(_edit_actions(partial, sorted(held), {}, _change_comment(held, [], night)))
+    merged, others = _merged_groups(groups)
+    for event, tests in merged:
+        actions.append({
+            "action": "create", "key": event["key"], "tests": tests,
+            "title": issue_title(event, tests, night), "body": issue_body(event, tests, night, others),
+        })
+    return actions
 
 
 # --------------------------------------------------------------------- I/O
@@ -1557,6 +2138,144 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+class GhError(Exception):
+    """A `gh` call failed or returned what it never returns."""
+
+
+def _gh(args: list[str], body: str | None = None) -> str:
+    """Run `gh`, with `body` on standard input for `--body-file -`, since a body
+    can be longer than one argument may be on some systems."""
+    try:
+        r = subprocess.run(
+            ["gh", *args], input=body, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=False, timeout=_GH_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise GhError(f"gh {' '.join(args[:2])}: {exc}") from exc
+    if r.returncode != 0:
+        raise GhError(f"gh {' '.join(args[:2])} exited {r.returncode}: {r.stderr.strip()[-500:]}")
+    return r.stdout
+
+
+def _gh_list(args: list[str]) -> list[dict[str, Any]]:
+    try:
+        data = json.loads(_gh(args))
+    except ValueError as exc:
+        raise GhError(f"gh {' '.join(args[:2])} printed no JSON: {exc}") from exc
+    if not isinstance(data, list) or not all(isinstance(row, dict) for row in cast("list[object]", data)):
+        raise GhError(f"gh {' '.join(args[:2])} printed no list of objects")
+    return cast("list[dict[str, Any]]", data)
+
+
+def _open_issues(repo: str) -> list[dict[str, Any]]:
+    issues = _gh_list([
+        "issue", "list", "--repo", repo, "--label", LABEL, "--state", "open",
+        "--json", "number,title,body,comments", "--limit", str(_LIST_LIMIT),
+    ])
+    # A list cut short would open a duplicate of every issue it left out.
+    if len(issues) >= _LIST_LIMIT:
+        raise GhError(f"gh issue list returned {len(issues)} issues, its limit, so the list may be cut short")
+    if not all(isinstance(issue.get("number"), int) for issue in issues):
+        raise GhError("gh issue list printed an issue with no number")
+    return issues
+
+
+def _ensure_label(repo: str) -> None:
+    labels = _gh_list(["label", "list", "--repo", repo, "--search", LABEL, "--json", "name", "--limit", "100"])
+    if not any(label.get("name") == LABEL for label in labels):
+        _gh([
+            "label", "create", LABEL, "--repo", repo, "--color", "B60205",
+            "--description", "The nightly canary found a test failing on main",
+        ])
+
+
+def _apply(action: dict[str, Any], repo: str) -> None:
+    kind, number = action["action"], str(action.get("number"))
+    if kind == "create":
+        _gh(["issue", "create", "--repo", repo, "--title", action["title"], "--label", LABEL, "--body-file", "-"], action["body"])
+    elif kind == "edit":
+        title = ["--title", action["title"]] if "title" in action else []
+        _gh(["issue", "edit", number, "--repo", repo, *title, "--body-file", "-"], action["body"])
+    elif kind == "comment":
+        _gh(["issue", "comment", number, "--repo", repo, "--body-file", "-"], action["body"])
+    else:
+        _gh(["issue", "close", number, "--repo", repo, "--reason", "completed"])
+
+
+def _describe(action: dict[str, Any]) -> str:
+    kind = action["action"]
+    if kind == "create":
+        return f"create {action['key']}: {action['title']}"
+    if kind == "comment":
+        return f"comment on #{action['number']}: {action['body'].splitlines()[0]}"
+    return f"{kind} #{action['number']}"
+
+
+def _act_on_issues(repo: str, events: list[dict[str, Any]], night: dict[str, Any]) -> int:
+    """Read, plan and apply, up to `_GH_RETRIES` more times. Each try plans from
+    what the last one left, so a try that died halfway does not repeat its work."""
+    problem: GhError | None = None
+    for attempt in range(_GH_RETRIES + 1):
+        if attempt:
+            time.sleep(_GH_RETRY_SECONDS * attempt)
+        try:
+            actions = plan_actions(_open_issues(repo), events, night)
+            if any(action["action"] == "create" for action in actions):
+                _ensure_label(repo)
+            for action in actions:
+                _apply(action, repo)
+                print(_describe(action))
+            return 0
+        except GhError as exc:
+            problem = exc
+            print(f"::warning::try {attempt + 1}: {exc}")
+    print(f"::error::{problem}")
+    return 1
+
+
+def _read_night(directory: Path, base: dict[str, Any], today: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The night in `directory`: its events and what `plan_actions` reads."""
+    record_file = directory / "record.json"
+    if not record_file.is_file():
+        return [no_record_event(today)], base
+    record = _read_json(record_file)
+    validate_record(record, str(record_file))
+    triage_file = directory / "triage.json"
+    triage: dict[str, Any] | None = None
+    if triage_file.is_file():
+        triage = _read_json(triage_file)
+        validate_triage(triage, str(triage_file))
+        validate_events(triage.get("events", []), str(triage_file))
+    return night_events(record, triage), {**base, **night_facts(record)}
+
+
+def cmd_issues(args: argparse.Namespace) -> int:
+    if _REPO_NAME.fullmatch(args.repo) is None:
+        raise ValueError(f"--repo {args.repo!r} is not OWNER/NAME")
+    run = _RUN_URL.fullmatch(args.run_url)
+    if run is None:
+        raise ValueError(f"--run-url {args.run_url!r} does not name a run")
+    if not args.events.is_dir():
+        raise ValueError(f"--events {args.events} is not a directory")
+    base: dict[str, Any] = {"run_id": int(run.group(1)), "run_url": args.run_url, "repo": args.repo}
+    today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    unreadable = False
+    try:
+        events, night = _read_night(args.events, base, today)
+    except (*_UNREADABLE, LookupError, TypeError, AttributeError) as exc:
+        # A night that can't be read is a night with no record, and the issue says so.
+        print(f"::error::the night in {args.events} is unreadable: {exc}")
+        unreadable = True
+        events, night = [no_record_event(today)], base
+    if args.dry_run:
+        print("dry run: no gh call, so this plans as if no issue were open")
+        for action in plan_actions([], events, night):
+            print(f"dry run: would {_describe(action)}")
+        return 2 if unreadable else 0
+    status = _act_on_issues(args.repo, events, night)
+    return 2 if unreadable else status
+
+
 def _max_red(value: str) -> int:
     """`--max`: a negative one would read every leg, even a green one, as a mass failure."""
     limit = int(value)
@@ -1618,6 +2337,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--main-repo", default=Path("."), type=Path)
     p.add_argument("--main-ref", default=None)
     p.set_defaults(func=cmd_publish)
+
+    p = sub.add_parser("issues", parents=[common], help="open, update and close the night's issues")
+    p.add_argument("--events", required=True, type=Path, help="the folder holding record.json and triage.json")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--run-url", required=True)
+    p.set_defaults(func=cmd_issues)
     return parser
 
 
