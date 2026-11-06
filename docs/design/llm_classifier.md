@@ -443,7 +443,9 @@ Fields:
 - `model` — the model id actually called (so override visible).
 - `input_tokens`, `output_tokens`, `total_tokens` — Anthropic's billed
   counts, summed across shards.
-- `requests` — number of HTTP requests the implementation made.
+- `requests`: number of classifier calls that sent a request. A call that
+  fails before sending anything, such as on a refused connection, counts 0.
+  The SDK's own retries of one call count once.
 - `fallbacks` — number of candidates that fell back to regex (see
   § 7).
 

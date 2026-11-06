@@ -7,6 +7,9 @@ the telemetry line, and the store.
 from __future__ import annotations
 
 import io
+import socket
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -154,6 +157,105 @@ def test_auth_failure_stays_an_auth_failure(status: int) -> None:
     assert result.sdk_mismatch_error is None
 
 
+# --- The request count ----------------------------------------------------
+
+
+class ConnectError(Exception):
+    pass
+
+
+class ConnectTimeout(Exception):
+    pass
+
+
+class ProxyError(Exception):
+    pass
+
+
+class UnsupportedProtocol(Exception):
+    pass
+
+
+class ReadError(Exception):
+    pass
+
+
+class ReadTimeout(Exception):
+    pass
+
+
+def _connection_error(cause: type[Exception]) -> APIConnectionError:
+    exc = APIConnectionError("Connection error.")
+    exc.__cause__ = cause("from the HTTP library")
+    return exc
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (_connection_error(ConnectError), 0),
+        (_connection_error(ConnectTimeout), 0),
+        (_connection_error(ProxyError), 0),
+        (_connection_error(UnsupportedProtocol), 0),
+        (OSError("raised outside the SDK's send"), 0),
+        (_connection_error(ReadError), 1),
+        (_connection_error(ReadTimeout), 1),
+        (_StatusError(429), 1),
+        (_StatusError(500), 1),
+        (_StatusError(400), 1),
+    ],
+    ids=[
+        "ConnectError", "ConnectTimeout", "ProxyError", "UnsupportedProtocol",
+        "raw-OSError", "ReadError", "ReadTimeout", "429", "500", "400",
+    ],
+)
+def test_fallback_counts_only_a_request_that_was_sent(
+    exc: Exception, expected: int,
+) -> None:
+    result = _batch(_raising(exc))
+    assert result.fallback_used
+    assert result.telemetry.requests == expected
+
+
+def test_mismatch_counts_no_request() -> None:
+    assert _batch(_raising(TypeError("nope"))).telemetry.requests == 0
+
+
+def _responding(resp: Any) -> _FakeSdk:
+    def _create(**_kwargs: Any) -> Any:
+        return resp
+
+    return _client_with(_create)
+
+
+@pytest.mark.parametrize(
+    "resp",
+    [
+        SimpleNamespace(usage=None),
+        SimpleNamespace(content=[], usage=None),
+        SimpleNamespace(content=[SimpleNamespace(text="not json")], usage=None),
+    ],
+    ids=["no-content", "no-text-block", "malformed-json"],
+)
+def test_unusable_response_counts_the_request(resp: Any) -> None:
+    result = _batch(_responding(resp))
+    assert result.fallback_used
+    assert result.telemetry.requests == 1
+
+
+def test_transient_error_defaults_to_no_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The request-time import failure raises with no flag, before any send."""
+    def _fail(**_kwargs: Any) -> Any:
+        raise llm.LLMTransientError("SDK not importable at request time")
+
+    monkeypatch.setattr(llm, "_call_anthropic", _fail)
+    result = _batch(None)
+    assert result.fallback_used
+    assert result.telemetry.requests == 0
+
+
 # --- Through `main` -------------------------------------------------------
 
 
@@ -198,6 +300,27 @@ def _open_db(tmp_path: Path) -> MemoryStore:
     return MemoryStore(str(tmp_path / "memory.db"))
 
 
+def _seed_orphan(tmp_path: Path) -> None:
+    store = _open_db(tmp_path)
+    store.insert_belief(
+        Belief(
+            id="orphan1846",
+            content="an orphan belief with no type",
+            content_hash="orphan1846-hash",
+            alpha=1.0,
+            beta=1.0,
+            type="unknown",
+            lock_level="none",
+            locked_at=None,
+            created_at="2025-01-01T00:00:00Z",
+            last_retrieved_at=None,
+            session_id=None,
+            origin=ORIGIN_UNKNOWN,
+        )
+    )
+    store.close()
+
+
 @pytest.mark.parametrize(
     "argv",
     [["--llm-classify"], []],
@@ -234,24 +357,7 @@ def test_doctor_classify_orphans_stops_and_names_the_exception(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    store = _open_db(tmp_path)
-    store.insert_belief(
-        Belief(
-            id="orphan1846",
-            content="an orphan belief with no type",
-            content_hash="orphan1846-hash",
-            alpha=1.0,
-            beta=1.0,
-            type="unknown",
-            lock_level="none",
-            locked_at=None,
-            created_at="2025-01-01T00:00:00Z",
-            last_retrieved_at=None,
-            session_id=None,
-            origin=ORIGIN_UNKNOWN,
-        )
-    )
-    store.close()
+    _seed_orphan(tmp_path)
     _use_sdk(monkeypatch, _client_with(_create_without_temperature))
 
     out = io.StringIO()
@@ -293,3 +399,104 @@ def test_onboard_still_falls_back_on_a_network_fault(
         )
     finally:
         store.close()
+
+
+def test_onboard_prints_requests_0_when_nothing_was_sent(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_sdk(monkeypatch, _raising(_connection_error(ConnectError)))
+
+    out = io.StringIO()
+    rc = cli_module.main(["onboard", str(project), "--llm-classify"], out=out)
+
+    assert rc == 0
+    assert "requests=0 " in out.getvalue()
+
+
+def test_doctor_prints_requests_0_when_nothing_was_sent(
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_orphan(tmp_path)
+    _use_sdk(monkeypatch, _raising(_connection_error(ConnectError)))
+
+    out = io.StringIO()
+    rc = cli_module.main(["doctor", "--classify-orphans"], out=out)
+
+    assert rc == 0
+    assert "requests=0 " in out.getvalue()
+
+
+# --- The installed SDK, against a server on 127.0.0.1 --------------------
+#
+# These prove the real SDK's exceptions land where `_falls_back` and
+# `_request_was_sent` expect, by class name and by `__cause__`. Nothing leaves
+# the machine: the base URL is a closed local port or the server below.
+
+
+class _RateLimited(BaseHTTPRequestHandler):
+    hits = 0
+
+    def do_POST(self) -> None:
+        type(self).hits += 1
+        self.rfile.read(int(self.headers.get("content-length", "0")))
+        body = b'{"type":"error","error":{"type":"rate_limit_error","message":"x"}}'
+        self.send_response(429)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        # The SDK waits this long before its retries.
+        self.send_header("retry-after-ms", "1")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        del format, args
+
+
+@pytest.fixture
+def installed_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    if not llm._anthropic_importable(None):  # pyright: ignore[reportPrivateUsage]
+        pytest.skip("requires the onboard-llm extra")
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+
+
+def test_installed_sdk_refused_connection_falls_back_with_requests_0(
+    installed_sdk: None,
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", f"http://127.0.0.1:{port}")
+
+    out = io.StringIO()
+    rc = cli_module.main(["onboard", str(project), "--llm-classify"], out=out)
+
+    assert rc == 0
+    assert "requests=0 " in out.getvalue()
+
+
+def test_installed_sdk_rate_limit_falls_back_with_requests_1(
+    installed_sdk: None,
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _RateLimited.hits = 0
+    server = HTTPServer(("127.0.0.1", 0), _RateLimited)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", f"http://127.0.0.1:{server.server_port}")
+    try:
+        out = io.StringIO()
+        rc = cli_module.main(["onboard", str(project), "--llm-classify"], out=out)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert rc == 0
+    assert _RateLimited.hits >= 1
+    assert "requests=1 " in out.getvalue()

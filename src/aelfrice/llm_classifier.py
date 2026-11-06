@@ -107,6 +107,15 @@ _REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
 # Temperature for classification: deterministic.
 _REQUEST_TEMPERATURE: Final[float] = 0.0
 
+# The SDK raises its connection error `from` the HTTP library's exception.
+# These causes mean the failure came before any request was written.
+_NOT_SENT_CAUSES: Final[frozenset[str]] = frozenset({
+    "ConnectError",
+    "ConnectTimeout",
+    "ProxyError",
+    "UnsupportedProtocol",
+})
+
 
 # --- Config dataclass ----------------------------------------------------
 
@@ -736,7 +745,15 @@ class LLMAuthError(Exception):
 
 
 class LLMTransientError(Exception):
-    """Raised on connect/timeout/429/5xx/malformed. Triggers regex fallback."""
+    """Raised on connect/timeout/429/5xx/malformed. Triggers regex fallback.
+
+    `request_sent` says whether a request left the machine, which decides
+    the telemetry's `requests` count on the fallback path.
+    """
+
+    def __init__(self, message: str, *, request_sent: bool = False) -> None:
+        super().__init__(message)
+        self.request_sent = request_sent
 
 
 class LLMSDKMismatchError(Exception):
@@ -863,7 +880,9 @@ def _call_anthropic(
             raise LLMAuthError(str(exc)) from exc
         if not _falls_back(exc):
             raise LLMSDKMismatchError(f"{type(exc).__name__}: {exc}") from exc
-        raise LLMTransientError(str(exc)) from exc
+        raise LLMTransientError(
+            str(exc), request_sent=_request_was_sent(exc),
+        ) from exc
 
     text = _extract_text_from_response(resp)
     input_tokens, output_tokens = _extract_usage(resp)
@@ -907,6 +926,18 @@ def _falls_back(exc: BaseException) -> bool:
     return any(cls.__name__ == "APIError" for cls in type(exc).__mro__)
 
 
+def _request_was_sent(exc: BaseException) -> bool:
+    """Return True if the fault in `exc` came after a request left the machine.
+
+    Takes an exception `_falls_back` accepted. A bare `OSError` isn't from
+    the SDK's send, which wraps its failures, so it doesn't count. A status
+    error has no cause, so it counts: a response came back.
+    """
+    if isinstance(exc, OSError):
+        return False
+    return type(exc.__cause__).__name__ not in _NOT_SENT_CAUSES
+
+
 def _extract_text_from_response(resp: Any) -> str:
     """Pluck the text block off an Anthropic response.
 
@@ -915,14 +946,16 @@ def _extract_text_from_response(resp: Any) -> str:
     """
     content = getattr(resp, "content", None)
     if content is None:
-        raise LLMTransientError("response has no content")
+        raise LLMTransientError("response has no content", request_sent=True)
     parts: list[str] = []
     for block in content:
         text = getattr(block, "text", None)
         if isinstance(text, str):
             parts.append(text)
     if not parts:
-        raise LLMTransientError("response contains no text block")
+        raise LLMTransientError(
+            "response contains no text block", request_sent=True,
+        )
     return "".join(parts)
 
 
@@ -1027,7 +1060,7 @@ def classify_batch(
         result.fallback_used = True
         result.fallback_reason = type(exc).__name__ + ":transient"
         result.telemetry.fallbacks = len(candidates)
-        result.telemetry.requests = 1
+        result.telemetry.requests = int(exc.request_sent)
         return result
 
     result.telemetry.input_tokens += resp.input_tokens
