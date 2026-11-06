@@ -809,6 +809,12 @@ def test_the_docs_leave_promoting_a_report_only_leg_to_an_operator() -> None:
     assert "An operator decides whether to promote a report-only leg after 14 green nights, and nothing promotes it automatically." in text
 
 
+def test_the_docs_say_a_cancelled_run_can_hold_a_green_night() -> None:
+    text = " ".join(_CONTRIBUTING.read_text(encoding="utf-8").split())
+    assert "A report-only job that passes its own cap makes the run read `cancelled`, even with green canary legs." in text
+    assert "The later jobs still run, and the night's verdict in `index.jsonl` still tells you whether the night was red." in text
+
+
 def _streak_command() -> str:
     """The Python the CONTRIBUTING streak command hands python3."""
     text = _CONTRIBUTING.read_text(encoding="utf-8")
