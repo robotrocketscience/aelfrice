@@ -64,9 +64,10 @@ _FILE_PATH_WIN: Final[re.Pattern[str]] = re.compile(
 
 # HTTP(S) URL up to the first whitespace / closing bracket / quote.
 # Conservative on the right boundary so trailing prose punctuation
-# (`see https://x.y/z.`) does not leak into the entity.
+# (`see https://x.y/z.`) and a closing code-span backtick (#1874) do
+# not leak into the entity.
 _URL: Final[re.Pattern[str]] = re.compile(
-    r"\bhttps?://[^\s<>\"')\]]+",
+    r"\bhttps?://[^\s<>\"')\]`]*[^\s<>\"')\]`.,;:!?]",
     re.IGNORECASE,
 )
 
@@ -143,15 +144,14 @@ KINDS: Final[frozenset[str]] = frozenset({
 })
 
 
-# Ordered (kind, regex) tuples. Earlier wins on overlap. file_path
-# runs before url so a path inside a URL still surfaces only as the
-# URL; in practice URL appears earlier here so URL wins on URL-
-# embedded paths. The ordering is the design — see spec § Pattern
-# bank notes.
+# Ordered (kind, regex) tuples. Earlier wins on overlap. url runs before
+# file_path so a path inside a URL surfaces only as the URL: from
+# `https://x.y/a/b.html`, the path pattern alone takes `y/a/b.html`
+# (#1874). The ordering is the design: see spec § Pattern bank notes.
 _PATTERN_BANK: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
+    (KIND_URL, _URL),
     (KIND_FILE_PATH, _FILE_PATH_POSIX),
     (KIND_FILE_PATH, _FILE_PATH_WIN),
-    (KIND_URL, _URL),
     (KIND_ERROR_CODE, _ERROR_CODE),
     (KIND_VERSION, _VERSION),
     (KIND_BRANCH, _BRANCH),

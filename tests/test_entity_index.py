@@ -35,11 +35,13 @@ from aelfrice.entity_extractor import (
     KIND_ERROR_CODE,
     KIND_FILE_PATH,
     KIND_IDENTIFIER,
+    KIND_NOUN_PHRASE,
     KIND_URL,
     KIND_VERSION,
     Entity,
     extract_entities,
 )
+from aelfrice.ingest import ingest_turn
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.retrieval import (
     DEFAULT_L25_LIMIT,
@@ -186,6 +188,52 @@ def test_ac1_per_kind_negative_fixtures(
     assert not matching, (
         f"expected no {forbidden_kind} in {text!r}, got {matching}"
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("see `https://x.y/z` for docs", "https://x.y/z"),
+        ("see https://x.y/z.", "https://x.y/z"),
+        ("is it https://x.y/z?", "https://x.y/z"),
+        ("see https://x.y/a/b.html first", "https://x.y/a/b.html"),
+    ],
+)
+def test_url_entity_is_the_bare_link_alone(text: str, expected: str) -> None:
+    """#1874: prompts now store URLs, so these shapes reach the bank.
+
+    A query for the link has to produce the same key, and no file_path
+    fragment of the URL may take its place.
+    """
+    structured = [e for e in extract_entities(text) if e.kind != KIND_NOUN_PHRASE]
+    assert [(e.kind, e.raw) for e in structured] == [(KIND_URL, expected)]
+    assert [e.lower for e in extract_entities(expected) if e.kind == KIND_URL] == [expected]
+
+
+def test_url_entity_stops_at_the_first_backtick() -> None:
+    entities = extract_entities("see `https://x.y/a`,`https://x.y/b` now")
+    assert [e.raw for e in entities if e.kind == KIND_URL] == ["https://x.y/a", "https://x.y/b"]
+
+
+def test_a_stored_code_span_writes_path_and_url_entities(tmp_path: Path) -> None:
+    """#1874: a path or a link in a prompt reaches the entity index."""
+    store = MemoryStore(str(tmp_path / "ingest.db"))
+    try:
+        ingest_turn(
+            store,
+            "Edit `src/widget/core.py` and read https://example.invalid/runbook first.",
+            source="user",
+        )
+        rows = store._conn.execute(  # noqa: SLF001
+            "SELECT kind, entity_lower FROM belief_entities WHERE kind != ?",
+            (KIND_NOUN_PHRASE,),
+        ).fetchall()
+    finally:
+        store.close()
+    assert sorted((r[0], r[1]) for r in rows) == [
+        (KIND_FILE_PATH, "src/widget/core.py"),
+        (KIND_URL, "https://example.invalid/runbook"),
+    ]
 
 
 def test_ac1_overlap_policy_file_path_wins_over_identifier() -> None:
