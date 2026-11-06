@@ -177,6 +177,82 @@ def test_slash_command_invokes_matching_cli(cmd: str) -> None:
     )
 
 
+#: `uv run aelf`, spelled any way a command could spell it. `[^`]` crosses
+#: a line break so a wrapped invocation can't escape.
+_UV_WRAPPED_AELF = re.compile(r"\buv(?:x|\s+(?:tool\s+)?run)\b[^`]{0,30}?\baelf\b")
+
+#: upgrade.md names the wrapper as something an agent must not substitute
+#: for the printed upgrade command. That sentence warns; it doesn't call.
+_UPGRADE_WARNING = "Do not substitute\n`uv run aelf upgrade` or"
+
+
+def _uv_wrapped_calls(filename: str, text: str) -> list[str]:
+    """Every `uv run aelf` form in one slash file, past the upgrade warning."""
+    if filename == "upgrade.md":
+        assert text.count(_UPGRADE_WARNING) == 1, (
+            "upgrade.md's warning changed; re-read this guard's exemption"
+        )
+        text = text.replace(_UPGRADE_WARNING, "")
+    return [m.group(0) for m in _UV_WRAPPED_AELF.finditer(text)]
+
+
+def test_no_bundled_slash_command_calls_aelf_through_uv_run() -> None:
+    """#1857: `uv run` writes to, and can fail on, the user's project.
+
+    Under a `pyproject.toml` it creates `.venv` and `uv.lock`, and stops
+    at uv's resolver error when the project can't resolve. A read-only uv
+    cache stops it too, and a different aelfrice in the project's
+    environment shadows the `uv tool` install.
+    """
+    files = sorted(_slash_dir().glob("*.md"))
+    assert files, "bundle is empty; the assertion below would be vacuous"
+    offenders = {
+        p.name: hits
+        for p in files
+        if (hits := _uv_wrapped_calls(p.name, p.read_text(encoding="utf-8")))
+    }
+    assert offenders == {}, f"slash commands call aelf through uv: {offenders}"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Run: `uv run aelf status`",
+        "  uv run aelf wonder \"$ARGUMENTS\"",
+        "`uv run --quiet aelf status`",
+        "`uv run --with foo aelf status`",
+        "`uv tool run aelf status`",
+        "`uvx aelf status`",
+        "`uv run\naelf status`",
+    ],
+)
+def test_uv_run_guard_catches_a_wrapped_call(line: str) -> None:
+    assert _uv_wrapped_calls("search.md", line), line
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Run: `aelf status`",
+        "`uv tool install aelfrice`",
+        "`uv tool upgrade aelfrice`",
+        "- `uv tool upgrade aelfrice` (uv-managed install)\n`aelf setup`",
+    ],
+)
+def test_uv_run_guard_passes_a_direct_call(line: str) -> None:
+    assert _uv_wrapped_calls("search.md", line) == [], line
+
+
+def test_uv_run_guard_exempts_only_the_upgrade_warning() -> None:
+    assert _uv_wrapped_calls("search.md", _UPGRADE_WARNING), (
+        "the exemption must not apply outside upgrade.md"
+    )
+    assert not _uv_wrapped_calls("upgrade.md", _UPGRADE_WARNING)
+    assert _uv_wrapped_calls(
+        "upgrade.md", f"{_UPGRADE_WARNING}\nRun `uv run aelf setup`."
+    ), "a real call in upgrade.md must not hide behind the warning"
+
+
 def test_no_extra_files_in_slash_commands_dir() -> None:
     """Catches typos like `loocked.md` and accidental .md.bak files."""
     files = sorted(p.name for p in _slash_dir().iterdir() if p.is_file())
