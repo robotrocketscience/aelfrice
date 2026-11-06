@@ -197,7 +197,7 @@ Start your agent in the project's folder, and then run this command in the agent
 /aelf:onboard .
 ```
 
-On Codex, run `$aelf-onboard .` instead. Both commands classify with your agent's model and need no API key. When the store is empty, `aelf setup` prints the command for the host you set up. If you run `aelf setup` outside a git repository, it tells you to open a project first.
+On Codex, run `$aelf-onboard .` instead. Both commands classify with your agent's model and need no API key. When the store is empty, `aelf setup` prints the command for the host you set up. If you run `aelf setup` in a folder that has no git work tree and no `[store]` marker, it tells you to open a project first. A folder with a `[store]` marker has its own store, so `aelf setup` treats it as a project without git.
 
 To scan from a terminal without your agent's model, run the command from the project root:
 
