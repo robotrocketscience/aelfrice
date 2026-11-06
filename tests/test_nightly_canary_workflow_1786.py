@@ -512,8 +512,12 @@ def test_the_documents_describe_the_workflow() -> None:
     text = _CONTRIBUTING.read_text(encoding="utf-8")
     start = text.index("### The nightly canary")
     section = text[start : text.index("\n### ", start + 1)]
-    for name in ("`suite`", "`triage`", "`publish`", "`test-results`", "02:17", "`last-green.json`", "`index.jsonl`"):
-        assert name in section, name
+    for name in (
+        "`suite`", "`triage`", "`publish`", "`report`", "`test-results`", "02:17", "`last-green.json`", "`index.jsonl`",
+        "`nightly-regression`", "`recovered at <sha7> (<run url>)`",
+        "`<!-- nightly-canary-event v1 key=<key> -->`",
+    ):
+        assert name in " ".join(section.split()), name
     cron = re.search(r"cron: '(\d+) (\d+) \* \* \*'", _text())
     assert cron
     assert f"{int(cron.group(2)):02d}:{int(cron.group(1)):02d} " in " ".join(section.split())

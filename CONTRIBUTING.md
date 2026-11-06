@@ -317,10 +317,29 @@ The workflow runs these jobs:
   merged since that commit.
 - `publish` writes the night to the `test-results` branch. The first run creates
   the branch.
+- `report` opens, updates, and closes the night's issues. It runs even when an
+  earlier job failed, and it runs no test.
 
 A red leg fails the `suite` job, and an `incomplete` night fails the `publish`
-job after it writes the night, so the Actions tab shows both as a failed run. The
-canary doesn't open issues yet. A later pull request adds them.
+job after it writes the night, so the Actions tab shows both as a failed run.
+
+The canary opens issues with the `nightly-regression` label, and creates the
+label if it's missing. A test already in an open issue gets no new issue, and a
+mass failure opens one issue. An open issue stays quiet unless its tests change.
+The canary then edits the test list and adds one comment. Re-running a run adds
+nothing.
+
+The canary closes an issue when every test in it passes in the full run on both
+canary legs. It comments `recovered at <sha7> (<run url>)` first. A test that
+only passes on the rerun doesn't count, and neither does a night that left no
+result for the test. If you remove, rename, or skip a test, close its issue
+yourself, because the canary never sees that test pass. A night with too many
+tests for one issue closes only when no test goes red on either leg.
+
+You can edit an issue the canary opened, but keep the
+`<!-- nightly-canary-event v1 key=<key> -->` and `<!-- nightly-canary-tests [...] -->`
+lines. The canary reads its state from them. An issue with no event line is no
+longer the canary's, so the next night opens a new one.
 
 To read the newest night, run these commands:
 
@@ -356,7 +375,8 @@ Each event key says what the canary found:
   `conftest.py`.
 - `no-baseline-<sha12>`: tests failed, and there is no green night to compare
   with.
-- `canary-broken`: a leg is missing or produced no usable result.
+- `canary-broken`: a leg is missing or produced no usable result, or the night
+  left no record at all.
 
 A bisect names the commit where a test started to fail, which may not be the
 cause. The docstring of `scripts/nightly_bisect.py` lists what the checks can't
