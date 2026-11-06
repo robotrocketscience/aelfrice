@@ -223,6 +223,12 @@ def test_triage_holds_full_history_and_no_token_in_its_checkout() -> None:
     assert _with_input(step, "persist-credentials") == "false"
 
 
+def test_a_green_night_with_nothing_to_cache_does_not_fail_triage() -> None:
+    setup = [s for s in _steps(_job("triage")) if (_step_uses(s) or "").startswith("astral-sh/setup-uv@")]
+    assert len(setup) == 1, setup
+    assert _with_input(setup[0], "ignore-nothing-to-cache") == "true"
+
+
 def test_the_record_gets_a_stable_date_and_the_canary_legs() -> None:
     step = _step("triage", "Build the night's record")
     assert 'actions/runs/$GITHUB_RUN_ID" --jq .created_at' in step

@@ -148,12 +148,14 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       # No Python here: the drift check and the bisect name the leg's with
-      # `--python`, and the scripts run on the image's python3.
+      # `--python`, and the scripts run on the image's python3. A green night runs
+      # no uv command after this, so its post step can find nothing to cache.
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         timeout-minutes: 3
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
+          ignore-nothing-to-cache: true
       # A failed download is a leg with no bundle, which the record reads as
       # missing. Each artifact lands in a folder of its own name.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
