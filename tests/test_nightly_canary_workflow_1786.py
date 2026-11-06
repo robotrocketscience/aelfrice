@@ -177,11 +177,54 @@ def test_the_suite_command_matches_ci() -> None:
     assert "--deselect" not in tokens
 
 
+_EXTRAS_GUARD = "The extras the tests need must be installed, or those tests skip"
+
+
 def test_the_suite_syncs_what_ci_syncs() -> None:
     lines = [line.strip() for line in _job("suite")]
     assert f"- run: {_ci_sync()}" in lines
-    for module in ("cryptography", "anthropic"):
-        assert f'run: uv run python -c "import {module}"' in lines
+
+
+def test_the_extras_guard_covers_what_ci_syncs_and_runs_before_the_suite() -> None:
+    code = _inline_python("suite", _EXTRAS_GUARD)
+    loop = re.search(r"for extra in \((.*?)\):", code)
+    assert loop
+    assert re.findall(r'"([^"]+)"', loop.group(1)) == sorted(_extras(_ci_sync()))
+    assert "uv run python - <<'PY'" in _step("suite", _EXTRAS_GUARD)
+    steps = _steps(_job("suite"))
+    order = [i for i, s in enumerate(steps) if _EXTRAS_GUARD in s or "name: Run the suite" in s]
+    assert _EXTRAS_GUARD in steps[order[0]], order
+
+
+def _guard_rc(tmp_path: Path, extras: dict[str, list[str]]) -> int:
+    """The guard's exit status on a pyproject.toml holding these extras."""
+    rows = "".join(f"{name} = {json.dumps(reqs)}\n" for name, reqs in extras.items())
+    (tmp_path / "pyproject.toml").write_text(f"[project.optional-dependencies]\n{rows}", encoding="utf-8")
+    block = tmp_path / "guard_block.py"
+    block.write_text(_inline_python("suite", _EXTRAS_GUARD), encoding="utf-8")
+    return subprocess.run(
+        [sys.executable, str(block)], cwd=tmp_path, capture_output=True, timeout=60, check=False,
+    ).returncode
+
+
+_INSTALLED = ["pytest>=8.0"]
+_ABSENT = ["no-such-distribution-1786>=1"]
+
+
+@pytest.mark.parametrize(
+    ("archive", "llm", "rc"),
+    [
+        (_INSTALLED, _INSTALLED, 0),
+        ([*_INSTALLED, *_ABSENT], _INSTALLED, 1),
+        (_INSTALLED, [*_INSTALLED, *_ABSENT], 1),
+        ([], _INSTALLED, 1),
+    ],
+    ids=["all installed", "absent in archive", "absent in onboard-llm", "an empty extra"],
+)
+def test_the_extras_guard_fails_on_a_package_that_is_not_installed(
+    tmp_path: Path, archive: list[str], llm: list[str], rc: int,
+) -> None:
+    assert _guard_rc(tmp_path, {"archive": archive, "onboard-llm": llm}) == rc
 
 
 def test_the_rerun_runs_only_when_failed_ids_says_true() -> None:

@@ -58,12 +58,25 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev --extra archive --extra onboard-llm
         timeout-minutes: 5
-      - name: The [archive] extra must be present, or the archive tests skip
+      # A package a test needs that is missing makes that test skip, not fail, so
+      # every requirement of these extras has to be installed before the suite. A
+      # package added to an extra joins this check.
+      - name: The extras the tests need must be installed, or those tests skip
         timeout-minutes: 1
-        run: uv run python -c "import cryptography"
-      - name: The [onboard-llm] extra must be present, or the SDK contract tests skip
-        timeout-minutes: 1
-        run: uv run python -c "import anthropic"
+        run: |
+          uv run python - <<'PY'
+          import importlib.metadata
+          import re
+          import tomllib
+          from pathlib import Path
+
+          table = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["optional-dependencies"]
+          for extra in ("archive", "onboard-llm"):
+              assert table[extra], f"the [{extra}] extra lists no package"
+              for requirement in table[extra]:
+                  name = re.match(r"[A-Za-z0-9._-]+", requirement).group()
+                  print(extra, name, importlib.metadata.version(name))
+          PY
       # Under `uv run`, or it records the runner's Python and not the leg's.
       - name: Record the leg's environment
         timeout-minutes: 1
