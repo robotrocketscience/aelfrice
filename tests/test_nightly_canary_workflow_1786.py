@@ -118,6 +118,7 @@ def test_the_jobs_and_their_needs_are_only_the_ones_that_exist() -> None:
 def test_the_suite_runs_the_canary_legs_and_one_report_only_leg_on_the_pinned_image() -> None:
     lines = [line.strip() for line in _job("suite")]
     assert _matrix_rows() == [("3.12", "true"), ("3.13", "true"), ("3.14", "false")]
+    assert _key("suite", "name") == "suite (${{ matrix.leg }})"
     assert _key("suite", "continue-on-error") == "${{ !matrix.canary }}"
     assert "fail-fast: false" in lines
     assert _key("suite", "runs-on") == _ci_key("runs-on")
@@ -139,8 +140,9 @@ def _cap(step: str) -> int | None:
 
 @pytest.mark.parametrize("job", ["suite", "triage", "publish", "report"])
 def test_every_step_has_a_cap_and_the_caps_fit_under_the_job(job: str) -> None:
-    """A job past its cap ends `cancelled`, and so does the run, and `triage` and
-    `publish` then lose the night. A step past its cap ends `failure` instead."""
+    """A job past its cap ends `cancelled`, and so does the run, and whether `triage`
+    and `publish` still run then is unverified. A step past its cap ends `failure`
+    instead."""
     steps = _steps(_job(job))
     assert steps
     missing = [s.splitlines()[0].strip() for s in steps if _cap(s) is None]
