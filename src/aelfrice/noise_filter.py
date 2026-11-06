@@ -252,6 +252,17 @@ _TRANSCRIPT_XML_PREFIXES: Final[tuple[str, ...]] = (
     # Other harness tags (<bash-input, <bash-stdout, <user-prompt-submit-hook)
     # are NOT added here — they are a separate inventory, not this block.
     "<local-command-caveat",
+    # Relay text from other agents: a teammate's brief, a background
+    # agent's report, another session's message, and the host's
+    # cross-session delivery and idle notices. The host writes each as a
+    # user record, so before this they were logged and stored as the
+    # user's own words. Shapes taken from real session files: 3,665
+    # teammate-message, 537 agent-message, 35 cross-session-message and
+    # 28 "[Cross-session ... notice]" user records.
+    "<teammate-message",
+    "<agent-message",
+    "<cross-session-message",
+    "[Cross-session ",
 )
 
 # #1025: a sentence that begins with a CLOSING tag ("</…") is a stray

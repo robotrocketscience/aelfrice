@@ -488,6 +488,9 @@ _SYSTEM_REMINDER_RE: Final[re.Pattern[str]] = re.compile(
 _HARNESS_BLOCK_TAGS: Final[tuple[str, ...]] = (
     "task-notification", "system-reminder", "tool-result",
     "cross-session-message", "aelfrice-worker-context",
+    # Relay from other agents: a teammate's brief and a background
+    # agent's report. The words are another agent's, not the user's.
+    "teammate-message", "agent-message",
     # A notice's own parts, cut even when its wrapper is missing.
     "task-id", "tool-use-id", "output-file", "status", "summary", "result",
     "usage",
@@ -507,6 +510,13 @@ _HARNESS_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
 _UNCLOSED_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
     r"^[ \t]*<(?:" + _TAG_ALT + r")\b[^>]*>.*\Z",
     re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+# The host's cross-session delivery and idle notices. They open on their own
+# line with no closing marker, so like an unclosed block they are cut from
+# the notice line to the end of the record.
+_CROSS_SESSION_NOTICE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*\[Cross-session [^\]\n]*\].*\Z",
+    re.DOTALL | re.MULTILINE,
 )
 # A slash command: its wrapper is followed by the command's expanded body,
 # which is the command's text and not the user's, so the record goes whole.
@@ -707,6 +717,7 @@ def _user_speech(text: str) -> str | None:
         return None
     rest = _HARNESS_BLOCK_RE.sub("", rest)
     rest = _UNCLOSED_BLOCK_RE.sub("", rest)
+    rest = _CROSS_SESSION_NOTICE_RE.sub("", rest)
     rest = _filter_pastes(rest).strip()
     return rest or None
 
