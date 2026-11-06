@@ -165,7 +165,10 @@ re-initializes it. Every git call here, and the step and its children, run
 without git's repository variables. Every git call in the clone, and the step and its
 children, also run with `GIT_CEILING_DIRECTORIES` set to the clone's parent. A
 clone that lost its `.git` then gives "not a git repository", and git cannot find
-a repository above it, even with the temporary folder inside one.
+a repository above it, even with the temporary folder inside one. The step and its
+children also run without the variables that point `uv` at another project, and
+with `TMPDIR` at the clone's parent, so what `uv` and pytest leave there, such as
+`uv`'s lock file for that clone, goes with the run.
 
 The step. It first deletes what the commit before left in the clone, ignored files
 too, with `git clean -ffdxq --exclude=.venv`, so each commit is judged on its own
@@ -334,6 +337,8 @@ _OUTPUT_TAIL_LINES = 40
 _CLONE_NAME = "nightly-bisect"
 # Names that clone to the step, the one place the step may delete files.
 _CLONE_ENV = "NIGHTLY_BISECT_CLONE"
+# What points `uv` at a project or an environment other than the clone's.
+_UV_TARGET_VARS = ("UV_PROJECT", "UV_PROJECT_ENVIRONMENT", "UV_WORKING_DIR")
 _MAX_SECONDS = 7 * 24 * 3600
 
 REASON_BUDGET = "budget"
@@ -750,12 +755,15 @@ def run_group(
     Status None is a timeout; a missing program is status 127. Output goes
     to a temporary file, not a pipe, so a process that escapes the group
     cannot keep this call waiting. With `capture` the output is stdout and
-    stderr together. With `clone`, git stops at its folder and the step can
-    tell it is in that clone.
+    stderr together. With `clone`, git stops at its folder, the step can tell
+    it is in that clone, and `uv` and temporary files stay with it.
     """
     env = repo_free_env(clone.parent if clone else None)
     if clone:
         env[_CLONE_ENV] = str(clone)
+        env["TMPDIR"] = str(clone.parent)
+        for var in _UV_TARGET_VARS:
+            env.pop(var, None)
     with tempfile.TemporaryFile() as out:
         try:
             proc = subprocess.Popen(

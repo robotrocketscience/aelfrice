@@ -170,7 +170,8 @@ sys.exit(1 if failing else 0)
 # FAKE_UV_JUNIT=missing leaves out and FAKE_UV_JUNIT=corrupt makes unreadable.
 # Each call is logged. FAKE_UV_HANG=<stage> makes that stage (sync, collect
 # or run) sleep with a child that sleeps too. FAKE_UV_RESIDUE keeps `state.db`
-# in the folder, and every test fails when it comes from another commit.
+# in the folder, and every test fails when it comes from another commit. Like
+# real `uv`, it leaves a lock file in `TMPDIR`.
 _FAKE_UV = '''\
 import json, os, re, subprocess, sys, time
 from pathlib import Path
@@ -182,6 +183,9 @@ with open(os.environ["FAKE_ENV_LOG"], "a", encoding="utf-8") as fh:
     fh.write(f"uv {stage} {os.environ.get('GIT_DIR')}\\n")
 with open(os.environ["FAKE_CEILING_LOG"], "a", encoding="utf-8") as fh:
     fh.write(f"uv {stage} {os.environ.get('GIT_CEILING_DIRECTORIES')}\\n")
+with open(os.environ["FAKE_UV_TARGET_LOG"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps({k: v for k, v in os.environ.items() if k in ("UV_PROJECT", "UV_PROJECT_ENVIRONMENT", "UV_WORKING_DIR")}) + "\\n")
+Path(os.environ["TMPDIR"], "uv-fake.lock").touch()
 if os.environ.get("FAKE_UV_HANG") == stage:
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     with open(os.environ["FAKE_PIDS"], "a", encoding="utf-8") as fh:
@@ -291,6 +295,7 @@ class Env:
         self.pids_file = root / "pids.txt"
         self.env_log = root / "env.log"
         self.ceiling_log = root / "ceiling.log"
+        self.uv_target_log = root / "uv-target.log"
         self.tmp = root / "tmp"
         self.fake_step = _executable(root / "fake_step.py", _FAKE_STEP)
 
@@ -366,6 +371,9 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
     monkeypatch.setenv("FAKE_PIDS", str(e.pids_file))
     monkeypatch.setenv("FAKE_ENV_LOG", str(e.env_log))
     monkeypatch.setenv("FAKE_CEILING_LOG", str(e.ceiling_log))
+    monkeypatch.setenv("FAKE_UV_TARGET_LOG", str(e.uv_target_log))
+    for var in nb._UV_TARGET_VARS:
+        monkeypatch.delenv(var, raising=False)
     for var in ("FAKE_ABORT_AFTER", "FAKE_ABORT_CHECK", "FAKE_EXITS", "FAKE_FLAKES", "FAKE_NO_FAILED", "FAKE_DIRTY",
                 "FAKE_HANG", "FAKE_READONLY", "FAKE_TAMPER", "FAKE_CALLER", "FAKE_STATUS_LOG", "FAKE_GIT_STATE", "FAKE_UV_HANG",
                 "FAKE_UV_JUNIT", "FAKE_UV_RESIDUE", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL", "FAKE_GH_HANG", nb._CLONE_ENV):
@@ -1537,6 +1545,22 @@ def test_a_temporary_location_in_another_case_is_still_the_clone(
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})
     assert rc == 0, result
     assert result["events"] == [nb.event_for_culprit(shas[1], 7, [_A], shas[0])]
+
+
+def test_uv_cannot_be_pointed_at_the_caller_and_leaves_no_lock_behind(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real `uv` rewrites what those variables name, and writes one lock file per
+    clone path in `TMPDIR`."""
+    shas = env.repo(["", "", "a", "a"])
+    for var in ("UV_PROJECT", "UV_PROJECT_ENVIRONMENT", "UV_WORKING_DIR"):
+        monkeypatch.setenv(var, str(tmp_path / "caller"))
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A,
+                            points={shas[1]: 21, shas[2]: 22, shas[3]: 23}, step=False)
+    assert rc == 0, result
+    rows = env.uv_target_log.read_text(encoding="utf-8").splitlines()
+    assert rows and set(rows) == {"{}"}
+    assert list(env.tmp.iterdir()) == []
 
 
 def test_a_subfolder_as_the_repository_means_its_toplevel(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
