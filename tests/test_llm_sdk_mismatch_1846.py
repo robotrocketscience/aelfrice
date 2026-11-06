@@ -500,3 +500,170 @@ def test_installed_sdk_rate_limit_falls_back_with_requests_1(
     assert rc == 0
     assert _RateLimited.hits >= 1
     assert "requests=1 " in out.getvalue()
+
+
+# --- A rejected request warns once and carries on ------------------------
+
+
+_REJECTED = [400, 404, 413, 422]
+_NOT_REJECTED = [401, 403, 408, 409, 429, 500, 503, 529]
+
+
+@pytest.mark.parametrize("status", _REJECTED)
+def test_rejected_status_names_itself_and_counts_the_request(status: int) -> None:
+    result = _batch(_raising(_StatusError(status)))
+    assert result.fallback_used
+    assert result.rejection is not None
+    assert result.rejection.startswith(f"status {status}: ")
+    assert result.telemetry.requests == 1
+
+
+@pytest.mark.parametrize("status", _NOT_REJECTED)
+def test_other_status_is_not_a_rejection(status: int) -> None:
+    assert _batch(_raising(_StatusError(status))).rejection is None
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        _connection_error(ConnectError),
+        _connection_error(ReadTimeout),
+        OSError("network unreachable"),
+    ],
+    ids=["refused", "read-timeout", "raw-OSError"],
+)
+def test_network_fault_is_not_a_rejection(exc: Exception) -> None:
+    assert _batch(_raising(exc)).rejection is None
+
+
+def test_rejection_text_is_one_bounded_line() -> None:
+    exc = _StatusError(413)
+    exc.args = ("<html>\n" + "<p>too large</p>\n" * 200,)
+    rejection = _batch(_raising(exc)).rejection
+    assert rejection is not None
+    assert "\n" not in rejection
+    detail = rejection.removeprefix("status 413: ")
+    assert detail.startswith("<html> <p>too large</p>")
+    assert len(detail) == 200
+
+
+def test_router_keeps_the_first_rejection_across_batches() -> None:
+    router = llm.ScannerRouter(api_key="k", sdk_module=_raising(_StatusError(400)))
+    candidate = SimpleNamespace(text="a sentence", source="doc:a.md:p1")
+    router.classify([candidate])
+    first = router.rejection
+    assert first is not None and first.startswith("status 400: ")
+    router._sdk_module = _raising(_StatusError(404))  # pyright: ignore[reportPrivateUsage]
+    router.classify([candidate])
+    assert router.rejection == first
+
+
+def _warnings(err: str) -> list[str]:
+    return [ln for ln in err.splitlines() if "rejected the classifier request" in ln]
+
+
+@pytest.mark.parametrize("status", _REJECTED)
+@pytest.mark.parametrize(
+    "argv",
+    [["--llm-classify"], []],
+    ids=["explicit-flag", "default-on"],
+)
+def test_onboard_warns_once_on_a_rejection_and_finishes_on_regex(
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    status: int,
+) -> None:
+    _use_sdk(monkeypatch, _raising(_StatusError(status)))
+
+    out = io.StringIO()
+    rc = cli_module.main(["onboard", str(project), *argv], out=out)
+
+    assert rc == 0
+    warnings = _warnings(capsys.readouterr().err)
+    assert len(warnings) == 1
+    assert f"status {status}: " in warnings[0]
+    assert "regex classifier" in warnings[0]
+    assert "requests=1 " in out.getvalue()
+    store = _open_db(tmp_path)
+    try:
+        assert store.count_beliefs() > 0
+        assert any(
+            e.source.startswith("onboard.llm.fallback")
+            for e in store.list_feedback_events()
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("status", _REJECTED)
+def test_doctor_warns_once_on_a_rejection_and_skips_the_orphans(
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    status: int,
+) -> None:
+    _seed_orphan(tmp_path)
+    _use_sdk(monkeypatch, _raising(_StatusError(status)))
+
+    out = io.StringIO()
+    rc = cli_module.main(["doctor", "--classify-orphans"], out=out)
+
+    assert rc == 0
+    warnings = _warnings(capsys.readouterr().err)
+    assert len(warnings) == 1
+    assert f"status {status}: " in warnings[0]
+    assert "No beliefs updated" in warnings[0]
+    assert "requests=1 " in out.getvalue()
+    store = _open_db(tmp_path)
+    try:
+        belief = store.get_belief("orphan1846")
+        assert belief is not None and belief.type == "unknown"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("status", [429, 500, 529])
+@pytest.mark.parametrize(
+    "argv",
+    [["onboard", "@P", "--llm-classify"], ["doctor", "--classify-orphans"]],
+    ids=["onboard", "doctor"],
+)
+def test_other_fallback_status_stays_silent(
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    status: int,
+) -> None:
+    _seed_orphan(tmp_path)
+    _use_sdk(monkeypatch, _raising(_StatusError(status)))
+
+    args = [str(project) if a == "@P" else a for a in argv]
+    rc = cli_module.main(args, out=io.StringIO())
+
+    assert rc == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_successful_run_prints_no_warning(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def _create(**kwargs: Any) -> Any:
+        count = kwargs["messages"][0]["content"].count('"index"')
+        row = '{"belief_type":"factual","origin":"agent_inferred","persist":true}'
+        text = "[" + ",".join([row] * count) + "]"
+        return SimpleNamespace(content=[SimpleNamespace(text=text)], usage=None)
+
+    _use_sdk(monkeypatch, _client_with(_create))
+
+    rc = cli_module.main(["onboard", str(project), "--llm-classify"], out=io.StringIO())
+
+    assert rc == 0
+    assert capsys.readouterr().err == ""

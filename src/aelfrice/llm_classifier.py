@@ -41,7 +41,8 @@ Failure semantics (docs/design/llm_classifier.md § 7):
   - Any other exception from the SDK call, such as a `TypeError` when the
     installed SDK doesn't take the classifier's keywords → DO NOT fall
     back. Exit 1, no beliefs inserted, error message names the exception.
-    Rejected 4xx responses other than 401/403 still fall back.
+  - 400/404/413/422 → fall back as above, and print one stderr warning
+    per run naming the status. The request was sent, so it counts.
   - Token cap exceeded → exit 1 with partial-insertion message; the
     deterministic belief id ensures a re-run resumes from the cap-hit
     point.
@@ -115,6 +116,13 @@ _NOT_SENT_CAUSES: Final[frozenset[str]] = frozenset({
     "ProxyError",
     "UnsupportedProtocol",
 })
+
+# Responses that reject this request rather than report a passing fault. The
+# run still falls back, and the user gets one warning naming the status.
+_REJECTED_STATUSES: Final[frozenset[int]] = frozenset({400, 404, 413, 422})
+
+# Bound on the error text in that warning. A proxy can answer 413 with a page.
+_REJECTION_DETAIL_CHARS: Final[int] = 200
 
 
 # --- Config dataclass ----------------------------------------------------
@@ -748,12 +756,20 @@ class LLMTransientError(Exception):
     """Raised on connect/timeout/429/5xx/malformed. Triggers regex fallback.
 
     `request_sent` says whether a request left the machine, which decides
-    the telemetry's `requests` count on the fallback path.
+    the telemetry's `requests` count on the fallback path. `rejection` names
+    the status and error when the API rejected the request.
     """
 
-    def __init__(self, message: str, *, request_sent: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_sent: bool = False,
+        rejection: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.request_sent = request_sent
+        self.rejection = rejection
 
 
 class LLMSDKMismatchError(Exception):
@@ -881,7 +897,9 @@ def _call_anthropic(
         if not _falls_back(exc):
             raise LLMSDKMismatchError(f"{type(exc).__name__}: {exc}") from exc
         raise LLMTransientError(
-            str(exc), request_sent=_request_was_sent(exc),
+            str(exc),
+            request_sent=_request_was_sent(exc),
+            rejection=_rejection(exc),
         ) from exc
 
     text = _extract_text_from_response(resp)
@@ -938,6 +956,15 @@ def _request_was_sent(exc: BaseException) -> bool:
     return type(exc.__cause__).__name__ not in _NOT_SENT_CAUSES
 
 
+def _rejection(exc: BaseException) -> str | None:
+    """Return `status <n>: <error>` for a rejected request, else None."""
+    status = getattr(exc, "status_code", None)
+    if status not in _REJECTED_STATUSES:
+        return None
+    detail = " ".join(str(exc).split())[:_REJECTION_DETAIL_CHARS]
+    return f"status {status}: {detail}"
+
+
 def _extract_text_from_response(resp: Any) -> str:
     """Pluck the text block off an Anthropic response.
 
@@ -986,7 +1013,8 @@ class BatchResult:
     `fallback_used=True` means every candidate was reclassified by
     the regex fallback. `auth_error` is non-None for 401/403, and
     `sdk_mismatch_error` is non-None when the SDK call itself failed;
-    the caller exits 1 in both cases.
+    the caller exits 1 in both cases. `rejection` is non-None when the
+    API rejected the request; the caller warns once and carries on.
     """
 
     classifications: list[CandidateClassification] = field(
@@ -995,6 +1023,7 @@ class BatchResult:
     telemetry: BatchTelemetry = field(default_factory=BatchTelemetry)
     fallback_used: bool = False
     fallback_reason: str | None = None
+    rejection: str | None = None
     auth_error: str | None = None
     sdk_mismatch_error: str | None = None
     token_cap_exceeded: bool = False
@@ -1060,6 +1089,7 @@ def classify_batch(
         result.fallback_used = True
         result.fallback_reason = type(exc).__name__ + ":transient"
         result.telemetry.fallbacks = len(candidates)
+        result.rejection = exc.rejection
         result.telemetry.requests = int(exc.request_sent)
         return result
 
@@ -1142,6 +1172,8 @@ class ScannerRouter:
         self._max_tokens = max_tokens
         self._sdk_module = sdk_module
         self.telemetry = BatchTelemetry()
+        # The first rejection of the run, for the CLI's one warning.
+        self.rejection: str | None = None
 
     @property
     def model(self) -> str:
@@ -1196,6 +1228,7 @@ class ScannerRouter:
         self.telemetry.requests += batch.telemetry.requests
         self.telemetry.fallbacks += batch.telemetry.fallbacks
         self.telemetry.skipped_invalid += batch.telemetry.skipped_invalid
+        self.rejection = self.rejection or batch.rejection
 
         routes: list[Any] = []
         if batch.fallback_used:

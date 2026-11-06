@@ -2654,6 +2654,7 @@ class OrphanRunReport:
     requests: int = 0
     fallbacks: int = 0
     model: str = ""
+    rejection: str | None = None
 
 
 def classify_orphans(
@@ -2724,6 +2725,7 @@ def classify_orphans(
     report.output_tokens = tel.output_tokens
     report.requests = tel.requests
     report.fallbacks = tel.fallbacks
+    report.rejection = batch.rejection
 
     # Auth failure: propagate so CLI can exit 1.
     if batch.auth_error is not None:

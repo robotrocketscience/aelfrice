@@ -514,8 +514,13 @@ match the installed SDK, and a re-run fails the same way. The error names
 the exception. `aelf doctor --classify-orphans` shares the call and exits
 1 the same way, with no beliefs updated.
 
-Other rejected 4xx responses, such as 400 and 404, aren't in the trigger
-list above, but they also fall back.
+### Rejected-request behavior
+
+A 400, 404, 413, or 422 response means the API rejected the request. The run
+falls back as listed above and exits 0, and stderr gets one warning per run
+with the status and the error. The request was sent, so `requests` counts it.
+`aelf doctor --classify-orphans` has no regex path: it prints the same warning,
+skips every orphan, and exits 0.
 
 ### Token-cap behaviour
 
