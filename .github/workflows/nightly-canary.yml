@@ -29,30 +29,41 @@ jobs:
     # A dispatch from any other branch would test a commit main never had.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # Green legs take 12.5 to 14 minutes. The suite and the rerun carry their
-    # own caps, below this one, because a step past its cap ends `failure` and
-    # the steps after it still run, while a job past its cap ends `cancelled`.
-    timeout-minutes: 35
+    # A job that reaches its cap ends `cancelled`, and so does the run, whatever
+    # `continue-on-error` says: mutation.yml's 60-minute timeouts on runs
+    # 41401037793 and 39564214136 ended that way. `triage` and `publish` don't
+    # run after that, which would lose the night. So every step here and in those
+    # jobs carries its own `timeout-minutes`, and a job's step caps add up to
+    # less than its own, with room left for the actions' post steps. A step past
+    # its cap ends `failure`, and the jobs after it still run. Green legs take
+    # 12.5 to 14 minutes.
+    timeout-minutes: 52
     strategy:
       fail-fast: false
       matrix:
         leg: ['3.12', '3.13']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        timeout-minutes: 3
         with:
           python-version: ${{ matrix.leg }}
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev --extra archive --extra onboard-llm
+        timeout-minutes: 5
       - name: The [archive] extra must be present, or the archive tests skip
+        timeout-minutes: 1
         run: uv run python -c "import cryptography"
       - name: The [onboard-llm] extra must be present, or the SDK contract tests skip
+        timeout-minutes: 1
         run: uv run python -c "import anthropic"
       # Under `uv run`, or it records the runner's Python and not the leg's.
       - name: Record the leg's environment
+        timeout-minutes: 1
         run: uv run python scripts/nightly_canary.py env --out bundle/env.json
       # `continue-on-error` is for the cap: a hang still gets a verdict and an
       # upload. A test failure is an exit status here and fails nothing yet.
@@ -68,6 +79,7 @@ jobs:
       # The verdict reads a bad report on its own.
       - name: List the failed tests
         id: failed
+        timeout-minutes: 1
         if: steps.suite.outputs.rc == '1'
         run: |
           rc=0
@@ -87,6 +99,7 @@ jobs:
       # An empty rc is a step its cap killed. 124 stands in for it: not 0 or 1,
       # so the leg reads as broken and the rerun does not count.
       - name: Sort the red tests into flaky and confirmed
+        timeout-minutes: 1
         env:
           SUITE_RC: ${{ steps.suite.outputs.rc }}
           RERAN: ${{ steps.failed.outputs.rerun }}
@@ -100,6 +113,7 @@ jobs:
           uv run python scripts/nightly_canary.py verdict "${args[@]}"
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        timeout-minutes: 2
         with:
           name: nightly-${{ matrix.leg }}-${{ github.sha }}-a${{ github.run_attempt }}
           path: bundle/
@@ -107,12 +121,13 @@ jobs:
 
   triage:
     needs: suite
-    # `!cancelled()` so a red leg reaches its record. The ref test because a
-    # skipped `suite` does not skip this job under `!cancelled()`.
+    # `!cancelled()` so a red leg reaches its record, while a manual cancel still
+    # stops the run. The ref test because a skipped `suite` does not skip this
+    # job under `!cancelled()`.
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
-    # The step caps below add up to less than this.
-    timeout-minutes: 30
+    # The `suite` job's comment says why the step caps add up to less than this.
+    timeout-minutes: 50
     permissions:
       contents: read
       # The run's `created_at`.
@@ -123,18 +138,21 @@ jobs:
       # Full history: `nightly_bisect.py` clones this checkout with `--shared`,
       # and that clone needs `--good`, `--bad`, and every commit between them.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
         with:
           persist-credentials: false
           fetch-depth: 0
       # No Python here: the drift check and the bisect name the leg's with
       # `--python`, and the scripts run on the image's python3.
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        timeout-minutes: 3
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       # A failed download is a leg with no bundle, which the record reads as
       # missing. Each artifact lands in a folder of its own name.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        timeout-minutes: 3
         continue-on-error: true
         with:
           pattern: nightly-*-${{ github.sha }}-a*
@@ -143,6 +161,7 @@ jobs:
       # same record and `publish` accepts it. The clock is only for a failed
       # lookup: a record with a later date beats no record.
       - name: Build the night's record
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -161,6 +180,7 @@ jobs:
       # baseline. `regressions` exits 2 on a missing folder, so that night makes
       # an empty one.
       - name: Compare with the last green night
+        timeout-minutes: 2
         run: |
           set -euo pipefail
           rc=0
@@ -302,6 +322,7 @@ jobs:
           done
       # After a bisect that died too: a test no result names gets a range event.
       - name: Add the bisect's events to the triage
+        timeout-minutes: 1
         if: ${{ !cancelled() && steps.sort.outputs.legs != '' }}
         env:
           GOOD: ${{ steps.sort.outputs.good }}
@@ -339,6 +360,7 @@ jobs:
       # reads the newest. A failed step above still keeps the record.
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        timeout-minutes: 2
         with:
           name: nightly-triage-${{ github.sha }}
           path: night/
@@ -349,22 +371,25 @@ jobs:
     needs: [suite, triage]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: write
     # No setup-uv: `nightly_canary.py` is standard library only, and this job
     # holds the write token, so it installs nothing and runs no test.
     steps:
       - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        timeout-minutes: 2
         with:
           egress-policy: audit
       # Full history: `publish` moves `last-green.json` only to a commit on main
       # that descends from the old one, and reads that from this checkout.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
         with:
           persist-credentials: true
           fetch-depth: 0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        timeout-minutes: 2
         with:
           name: nightly-triage-${{ github.sha }}
           path: night
@@ -373,6 +398,7 @@ jobs:
       # its writes when a pointer needs attention, so the night lands and then
       # the job fails.
       - name: Write the night to test-results
+        timeout-minutes: 5
         env:
           # Unsigned: the main ruleset's signature rule does not cover this branch.
           GIT_AUTHOR_NAME: aelfrice-nightly-bot

@@ -19,7 +19,9 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
-from tests.test_workflow_supply_chain_1786 import _jobs, _step_uses, _steps, _with_input
+import pytest
+
+from tests.test_workflow_supply_chain_1786 import _jobs, _step_lines, _step_uses, _steps, _with_input
 
 _REPO = Path(__file__).resolve().parents[1]
 _WORKFLOW = _REPO / ".github" / "workflows" / "nightly-canary.yml"
@@ -105,6 +107,28 @@ def test_the_suite_runs_only_the_canary_legs_on_the_pinned_image() -> None:
 
 def _ci_key(key: str) -> str:
     return next(line.split(":", 1)[1].strip() for line in _ci_job() if line.startswith(f"    {key}:"))
+
+
+def _cap(step: str) -> int | None:
+    """The step's own `timeout-minutes`, or None."""
+    key_indent, lines = _step_lines(step)
+    for indent, text in lines:
+        key, _, value = text.partition(":")
+        if indent == key_indent and key == "timeout-minutes":
+            return int(value)
+    return None
+
+
+@pytest.mark.parametrize("job", ["suite", "triage", "publish"])
+def test_every_step_has_a_cap_and_the_caps_fit_under_the_job(job: str) -> None:
+    """A job past its cap ends `cancelled`, and so does the run, and `triage` and
+    `publish` then lose the night. A step past its cap ends `failure` instead."""
+    steps = _steps(_job(job))
+    assert steps
+    missing = [s.splitlines()[0].strip() for s in steps if _cap(s) is None]
+    assert missing == []
+    total = sum(_cap(s) or 0 for s in steps)
+    assert total < int(_key(job, "timeout-minutes")), total
 
 
 def test_only_main_reaches_each_job() -> None:
