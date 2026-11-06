@@ -459,32 +459,74 @@ def test_a_night_on_the_last_green_commit_bisects_nothing(tmp_path: Path) -> Non
     assert outputs["legs"] == ""
 
 
-def test_the_bisects_events_reach_the_triage_and_no_test_is_lost(tmp_path: Path) -> None:
+def test_a_failed_checkout_of_the_last_green_commit_leaves_the_tests_to_bisect(tmp_path: Path) -> None:
+    _repo(tmp_path)
+    green = "f" * 40
+    triage = _triage(
+        green, candidates=[_candidate("regresses", ["3.13"])],
+        drift_check={"sha": green, "legs": {"3.13": _ask(["regresses"])}},
+    )
+    after, outputs = _sort(tmp_path, triage, {"3.13": ["tests/regresses.py::t"]})
+    assert outputs == {"legs": "3.13", "good": green}
+    assert _tests(after["candidates"]) == ["regresses"]
+    assert after["events"] == []
+    assert not (tmp_path / "stub.log").exists()
+
+
+_GOOD, _BAD = "a" * 40, "b" * 40
+
+
+def _add_events(tmp_path: Path, triage: dict[str, Any], legs: str, results: dict[str, Any]) -> dict[str, Any]:
+    """Run the add-events step's Python; the triage after it."""
     (tmp_path / "scripts").mkdir()
     shutil.copy(_REPO / "scripts" / "nightly_bisect.py", tmp_path / "scripts" / "nightly_bisect.py")
     night = tmp_path / "night"
     night.mkdir()
-    good, bad = "a" * 40, "b" * 40
-    part = {"format": 1, "candidates": [_candidate("found", ["3.13"]), _candidate("lost", ["3.13"])],
-            "new_failing": [], "collection_errors": []}
-    (night / "triage.json").write_text(json.dumps(_triage(good)), encoding="utf-8")
-    (night / "bisect-3.13.json").write_text(json.dumps(part), encoding="utf-8")
-    (night / "bisect-3.12.json").write_text(json.dumps({**part, "candidates": [_candidate("died", ["3.12"])]}), encoding="utf-8")
-    event = {"key": "pr-7", "kind": "pr", "pr": 7, "sha": bad, "preceding": good, "tests": ["found"]}
-    (night / "bisect-3.13-result.json").write_text(
-        json.dumps({"complete": True, "merge_points": 3, "rounds": [{"log": "x"}], "reset_errors": [], "events": [event]}),
-        encoding="utf-8",
-    )
-    block = tmp_path / "merge_block.py"
+    (night / "triage.json").write_text(json.dumps(triage), encoding="utf-8")
+    for leg, result in results.items():
+        (night / f"bisect-{leg}-result.json").write_text(json.dumps(result), encoding="utf-8")
+    block = tmp_path / "add_events_block.py"
     block.write_text(_inline_python("triage", "Add the bisect's events to the triage"), encoding="utf-8")
     r = subprocess.run(
         [sys.executable, str(block)], cwd=tmp_path, capture_output=True, text=True, timeout=60, check=False,
-        env={**os.environ, "LEGS": "3.12 3.13", "GOOD": good, "GITHUB_SHA": bad},
+        env={**os.environ, "LEGS": legs},
     )
     assert r.returncode == 0, r.stdout + r.stderr
-    after = json.loads((night / "triage.json").read_text(encoding="utf-8"))
+    return json.loads((night / "triage.json").read_text(encoding="utf-8"))
+
+
+def test_the_bisects_events_reach_the_triage_and_no_test_is_lost(tmp_path: Path) -> None:
+    triage = _triage(_GOOD, candidates=[
+        _candidate("found", ["3.13"]), _candidate("lost", ["3.13"]), _candidate("died", ["3.12"]),
+    ])
+    event = {"key": "pr-7", "kind": "pr", "pr": 7, "sha": _BAD, "preceding": _GOOD, "tests": ["found"]}
+    result = {"complete": True, "merge_points": 3, "rounds": [{"log": "x"}], "reset_errors": [], "events": [event]}
+    after = _add_events(tmp_path, triage, "3.12 3.13", {"3.13": result})
     by_key = {e["key"]: e for e in after["events"]}
     assert by_key["pr-7"]["tests"] == ["found"]
-    assert by_key[f"range-{good[:12]}-{bad[:12]}"]["reasons"] == {"died": "no result", "lost": "no result"}
+    assert by_key[f"range-{_GOOD[:12]}-{_BAD[:12]}"]["reasons"] == {"died": "no result", "lost": "no result"}
     assert after["bisect"]["3.13"]["rounds"] == [{"log": "x"}]
     assert after["bisect"]["3.12"]["complete"] is None
+
+
+def test_a_sort_step_that_died_leaves_no_row_without_an_event(tmp_path: Path) -> None:
+    """A dead step writes no `legs`, so nothing was bisected and every row is left."""
+    triage = _triage(
+        _GOOD, candidates=[_candidate("candidate", ["3.13"])], new_failing=[_candidate("is_new", ["3.12"])],
+        collection_errors=[_row("::tests.broken", ["3.13"], module="tests/broken.py")],
+    )
+    after = _add_events(tmp_path, triage, "", {})
+    assert [e["key"] for e in after["events"]] == [f"range-{_GOOD[:12]}-{_BAD[:12]}"]
+    assert after["events"][0]["reasons"] == {t: "no result" for t in ("candidate", "is_new", "::tests.broken")}
+    assert after["bisect"] == {}
+
+
+@pytest.mark.parametrize("green", [None, _BAD], ids=["no baseline", "on the last green commit"])
+def test_a_dead_sort_step_has_no_range_to_name_without_two_commits(tmp_path: Path, green: str | None) -> None:
+    triage = _triage(green, collection_errors=[_row("::tests.broken", ["3.13"], module="tests/broken.py")])
+    assert _add_events(tmp_path, triage, "", {})["events"] == []
+
+
+def test_the_add_events_step_also_runs_after_a_dead_sort_step() -> None:
+    step = _step("triage", "Add the bisect's events to the triage")
+    assert "if: ${{ !cancelled() && (steps.sort.outputs.legs != '' || steps.sort.outcome == 'failure') }}" in step

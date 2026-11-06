@@ -232,9 +232,14 @@ jobs:
           triage = json.loads((night / "triage.json").read_text(encoding="utf-8"))
           check = triage["drift_check"]
           drifted: dict[str, set[str]] = {}
+          tree = Path(os.environ["RUNNER_TEMP"]) / "last-green-tree"
           if check:
-              tree = Path(os.environ["RUNNER_TEMP"]) / "last-green-tree"
-              subprocess.run(["git", "worktree", "add", "--detach", str(tree), check["sha"]], check=True, timeout=120)
+              try:
+                  subprocess.run(["git", "worktree", "add", "--detach", str(tree), check["sha"]], check=True, timeout=120)
+              except (OSError, subprocess.SubprocessError) as exc:
+                  print(f"::warning::no drift check, so its tests stay to bisect: {exc}")
+                  check = None
+          if check:
               script = Path("scripts/nightly_bisect.py").resolve()
               deadline = time.monotonic() + BUDGET_SECONDS
               for leg, asked in check["legs"].items():
@@ -325,12 +330,12 @@ jobs:
               echo "::warning::the bisect on $leg exited $rc"
             fi
           done
-      # After a bisect that died too: a test no result names gets a range event.
+      # After a bisect or a Sort step that died too: a test still in the triage
+      # that no result names gets a range event, so it doesn't end with no event.
       - name: Add the bisect's events to the triage
         timeout-minutes: 1
-        if: ${{ !cancelled() && steps.sort.outputs.legs != '' }}
+        if: ${{ !cancelled() && (steps.sort.outputs.legs != '' || steps.sort.outcome == 'failure') }}
         env:
-          GOOD: ${{ steps.sort.outputs.good }}
           LEGS: ${{ steps.sort.outputs.legs }}
         run: |
           set -euo pipefail
@@ -346,19 +351,21 @@ jobs:
           night = Path("night")
           triage = json.loads((night / "triage.json").read_text(encoding="utf-8"))
           triage["bisect"] = {}
+          named: set[str] = set()
           for leg in os.environ["LEGS"].split():
-              part = json.loads((night / f"bisect-{leg}.json").read_text(encoding="utf-8"))
               found = night / f"bisect-{leg}-result.json"
               result = json.loads(found.read_text(encoding="utf-8")) if found.is_file() else {}
-              events = result.get("events", [])
-              for event in events:
+              for event in result.get("events", []):
                   add_event(triage["events"], event)
-              named = {t for event in events for t in event["tests"]}
-              rows = [row for key in ("candidates", "new_failing", "collection_errors") for row in part[key]]
+                  named.update(event["tests"])
+              triage["bisect"][leg] = {k: result.get(k) for k in ("complete", "merge_points", "rounds", "reset_errors")}
+          # With no baseline, or on its commit, there is no range to name.
+          green = (triage["last_green"] or {}).get("sha")
+          if green and green != triage["sha"]:
+              rows = [row for key in ("candidates", "new_failing", "collection_errors") for row in triage[key]]
               lost = [row["test"] for row in rows if row["test"] not in named]
               if lost:
-                  add_event(triage["events"], event_for_range(os.environ["GOOD"], os.environ["GITHUB_SHA"], lost, "no result"))
-              triage["bisect"][leg] = {k: result.get(k) for k in ("complete", "merge_points", "rounds", "reset_errors")}
+                  add_event(triage["events"], event_for_range(green, triage["sha"], lost, "no result"))
           (night / "triage.json").write_text(json.dumps(triage, indent=1, sort_keys=True) + "\n", encoding="utf-8")
           PY
       # One name for every attempt, so a re-run job replaces it and `publish`
