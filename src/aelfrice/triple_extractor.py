@@ -113,16 +113,33 @@ class _RelationPattern:
     template: str
 
 
-def _build_pattern(template: str, edge_type: str, *, swap: bool = False) -> _RelationPattern:
+def _build_pattern(
+    template: str,
+    edge_type: str,
+    *,
+    swap: bool = False,
+    exact_verb_case: bool = False,
+) -> _RelationPattern:
     """Compile a template like 'supports' or 'is supported by' into a
     full regex with NP captures around it. The verb phrase tokens are
     space-separated; `\\s+` is inserted between each so multi-space
     inputs still match.
+
+    `exact_verb_case` ignores case in the noun phrases only, so the verb
+    has to appear as the template spells it.
     """
     verb_pattern = r"\s+".join(re.escape(t) for t in template.split())
-    full = rf"(?<![\w-]){_np('subject')}\s+{verb_pattern}\s+{_np('object')}"
+    if exact_verb_case:
+        full = (
+            rf"(?<![\w-])(?i:{_np('subject')})\s+{verb_pattern}"
+            rf"\s+(?i:{_np('object')})"
+        )
+        regex = re.compile(full)
+    else:
+        full = rf"(?<![\w-]){_np('subject')}\s+{verb_pattern}\s+{_np('object')}"
+        regex = re.compile(full, re.IGNORECASE)
     return _RelationPattern(
-        regex=re.compile(full, re.IGNORECASE),
+        regex=regex,
         edge_type=edge_type,
         swap=swap,
         template=template,
@@ -192,6 +209,9 @@ _PATTERNS: Final[tuple[_RelationPattern, ...]] = (
 # / `succeeds` for `follows`, `is supported by` for `supports`. TESTS lost
 # both of its single-token forms, so the two passive multi-token forms #1376
 # names as the obvious replacement are added here — ingest-side only.
+#
+# #1874: the verb's case is exact here, because 17 of 40 stored edges came
+# from an uppercase edge-type name used as a noun ("the SUPERSEDES writer").
 _INGEST_EXCLUDED_TEMPLATES: Final[frozenset[str]] = frozenset({
     "supports",
     "replaces",
@@ -202,12 +222,14 @@ _INGEST_EXCLUDED_TEMPLATES: Final[frozenset[str]] = frozenset({
 })
 
 _INGEST_ADDITIONAL_PATTERNS: Final[tuple[_RelationPattern, ...]] = (
-    _build_pattern("is tested by", EDGE_TESTS, swap=True),
-    _build_pattern("is covered by", EDGE_TESTS, swap=True),
+    _build_pattern("is tested by", EDGE_TESTS, swap=True, exact_verb_case=True),
+    _build_pattern("is covered by", EDGE_TESTS, swap=True, exact_verb_case=True),
 )
 
 _INGEST_PATTERNS: Final[tuple[_RelationPattern, ...]] = tuple(
-    p for p in _PATTERNS if p.template not in _INGEST_EXCLUDED_TEMPLATES
+    _build_pattern(p.template, p.edge_type, swap=p.swap, exact_verb_case=True)
+    for p in _PATTERNS
+    if p.template not in _INGEST_EXCLUDED_TEMPLATES
 ) + _INGEST_ADDITIONAL_PATTERNS
 
 
@@ -271,8 +293,9 @@ def extract_triples(
 
     `constrain_collision_verbs` selects the ingest-constrained bank
     (`_INGEST_PATTERNS`): the six single-token templates that double as
-    plural nouns are dropped and TESTS' two passive forms are added. Each
-    match stays on one line of `text` (#1874). It defaults to False so the read path is unchanged — operator
+    plural nouns are dropped and TESTS' two passive forms are added. The
+    verb's case is exact, and each match stays on one line of `text`
+    (#1874). It defaults to False so the read path is unchanged — operator
     ruling of 2026-08-06 scopes #1376 to the write path, and
     `context_rebuilder` calls this on every prompt with behaviour that was
     never measured. Only `hook_commit_ingest` passes True.

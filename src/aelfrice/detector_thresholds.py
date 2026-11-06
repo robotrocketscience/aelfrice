@@ -100,7 +100,7 @@ from typing import Any, Final, cast
 # Bump when any pinned value below changes, and append the new content
 # digest to DIGEST_HISTORY at the bottom of this module. The guard in
 # tests/test_detector_thresholds_manifest_1355.py fails until you do.
-DETECTOR_THRESHOLDS_VERSION: Final[int] = 5
+DETECTOR_THRESHOLDS_VERSION: Final[int] = 6
 
 # --- Kinds -------------------------------------------------------------
 
@@ -468,7 +468,7 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         module="aelfrice.triple_extractor",
         name="_INGEST_PATTERNS",
         kind=KIND_PATTERN_TABLE,
-        value="sha256:cd362b13596162e4869c0c3c12b34df52c2ec760d12fa43e0a1e90780b035f21",
+        value="sha256:b2ec30a1ca895f1402c4b7a18d3df4bde5f59801ef30759ffec85e45e972e556",
         size=21,
         edge_types=(
             "SUPPORTS", "CITES", "CONTRADICTS", "SUPERSEDES",
@@ -484,8 +484,10 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
             "`_PATTERNS` minus the six single-token templates that are "
             "also plural nouns (`tests`, `covers`, `follows`, `extends`, "
             "`supports`, `replaces`) plus TESTS' two passive forms "
-            "(`is tested by`, `is covered by`). Same nine edge types — "
-            "no relation was made unreachable. Pinned separately because "
+            "(`is tested by`, `is covered by`). Its verbs match in their "
+            "exact case (#1874), and `extract_triples` runs it one line at "
+            "a time, which this digest doesn't cover. Same nine edge types, "
+            "so no relation was made unreachable. Pinned separately because "
             "the two banks can now drift apart, and a change to either "
             "alone changes what one path writes or reads."
         ),
@@ -831,6 +833,11 @@ DIGEST_HISTORY: Final[dict[int, str]] = {
     # and the origins it never targets. It logs matches with applied=0
     # and writes no edge, so no store's edges change.
     5: "dba6a96d2c615b8d265d4fa542412d41c140754dfe3d786762aafb1f6b77efd3",
+    # 6 (#1874): the ingest bank's verbs match in their exact case, so stored
+    # edges stop reading an uppercase edge-type name as a verb. `_PATTERNS`
+    # kept its digest, so the read path did not move. Ingest matches also stay on
+    # one line now, which lives in `extract_triples` and has no pin of its own.
+    6: "2a2ac6df2ded790dbdcc9e0e10a58991c1165f30f2edfc84ce5cbfc449f86beb",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.
