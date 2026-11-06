@@ -249,6 +249,33 @@ def test_codex_setup_leaves_a_file_it_cannot_count_byte_identical(
 
 
 @pytest.mark.timeout(60)
+@pytest.mark.parametrize("host", ["claude", "codex"])
+def test_a_corrupt_store_exits_0_with_no_next_step(
+    env: Path, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    _folder(env, repo=True, monkeypatch=monkeypatch)
+    db = env / "store" / "memory.db"
+    db.parent.mkdir()
+    db.write_bytes(b"this is not a database file, " * 300)
+    code, lines = _setup(host)
+    assert code == 0
+    assert lines == []
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("host", ["claude", "codex"])
+def test_a_broken_marker_exits_0_with_no_next_step(
+    env: Path, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    folder = _folder(env, repo=False, monkeypatch=monkeypatch)
+    (folder / ".aelfrice.toml").write_text("[store]\npath = 5\n", encoding="utf-8")
+    monkeypatch.delenv("AELFRICE_DB")
+    code, lines = _setup(host)
+    assert code == 0
+    assert lines == []
+
+
+@pytest.mark.timeout(60)
 def test_the_line_itself_writes_nothing_to_a_healthy_store(
     env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
