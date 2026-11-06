@@ -1,0 +1,17 @@
+{
+ "canary_legs": [
+  "3.12",
+  "3.13"
+ ],
+ "candidates": [],
+ "collection_errors": [],
+ "drift_check": null,
+ "events": [],
+ "format": 1,
+ "last_green": null,
+ "mass_failure": false,
+ "new_failing": [],
+ "run_id": 42161973742,
+ "sha": "c515606a8b6f1b9e4818893aa35572765638b5e8",
+ "verdict": "green"
+}
