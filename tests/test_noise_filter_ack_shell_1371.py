@@ -222,6 +222,30 @@ def _log(tmp_path: Path, prompt: str, monkeypatch: pytest.MonkeyPatch) -> list[d
     return [json.loads(x) for x in out.read_text().splitlines() if x.strip()]
 
 
+@pytest.mark.parametrize(
+    ("prompt", "logged"),
+    [
+        # Ack-shaped with a span: the whole prompt and its one sentence are
+        # both noise, as they were when the span was removed.
+        ("Yes `widget_flag_name`.", False),
+        ("No https://example.invalid/a", False),
+        # A pasted command in backticks reads as speech to this gate, and
+        # always did: the raw prompt never matched a shell prefix.
+        ("`git push --force origin main`", True),
+        # A bare pasted command stays out.
+        ("git push --force origin main", False),
+    ],
+)
+def test_keeping_span_text_does_not_shift_the_logger_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prompt: str,
+    logged: bool,
+) -> None:
+    """#1874: `extract_sentences` keeps span text, and this gate calls it."""
+    assert bool(_log(tmp_path, prompt, monkeypatch)) is logged
+
+
 def test_a_multi_sentence_prompt_survives_a_leading_ack(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

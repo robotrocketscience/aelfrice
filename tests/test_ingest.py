@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice.ingest import _ingest_turn_ids, ingest_turn
+from aelfrice.replay import replay_full_equality
 from aelfrice.store import MemoryStore
 
 
@@ -60,6 +61,37 @@ def test_ingest_turn_idempotent_on_same_text(store: MemoryStore) -> None:
     ingest_turn(store, text, source="user")
     after = store.count_beliefs()
     assert before == after  # INSERT OR IGNORE prevents duplicates
+
+
+def test_ingest_turn_stores_and_finds_inline_code_and_urls(store: MemoryStore) -> None:
+    """#1874: a search for the command or the link reaches the belief."""
+    sentence = (
+        "Run `zqtool --frobnicate` and read "
+        "https://example.invalid/zqdocs before you tag a widget release."
+    )
+    ingest_turn(store, sentence, source="user")
+    for query in ("zqtool", "frobnicate", "zqdocs"):
+        hits = store.search_beliefs(query, limit=10)
+        assert [h.content for h in hits] == [sentence], query
+
+
+def test_reingest_after_1874_adds_a_belief_next_to_the_holed_one(
+    store: MemoryStore,
+) -> None:
+    """Id and hash read the exact sentence, so nothing dedupes old against new.
+
+    The holed text stands in for a row a release before #1874 wrote.
+    """
+    holed = "Run   before you tag a widget release."
+    whole = "Run `zqtool --frobnicate` before you tag a widget release."
+    ingest_turn(store, holed, source="user")
+    ingest_turn(store, whole, source="user")
+    ingest_turn(store, whole, source="user")
+    assert store.count_beliefs() == 2
+    report = replay_full_equality(store)
+    assert report.mismatched == 0
+    assert report.derived_orphan == 0
+    assert report.canonical_orphan == 0
 
 
 def test_ingest_turn_accepts_session_id_and_source_id(store: MemoryStore) -> None:
