@@ -292,6 +292,35 @@ def test_publish_retries_its_push_and_creates_the_branch_once() -> None:
     assert re.search(r'^\s*\*\)\n\s*exit "\$rc"$', step, re.M)
 
 
+def _incomplete_check(tmp_path: Path, verdict: str) -> int:
+    """The exit status of the last publish step on a record with this verdict."""
+    (tmp_path / "night").mkdir()
+    (tmp_path / "night" / "record.json").write_text(json.dumps({"nightly": {"verdict": verdict}}), encoding="utf-8")
+    step = _step("publish", "Fail the job on an incomplete night")
+    body = textwrap.dedent(step.partition("run: |\n")[2])
+    return subprocess.run(["bash", "-e", "-c", body], cwd=tmp_path, capture_output=True, timeout=30, check=False).returncode
+
+
+@pytest.mark.parametrize(("verdict", "rc"), [("incomplete", 1), ("red", 0), ("green", 0)])
+def test_only_an_incomplete_night_fails_the_last_publish_step(tmp_path: Path, verdict: str, rc: int) -> None:
+    assert _incomplete_check(tmp_path, verdict) == rc
+
+
+def test_the_incomplete_check_is_the_last_step_and_reads_the_real_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After the write, so the night lands first, and the field `record` writes."""
+    last = _steps(_job("publish"))[-1]
+    assert "name: Fail the job on an incomplete night" in last
+    assert not re.search(r"^\s*if:", last, re.M), last
+    monkeypatch.syspath_prepend(_REPO / "scripts")
+    import nightly_canary
+
+    record = nightly_canary.build_nightly_record(
+        {"3.12": None}, {"3.12": None}, {"3.12": None}, {"3.12": "canary"}, {"3.12": None},
+        "a" * 40, 1, 1, "schedule", "2026-11-06T02:17:03Z", {"3.12": ["no bundle"]}, ["3.12"],
+    )
+    assert record["nightly"]["verdict"] == "incomplete"
+
+
 def test_the_documents_describe_the_workflow() -> None:
     text = _CONTRIBUTING.read_text(encoding="utf-8")
     start = text.index("### The nightly canary")

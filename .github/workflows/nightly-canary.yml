@@ -458,3 +458,14 @@ jobs:
           done
           echo "::error::could not push to test-results"
           exit 1
+      # Both legs can be green with the night `incomplete`, when a leg's report is
+      # unusable, and no earlier step fails then. The night is on the branch by now.
+      - name: Fail the job on an incomplete night
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          verdict=$(python3 -c 'import json; print(json.load(open("night/record.json", encoding="utf-8"))["nightly"]["verdict"])')
+          if [ "$verdict" = incomplete ]; then
+            echo "::error::the night is incomplete: a canary leg left no usable report"
+            exit 1
+          fi

@@ -318,8 +318,9 @@ The workflow runs these jobs:
 - `publish` writes the night to the `test-results` branch. The first run creates
   the branch.
 
-A red leg fails the run, so the Actions tab shows a red night. The canary doesn't
-open issues yet. A later pull request adds them.
+A red leg fails the `suite` job, and an `incomplete` night fails the `publish`
+job after it writes the night, so the Actions tab shows both as a failed run. The
+canary doesn't open issues yet. A later pull request adds them.
 
 To read the newest night, run these commands:
 
