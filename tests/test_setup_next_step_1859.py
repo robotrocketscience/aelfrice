@@ -432,6 +432,52 @@ def test_the_shared_store_outside_git_says_to_open_a_project(
     assert lines == [OUTSIDE_LINE.format(IN_CODEX)]
 
 
+@pytest.mark.timeout(60)
+def test_project_root_in_a_repo_is_described_from_outside_one(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _folder(env, repo=False, monkeypatch=monkeypatch)
+    root = env / "root"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, timeout=30)
+    code, lines = _setup("claude", "--project-root", str(root))
+    assert code == 0
+    assert lines == [PROJECT_LINE.format(IN_AGENT)]
+
+
+@pytest.mark.timeout(60)
+def test_project_root_outside_a_repo_is_described_from_inside_one(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _folder(env, repo=True, monkeypatch=monkeypatch)
+    root = env / "root"
+    root.mkdir()
+    code, lines = _setup("claude", "--project-root", str(root))
+    assert code == 0
+    assert lines == [OUTSIDE_LINE.format(IN_AGENT)]
+
+
+@pytest.mark.timeout(60)
+def test_project_root_store_is_the_one_counted(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without the pin, each folder has its own store: the root's holds a
+    belief and the current folder's is empty, so no line prints."""
+    import aelfrice.db_paths as db_paths
+
+    root = env / "root"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, timeout=30)
+    monkeypatch.delenv("AELFRICE_DB")
+    monkeypatch.setattr(db_paths, "DEFAULT_DB_DIR", env / "global")
+    monkeypatch.chdir(root)
+    _seed()
+    _folder(env, repo=False, monkeypatch=monkeypatch)
+    code, lines = _setup("claude", "--project-root", str(root))
+    assert code == 0
+    assert lines == []
+
+
 def test_another_host_is_refused_before_setup_runs() -> None:
     with pytest.raises(SystemExit) as exc:
         build_parser().parse_args(["setup", "--host", "gemini"])

@@ -5890,7 +5890,12 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
             file=out,  # type: ignore[arg-type]
         )
     _sync_setup_opt_outs_and_stamp(args)
-    _print_setup_next_step(out, _ONBOARD_IN_AGENT)
+    project_root = getattr(args, "project_root", None)
+    _print_setup_next_step(
+        out,
+        _ONBOARD_IN_AGENT,
+        start=Path(project_root) if project_root else None,
+    )
     _print_setup_jsonl_history_hint(out)
     return 0
 
@@ -5970,13 +5975,17 @@ def _belief_count_without_writing(path: Path) -> int:
         store.close()
 
 
-def _print_setup_next_step(out: object, onboard: str) -> None:
+def _print_setup_next_step(
+    out: object, onboard: str, *, start: Path | None = None,
+) -> None:
     """One-line next-step hint when the active store is empty.
 
     Closes the loop on issue #116: after `aelf setup` succeeds in a
     fresh project the user otherwise gets no signal that the belief
     graph is empty and that hooks have nothing to retrieve. `onboard`
-    names the command for the host just set up (#1859).
+    names the command for the host just set up (#1859). `start` is the
+    folder `--project-root` named, when it names one, and the hint
+    describes that folder instead of the current one.
 
     A folder outside any git repository has no project to onboard, so
     the hint sends the user to one first. A `[store]` marker gives a
@@ -5986,13 +5995,16 @@ def _print_setup_next_step(out: object, onboard: str) -> None:
     derail setup itself.
     """
     try:
-        selection = resolve_store()
+        selection = resolve_store(start)
         n = _belief_count_without_writing(selection.path)
     except Exception:  # pragma: no cover - defensive
         return
     if n != 0:
         return
-    if selection.rule == STORE_RULE_MARKER or _git_common_dir() is not None:
+    if (
+        selection.rule == STORE_RULE_MARKER
+        or _git_common_dir(start) is not None
+    ):
         print(
             "next step: this project's belief store is empty. "
             f"Run {onboard} to populate it.",
