@@ -28,8 +28,9 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     # #1329: was "OS Independent", which was false — aelfrice could not start
     # on Windows at all (module-scope `fcntl`). Named explicitly rather than
-    # restored to the blanket claim: Linux and macOS run the full suite on
-    # every PR, Windows runs a smoke job. See docs/user/LIMITATIONS.md.
+    # restored to the blanket claim: Linux runs the full suite on every PR,
+    # macOS runs it nightly as a report, Windows runs a smoke job. See
+    # docs/user/LIMITATIONS.md.
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
     "Operating System :: Microsoft :: Windows",

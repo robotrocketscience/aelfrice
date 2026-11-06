@@ -9,11 +9,13 @@ someone edits a workflow or adds a module.
 So they are checked here rather than typed there:
 
   1. **The CI platform claim.** INSTALL.md and LIMITATIONS.md said the full
-     suite runs on macOS and Linux on every pull request. No workflow has ever
-     used a macOS runner. The operator ruling of 2026-08-19 was to describe
-     reality rather than buy the CI leg, so the documents now say Linux plus a
-     Windows smoke job. If a macOS runner is ever added, this test goes red and
-     the sentence gets revisited — which is the point.
+     suite runs on macOS and Linux on every pull request. No workflow used a
+     macOS runner then. The operator ruling of 2026-08-19 was to describe
+     reality rather than buy the CI leg, so the documents said Linux plus a
+     Windows smoke job. The ruling of 2026-11-04 allows macOS in
+     `nightly-canary.yml` alone, as a report with no pull-request trigger. If a
+     macOS runner appears anywhere else, this test goes red and the sentence
+     gets revisited.
 
   2. **The ARCHITECTURE module and file counts.** The page named 31 modules
      against 117 `.py` files. The table had 32 rows and the tree held 127
@@ -56,21 +58,70 @@ def _runner_labels() -> set[str]:
     return labels
 
 
-def test_no_workflow_uses_a_macos_runner() -> None:
-    """The documents say no workflow tests macOS. Hold them to it.
+_MACOS_WORKFLOW = "nightly-canary.yml"
+_MACOS_JOB = "suite-macos"
+_MACOS_LABEL = "macos-15"
+# Names in that workflow that hold the word and are no runner: the job and its leg.
+_MACOS_NAMES = re.compile(r"suite-macos|macos-3\.13")
 
-    If this goes red, a macOS leg was added and
-    `docs/user/INSTALL.md` plus `docs/user/LIMITATIONS.md § Compatibility`
-    must be corrected in the same change.
+
+def _workflow_files() -> list[Path]:
+    return sorted(p for p in WORKFLOWS.iterdir() if p.suffix in {".yml", ".yaml"})
+
+
+def _macos_mentions(text: str) -> list[tuple[str, str]]:
+    """(job, line) for each line naming macOS in any case, outside a comment and
+    outside the names above. Labels are case-insensitive, and this reads matrix
+    values and list items too, which a `runs-on:` scan would miss. A `runs-on:`
+    line keeps every name: `runs-on: macos-3.13` has to count."""
+    mentions: list[tuple[str, str]] = []
+    job = ""
+    for raw in text.splitlines():
+        line = raw.split(" #")[0].rstrip()
+        match = re.fullmatch(r"  ([A-Za-z0-9_-]+):", line)
+        if match:
+            job = match.group(1)
+            continue
+        if line.lstrip().startswith("#"):
+            continue
+        kept = line if "runs-on" in line else _MACOS_NAMES.sub("", line)
+        if "macos" in kept.lower():
+            mentions.append((job, kept.strip()))
+    return mentions
+
+
+def _triggers(text: str) -> set[str]:
+    """The keys under the workflow's `on:` block."""
+    lines = text.splitlines()
+    start = lines.index("on:")
+    keys: set[str] = set()
+    for line in lines[start + 1 :]:
+        if line.strip() and not line.startswith(" "):
+            break
+        match = re.fullmatch(r"  ([a-z_]+):.*", line)
+        if match:
+            keys.add(match.group(1))
+    return keys
+
+
+def test_macos_runs_only_in_the_nightly() -> None:
+    """The ruling of 2026-11-04: one workflow, one job, one label, no pull request.
+
+    If this goes red, a macOS runner moved or spread, and `docs/user/INSTALL.md`
+    plus `docs/user/LIMITATIONS.md § Compatibility` must be corrected in the same
+    change.
     """
-    labels = _runner_labels()
-    assert labels, "found no runs-on: labels at all — the scan is vacuous"
-    macos = {lbl for lbl in labels if "macos" in lbl.lower()}
-    assert not macos, (
-        f"a macOS runner is now declared ({sorted(macos)}), but "
-        "docs/user/INSTALL.md and docs/user/LIMITATIONS.md say no workflow "
-        "tests macOS. Update the documents in this change."
-    )
+    files = _workflow_files()
+    assert _MACOS_WORKFLOW in {p.name for p in files}
+    assert _runner_labels(), "found no runs-on: labels at all, so the scan is vacuous"
+    elsewhere = {
+        p.name: [line for line in p.read_text(encoding="utf-8").splitlines() if "macos" in line.lower()]
+        for p in files if p.name != _MACOS_WORKFLOW
+    }
+    assert {name: lines for name, lines in elsewhere.items() if lines} == {}
+    nightly = (WORKFLOWS / _MACOS_WORKFLOW).read_text(encoding="utf-8")
+    assert _macos_mentions(nightly) == [(_MACOS_JOB, f"runs-on: {_MACOS_LABEL}")]
+    assert _triggers(nightly) == {"schedule", "workflow_dispatch"}
 
 
 def test_the_linux_and_windows_legs_the_documents_name_still_exist() -> None:

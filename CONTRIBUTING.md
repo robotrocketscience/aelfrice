@@ -312,6 +312,9 @@ The workflow runs these jobs:
   once. A test that passes on the rerun is flaky. A test
   that fails again is confirmed. It also runs the producer check, which the
   `pytest` job leaves to the `derived-figures` job.
+- `suite-macos` runs the same steps on a second report-only leg, `macos-3.13`:
+  Python 3.13 on `macos-15`. macOS runs only in this workflow, so no pull request
+  runs it.
 - `triage` reruns the confirmed failures on the last green commit, under the
   Python of the leg that failed them. A test that also fails there is
   environment drift. For the other tests, `triage` bisects the pull requests
@@ -368,27 +371,30 @@ A night's verdict is `green` when both canary legs reported and no test is confi
 `incomplete` when a canary leg left no usable report, and `red` otherwise. A flaky test
 doesn't change the verdict.
 
-The 3.14 leg tracks a Python version that aelfrice doesn't support yet. It has the
-`extra` role in the record, so a red, broken, or missing 3.14 leg doesn't change
-the verdict or fail the run. The leg opens no issue, gets no drift check or
-bisect, and never moves the `canary` entry in `last-green.json`.
+The 3.14 leg tracks a Python version that aelfrice doesn't support yet. The
+`macos-3.13` leg reports on macOS and isn't a supported-tier promise. Each leg has
+the `extra` role in the record, so a red, broken, or missing report-only leg
+doesn't change the verdict or fail the run. A report-only leg opens no issue, gets
+no drift check or bisect, and never moves the `canary` entry in `last-green.json`.
 
-An operator decides whether to promote the leg after 14 green nights, and nothing
-promotes it automatically. To read the current streak, in nights, run this command:
+An operator decides whether to promote a report-only leg after 14 green nights, and nothing
+promotes it automatically. To read each leg's current streak, in nights, run this command:
 
 ```bash
 git show origin/test-results:index.jsonl | python3 -c '
 import json, sys
-nights = set()
+nights = {"3.14": set(), "macos-3.13": set()}
 for line in sys.stdin:
     run = json.loads(line)
-    nights = nights | {run["date"]} if run["status"].get("3.14") == "green" else set()
-print(len(nights))
+    for leg in nights:
+        nights[leg] = nights[leg] | {run["date"]} if run["status"].get(leg) == "green" else set()
+for leg in nights:
+    print(leg, len(nights[leg]))
 '
 ```
 
-The command reads each run's `status` for the leg, and any status other than
-`green` starts the count again. Two green runs on one date count as one night. A
+The command reads each run's `status` for each leg, and any status other than
+`green` starts that leg's count again. Two green runs on one date count as one night. A
 night with no line in the index neither counts nor starts the count again, so check
 the dates for gaps before you rely on the count.
 

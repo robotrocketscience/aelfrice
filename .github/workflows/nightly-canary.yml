@@ -1,7 +1,8 @@
 name: nightly-canary
 
 # The full suite on main every night (#1786). `suite` runs the canary legs and
-# a report-only 3.14 leg, and reruns each leg's failures once. `triage` builds the night's record, checks
+# a report-only 3.14 leg, `suite-macos` runs a report-only macOS leg, and each
+# leg reruns its failures once. `triage` builds the night's record, checks
 # whether what failed still fails on the last green commit, and bisects the
 # rest. `publish` writes the night to the `test-results` branch. `report` opens,
 # updates and closes the night's `nightly-regression` issues.
@@ -151,8 +152,101 @@ jobs:
           path: bundle/
           retention-days: 30
 
+  suite-macos:
+    # macOS runs in this workflow and in no other, so no pull request runs it. The
+    # operator ruling of 2026-11-04 narrows the 2026-08-19 ruling of no macOS runner,
+    # and tests/test_docs_truth_1511.py holds the rule. This leg is a report and not
+    # a supported-tier promise: an operator decides on promoting it after 14 green
+    # nights, and nothing here does that by itself.
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    # Red, or dead at a step, this leg doesn't fail the run. That doesn't cover a job
+    # past its own cap, which the `suite` job's comment describes, so the step caps
+    # add up to 61 of these 70 minutes. The suite step gets 40 because nothing has
+    # timed this suite on the image yet. The `suite` job's comments say why each step
+    # has its shape, and a test holds the steps equal to that job's.
+    timeout-minutes: 70
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        timeout-minutes: 3
+        with:
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --group dev --extra archive --extra onboard-llm
+        timeout-minutes: 5
+      - name: The extras the tests need must be installed, or those tests skip
+        timeout-minutes: 1
+        run: |
+          uv run python - <<'PY'
+          import importlib.metadata
+          import re
+          import tomllib
+          from pathlib import Path
+
+          table = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["optional-dependencies"]
+          for extra in ("archive", "onboard-llm"):
+              assert table[extra], f"the [{extra}] extra lists no package"
+              for requirement in table[extra]:
+                  name = re.match(r"[A-Za-z0-9._-]+", requirement).group()
+                  print(extra, name, importlib.metadata.version(name))
+          PY
+      - name: Record the leg's environment
+        timeout-minutes: 1
+        run: uv run python scripts/nightly_canary.py env --out bundle/env.json
+      - name: Run the suite
+        id: suite
+        timeout-minutes: 40
+        continue-on-error: true
+        run: |
+          rc=0
+          uv run pytest tests/ --ignore=tests/e2e -q -rfEsxX --durations=25 --junitxml=bundle/junit.xml || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+      - name: List the failed tests
+        id: failed
+        timeout-minutes: 1
+        if: steps.suite.outputs.rc == '1'
+        run: |
+          rc=0
+          uv run python scripts/nightly_canary.py failed-ids --junit bundle/junit.xml --repo-root . --out bundle/failed-ids.txt --github-output "$GITHUB_OUTPUT" || rc=$?
+          echo "failed-ids exited $rc"
+      - name: Rerun the failed tests once
+        id: rerun
+        if: steps.failed.outputs.rerun == 'true'
+        timeout-minutes: 5
+        continue-on-error: true
+        run: |
+          rc=0
+          uv run pytest @bundle/failed-ids.txt -p no:cacheprovider -q --junitxml=bundle/rerun.xml || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+      - name: Sort the red tests into flaky and confirmed
+        timeout-minutes: 1
+        env:
+          SUITE_RC: ${{ steps.suite.outputs.rc }}
+          RERAN: ${{ steps.failed.outputs.rerun }}
+          RERUN_RC: ${{ steps.rerun.outputs.rc }}
+        run: |
+          set -euo pipefail
+          args=(--rc "${SUITE_RC:-124}" --junit bundle/junit.xml --out bundle/verdict.json)
+          if [ "$RERAN" = true ]; then
+            args+=(--rerun bundle/rerun.xml --rerun-rc "${RERUN_RC:-124}")
+          fi
+          uv run python scripts/nightly_canary.py verdict "${args[@]}"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        timeout-minutes: 2
+        with:
+          name: nightly-macos-3.13-${{ github.sha }}-a${{ github.run_attempt }}
+          path: bundle/
+          retention-days: 30
+
   triage:
-    needs: suite
+    needs: [suite, suite-macos]
     # `!cancelled()` so a red leg reaches its record, while a manual cancel still
     # stops the run. The ref test because a skipped `suite` does not skip this
     # job under `!cancelled()`.
@@ -191,8 +285,9 @@ jobs:
         with:
           pattern: nightly-*-${{ github.sha }}-a*
           path: bundles
-      # `extra` keeps 3.14 out of the night's verdict, its events, the drift check,
-      # the bisect and the canary pointer. The record still holds its outcomes.
+      # `extra` keeps 3.14 and macOS out of the night's verdict, its events, the
+      # drift check, the bisect and the canary pointer. The record still holds
+      # their outcomes.
       # The run's `created_at` is the same at every retry, so a retry writes the
       # same record and `publish` accepts it. The clock is only for a failed
       # lookup: a record with a later date beats no record.
@@ -208,7 +303,7 @@ jobs:
             created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           fi
           python3 scripts/nightly_canary.py record \
-            --leg 3.12=bundles:canary --leg 3.13=bundles:canary --leg 3.14=bundles:extra \
+            --leg 3.12=bundles:canary --leg 3.13=bundles:canary --leg 3.14=bundles:extra --leg macos-3.13=bundles:extra \
             --sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --created-at "$created_at" --canary-legs 3.12,3.13 --out night/record.json
       # `ls-remote` exits 2 when the branch does not exist, the first night. Any
@@ -411,7 +506,7 @@ jobs:
           retention-days: 30
 
   publish:
-    needs: [suite, triage]
+    needs: [suite, suite-macos, triage]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -502,7 +597,7 @@ jobs:
           fi
 
   report:
-    needs: publish
+    needs: [suite-macos, publish]
     # `!cancelled()` so a failed `suite`, `triage` or `publish` still reports, and
     # a night with no record opens its issue. The ref test because a skipped
     # `publish` does not skip this job under `!cancelled()`, and a dispatch from a

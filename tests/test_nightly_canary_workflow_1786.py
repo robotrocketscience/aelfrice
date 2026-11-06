@@ -9,6 +9,7 @@ dependency set CI installs (#1436).
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -23,7 +24,7 @@ import pytest
 
 from tests.test_workflow_supply_chain_1786 import _jobs, _permissions_block, _step_lines, _step_uses, _steps, _with_input
 
-# The slowest test here, a real temporary repository, took 1.8 s on 2026-11-05.
+# The slowest test here, eight nights on a real temporary repository, took 7.3 s on 2026-11-05.
 pytestmark = pytest.mark.timeout(30)
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -109,10 +110,10 @@ def _ci_suite_tokens() -> list[str]:
 
 
 def test_the_jobs_and_their_needs_are_only_the_ones_that_exist() -> None:
-    assert set(_jobs(_text())) == {"suite", "triage", "publish", "report"}
-    assert _key("triage", "needs") == "suite"
-    assert _key("publish", "needs") == "[suite, triage]"
-    assert _key("report", "needs") == "publish"
+    assert set(_jobs(_text())) == {"suite", "suite-macos", "triage", "publish", "report"}
+    assert _key("triage", "needs") == "[suite, suite-macos]"
+    assert _key("publish", "needs") == "[suite, suite-macos, triage]"
+    assert _key("report", "needs") == "[suite-macos, publish]"
 
 
 def test_the_suite_runs_the_canary_legs_and_one_report_only_leg_on_the_pinned_image() -> None:
@@ -122,6 +123,43 @@ def test_the_suite_runs_the_canary_legs_and_one_report_only_leg_on_the_pinned_im
     assert _key("suite", "continue-on-error") == "${{ !matrix.canary }}"
     assert "fail-fast: false" in lines
     assert _key("suite", "runs-on") == _ci_key("runs-on")
+
+
+def test_the_macos_leg_is_report_only_on_its_pinned_image() -> None:
+    assert _key("suite-macos", "runs-on") == "macos-15"
+    assert _key("suite-macos", "continue-on-error") == "true"
+    assert not [line for line in _job("suite-macos") if "matrix" in line or "strategy:" in line]
+
+
+def _as_the_macos_leg(line: str) -> str:
+    """A `suite` step line with that job's leg and suite cap replaced by the macOS leg's."""
+    return (
+        line.replace("python-version: ${{ matrix.leg }}", "python-version: '3.13'")
+        .replace("name: nightly-${{ matrix.leg }}-", "name: nightly-macos-3.13-")
+    )
+
+
+def test_the_macos_steps_are_the_suites_but_for_the_python_the_artifact_and_one_cap() -> None:
+    """So the leg stays comparable with `suite`, and a step added there comes here too."""
+    suite, macos = _steps(_job("suite")), _steps(_job("suite-macos"))
+    assert len(suite) == len(macos)
+    capped = _step("suite-macos", "Run the suite")
+    for ours, theirs in zip(suite, macos, strict=True):
+        if theirs == capped:
+            ours = ours.replace("timeout-minutes: 25", "timeout-minutes: 40")
+        assert _as_the_macos_leg(ours) == theirs
+
+
+def test_the_macos_bundle_is_one_triage_downloads_and_the_record_reads() -> None:
+    upload = next(s for s in _steps(_job("suite-macos")) if "upload-artifact" in s)
+    assert "if: always()" in upload
+    sha = "a" * 40
+    name = (_with_input(upload, "name") or "").replace("${{ github.sha }}", sha).replace("${{ github.run_attempt }}", "2")
+    download = next(s for s in _steps(_job("triage")) if "download-artifact" in s)
+    pattern = (_with_input(download, "pattern") or "").replace("${{ github.sha }}", sha)
+    assert fnmatch.fnmatch(name, pattern), (name, pattern)
+    assert nc.bundle_attempt(name, "macos-3.13", sha) == 2
+    assert nc.bundle_attempt(name, "3.13", sha) is None
 
 
 def _ci_key(key: str) -> str:
@@ -138,7 +176,7 @@ def _cap(step: str) -> int | None:
     return None
 
 
-@pytest.mark.parametrize("job", ["suite", "triage", "publish", "report"])
+@pytest.mark.parametrize("job", ["suite", "suite-macos", "triage", "publish", "report"])
 def test_every_step_has_a_cap_and_the_caps_fit_under_the_job(job: str) -> None:
     """A job past its cap ends `cancelled`, and so does the run, and whether `triage`
     and `publish` still run then is unverified. A step past its cap ends `failure`
@@ -161,6 +199,7 @@ def test_only_main_reaches_each_job() -> None:
     """Under `!cancelled()` a skipped `suite` doesn't skip the jobs after it, so
     without the ref test a dispatch from a branch publishes an empty record."""
     assert _key("suite", "if") == "github.ref == 'refs/heads/main'"
+    assert _key("suite-macos", "if") == _key("suite", "if")
     assert _key("triage", "if") == _MAIN_ONLY
     assert _key("publish", "if") == _MAIN_ONLY
     assert _key("report", "if") == _MAIN_ONLY
@@ -296,7 +335,7 @@ def test_the_record_gets_a_stable_date_and_the_canary_legs() -> None:
     assert 'actions/runs/$GITHUB_RUN_ID" --jq .created_at' in step
     assert '--created-at "$created_at"' in step
     assert "--canary-legs 3.12,3.13" in step
-    assert "--leg 3.12=bundles:canary --leg 3.13=bundles:canary --leg 3.14=bundles:extra" in step
+    assert "--leg 3.12=bundles:canary --leg 3.13=bundles:canary --leg 3.14=bundles:extra --leg macos-3.13=bundles:extra" in step
 
 
 def test_the_first_night_makes_the_folder_regressions_requires() -> None:
@@ -400,6 +439,8 @@ def _key_is(step: str, key: str, value: str) -> bool:
     [
         ("suite", "Run the suite", 25),
         ("suite", "Rerun the failed tests once", 5),
+        ("suite-macos", "Run the suite", 40),
+        ("suite-macos", "Rerun the failed tests once", 5),
         ("triage", "Bisect what the last green commit still passes", 21),
     ],
 )
@@ -587,8 +628,8 @@ def test_an_incomplete_night_fails_publish_and_report_still_opens_canary_broken(
     done = subprocess.run(["bash", "-e", "-c", body], cwd=tmp_path, capture_output=True, timeout=30, check=False)
     assert done.returncode == 1
 
-    # `needs: publish` under `!cancelled()`: a failed `publish` doesn't skip `report`.
-    assert _key("report", "needs") == "publish"
+    # `needs` holds `publish` under `!cancelled()`: a failed `publish` doesn't skip `report`.
+    assert _key("report", "needs") == "[suite-macos, publish]"
     assert _key("report", "if") == _MAIN_ONLY
     triage = json.loads((night / "triage.json").read_text(encoding="utf-8"))
     facts = {**nc.night_facts(record), "run_id": 9, "run_url": "https://github.com/o/r/actions/runs/9", "repo": "o/r"}
@@ -610,7 +651,7 @@ def _workflow_flags() -> tuple[list[str], str, str]:
 def test_the_workflow_gives_each_matrix_leg_a_role_and_only_canary_legs_count() -> None:
     legs, on_record, on_regressions = _workflow_flags()
     rows = _matrix_rows()
-    assert legs == [f"{leg}=bundles:{'canary' if canary == 'true' else 'extra'}" for leg, canary in rows]
+    assert legs == [*(f"{leg}=bundles:{'canary' if canary == 'true' else 'extra'}" for leg, canary in rows), "macos-3.13=bundles:extra"]
     canary = ",".join(leg for leg, flag in rows if flag == "true")
     assert on_record == canary
     assert on_regressions == canary
@@ -633,9 +674,9 @@ class _Nights:
         self.run_id = 100
 
     def night(
-        self, date: str, *, on_313: str = "passed", on_314: str | None = "passed",
+        self, date: str, *, on_313: str = "passed", on_314: str | None = "passed", on_macos: str | None = "passed",
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
-        """One night; `on_314=None` is a leg that uploaded nothing. The record, the
+        """One night; a report-only leg given None uploaded nothing. The record, the
         triage, `last-green.json` after publishing, and the night's commit."""
         self.run_id += 1
         _git(self.main, "commit", "-q", "--allow-empty", "-m", f"night {self.run_id}")
@@ -646,6 +687,8 @@ class _Nights:
         _leg_bundle(bundles / f"nightly-3.13-{sha}-a1", {test: on_313})
         if on_314 is not None:
             _leg_bundle(bundles / f"nightly-3.14-{sha}-a1", {test: on_314})
+        if on_macos is not None:
+            _leg_bundle(bundles / f"nightly-macos-3.13-{sha}-a1", {test: on_macos})
         legs, on_record, on_regressions = _workflow_flags()
         night = self.root / f"night-{self.run_id}"
         leg_args = [a for leg in legs for a in ("--leg", leg.replace("=bundles:", f"={bundles}:"))]
@@ -669,17 +712,26 @@ class _Nights:
         return nc.plan_actions([], nc.night_events(record, triage), facts)
 
 
-@pytest.mark.parametrize("on_314", ["failed", None], ids=["3.14 red", "3.14 bundle missing"])
-def test_a_report_only_leg_changes_nothing_about_the_night(tmp_path: Path, on_314: str | None) -> None:
-    """With a baseline in place, so a 3.14 failure would be a candidate if it counted."""
+@pytest.mark.parametrize(
+    ("leg", "flag", "outcome"),
+    [
+        ("3.14", "on_314", "failed"),
+        ("3.14", "on_314", None),
+        ("macos-3.13", "on_macos", "failed"),
+        ("macos-3.13", "on_macos", None),
+    ],
+    ids=["3.14 red", "3.14 bundle missing", "macOS red", "macOS bundle missing"],
+)
+def test_a_report_only_leg_changes_nothing_about_the_night(tmp_path: Path, leg: str, flag: str, outcome: str | None) -> None:
+    """With a baseline in place, so the leg's failure would be a candidate if it counted."""
     nights = _Nights(tmp_path)
     _record0, _triage0, green0, sha0 = nights.night("2026-11-06")
     assert green0["canary"]["sha"] == sha0
-    assert green0["legs"]["3.14"]["sha"] == sha0
+    assert green0["legs"][leg]["sha"] == sha0
 
-    record, triage, green, sha = nights.night("2026-11-07", on_314=on_314)
-    assert record["nightly"]["roles"]["3.14"] == "extra"
-    assert record["nightly"]["status"]["3.14"] == ("red" if on_314 else "missing")
+    record, triage, green, sha = nights.night("2026-11-07", **{flag: outcome})
+    assert record["nightly"]["roles"][leg] == "extra"
+    assert record["nightly"]["status"][leg] == ("red" if outcome else "missing")
     assert record["nightly"]["verdict"] == "green"
     assert triage["events"] == []
     assert triage["candidates"] == []
@@ -693,13 +745,20 @@ def test_a_report_only_leg_changes_nothing_about_the_night(tmp_path: Path, on_31
     assert outputs["legs"] == ""
     assert not (sort_dir / "stub.log").exists()
     assert green["canary"]["sha"] == sha
-    assert green["legs"]["3.14"]["sha"] == sha0
+    assert green["legs"][leg]["sha"] == sha0
+    assert {other: entry["sha"] for other, entry in green["legs"].items() if other != leg} == dict.fromkeys(
+        {"3.12", "3.13", "3.14", "macos-3.13"} - {leg}, sha,
+    )
 
 
-def test_a_failure_on_a_canary_leg_and_on_3_14_is_checked_and_bisected_on_the_canary_leg_only(tmp_path: Path) -> None:
+@pytest.mark.parametrize("on_macos", ["failed", None], ids=["macOS red", "macOS bundle missing"])
+def test_a_failure_on_a_canary_leg_and_on_the_report_only_legs_is_checked_and_bisected_on_the_canary_leg_only(
+    tmp_path: Path, on_macos: str | None,
+) -> None:
     nights = _Nights(tmp_path)
     nights.night("2026-11-06")
-    _record, triage, _green, _sha = nights.night("2026-11-07", on_313="failed", on_314="failed")
+    record, triage, _green, _sha = nights.night("2026-11-07", on_313="failed", on_314="failed", on_macos=on_macos)
+    assert record["nightly"]["verdict"] == "red"
     assert [c["legs"] for c in triage["candidates"]] == [["3.13"]]
     assert list(triage["drift_check"]["legs"]) == ["3.13"]
     sort_dir = tmp_path / "sort"
@@ -712,9 +771,9 @@ def test_a_failure_on_a_canary_leg_and_on_3_14_is_checked_and_bisected_on_the_ca
     assert [e["python"] for e in log] == ["3.13"]
 
 
-def test_the_docs_leave_promoting_the_leg_to_an_operator() -> None:
+def test_the_docs_leave_promoting_a_report_only_leg_to_an_operator() -> None:
     text = " ".join(_CONTRIBUTING.read_text(encoding="utf-8").split())
-    assert "An operator decides whether to promote the leg after 14 green nights, and nothing promotes it automatically." in text
+    assert "An operator decides whether to promote a report-only leg after 14 green nights, and nothing promotes it automatically." in text
 
 
 def _streak_command() -> str:
@@ -725,36 +784,47 @@ def _streak_command() -> str:
     return match.group(1)
 
 
-def _streak(branch: Path) -> int:
+def _streak(branch: Path) -> dict[str, int]:
     done = subprocess.run(
         [sys.executable, "-c", _streak_command()], input=(branch / "index.jsonl").read_text(encoding="utf-8"),
         capture_output=True, text=True, timeout=30, check=True,
     )
-    return int(done.stdout)
+    return {leg: int(count) for leg, count in (line.split() for line in done.stdout.splitlines())}
 
 
 def test_the_documented_command_reads_the_streak_from_the_index(tmp_path: Path) -> None:
     nights = _Nights(tmp_path)
     nights.night("2026-11-06")
-    assert _streak(nights.branch) == 1
+    assert _streak(nights.branch) == {"3.14": 1, "macos-3.13": 1}
     nights.night("2026-11-07")
-    assert _streak(nights.branch) == 2
+    assert _streak(nights.branch) == {"3.14": 2, "macos-3.13": 2}
     nights.night("2026-11-07")
-    assert _streak(nights.branch) == 2, "two runs on one date are one night"
+    assert _streak(nights.branch) == {"3.14": 2, "macos-3.13": 2}, "two runs on one date are one night"
     nights.night("2026-11-08", on_314="failed")
-    assert _streak(nights.branch) == 0
+    assert _streak(nights.branch) == {"3.14": 0, "macos-3.13": 3}
     nights.night("2026-11-09")
-    assert _streak(nights.branch) == 1
+    assert _streak(nights.branch) == {"3.14": 1, "macos-3.13": 4}
     nights.night("2026-11-10", on_314=None)
-    assert _streak(nights.branch) == 0
+    assert _streak(nights.branch) == {"3.14": 0, "macos-3.13": 5}
+    nights.night("2026-11-11", on_macos="failed")
+    assert _streak(nights.branch) == {"3.14": 1, "macos-3.13": 0}
+    nights.night("2026-11-12", on_macos=None)
+    assert _streak(nights.branch) == {"3.14": 2, "macos-3.13": 0}
     lines = [json.loads(line) for line in (nights.branch / "index.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert [line["status"]["3.14"] for line in lines] == ["green", "green", "green", "red", "green", "missing"]
+    assert [line["status"]["3.14"] for line in lines] == ["green", "green", "green", "red", "green", "missing", "green", "green"]
+    assert [line["status"]["macos-3.13"] for line in lines] == ["green", "green", "green", "green", "green", "green", "red", "missing"]
     assert {line["verdict"] for line in lines} == {"green"}
+
+
+def test_the_streak_command_reads_every_report_only_leg_the_workflow_records(tmp_path: Path) -> None:
+    (tmp_path / "index.jsonl").write_text("", encoding="utf-8")
+    legs, _on_record, _on_regressions = _workflow_flags()
+    assert set(_streak(tmp_path)) == {leg.partition("=")[0] for leg in legs if leg.endswith(":extra")}
 
 
 def test_a_line_from_before_the_leg_breaks_no_streak_read(tmp_path: Path) -> None:
     (tmp_path / "index.jsonl").write_text(json.dumps({"date": "2026-11-06", "status": {"3.13": "green"}}) + "\n", encoding="utf-8")
-    assert _streak(tmp_path) == 0
+    assert _streak(tmp_path) == {"3.14": 0, "macos-3.13": 0}
 
 
 def test_the_documents_describe_the_workflow() -> None:
@@ -762,7 +832,8 @@ def test_the_documents_describe_the_workflow() -> None:
     start = text.index("### The nightly canary")
     section = text[start : text.index("\n### ", start + 1)]
     for name in (
-        "`suite`", "`triage`", "`publish`", "`report`", "`test-results`", "02:17", "`last-green.json`", "`index.jsonl`",
+        "`suite`", "`suite-macos`", "`macos-15`", "`macos-3.13`", "`triage`", "`publish`", "`report`", "`test-results`", "02:17",
+        "`last-green.json`", "`index.jsonl`",
         "`nightly-regression`", "`recovered at <sha7> (<run url>)`", "The `stale` workflow skips this label",
         "`<!-- nightly-canary-event v1 key=<key> -->`",
     ):
@@ -770,6 +841,16 @@ def test_the_documents_describe_the_workflow() -> None:
     cron = re.search(r"cron: '(\d+) (\d+) \* \* \*'", _text())
     assert cron
     assert f"{int(cron.group(2)):02d}:{int(cron.group(1)):02d} " in " ".join(section.split())
+
+
+def test_the_user_docs_say_where_the_suite_runs() -> None:
+    limits = " ".join((_REPO / "docs" / "user" / "LIMITATIONS.md").read_text(encoding="utf-8").split())
+    install = " ".join((_REPO / "docs" / "user" / "INSTALL.md").read_text(encoding="utf-8").split())
+    assert f"(`ci.yml` on `{_ci_key('runs-on')}`, Python 3.12 and 3.13)" in limits
+    assert f"(`nightly-canary.yml` on `{_key('suite-macos', 'runs-on')}`, Python 3.13), and no pull request runs it." in limits
+    assert "isn't a supported-tier promise" in limits
+    assert "a nightly job runs the full test suite on macOS as a report that blocks nothing" in install
+    assert "macOS runs it nightly as a report" in (_REPO / "pyproject.toml").read_text(encoding="utf-8")
 
 
 # --- the Python the triage job holds ----------------------------------------
