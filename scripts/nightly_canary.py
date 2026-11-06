@@ -1666,6 +1666,9 @@ def plan_actions(
             actions.append({"action": "comment", "number": issue["number"], "body": _recovered_comment(night)})
         actions.append({"action": "close", "number": issue["number"]})
     partial = next((i for i in alive if i["total"] is not None and i["key"] != KEY_BROKEN), None)
+    # A collection error stays out of a partial issue on a later night, but a merge
+    # can have put it there. The digest needs `held` whole, so this set stays apart.
+    in_partial = set(partial["tests"] or []) if partial is not None else set()
     by_key: dict[str, dict[str, Any]] = {}
     for issue in alive:
         by_key.setdefault(issue["key"], issue)
@@ -1683,12 +1686,14 @@ def plan_actions(
         if owner is not None and owner["total"] is None:
             added[owner["number"]] = [test for test in fresh if test not in (owner["tests"] or [])]
             reasons[owner["number"]] = event.get("reasons", {})
-        elif owner is not None and kind == KEY_BROKEN:
+        elif owner is not None and kind in (KEY_BROKEN, KEY_COLLECTION):
             continue
         elif partial is not None and kind not in (KEY_BROKEN, KEY_COLLECTION):
             held.extend(fresh)
-        elif fresh or kind == KEY_BROKEN:
+        elif kind == KEY_BROKEN:
             groups.append((event, fresh))
+        elif set(fresh) - in_partial:
+            groups.append((event, [test for test in fresh if test not in in_partial]))
     for issue in alive:
         if issue["total"] is not None:
             continue

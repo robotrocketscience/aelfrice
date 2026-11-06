@@ -3875,6 +3875,33 @@ def test_issues_a_partial_issue_lets_collection_errors_and_canary_broken_open_th
     assert keys == [events[0]["key"], "canary-broken"]
 
 
+def test_issues_a_reattempt_adds_nothing_for_a_collection_error_a_merged_partial_holds() -> None:
+    """A leg stopped on the import error, so the night never rewrites the partial
+    issue and each attempt reads the same marker."""
+    module = "::tests.test_broken"
+    events = [_pr_event(*_many(5000)), _collection(module)]
+    night = {**_base(), "results": {"3.12": {}, "3.13": {}}, "ran_full": False}
+    issues = _land([], nc.plan_actions([], events, night))
+    assert len(issues) == 1 and module in _marker_tests(issues[0]["body"])
+    assert nc.plan_actions(issues, events, night) == []
+
+
+def test_issues_a_reattempt_adds_nothing_for_a_collection_error_its_own_partial_issue_cut() -> None:
+    """The marker holds only the first ids, and the key says the rest are this issue's."""
+    event = _collection(*_many(5000, "::tests.m"))
+    issues = _land([], nc.plan_actions([], [event], _base()))
+    assert _parsed(issues[0])["total"] == 5000
+    assert nc.plan_actions(issues, [event], _base()) == []
+
+
+def test_issues_a_new_collection_error_opens_its_own_issue_beside_a_partial_that_holds_another() -> None:
+    held, new = "::tests.test_held", "::tests.test_new"
+    other = {**_collection(new), "key": f"collection-error-{SHA1[:12]}"}
+    issues = _land([], nc.plan_actions([], [_pr_event(*_many(5000)), _collection(held)], _base()))
+    actions = nc.plan_actions(issues, [_collection(held), other], _base(run_id=201))
+    assert [(a["action"], a["tests"]) for a in actions] == [("create", [new])]
+
+
 def test_issues_an_open_canary_broken_issue_cut_by_the_budget_opens_no_second_one() -> None:
     tests = _many(5000)
     issues = _opened({"key": "canary-broken", "legs": ["3.13"], "tests": tests})
