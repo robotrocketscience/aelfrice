@@ -1318,11 +1318,11 @@ def _list_block(
     if left:
         lines.extend(["", f"This list leaves out {left} of {len(ordered)} test(s). The run's `record.json` names them all."])
     if _is_cut(ordered):
-        lines.extend([
-            "",
+        note = (
             "This issue holds too many tests to track each one, so the canary closes it only on a night "
-            "when no test goes red on either canary leg.",
-        ])
+            "when no test goes red on either canary leg."
+        )
+        lines.extend(["", note])
     return "\n".join([_LIST_START, *lines, _LIST_END])
 
 
