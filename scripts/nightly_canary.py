@@ -1261,11 +1261,16 @@ def marker_ids(tests: Iterable[str]) -> list[str]:
     return kept
 
 
+def _is_cut(tests: list[str]) -> bool:
+    """Whether the tests marker can't hold them all, which makes the issue partial."""
+    return len(marker_ids(tests)) < len(tests)
+
+
 def _tests_lines(tests: list[str]) -> str:
     """The tests marker, plus the partial marker when it could not hold them all."""
     kept = marker_ids(tests)
     line = f"<!-- nightly-canary-tests {_marker_json(kept)} -->"
-    if len(kept) < len(tests):
+    if _is_cut(tests):
         line += f"\n<!-- nightly-canary-partial total={len(tests)} digest={_digest(tests)} -->"
     return line
 
@@ -1287,7 +1292,7 @@ def _list_block(tests: list[str], reasons: dict[str, Any]) -> str:
     left = len(ordered) - len(lines)
     if left:
         lines.extend(["", f"This list leaves out {left} of {len(ordered)} test(s). The run's `record.json` names them all."])
-    if len(marker_ids(ordered)) < len(ordered):
+    if _is_cut(ordered):
         lines.extend([
             "",
             "This issue holds too many tests to track each one, so the canary closes it only on a night "
@@ -1440,16 +1445,19 @@ def _modules(tests: list[str]) -> str:
     return shown if len(names) <= 3 else f"{shown} and {len(names) - 3} more"
 
 
-def _shared(event: dict[str, Any]) -> bool:
+def _shared(event: dict[str, Any], tests: list[str]) -> bool:
     """Whether the issue holds tests no one event explains, so its title and
-    intro can't name what one event says."""
-    return bool(event.get("merged"))
+    intro can't name what one event says. A partial issue takes in other events'
+    tests on later nights, unless it is `canary-broken`, which takes in none."""
+    if event.get("merged"):
+        return True
+    return key_kind(str(event["key"]))[0] != KEY_BROKEN and _is_cut(tests)
 
 
 def issue_title(event: dict[str, Any], tests: list[str], night: dict[str, Any]) -> str:
     kind, parts = key_kind(str(event["key"]))
     count = f"{len(tests)} test(s)"
-    if _shared(event):
+    if _shared(event, tests):
         title = f"nightly: {count} fail on main in a mass failure ({str(night.get('sha', ''))[:7]})"
     elif kind == KEY_PR:
         title = f"nightly: {count} fail on main since #{parts[0]} ({str(event.get('sha', ''))[:7]})"
@@ -1477,7 +1485,7 @@ def _intro(event: dict[str, Any], tests: list[str], night: dict[str, Any]) -> st
     """What the event means to a reader. It holds no test output: the reports
     stay in the run's artifacts."""
     kind, parts = key_kind(str(event["key"]))
-    if _shared(event):
+    if _shared(event, tests):
         return (
             f"These tests failed at {_code(str(night.get('sha', ''))[:12])} in a mass failure, so they share this "
             "issue. No one commit explains them all: `triage.json` in the run's `nightly-triage-<sha>` artifact "
@@ -1518,12 +1526,12 @@ def _intro(event: dict[str, Any], tests: list[str], night: dict[str, Any]) -> st
     return f"The canary reports the event {_code(str(event['key']))} for {len(tests)} test(s)."
 
 
-def _closing(event: dict[str, Any]) -> str:
+def _closing(event: dict[str, Any], tests: list[str]) -> str:
     """When the canary closes the issue, in the terms of its event."""
     kind = key_kind(str(event["key"]))[0]
     if kind == KEY_BROKEN:
         return "The canary closes it on a night that reaches both canary legs, once any tests here pass on both."
-    if kind == KEY_COLLECTION and not _shared(event):
+    if kind == KEY_COLLECTION and not _shared(event, tests):
         return "The canary closes it when pytest gets past collecting on both canary legs and reports none of these."
     return (
         "The canary closes it when every test here passes in the full run on both canary legs. If you remove, "
@@ -1540,13 +1548,16 @@ def issue_body(
         head.append(f"<!-- nightly-canary-run run_id={night['run_id']} kind=opened -->")
     head.append(_tests_lines(tests))
     paragraphs = ["\n".join(head), _intro(event, tests, night)]
-    if _shared(event):
-        shown = ", ".join(f"{_code(key)} ({count})" for key, count in others[:_COMMENT_LIST])
-        if len(others) > _COMMENT_LIST:
-            shown += f", and {len(others) - _COMMENT_LIST} more"
+    if _shared(event, tests):
+        keys = others or [(str(event["key"]), len(tests))]
+        shown = ", ".join(f"{_code(key)} ({count})" for key, count in keys[:_COMMENT_LIST])
+        if len(keys) > _COMMENT_LIST:
+            shown += f", and {len(keys) - _COMMENT_LIST} more"
         paragraphs.append(f"The night's event keys, each with its test count: {shown}.")
     paragraphs.append(_list_block(tests, event.get("reasons", {})))
-    paragraphs.append(f"The [nightly run]({night.get('run_url', '')}) opened this issue. {_closing(event)}")
+    # A partial issue's list says how it closes.
+    closing = "" if _is_cut(tests) else f" {_closing(event, tests)}"
+    paragraphs.append(f"The [nightly run]({night.get('run_url', '')}) opened this issue.{closing}")
     return "\n\n".join(paragraphs) + "\n"
 
 

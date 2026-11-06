@@ -3637,12 +3637,41 @@ def test_issues_a_mass_failure_opens_one_issue_under_the_limit_and_says_what_it_
     shown = len(re.findall(r"^- `", body, flags=re.M))
     assert 0 < shown < 5000
     assert f"This list leaves out {5000 - shown} of 5000 test(s)." in body
-    assert actions[0]["title"].startswith("nightly: 5000 test(s)")
+    assert actions[0]["title"] == f"nightly: 5000 test(s) fail on main in a mass failure ({SHA2[:7]})"
     parsed = _parsed({"number": 1, "body": body})
     assert parsed["total"] == 5000
     assert 0 < len(parsed["tests"]) < 5000
     assert parsed["tests"] == sorted(tests)[: len(parsed["tests"])]
     assert "closes it only on a night when no test goes red" in " ".join(body.split())
+
+
+@pytest.mark.parametrize(
+    "event",
+    [_pr_event(*_many(5000)), {"key": f"collection-error-{SHA2[:12]}", "kind": "collection-error", "legs": ["3.13"], "tests": _many(5000, "::tests.m")}],
+    ids=["pr", "collection"],
+)
+def test_issues_a_partial_issue_names_no_culprit_from_creation(event: dict[str, Any]) -> None:
+    """It takes in other events' tests on later nights, so one event's words go false."""
+    action = nc.plan_actions([], [event], _base())[0]
+    flat = " ".join(action["body"].split())
+    assert action["title"] == f"nightly: 5000 test(s) fail on main in a mass failure ({SHA2[:7]})"
+    assert "bisect points" not in flat and "can't collect" not in flat
+    assert f"The night's event keys, each with its test count: `{event['key']}` (5000)." in flat
+    # One rule for closing, the one `_recovered` applies to a partial issue.
+    assert "closes it only on a night when no test goes red" in flat
+    assert "passes in the full run" not in flat and "reports none of these" not in flat
+
+
+def test_issues_a_partial_canary_broken_issue_keeps_its_own_words() -> None:
+    """It takes in no other event's tests, so what it says stays true."""
+    broken = {"key": "canary-broken", "legs": ["3.13"], "tests": _many(5000)}
+    action = nc.plan_actions([], [broken], _base())[0]
+    flat = " ".join(action["body"].split())
+    assert "no usable result on 3.13" in action["title"]
+    assert "These legs left no usable result" in flat
+    assert "event keys" not in flat
+    assert "closes it only on a night when no test goes red" in flat
+    assert "once any tests here pass" not in flat
 
 
 def test_issues_a_list_that_fits_has_no_partial_marker_and_no_left_out_line() -> None:

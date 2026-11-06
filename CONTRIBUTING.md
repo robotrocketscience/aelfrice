@@ -337,8 +337,8 @@ canary legs. It comments `recovered at <sha7> (<run url>)` first. A test that
 only passes on the rerun doesn't count, and neither does a night that left no
 result for the test. If you remove, rename, or skip a test, close its issue
 yourself, because the canary never sees that test pass. An issue with too many
-tests to track each one closes only on a night when no test goes red on either
-leg.
+tests to track each one names no culprit, takes in later nights' failures, and
+closes only on a night when no test goes red on either leg.
 
 You can edit an issue the canary opened, but keep the
 `<!-- nightly-canary-event v1 key=<key> -->` and `<!-- nightly-canary-tests [...] -->`
