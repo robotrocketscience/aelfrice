@@ -3272,7 +3272,7 @@ def test_issues_odd_ids_cannot_break_the_marker_or_the_markdown() -> None:
     assert sorted(_marker_tests(body)) == sorted(_ODD_IDS)
     assert _parsed({"number": 1, "body": body})["key"] == _PR_KEY
     # Only the lines the canary wrote: an id can't end a marker or start another.
-    comments = re.findall(r"^<!--.*-->$", body, flags=re.M)
+    comments = [line for line in body.splitlines() if line.startswith("<!--") and line.endswith("-->")]
     assert len(comments) == 5
     assert all(c.count("-->") == 1 for c in comments)
     block = nc._LIST_BLOCK.search(body)
