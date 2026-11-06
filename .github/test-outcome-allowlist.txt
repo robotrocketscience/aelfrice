@@ -25,3 +25,8 @@
 # Windows-only (#1833): `skipif(not WIN32)`, so both Linux legs skip them.
 tests.test_core_gate_background_windows_1761::test_a_cmd_shim_receives_the_argv_intact
 tests.test_core_gate_background_windows_1761::test_the_detached_child_runs_the_stub_on_windows
+
+# Case-insensitive disks only (#1861): they skip on a case-sensitive disk, so both
+# Linux legs skip them. The nightly canary's macOS leg runs them.
+tests.test_nightly_bisect_1786::test_a_temporary_location_in_another_case_is_still_the_clone
+tests.test_nightly_bisect_1786::test_a_temporary_location_inside_the_repository_in_another_case_exits_2
