@@ -941,22 +941,20 @@ _HOST_MANAGEMENT_NOTE: Final[str] = (
     "</host-adapter>"
 )
 
-# #1413. The bundled slash bodies invoke the CLI as ``uv run aelf``,
-# which is right for a source checkout and wrong for an installed Codex
-# skill. ``uv run`` initializes and locks a cache before aelfrice starts,
-# so in a sandbox whose cache is read-only the skill fails at the wrapper
-# — measured, `uv run aelf --version` exits 2 where `aelf --version`
-# exits 0. It also resolves a project environment, so an unactivated
-# checkout holding a different aelfrice version silently shadows the
-# ``uv tool`` install that generated the skill.
+# #1413. A generated skill must not name ``uv run aelf``. ``uv run``
+# initializes and locks a cache before aelfrice starts, so in a sandbox
+# whose cache is read-only the skill fails at the wrapper — measured,
+# `uv run aelf --version` exits 2 where `aelf --version` exits 0. It also
+# resolves a project environment, so an unactivated checkout holding a
+# different aelfrice version silently shadows the ``uv tool`` install
+# that generated the skill.
 #
-# The rewrite happens HERE, at transform time, rather than in the slash
-# sources: those are shared with hosts where ``uv run`` is correct
-# (ratified design fork, 2026-08-06 — Codex-only, and no absolute path
-# baked in, so the generated skill stays machine-independent and resolves
-# ``aelf`` through the invoking shell's PATH/PATHEXT like any other
-# command). This is why the generated body is no longer byte-identical to
-# its source.
+# Since #1857 the slash sources invoke ``aelf`` by name on every host, so
+# the only text this rewrite still changes is the sentence in upgrade.md
+# warning against substituting ``uv run aelf upgrade``. No absolute path
+# is baked in (ratified design fork, 2026-08-06), so the generated skill
+# stays machine-independent and resolves ``aelf`` through the invoking
+# shell's PATH/PATHEXT like any other command.
 _UV_RUN_PREFIX: Final[str] = "uv run aelf "
 _DIRECT_PREFIX: Final[str] = "aelf "
 
@@ -964,12 +962,12 @@ _DIRECT_PREFIX: Final[str] = "aelf "
 def _direct_cli_invocations(text: str) -> str:
     """Rewrite ``uv run aelf <cmd>`` to ``aelf <cmd>`` (#1413).
 
-    Every bundled occurrence is the literal prefix followed by a
-    subcommand, so a literal replace is exact — there is no ``uv run
-    aelfrice``, no line-broken form, and no occurrence where ``aelf`` is
-    the final token. A test pins that property against the bundle so a
-    future slash edit introducing another shape fails rather than
-    shipping a half-rewritten skill.
+    The one bundled occurrence (upgrade.md, #1857) is the literal prefix
+    followed by a subcommand, so a literal replace is exact — there is no
+    ``uv run aelfrice``, no line-broken form, and no occurrence where
+    ``aelf`` is the final token. A test pins that property against the
+    bundle so a future slash edit introducing another shape fails rather
+    than shipping a half-rewritten skill.
     """
     return text.replace(_UV_RUN_PREFIX, _DIRECT_PREFIX)
 

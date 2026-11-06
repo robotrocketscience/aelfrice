@@ -33,7 +33,7 @@ output.
 </objective>
 
 <process>
-Run: `uv run aelf introspect $ARGUMENTS`
+Run: `aelf introspect $ARGUMENTS`
 Display the output verbatim, then, if the user wants to curate, offer the
 retire/lock/resolve verbs from the footer.
 </process>

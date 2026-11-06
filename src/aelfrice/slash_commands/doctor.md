@@ -17,7 +17,7 @@ With no argument, runs both checks. Pass `hooks` or `graph` to limit.
 </objective>
 
 <process>
-Run: `uv run aelf doctor $ARGUMENTS`
+Run: `aelf doctor $ARGUMENTS`
 Display the output verbatim. Do not add commentary. Exit code is 1
 when at least one structural failure fires in either subcheck, so a
 wrapping CI step can gate on it.

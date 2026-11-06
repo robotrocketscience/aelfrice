@@ -13,6 +13,6 @@ By default tails forever; pass `--no-follow` for a one-shot dump.
 </objective>
 
 <process>
-Run: `uv run aelf tail $ARGUMENTS`
+Run: `aelf tail $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>

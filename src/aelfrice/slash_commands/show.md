@@ -30,6 +30,6 @@ expired-lock sweep — `show` is not a write-free command there.
 </objective>
 
 <process>
-Run: `uv run aelf show $ARGUMENTS`
+Run: `aelf show $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>

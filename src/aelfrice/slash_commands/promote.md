@@ -31,6 +31,6 @@ is `agent_inferred`; only the scope changes when the belief is already
 </flags>
 
 <process>
-Run: `uv run aelf promote $ARGUMENTS`
+Run: `aelf promote $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>

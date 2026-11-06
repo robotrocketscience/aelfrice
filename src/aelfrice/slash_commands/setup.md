@@ -39,7 +39,7 @@ both commands with no other options on this host.
 </objective>
 
 <process>
-Run: `uv run aelf setup`
+Run: `aelf setup`
 
 On the `claude` host, the install scope is auto-detected by default:
 `project` (writing `<root>/.claude/settings.json`) if the current

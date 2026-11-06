@@ -162,7 +162,7 @@ _INVOKE_EXEMPT: dict[str, str] = {
     # the printed install-aware upgrade command via Bash (separate
     # process, no mid-process replacement), then `aelf setup` to
     # refresh slash-command bundle, then `aelf upgrade-cmd` to clear
-    # the stale update-banner cache. No single `uv run aelf upgrade`.
+    # the stale update-banner cache. No single `aelf upgrade`.
     "upgrade": "imperative orchestrator over upgrade-cmd + setup",
 }
 
@@ -172,8 +172,8 @@ def test_slash_command_invokes_matching_cli(cmd: str) -> None:
     if cmd in _INVOKE_EXEMPT:
         pytest.skip(f"{cmd} is exempt: {_INVOKE_EXEMPT[cmd]}")
     text = (_slash_dir() / f"{cmd}.md").read_text()
-    assert f"uv run aelf {cmd}" in text, (
-        f"{cmd}.md does not invoke `uv run aelf {cmd}`"
+    assert re.search(rf"(?<!uv run )\baelf {re.escape(cmd)}\b", text), (
+        f"{cmd}.md does not invoke `aelf {cmd}` directly"
     )
 
 

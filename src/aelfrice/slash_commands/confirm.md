@@ -16,6 +16,6 @@ tracks duplicate re-ingests; `confirm` is an explicit user signal written to
 </objective>
 
 <process>
-Run: `uv run aelf confirm "$ARGUMENTS"`
+Run: `aelf confirm "$ARGUMENTS"`
 Display the output verbatim. Do not add commentary.
 </process>

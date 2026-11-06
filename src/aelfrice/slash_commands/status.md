@@ -11,6 +11,6 @@ contradictions) use `aelf:doctor` with the `graph` subcommand.
 </objective>
 
 <process>
-Run: `uv run aelf status`
+Run: `aelf status`
 Display the output verbatim. Do not add commentary.
 </process>

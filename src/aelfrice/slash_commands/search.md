@@ -10,6 +10,6 @@ Search the aelfrice memory store for beliefs matching the given query.
 </objective>
 
 <process>
-Run: `uv run aelf search "$ARGUMENTS"`
+Run: `aelf search "$ARGUMENTS"`
 Display the output verbatim. Do not add commentary.
 </process>

@@ -14,6 +14,6 @@ the eval harness, and for users running `trigger_mode = "manual"`
 </objective>
 
 <process>
-Run: `uv run aelf rebuild $ARGUMENTS`
+Run: `aelf rebuild $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>

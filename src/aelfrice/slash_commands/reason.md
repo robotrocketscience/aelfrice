@@ -18,7 +18,7 @@ The Python side owns the contract; this markdown is the dispatch script.
 </objective>
 
 <process>
-Run: `uv run aelf reason "$ARGUMENTS" --json`
+Run: `aelf reason "$ARGUMENTS" --json`
 
 Parse the payload. It has these top-level keys: `query`, `seeds`, `hops`, `paths`, `verdict`, `impasses`, `dispatch`, `suggested_updates`.
 

@@ -16,19 +16,19 @@ classifier on `--no-subagents` or when the subagent tool is unavailable.
 
 <process>
 1. Parse `$ARGUMENTS`. If it contains `--no-subagents`, run
-   `uv run aelf onboard "<path>" --llm-classify=false` (deterministic regex path) and display the output
+   `aelf onboard "<path>" --llm-classify=false` (deterministic regex path) and display the output
    verbatim. Stop. Otherwise extract `<path>` (everything that isn't
    `--no-subagents`).
 
 2. **Pre-scan and emit candidates.** First run the read-only pre-scan:
-   `uv run aelf onboard "<path>" --check`
+   `aelf onboard "<path>" --check`
    Print the output verbatim so the user sees the idempotency state
    before any session opens. Parse the `new since last onboard: <N>
    candidates` line; if `N == 0`, stop — no session is opened, no
    classification work is dispatched (#761).
 
    Otherwise run:
-   `uv run aelf onboard "<path>" --emit-candidates`
+   `aelf onboard "<path>" --emit-candidates`
    Parse the JSON. Capture `session_id`, `n_already_present`, and
    `sentences` (a list of `{index, text, source}` objects).
    If `sentences` is empty, run accept with an empty classification
@@ -168,7 +168,7 @@ classifier on `--no-subagents` or when the subagent tool is unavailable.
    `{index, belief_type, persist}` entries.
 
 6. **Apply.** Pipe the aggregated JSON into:
-   `uv run aelf onboard --accept-classifications --session-id <id> --classifications-file -`
+   `aelf onboard --accept-classifications --session-id <id> --classifications-file -`
    The CLI prints a JSON summary with `inserted`,
    `skipped_non_persisting`, `skipped_existing`,
    `skipped_unclassified`.

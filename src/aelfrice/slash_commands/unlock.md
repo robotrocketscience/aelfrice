@@ -15,7 +15,7 @@ and writes no audit row.
 <process>
 If `$ARGUMENTS` starts with `--user` followed by a space, the lock is in
 the user-scope store. Pass `--user` as its own flag and run
-`uv run aelf unlock --user "<the id after --user>"`.
-Otherwise run: `uv run aelf unlock "$ARGUMENTS"`
+`aelf unlock --user "<the id after --user>"`.
+Otherwise run: `aelf unlock "$ARGUMENTS"`
 Display the output verbatim. Do not add commentary.
 </process>

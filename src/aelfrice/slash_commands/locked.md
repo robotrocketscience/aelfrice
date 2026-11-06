@@ -11,6 +11,6 @@ store, tagged `[user]`.
 </objective>
 
 <process>
-Run: `uv run aelf locked`
+Run: `aelf locked`
 Display the output verbatim. Do not add commentary.
 </process>

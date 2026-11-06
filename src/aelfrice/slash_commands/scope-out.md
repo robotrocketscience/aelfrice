@@ -12,7 +12,7 @@ explicit instruction (#856).
 </objective>
 
 <process>
-Run: `uv run aelf scope-out $ARGUMENTS`
+Run: `aelf scope-out $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 
 `$ARGUMENTS` may be:

@@ -20,22 +20,22 @@ enabled = true` in `.aelfrice.toml`.
 <process>
 Parse `$ARGUMENTS` as an `aelf category` sub-action and pass it through.
 
-- No arguments, or `list` → run `uv run aelf category list` and display
+- No arguments, or `list` → run `aelf category list` and display
   the output verbatim.
-- `init` → run `uv run aelf category init` (seeds the 5 starter
+- `init` → run `aelf category init` (seeds the 5 starter
   categories idempotently).
 - `add <name> [--always-on] [--keyword PHRASE ...] [--tool-glob G ...]
   [--file-glob G ...] [--lock none|locked|advisory]` → run
-  `uv run aelf category add <name> ...` with the given flags.
-- `show <name>` → run `uv run aelf category show <name>`.
+  `aelf category add <name> ...` with the given flags.
+- `show <name>` → run `aelf category show <name>`.
 - `set-trigger <name> [--keyword ...] [--tool-glob ...] [--file-glob ...]`
-  → run `uv run aelf category set-trigger <name> ...`.
+  → run `aelf category set-trigger <name> ...`.
 - `assign <belief_id> <name>` / `unassign <belief_id> <name>` → run the
-  matching `uv run aelf category assign|unassign <belief_id> <name>`.
-- `delete <name>` → run `uv run aelf category delete <name>`.
+  matching `aelf category assign|unassign <belief_id> <name>`.
+- `delete <name>` → run `aelf category delete <name>`.
 
 To put a rule into a category at lock time instead, use
-`uv run aelf lock "<rule>" --category <name>`.
+`aelf lock "<rule>" --category <name>`.
 
 Display the command's output verbatim. Do not add commentary.
 </process>

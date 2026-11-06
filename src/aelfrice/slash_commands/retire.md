@@ -22,6 +22,6 @@ Retiring an already-retired belief is a no-op.
 </objective>
 
 <process>
-Run: `uv run aelf retire $ARGUMENTS`
+Run: `aelf retire $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>

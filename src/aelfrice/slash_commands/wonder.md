@@ -22,7 +22,7 @@ Two modes, picked from the shape of the arguments:
 - **Bare positional topic** — `$ARGUMENTS` is non-empty and its first non-whitespace character is **not** `-`. The user typed something like `/aelf:wonder about indentation`. Run with the topic quoted as one CLI argument:
 
   ```bash
-  uv run aelf wonder "$ARGUMENTS"
+  aelf wonder "$ARGUMENTS"
   ```
 
   The quotes are load-bearing — the CLI's positional `query` is a single argument; without them argparse rejects multi-word topics (`error: unrecognized arguments: ...`).
@@ -30,7 +30,7 @@ Two modes, picked from the shape of the arguments:
 - **Empty or flag-only** — `$ARGUMENTS` is empty, or its first non-whitespace character is `-` (e.g. `--gc`, `--persist`, `--emit-phantoms`, `--axes "<query>"`). Run unquoted so the shell tokenises flags correctly:
 
   ```bash
-  uv run aelf wonder $ARGUMENTS
+  aelf wonder $ARGUMENTS
   ```
 
 **What to do with the output:**
@@ -56,7 +56,7 @@ Two modes, picked from the shape of the arguments:
 
    The `anchor_ids` array is identical across all rows — it is the gap-analysis seed set.
 
-4. **Persist.** Run `uv run aelf wonder --persist-docs /tmp/aelf-wonder-dispatch-<unix-ts>.jsonl`. Display the resulting `inserted=N skipped=N edges_created=N` summary verbatim.
+4. **Persist.** Run `aelf wonder --persist-docs /tmp/aelf-wonder-dispatch-<unix-ts>.jsonl`. Display the resulting `inserted=N skipped=N edges_created=N` summary verbatim.
 
 **Dedup behaviour:** `wonder_ingest` keys idempotency on the sorted constituent belief IDs **and** the generator string (key prefix `wonder_ingest:v2:`, shipped in #644). An N-axis dispatch over the same `speculative_anchor_ids` therefore persists as N distinct phantoms (one per axis-derived generator), not one. Re-running the same dispatch is still a no-op.
 

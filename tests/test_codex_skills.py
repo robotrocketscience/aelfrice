@@ -60,12 +60,10 @@ def test_transform_carries_marker_and_invocation() -> None:
 def test_transform_body_is_verbatim_apart_from_the_cli_prefix() -> None:
     """The body is carried through unchanged except for `uv run` (#1413).
 
-    Before #1413 the body was byte-identical to its source. It no longer
-    is, and that is the change rather than a workaround: the generated
-    skill must invoke `aelf` directly, while the slash source keeps the
-    `uv run` form that is correct for a source checkout on other hosts.
-    Undoing the rewrite is the only difference, so this still pins that
-    nothing else in the body is edited, reordered, or dropped.
+    The slash sources invoke `aelf` by name since #1857, so the rewrite
+    now fires only on the sentence in upgrade.md that warns against
+    `uv run aelf upgrade`. This still pins that nothing else in any body
+    is edited, reordered, or dropped.
 
     Asserted as a SUFFIX over every bundled command, not as a substring
     over one of them. An earlier revision did both of those things
@@ -75,13 +73,13 @@ def test_transform_body_is_verbatim_apart_from_the_cli_prefix() -> None:
     """
     files = _bundled_slash_files()
     assert files, "bundle is empty; every assertion below would be vacuous"
-    exercised = 0
+    exercised: list[str] = []
     for filename, src in sorted(files.items()):
         _, text = codex_skill_from_slash(filename, src)
         body = src.split("---", 2)[2].strip()
         rewritten = body.replace("uv run aelf ", "aelf ")
         if body != rewritten:
-            exercised += 1
+            exercised.append(filename)
             assert body not in text, filename
         # The body is the last thing in the file, so nothing may follow
         # it but the trailing newline the renderer adds.
@@ -89,9 +87,8 @@ def test_transform_body_is_verbatim_apart_from_the_cli_prefix() -> None:
             f"{filename}: the generated body is not the source body with "
             "the CLI prefix rewritten, or something was appended after it"
         )
-    assert exercised >= 25, (
-        "the rewrite fires on too few bundled commands for this to be a "
-        f"meaningful guard: {exercised}"
+    assert exercised == ["upgrade.md"], (
+        f"the rewrite no longer fires only on the upgrade warning: {exercised}"
     )
 
 

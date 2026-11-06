@@ -15,6 +15,6 @@ renderer-agnostic `{nodes, edges}` dict.
 </objective>
 
 <process>
-Run: `uv run aelf graph $ARGUMENTS`
+Run: `aelf graph $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>

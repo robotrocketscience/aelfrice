@@ -14,7 +14,7 @@ as a checkbox file, let the user edit verdicts, then apply them to the store.
 <process>
 ## Generate a review file
 
-Run: `uv run aelf review --generate`
+Run: `aelf review --generate`
 
 This writes `.aelfrice/review.md` with up to 10 beliefs sorted by how long
 they have gone without a keep/remove/lock verdict. Display the path and
@@ -41,7 +41,7 @@ user to fill in their checkboxes before proceeding to the apply step.
 
 Only after the user confirms they have finished editing:
 
-Run: `uv run aelf review --apply`
+Run: `aelf review --apply`
 
 Display the summary line (kept / removed / locked / skipped counts).
 If `--apply` exits non-zero, show the error and do not retry automatically.

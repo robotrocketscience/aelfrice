@@ -23,6 +23,6 @@ prompt the user must explicitly pass `--yes`.
 </objective>
 
 <process>
-Run: `uv run aelf delete $ARGUMENTS`
+Run: `aelf delete $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>

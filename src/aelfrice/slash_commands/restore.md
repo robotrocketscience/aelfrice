@@ -18,6 +18,6 @@ already active, or an id that does not exist, is a no-op that reports
 </objective>
 
 <process>
-Run: `uv run aelf restore $ARGUMENTS`
+Run: `aelf restore $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>

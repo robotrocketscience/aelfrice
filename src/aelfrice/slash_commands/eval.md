@@ -18,6 +18,6 @@ produce bytes-identical output.
 </objective>
 
 <process>
-Run: `uv run aelf eval $ARGUMENTS`
+Run: `aelf eval $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>

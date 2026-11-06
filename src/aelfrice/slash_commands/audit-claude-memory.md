@@ -17,12 +17,12 @@ The report has four buckets:
 </objective>
 
 <process>
-Run: `uv run aelf audit-claude-memory`
+Run: `aelf audit-claude-memory`
 
 Optionally:
-- `uv run aelf audit-claude-memory --project /abs/path/to/project` to audit
+- `aelf audit-claude-memory --project /abs/path/to/project` to audit
   a specific project directory (default: current working directory).
-- `uv run aelf audit-claude-memory --json` for a single machine-readable
+- `aelf audit-claude-memory --json` for a single machine-readable
   JSON object.
 
 Display the output verbatim. Do not add commentary or act on the report

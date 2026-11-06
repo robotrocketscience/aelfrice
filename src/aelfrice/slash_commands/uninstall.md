@@ -24,7 +24,7 @@ command's own tail message now prints.
 </objective>
 
 <process>
-Run: `uv run aelf uninstall <flags>` with the flags the user requested.
+Run: `aelf uninstall <flags>` with the flags the user requested.
 
 If the user did not specify a disposition flag, ASK THEM which mode
 they want before invoking the command. Never invoke `--purge` without

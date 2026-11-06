@@ -10,12 +10,12 @@ inferred, or wonder-generated but not yet explicitly asserted by the user.
 </objective>
 
 <process>
-Run: `uv run aelf speculative`
+Run: `aelf speculative`
 
 Optionally:
-- `uv run aelf speculative --origin <tag>` to restrict to a single origin tag.
-- `uv run aelf speculative --limit N` to cap the row count.
-- `uv run aelf speculative --json` for machine-readable JSONL output.
+- `aelf speculative --origin <tag>` to restrict to a single origin tag.
+- `aelf speculative --limit N` to cap the row count.
+- `aelf speculative --json` for machine-readable JSONL output.
 
 Display the output verbatim. Do not add commentary.
 </process>

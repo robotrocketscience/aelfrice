@@ -16,7 +16,7 @@ re-lock the corrected statement (per #605, #814).
 If `$ARGUMENTS` starts with `--user` followed by a space, the lock is
 user-scoped: every repository shares it. Pass `--user` as its own flag
 and the rest as the statement, and run
-`uv run aelf lock --user "<the text after --user>"`.
-Otherwise run: `uv run aelf lock "$ARGUMENTS"`
+`aelf lock --user "<the text after --user>"`.
+Otherwise run: `aelf lock "$ARGUMENTS"`
 Display the output verbatim. Do not add commentary.
 </process>

@@ -13,6 +13,6 @@ when checking whether the store foundation is healthy.
 </objective>
 
 <process>
-Run: `uv run aelf core $ARGUMENTS`
+Run: `aelf core $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>
