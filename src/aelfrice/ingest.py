@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -652,8 +653,26 @@ def _pasted_prose(body: str) -> str:
     return "\n".join(ln for ln in lines if not _is_pasted_output_line(ln))
 
 
-def _filter_pastes(text: str) -> str:
-    """`text` with each pasted block reduced to its prose, in one pass.
+# Words that, outside a paste, mark it as text the user is rejecting rather
+# than saying (operator ruling rd24888de, 2026-11-06: "Drop on rejection
+# cue"). Whole words, any case. "made up" is not a cue when "of" follows,
+# which is the ordinary "is made up of" sense.
+_REJECTION_CUE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:wrong|incorrect|not right|not true|nonsense|gibberish"
+    r"|slop|sloppy|made[ -]up(?! of)|disagree|reject|rejected)\b",
+    re.IGNORECASE,
+)
+
+
+def _drop_prose(_body: str) -> str:
+    """Keep nothing of a paste."""
+    return ""
+
+
+def _filter_pastes(
+    text: str, prose: Callable[[str], str] = _pasted_prose,
+) -> str:
+    """`text` with each pasted block reduced by `prose`, in one pass.
 
     A paste runs from an opening tag to the next closing tag, or to the end
     of the record when none follows. An opening tag inside a paste and a
@@ -670,15 +689,15 @@ def _filter_pastes(text: str) -> str:
             if not closing:
                 start = m.end()
         elif closing:
-            out.append(_pasted_prose(text[start:m.start()]))
+            out.append(prose(text[start:m.start()]))
             start = None
         else:
             # A nested opener: drop the tag, keep the paste going.
-            out.append(_pasted_prose(text[start:m.start()]))
+            out.append(prose(text[start:m.start()]))
             start = m.end()
         pos = m.end()
     if start is not None:
-        out.append(_pasted_prose(text[start:]))
+        out.append(prose(text[start:]))
     else:
         out.append(text[pos:])
     return "".join(out)
@@ -710,6 +729,11 @@ def _user_speech(text: str) -> str | None:
     wrapper cannot be told from the user's own by any deterministic test.
     Pasted terminal and tool output is not kept: before #1691 each line of
     a pasted `git status` became a belief (`_pasted_prose`).
+
+    A paste the user rejects is not kept either (operator ruling
+    rd24888de, 2026-11-06): when the user's own words outside the pastes
+    contain a rejection cue (`_REJECTION_CUE_RE`), every paste in the
+    record is dropped whole and only those words stay.
     """
     rest = _HOST_MARKER_LINE_RE.sub("", text)
     rest = _SYSTEM_REMINDER_RE.sub("", rest).strip()
@@ -718,6 +742,9 @@ def _user_speech(text: str) -> str | None:
     rest = _HARNESS_BLOCK_RE.sub("", rest)
     rest = _UNCLOSED_BLOCK_RE.sub("", rest)
     rest = _CROSS_SESSION_NOTICE_RE.sub("", rest)
+    own = _filter_pastes(rest, _drop_prose)
+    if _REJECTION_CUE_RE.search(own):
+        return own.strip() or None
     rest = _filter_pastes(rest).strip()
     return rest or None
 
