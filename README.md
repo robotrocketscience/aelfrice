@@ -10,16 +10,17 @@
 [![Reproducibility](https://img.shields.io/badge/reproducibility-partial%20%286%2F11%20adapters%29-yellow)](docs/design/v2_reproducibility_harness.md)
 <!-- bench-canonical-badge:end -->
 
-**aelfrice gives an AI coding agent a local memory: before the model reads each prompt, a hook adds your locked beliefs and the best-ranked matches to it.** An agent forgets your corrections between sessions, so you repeat them.
+**aelfrice gives an AI coding agent a local memory: before the model reads each prompt, a hook adds your locked beliefs and the best-ranked matches to it.** An agent forgets your corrections between sessions, so you repeat them. A belief is one statement that aelfrice has stored.
 
-- aelfrice stores sentences from your prompts as beliefs, plus both sides of a phrase such as "X supersedes Y" in a commit message; a belief becomes ground truth only when you lock it with `/aelf:lock`.
+- aelfrice stores sentences from your prompts as beliefs. After each commit, it also stores the words on each side of a phrase such as "X supersedes Y" in the commit message. A message with no such phrase adds nothing. `/aelf:onboard` adds your docs, docstrings, and recent commit subjects.
+- By default, a belief becomes ground truth only when you lock it with `/aelf:lock`.
 - Retrieval uses an entity index and BM25 over local SQLite and needs no account, telemetry, embeddings, or LLM.
 
 By default, aelfrice checks PyPI for updates and runs your `claude` CLI in the background to label new core beliefs, and `/aelf:onboard` classifies with your agent's model. See the [privacy document](docs/user/PRIVACY.md).
 
 ## Beliefs
 
-A belief is one statement with its source, type, and Bayesian confidence score. Every 12 logged lines (about six prompts and replies), aelfrice stores each sentence of your prompts as a fact, correction, preference, or requirement. It skips noise, questions, and the model's replies.
+Each belief records its source, type, and Bayesian confidence score. Every 12 logged lines (about six prompts and replies), aelfrice stores each sentence of your prompts as a fact, correction, preference, or requirement. It skips noise, questions, and the model's replies.
 
 `/aelf:confirm` and `aelf feedback` change a belief's confidence, as does praise such as "perfect" for an answer it informed. Complaints such as "that's wrong" count only with [negative sentiment feedback](docs/user/CONFIG.md) on.
 
