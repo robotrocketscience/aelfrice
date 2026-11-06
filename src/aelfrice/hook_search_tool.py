@@ -644,7 +644,7 @@ _QUERY_STOPWORDS: Final[frozenset[str]] = frozenset({
 
 
 def _query_terms(tokens: list[str]) -> list[str]:
-    """`tokens` lowercased, with stopwords and repeats removed, in order.
+    """`tokens` with stopwords and repeats removed, in first-seen order.
 
     FTS5 matching is case-insensitive, so "Paper" and "paper" are one term,
     and a repeat would spend one of the `QUERY_TOKEN_LIMIT` slots twice.
@@ -656,7 +656,7 @@ def _query_terms(tokens: list[str]) -> list[str]:
         if low in _QUERY_STOPWORDS or low in seen:
             continue
         seen.add(low)
-        out.append(low)
+        out.append(tok)
     return out
 
 
