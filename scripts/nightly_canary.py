@@ -2251,7 +2251,6 @@ def _read_night(directory: Path, base: dict[str, Any], today: str) -> tuple[list
     triage: dict[str, Any] | None = None
     if triage_file.is_file():
         triage = _read_json(triage_file)
-        validate_triage(triage, str(triage_file))
         validate_events(triage.get("events", []), str(triage_file))
     return night_events(record, triage), {**base, **night_facts(record)}
 

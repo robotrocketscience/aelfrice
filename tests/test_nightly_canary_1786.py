@@ -3533,6 +3533,7 @@ def test_issues_canary_broken_adds_a_new_test_to_its_open_issue() -> None:
     actions = nc.plan_actions(issues, [{"key": "canary-broken", "legs": ["3.13"], "tests": [_A, _B]}], _base())
     assert _kinds(actions) == ["edit", "comment"]
     assert _marker_tests(actions[0]["body"]) == [_A, _B]
+    assert f"`{_B}`" in actions[1]["body"] and f"`{_A}`" not in actions[1]["body"]
 
 
 def test_issues_an_empty_tests_marker_only_closes_for_canary_broken() -> None:
@@ -4198,6 +4199,13 @@ def test_issues_an_unreadable_night_opens_canary_broken_and_exits_2(
     if triage is not None:
         (directory / "triage.json").write_text(triage, encoding="utf-8")
     assert _issues_cmd(directory) == 2
+    assert fake_gh.issues()[0]["title"].startswith("nightly: the canary produced no record")
+
+
+def test_issues_a_record_that_contradicts_itself_is_unreadable(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    record = _night(SHA2, _both({_A: tor.FAILED}))
+    record["nightly"]["status"]["3.12"] = nc.GREEN
+    assert _issues_cmd(_night_dir(tmp_path, "night", record, {"events": []})) == 2
     assert fake_gh.issues()[0]["title"].startswith("nightly: the canary produced no record")
 
 
