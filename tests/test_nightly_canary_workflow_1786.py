@@ -30,6 +30,11 @@ _CONTRIBUTING = _REPO / "CONTRIBUTING.md"
 
 _CHECKOUT = "actions/checkout@"
 _MAIN_ONLY = "${{ !cancelled() && github.ref == 'refs/heads/main' }}"
+# All that ci.yml's full-suite command may hold and the nightly's may not. The
+# deselect leaves the producer check to ci.yml's `derived-figures` job, and this
+# workflow has no such job, so the check runs in the nightly's legs.
+_CI_ONLY_JUNIT = "--junitxml=junit-${{ matrix.python-version }}.xml"
+_CI_ONLY_DESELECT = "--deselect tests/test_derived_figures_1469.py::test_the_repo_passes_the_producer_checks"
 
 
 def _text() -> str:
@@ -86,7 +91,10 @@ def _ci_suite_tokens() -> list[str]:
     found = [line for line in _ci_job() if "uv run pytest tests/ " in line and "--junitxml=" in line]
     assert len(found) == 1, found
     command = found[0].partition("run: ")[2]
-    return command.replace("--junitxml=junit-${{ matrix.python-version }}.xml", "").split()
+    for allowed in (_CI_ONLY_JUNIT, _CI_ONLY_DESELECT):
+        assert allowed in command, command
+        command = command.replace(allowed, "")
+    return command.split()
 
 
 # --- the jobs ----------------------------------------------------------------
@@ -150,7 +158,8 @@ def test_no_job_or_step_sets_a_pytest_variable() -> None:
 
 
 def test_the_suite_command_matches_ci() -> None:
-    """Same selection and report flags, so a nightly record compares with a PR's."""
+    """Same selection and report flags, but for the JUnit path and ci.yml's
+    deselect, so a nightly record compares with a PR's."""
     step = _step("suite", "Run the suite")
     line = next(s.strip() for s in step.splitlines() if "uv run pytest" in s)
     command, _, tail = line.partition(" || ")
@@ -158,6 +167,7 @@ def test_the_suite_command_matches_ci() -> None:
     tokens = command.split()
     assert "--junitxml=bundle/junit.xml" in tokens
     assert [t for t in tokens if not t.startswith("--junitxml=")] == _ci_suite_tokens()
+    assert "--deselect" not in tokens
 
 
 def test_the_suite_syncs_what_ci_syncs() -> None:

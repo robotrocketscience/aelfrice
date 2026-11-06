@@ -309,8 +309,8 @@ The workflow runs these jobs:
 
 - `suite` runs the `pytest` job's command on Python 3.12 and 3.13, then reruns
   each leg's failures once. A test that passes on the rerun is flaky. A test
-  that fails again is confirmed. Like the `pytest` job, it leaves out the
-  producer check, and this workflow doesn't run the `derived-figures` job.
+  that fails again is confirmed. It also runs the producer check, which the
+  `pytest` job leaves to the `derived-figures` job.
 - `triage` reruns the confirmed failures on the last green commit, under the
   Python of the leg that failed them. A test that also fails there is
   environment drift. For the other tests, `triage` bisects the pull requests

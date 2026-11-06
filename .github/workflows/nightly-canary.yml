@@ -67,13 +67,15 @@ jobs:
         run: uv run python scripts/nightly_canary.py env --out bundle/env.json
       # `continue-on-error` is for the cap: a hang still gets a verdict and an
       # upload. A test failure is an exit status here and fails nothing yet.
+      # ci.yml's full-suite command with no `--deselect`: its legs leave the
+      # producer check to its `derived-figures` job, and this workflow has none.
       - name: Run the suite
         id: suite
         timeout-minutes: 25
         continue-on-error: true
         run: |
           rc=0
-          uv run pytest tests/ --ignore=tests/e2e -q -rfEsxX --durations=25 --deselect tests/test_derived_figures_1469.py::test_the_repo_passes_the_producer_checks --junitxml=bundle/junit.xml || rc=$?
+          uv run pytest tests/ --ignore=tests/e2e -q -rfEsxX --durations=25 --junitxml=bundle/junit.xml || rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
       # Exit 1 means nothing to rerun, which is not a failure of this step.
       # The verdict reads a bad report on its own.
