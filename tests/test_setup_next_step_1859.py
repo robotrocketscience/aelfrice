@@ -316,6 +316,39 @@ def test_codex_skill_held_by_someone_else_is_not_named(
 
 
 @pytest.mark.timeout(60)
+def test_codex_skill_that_is_not_utf8_is_not_named(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _folder(env, repo=True, monkeypatch=monkeypatch)
+    skill = env / "home" / ".agents" / "skills" / "aelf-onboard"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_bytes(b"\xff\xfe\x00 not utf8 \x80\x81")
+    code, lines = _setup("codex", "--no-codex-skills")
+    assert code == 0
+    assert lines == [PROJECT_LINE.format(IN_TERMINAL)]
+
+
+@pytest.mark.timeout(60)
+def test_codex_skills_folder_without_permission_is_not_named(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`is_dir()` raises this on Python 3.12 and returns False on 3.14, so
+    the stub gives every version the 3.12 behavior."""
+    _folder(env, repo=True, monkeypatch=monkeypatch)
+
+    def refuse(self: Path) -> bool:
+        if self.name == "aelf-onboard":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_dir(self)
+
+    real_is_dir = Path.is_dir
+    monkeypatch.setattr(Path, "is_dir", refuse)
+    code, lines = _setup("codex", "--no-codex-skills")
+    assert code == 0
+    assert lines == [PROJECT_LINE.format(IN_TERMINAL)]
+
+
+@pytest.mark.timeout(60)
 def test_codex_skill_is_looked_for_where_setup_put_it(
     env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1193,7 +1193,14 @@ def onboard_skill_installed(dest_dir: Path | None = None) -> bool:
     another origin holds the name, which the installer leaves in place.
     """
     target = dest_dir if dest_dir is not None else resolve_agents_skills_dir()
-    return _is_owned_skill_dir(target / f"{_SKILL_PREFIX}onboard")
+    try:
+        return _is_owned_skill_dir(target / f"{_SKILL_PREFIX}onboard")
+    except (OSError, ValueError):
+        # The hooks are already written, and this only picks a line of
+        # text. A SKILL.md that isn't UTF-8 raises UnicodeDecodeError, and
+        # `is_dir()` on a folder without permission raises on Python 3.12.
+        # A skill that can't be read can't be shown to be ours.
+        return False
 
 
 def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
