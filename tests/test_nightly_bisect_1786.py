@@ -1499,6 +1499,37 @@ def test_a_temporary_location_beside_the_repository_is_fine(
     assert {Path(row.split()[-1]).parent for row in rows} == {beside}
 
 
+def _other_case(path: Path) -> Path:
+    """`path` in another case; skips where that names no folder, a case-sensitive disk."""
+    other = Path(str(path).swapcase())
+    if not other.exists():
+        pytest.skip("the disk is case-sensitive")
+    return other
+
+
+def test_a_temporary_location_inside_the_repository_in_another_case_exits_2(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(["", "a"])
+    repo = tmp_path / "repo"
+    (repo / "tmp").mkdir()
+    env.tmp = repo / "tmp"
+    monkeypatch.setattr(tempfile, "tempdir", str(env.tmp))
+    assert run_bisect(_other_case(repo), shas[0], shas[1], _A, points={shas[1]: 7})[0] == 2
+    assert env.stepped() == []
+
+
+def test_a_temporary_location_in_another_case_is_still_the_clone(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Git reports the disk's spelling, which read as a replaced clone."""
+    shas = env.repo(["", "a"])
+    monkeypatch.setattr(tempfile, "tempdir", str(_other_case(env.tmp)))
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})
+    assert rc == 0, result
+    assert result["events"] == [nb.event_for_culprit(shas[1], 7, [_A], shas[0])]
+
+
 def test_a_subfolder_as_the_repository_means_its_toplevel(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     """From a subfolder `git ls-tree` names files relative to it, and every test
     read as unmapped."""

@@ -57,7 +57,9 @@ a fake in place of uv and pytest.
 
 The temporary location cannot be inside `--repo-root`, where `uv` and `pytest`
 looking upward find the caller's project, or hold a colon, which splits
-`GIT_CEILING_DIRECTORIES`. Either exits 2 before any work.
+`GIT_CEILING_DIRECTORIES`. Either exits 2 before any work. That location
+and `--repo-root` are read from `pwd -P`, so a link or another spelling of a name on
+a case-insensitive disk reads as git reports it.
 
 `--repo-root` can be a subfolder, which means its toplevel, a linked worktree or
 a bare repository. The clone borrows
@@ -1328,9 +1330,16 @@ def cmd_merge_points(args: argparse.Namespace) -> int:
     return 0
 
 
+def _real_path(path: Path) -> Path:
+    """`path` as the kernel reports it. `Path.resolve` keeps the spelling it is
+    given, which on a case-insensitive disk need not be the one git reports."""
+    r = subprocess.run(["pwd", "-P"], cwd=path, capture_output=True, check=True, timeout=_GIT_TIMEOUT_SECONDS)
+    return Path(os.fsdecode(r.stdout).removesuffix("\n"))
+
+
 def _temp_location(root: Path) -> Path:
     """The real path of the temporary location, which `root` must not contain."""
-    temp = Path(tempfile.gettempdir()).resolve()
+    temp = _real_path(Path(tempfile.gettempdir()))
     if temp.is_relative_to(root):
         raise ValueError(f"the temporary location {temp} is inside {root}; set TMPDIR elsewhere")
     if ":" in str(temp):
@@ -1375,7 +1384,7 @@ def _run(args: argparse.Namespace) -> int:
             "kind": RESULT_KIND, "format": RESULT_FORMAT, "complete": False, "good": args.good, "bad": args.bad,
             "tests": [], "merge_points": 0, "events": [], "rounds": [], "reset_errors": [],
         })
-    root = (args.repo_root / Git(args.repo_root).out("rev-parse", "--show-cdup")).resolve()
+    root = _real_path(args.repo_root / Git(args.repo_root).out("rev-parse", "--show-cdup"))
     temp = _temp_location(root)
     git = Git(root)
     good, bad = resolve_range(git, args.good, args.bad)
