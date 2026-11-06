@@ -49,7 +49,6 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A throwaway home, Codex home, and pinned store, with the claude
     slash folder and the #1053 opt-out file pointed below it."""
     import aelfrice.auto_install as auto_install
-    import aelfrice.cli as cli_mod
     import aelfrice.setup as setup_mod
     from aelfrice.lifecycle import MigrationResult
 
@@ -67,8 +66,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         auto_install, "OPT_OUT_PATH", home / ".aelfrice" / "opt-out-hooks.json"
     )
     monkeypatch.setattr(
-        cli_mod,
-        "maybe_migrate_to_uv",
+        "aelfrice.cli.maybe_migrate_to_uv",
         lambda: MigrationResult(False, False, "already on uv tool"),
     )
     return tmp_path
@@ -426,11 +424,9 @@ def test_a_marked_folder_outside_git_is_a_project(
 def test_the_shared_store_outside_git_says_to_open_a_project(
     env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import aelfrice.db_paths as db_paths
-
     _folder(env, repo=False, monkeypatch=monkeypatch)
     monkeypatch.delenv("AELFRICE_DB")
-    monkeypatch.setattr(db_paths, "DEFAULT_DB_DIR", env / "global")
+    monkeypatch.setattr("aelfrice.db_paths.DEFAULT_DB_DIR", env / "global")
     code, lines = _setup("codex")
     assert code == 0
     assert lines == [OUTSIDE_LINE.format(IN_CODEX)]
@@ -566,13 +562,11 @@ def test_project_root_store_is_the_one_counted(
 ) -> None:
     """Without the pin, each folder has its own store: the root's holds a
     belief and the current folder's is empty, so no line prints."""
-    import aelfrice.db_paths as db_paths
-
     root = env / "root"
     root.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=root, check=True, timeout=30)
     monkeypatch.delenv("AELFRICE_DB")
-    monkeypatch.setattr(db_paths, "DEFAULT_DB_DIR", env / "global")
+    monkeypatch.setattr("aelfrice.db_paths.DEFAULT_DB_DIR", env / "global")
     monkeypatch.chdir(root)
     _seed()
     _folder(env, repo=False, monkeypatch=monkeypatch)
