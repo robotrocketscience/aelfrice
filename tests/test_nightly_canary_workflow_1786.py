@@ -603,7 +603,8 @@ def _workflow_flags() -> tuple[list[str], str, str]:
     record = _step("triage", "Build the night's record")
     compare = _step("triage", "Compare with the last green night")
     legs = re.findall(r"--leg (\S+)", record)
-    return legs, *(re.search(r"--canary-legs (\S+)", s).group(1) for s in (record, compare))  # type: ignore[union-attr]
+    on_record, on_regressions = re.findall(r"--canary-legs (\S+)", f"{record}\n{compare}")
+    return legs, on_record, on_regressions
 
 
 def test_the_workflow_gives_each_matrix_leg_a_role_and_only_canary_legs_count() -> None:
