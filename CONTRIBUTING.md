@@ -328,7 +328,9 @@ A red canary leg fails the `suite` job, and an `incomplete` night fails the `pub
 job after it writes the night, so the Actions tab shows both as a failed run. A
 report-only job that passes its own cap makes the run read `cancelled`, even with
 green canary legs. The later jobs still run, and the night's verdict in `index.jsonl`
-still tells you whether the night was red.
+still tells you whether the night was red. If you cancel a run by hand while the
+macOS job queues, `triage` doesn't run, so the canary legs that finished get no
+record that night.
 
 The canary opens issues with the `nightly-regression` label, and creates the
 label if it's missing. A test already in an open issue gets no new issue, and a

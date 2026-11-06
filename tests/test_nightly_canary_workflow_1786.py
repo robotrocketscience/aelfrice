@@ -813,6 +813,7 @@ def test_the_docs_say_a_cancelled_run_can_hold_a_green_night() -> None:
     text = " ".join(_CONTRIBUTING.read_text(encoding="utf-8").split())
     assert "A report-only job that passes its own cap makes the run read `cancelled`, even with green canary legs." in text
     assert "The later jobs still run, and the night's verdict in `index.jsonl` still tells you whether the night was red." in text
+    assert "If you cancel a run by hand while the macOS job queues, `triage` doesn't run, so the canary legs that finished get no record that night." in text
 
 
 def _streak_command() -> str:
