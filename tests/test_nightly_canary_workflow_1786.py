@@ -147,6 +147,13 @@ def test_only_main_reaches_each_job() -> None:
     assert _key("publish", "if") == _MAIN_ONLY
 
 
+def test_a_branch_dispatch_cannot_replace_a_pending_night() -> None:
+    """A group holds one pending run, so main's night needs a group of its own."""
+    lines = _text().splitlines()
+    start = lines.index("concurrency:")
+    assert lines[start + 1] == "  group: nightly-canary-${{ github.ref }}"
+
+
 def test_no_job_or_step_sets_a_pytest_variable() -> None:
     """pytest reads `PYTEST_ADDOPTS` and `PYTEST_PLUGINS`, which would change what
     runs while the pinned command stays the same."""

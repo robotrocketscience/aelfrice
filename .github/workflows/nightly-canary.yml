@@ -20,8 +20,11 @@ env:
   # timeout only takes longer to notice a hang.
   AELF_TEST_TIMEOUT_SCALE: "1"
 
+# By ref: one pending run per group, so a dispatch from another branch sharing a
+# group with main would replace main's pending night. Not cancelled in progress:
+# a night that is running gets to finish and publish.
 concurrency:
-  group: nightly-canary
+  group: nightly-canary-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
