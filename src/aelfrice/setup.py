@@ -816,8 +816,9 @@ def _git_hook_block(command: str, *, created: bool) -> str:
     return (
         f"{GIT_HOOK_BEGIN}\n"
         + (f"{GIT_HOOK_CREATED}\n" if created else "")
-        + "# Records this commit's message in aelfrice memory, in the\n"
-        "# background, so the commit doesn't wait. Skips commits that a\n"
+        + "# Reads this commit's message in the background, so the commit\n"
+        "# doesn't wait. On a phrase such as \"X supersedes Y\", stores the\n"
+        "# words on each side in aelfrice memory. Skips commits that a\n"
         "# rebase replays. Delete this block to stop it.\n"
         + git_hook_command_line(command)
         + f"{GIT_HOOK_END}\n"
