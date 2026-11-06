@@ -472,6 +472,14 @@ def test_report_has_its_own_cap_and_the_pinned_image() -> None:
     assert _cap(_step("report", _REPORT_STEP)) == 7
 
 
+def test_report_can_read_the_results_branch_with_the_token_its_step_holds() -> None:
+    """`issues` reads `index.jsonl` through `gh api`, so it needs `contents: read`
+    and needs no fetch: the checkout keeps no credential."""
+    step = _step("report", _REPORT_STEP)
+    assert "GH_TOKEN: ${{ github.token }}" in step
+    assert "git fetch" not in step
+
+
 def test_report_holds_only_the_permissions_it_uses() -> None:
     block = _permissions_block(_job("report"), 4)
     assert block is not None

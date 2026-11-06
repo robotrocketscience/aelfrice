@@ -496,6 +496,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
+      # The checkout, and `gh api` reading `index.jsonl` on `test-results`.
       contents: read
       # `gh issue create`, `edit`, `comment` and `close`, and `gh label create`.
       issues: write

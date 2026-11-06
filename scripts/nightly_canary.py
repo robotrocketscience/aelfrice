@@ -244,7 +244,10 @@ A collection error's id never passes: it has recovered when neither leg reports 
 and pytest exited 0 or 1 on both. When some of an issue's tests recover, the body
 drops them with one comment, and when all do, the canary comments `recovered at
 <sha7> (<run url>)` and closes the issue with `--reason completed`. The
-`canary-broken` issue also needs a night with no such event. Each comment carries
+`canary-broken` issue also needs a night with no such event. A re-run of a run
+older than the newest in `index.jsonl` on `test-results`, or older than a run that
+wrote to an open issue, changes no issue, and a lookup that fails exits 1 with no
+write. Each comment carries
 a `<!-- nightly-canary-run run_id=<id> kind=<kind> -->` line, and the body one with
 the kind `opened`, so a re-attempt of a run neither comments nor edits again.
 A comment that landed before a failed close leaves only the close to do.
@@ -1614,9 +1617,15 @@ def plan_actions(
     actions, in the order to apply them. `open_issues` is what `gh issue list`
     returns. `night` is `night_facts` with the run's `run_id`, `run_url` and
     `repo`; with none, nothing can close. Planning again once the actions landed
-    plans nothing, which is what makes a retry safe."""
+    plans nothing, which is what makes a retry safe. A night older than a run
+    that wrote to an open issue plans nothing."""
     night = night or {}
     issues = sorted((p for p in map(parse_issue, open_issues) if p is not None), key=lambda p: p["number"])
+    # A newer run wrote to this issue, so this night's data is old. Its publish may
+    # have failed, which leaves `_newest_published_run` unable to see that run.
+    run_id = night.get("run_id")
+    if run_id is not None and any(run > run_id for issue in issues for run, _ in issue["runs"]):
+        return []
     tonight = _canary_events(events, night)
     broken_tonight = any(key_kind(event["key"])[0] == KEY_BROKEN for event in tonight)
     actions: list[dict[str, Any]] = []
@@ -2203,6 +2212,25 @@ def _ensure_label(repo: str) -> None:
         ])
 
 
+def _newest_published_run(repo: str) -> int | None:
+    """The newest run in `index.jsonl` on `test-results`, or None when the branch or
+    the file doesn't exist yet. GitHub answers 404 for both. The raw media type
+    reads a file of any size up to 100 MB, where the default stops at 1 MB."""
+    try:
+        text = _gh([
+            "api", "-H", "Accept: application/vnd.github.raw+json",
+            f"repos/{repo}/contents/index.jsonl?ref=test-results",
+        ])
+    except GhError as exc:
+        if "HTTP 404" in str(exc):
+            return None
+        raise
+    try:
+        return max((_index_line_run(line)[0] for line in text.splitlines() if line.strip()), default=None)
+    except ValueError as exc:
+        raise GhError(f"index.jsonl on test-results is unreadable: {exc}") from exc
+
+
 def _apply(action: dict[str, Any], repo: str) -> None:
     kind, number = action["action"], str(action.get("number"))
     if kind == "create":
@@ -2233,6 +2261,10 @@ def _act_on_issues(repo: str, events: list[dict[str, Any]], night: dict[str, Any
         if attempt:
             time.sleep(_GH_RETRY_SECONDS * attempt)
         try:
+            newest = _newest_published_run(repo)
+            if newest is not None and newest > night["run_id"]:
+                print(f"::notice::test-results holds run {newest}, newer than run {night['run_id']}, so no issue changes")
+                return 0
             actions = plan_actions(_open_issues(repo), events, night)
             if any(action["action"] == "create" for action in actions):
                 _ensure_label(repo)

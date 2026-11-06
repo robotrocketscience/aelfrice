@@ -3432,6 +3432,19 @@ def test_issues_an_extra_leg_neither_blocks_a_close_nor_stands_in_for_a_canary_l
     assert nc.plan_actions(issues, [], _facts(one_canary)) == []
 
 
+def test_issues_a_night_older_than_a_run_that_wrote_to_an_issue_plans_nothing() -> None:
+    """The newer run's publish may have failed, so the index can't show it. Old
+    data would otherwise close, edit and comment on the newer night's issue."""
+    issues = _opened(_pr_event(_A, _B))
+    passed = _night(SHA1, _both({_A: tor.PASSED, _B: tor.PASSED}))
+    assert nc.plan_actions(issues, [], _facts(passed, run_id=99)) == []
+    half = _night(SHA1, _both({_A: tor.PASSED, _B: tor.FAILED}))
+    assert nc.plan_actions(issues, [_pr_event(_B)], _facts(half, run_id=99)) == []
+    assert nc.plan_actions(issues, [_pr_event("t.new", pr=9)], _base(run_id=99)) == []
+    assert _kinds(nc.plan_actions(issues, [], _facts(passed, run_id=100))) == ["comment", "close"]
+    assert _kinds(nc.plan_actions(issues, [], _facts(passed, run_id=101))) == ["comment", "close"]
+
+
 def test_issues_a_reattempt_of_the_run_adds_nothing() -> None:
     first = nc.plan_actions([], [_pr_event(_A)], _base())
     assert "run_id=200 kind=opened" in first[0]["body"]
@@ -3855,6 +3868,14 @@ elif command == "label list":
     # As `gh` 2.86.0 prints it: nothing at all when no label matches, not `[]`.
     found = [{"name": name} for name in state["labels"] if flag("--search") in name]
     out = json.dumps(found) if found else ""
+elif argv[0] == "api":
+    if state.get("index") is None:
+        # As `gh` 2.86.0 prints a branch that doesn't exist.
+        save()
+        print('{"message":"No commit found for the ref test-results","status":"404"}')
+        print("gh: No commit found for the ref test-results (HTTP 404)", file=sys.stderr)
+        sys.exit(1)
+    out = state["index"]
 elif command == "label create":
     state["labels"].append(argv[2])
 elif command == "issue create":
@@ -3907,7 +3928,7 @@ class _FakeGh:
     def writes(self) -> list[str]:
         """Each call that changes something, as its first two words."""
         names = [" ".join(c["argv"][:2]) for c in self.calls()]
-        return [name for name in names if name not in ("issue list", "label list")]
+        return [name for name in names if name not in ("issue list", "label list", "api -H")]
 
     def issues(self, state: str = "open") -> list[dict[str, Any]]:
         return [i for i in self.read()["issues"] if i["state"] == state]
@@ -3947,6 +3968,62 @@ def _issues_cmd(directory: Path, run_id: int = 200, *more: str) -> int:
 def _red_night(tmp_path: Path, *events: dict[str, Any]) -> Path:
     record = _night(SHA2, _both({_A: tor.FAILED, _B: tor.PASSED}))
     return _night_dir(tmp_path, "night", record, {"format": 1, "events": list(events), "last_green": {"sha": SHA1}})
+
+
+def _index_lines(*runs: int) -> str:
+    return "".join(json.dumps({"run_id": run, "run_attempt": 1}) + "\n" for run in runs)
+
+
+def _green_older_night(tmp_path: Path) -> Path:
+    return _night_dir(tmp_path, "older", _night(SHA1, _both({_A: tor.PASSED})), {"events": []})
+
+
+def test_issues_a_rerun_older_than_the_results_branch_changes_nothing(
+    tmp_path: Path, fake_gh: _FakeGh, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The open issue's markers name no newer run, so only the index can say."""
+    fake_gh.set(issues=[{**_opened(_pr_event(_A))[0], "state": "open"}], index=_index_lines(100, 300))
+    assert _issues_cmd(_green_older_night(tmp_path), 200) == 0
+    assert fake_gh.writes() == []
+    assert fake_gh.calls("issue list") == []
+    assert "test-results holds run 300, newer than run 200" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("index", [None, "", "\n", _index_lines(100), _index_lines(100, 200)])
+def test_issues_a_night_no_newer_than_the_results_branch_acts(tmp_path: Path, fake_gh: _FakeGh, index: str | None) -> None:
+    """No branch yet, no line yet, an older run, or this run's own line. A publish
+    that failed tonight leaves the index as it was, which is one of these."""
+    fake_gh.set(issues=[{**_opened(_pr_event(_A))[0], "state": "open"}], index=index)
+    assert _issues_cmd(_green_older_night(tmp_path), 200) == 0
+    assert fake_gh.writes() == ["issue comment", "issue close"]
+
+
+def test_issues_the_lookup_reads_the_raw_index_on_the_results_branch(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    assert _issues_cmd(_green_older_night(tmp_path), 200) == 0
+    assert fake_gh.calls("api -H")[0]["argv"] == [
+        "api", "-H", "Accept: application/vnd.github.raw+json",
+        f"repos/{_REPO_NAME}/contents/index.jsonl?ref=test-results",
+    ]
+
+
+def test_issues_a_failed_lookup_exits_1_with_no_write(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    fake_gh.set(index=_index_lines(100), fail=[{"command": "api -H", "times": 4}])
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 1
+    assert fake_gh.writes() == []
+    assert len(fake_gh.calls("api -H")) == 4
+
+
+def test_issues_a_lookup_that_clears_on_a_retry_goes_on(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    fake_gh.set(index=_index_lines(100), fail=[{"command": "api -H", "times": 1}])
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 0
+    assert fake_gh.writes() == ["issue create"]
+
+
+@pytest.mark.parametrize("index", ["not json\n", '{"run_id": "x"}\n', "[]\n"])
+def test_issues_an_unreadable_index_exits_1_with_no_write(tmp_path: Path, fake_gh: _FakeGh, index: str) -> None:
+    fake_gh.set(index=index)
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 1
+    assert fake_gh.writes() == []
 
 
 def test_issues_cmd_creates_through_gh_with_the_label_and_the_body_on_stdin(tmp_path: Path, fake_gh: _FakeGh) -> None:
@@ -4107,12 +4184,14 @@ def test_issues_a_list_of_the_wrong_shape_exits_1_and_writes_nothing(
 
     def run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(argv)
+        if argv[1] == "api":
+            return subprocess.CompletedProcess(argv, 1, "", "gh: Not Found (HTTP 404)")
         return subprocess.CompletedProcess(argv, 0, printed, "")
 
     monkeypatch.setattr(nc.subprocess, "run", run)
     monkeypatch.setattr(nc, "_GH_RETRY_SECONDS", 0)
     assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 1
-    assert {tuple(c[1:3]) for c in calls} == {("issue", "list")}
+    assert {tuple(c[1:3]) for c in calls} == {("api", "-H"), ("issue", "list")}
 
 
 def test_issues_a_create_that_landed_before_it_failed_opens_no_duplicate(tmp_path: Path, fake_gh: _FakeGh) -> None:
