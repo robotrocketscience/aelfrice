@@ -177,9 +177,11 @@ def test_slash_command_invokes_matching_cli(cmd: str) -> None:
     )
 
 
-#: `uv run aelf`, spelled any way a command could spell it. `[^`]` crosses
-#: a line break so a wrapped invocation can't escape.
-_UV_WRAPPED_AELF = re.compile(r"\buv(?:x|\s+(?:tool\s+)?run)\b[^`]{0,30}?\baelf\b")
+#: `uv run aelf`, spelled any way a command could spell it: flags on either
+#: side of `run`, `uv tool run`, `uvx`, and `-m aelfrice`. `[^`]` crosses a
+#: line break so a wrapped invocation can't escape, and stops at the end of
+#: an inline code span so prose near a separate command doesn't match.
+_UV_WRAPPED_AELF = re.compile(r"\buv(?:x\b|\b[^`]*?\brun\b)[^`]*?\baelf(?:rice)?\b")
 
 #: upgrade.md names the wrapper as something an agent must not substitute
 #: for the printed upgrade command. That sentence warns; it doesn't call.
@@ -205,7 +207,9 @@ def test_no_bundled_slash_command_calls_aelf_through_uv_run() -> None:
     environment shadows the `uv tool` install.
     """
     files = sorted(_slash_dir().glob("*.md"))
-    assert files, "bundle is empty; the assertion below would be vacuous"
+    assert len(files) == len(EXPECTED_COMMANDS), (
+        "the guard must scan the whole bundle, or the assertion below is vacuous"
+    )
     offenders = {
         p.name: hits
         for p in files
@@ -221,9 +225,25 @@ def test_no_bundled_slash_command_calls_aelf_through_uv_run() -> None:
         "  uv run aelf wonder \"$ARGUMENTS\"",
         "`uv run --quiet aelf status`",
         "`uv run --with foo aelf status`",
+        "`uv run --quiet --with \"aelfrice[archive]\" aelf status`",
+        "`uv run --project \"$CLAUDE_PROJECT_DIR\" aelf status`",
+        "`uv run --directory \"$CLAUDE_PROJECT_DIR\" aelf status`",
+        "`uv run -m aelfrice.cli status`",
+        "`uv run python -m aelfrice.cli status`",
+        "`uv --quiet run aelf status`",
+        "`uv --project . run aelf status`",
+        "`uv --quiet run -m aelfrice.cli status`",
+        "`uv --no-config run --project \"$CLAUDE_PROJECT_DIR\" aelf status`",
+        "`uv --quiet run --directory \"$CLAUDE_PROJECT_DIR\" aelf status`",
         "`uv tool run aelf status`",
+        "`uv tool run --from aelfrice aelf status`",
+        "`uv --quiet tool run --from \"aelfrice[archive]\" --python 3.12 aelf status`",
         "`uvx aelf status`",
+        "`uvx --from aelfrice aelf status`",
         "`uv run\naelf status`",
+        "`uv --quiet run\naelf status`",
+        "`uv --quiet\nrun aelf status`",
+        "`uv\nrun aelf status`",
     ],
 )
 def test_uv_run_guard_catches_a_wrapped_call(line: str) -> None:
@@ -237,6 +257,8 @@ def test_uv_run_guard_catches_a_wrapped_call(line: str) -> None:
         "`uv tool install aelfrice`",
         "`uv tool upgrade aelfrice`",
         "- `uv tool upgrade aelfrice` (uv-managed install)\n`aelf setup`",
+        "(installed via uv tool, use uv to upgrade) `aelf upgrade-cmd`",
+        "Don't `uv run` this. Run `aelf status`.",
     ],
 )
 def test_uv_run_guard_passes_a_direct_call(line: str) -> None:
