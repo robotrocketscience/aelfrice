@@ -885,11 +885,14 @@ def test_the_documents_describe_the_workflow() -> None:
 def test_the_user_docs_say_where_the_suite_runs() -> None:
     limits = " ".join((_REPO / "docs" / "user" / "LIMITATIONS.md").read_text(encoding="utf-8").split())
     install = " ".join((_REPO / "docs" / "user" / "INSTALL.md").read_text(encoding="utf-8").split())
-    assert f"(`ci.yml` on `{_ci_key('runs-on')}`, Python 3.12 and 3.13)" in limits
+    pyproject = re.sub(r"\n\s*# ", " ", (_REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    assert f"on every pull request that changes code (`ci.yml` on `{_ci_key('runs-on')}`, Python 3.12 and 3.13)" in limits
     assert f"(`nightly-canary.yml` on `{_key('suite-macos', 'runs-on')}`, Python 3.13), and no pull request runs it." in limits
     assert "isn't a supported-tier promise" in limits
+    assert "Linux runs the full test suite on every pull request that changes code" in install
     assert "a nightly job runs the full test suite on macOS as a report that blocks nothing" in install
-    assert "macOS runs it nightly as a report" in (_REPO / "pyproject.toml").read_text(encoding="utf-8")
+    assert "Linux runs the full suite on every pull request that changes code" in pyproject
+    assert "macOS runs it nightly as a report" in pyproject
 
 
 # --- the Python the triage job holds ----------------------------------------

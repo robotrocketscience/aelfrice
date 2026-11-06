@@ -117,7 +117,7 @@ Only one DB writes at a time. The beliefs written in project A are not *written*
 ## Compatibility
 
 - Python 3.12 or 3.13.
-- The full suite runs on Linux on every pull request (`ci.yml` on `ubuntu-24.04`, Python 3.12 and 3.13). macOS runs the full suite once a night (`nightly-canary.yml` on `macos-15`, Python 3.13), and no pull request runs it. That run is a report: a failure there blocks no merge and opens no issue. aelfrice is expected to run on macOS, and the project develops it there, but the report isn't a supported-tier promise.
+- The full suite runs on Linux on every pull request that changes code (`ci.yml` on `ubuntu-24.04`, Python 3.12 and 3.13). macOS runs the full suite once a night (`nightly-canary.yml` on `macos-15`, Python 3.13), and no pull request runs it. That run is a report: a failure there blocks no merge and opens no issue. aelfrice is expected to run on macOS, and the project develops it there, but the report isn't a supported-tier promise.
 - aelfrice supports Windows at a narrower level. This page states the difference
   plainly, because the page previously said "should work but is not exercised on
   every release". That statement was wrong. Until
