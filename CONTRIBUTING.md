@@ -379,8 +379,9 @@ Each event key says what the canary found:
   `conftest.py`.
 - `no-baseline-<sha12>`: tests failed, and there is no green night to compare
   with.
-- `canary-broken`: a leg is missing or produced no usable result, or the night
-  left no record at all.
+- `canary-broken`: a leg is missing or produced no usable result, the night left
+  no record at all, or the triage step left no `triage.json` on a night that
+  wasn't green.
 
 A bisect names the commit where a test started to fail, which may not be the
 cause. The docstring of `scripts/nightly_bisect.py` lists what the checks can't

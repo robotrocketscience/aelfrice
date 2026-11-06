@@ -3649,7 +3649,28 @@ def test_issues_with_no_range_to_name_the_lost_test_gets_a_no_baseline_event(las
 
 def test_issues_a_record_with_no_triage_opens_canary_broken_with_its_confirmed_tests() -> None:
     record = _night(SHA2, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.FAILED}, None)})
-    assert nc.night_events(record, None) == [{"key": "canary-broken", "kind": "canary-broken", "legs": ["3.13"], "tests": [_A]}]
+    assert nc.night_events(record, None) == [{
+        "key": "canary-broken", "kind": "canary-broken", "legs": ["3.13"], "statuses": {"3.13": "red"}, "tests": [_A],
+    }]
+
+
+def test_issues_with_no_triage_the_body_says_what_is_known_of_each_leg() -> None:
+    """The red leg gave a usable result and a rerun confirmed its tests, so the words
+    for a triage's `canary-broken` event would be false here."""
+    record = _night(SHA2, {"3.12": ({}, None), "3.13": ({_A: tor.FAILED}, None)}, rcs={"3.12": 1})
+    actions = nc.plan_actions([], nc.night_events(record, None), _facts(record))
+    assert actions[0]["title"] == f"nightly: the canary has no triage for a night that wasn't green ({SHA2[:7]})"
+    flat = " ".join(actions[0]["body"].split())
+    assert f"These legs weren't green at `{SHA2[:12]}`: `3.12` (broken), `3.13` (red)." in flat
+    assert "left no `triage.json`" in flat and "confirmed failures in the night's `record.json`" in flat
+    assert "no usable result" not in flat and "no rerun confirmed" not in flat
+
+
+def test_issues_with_no_triage_a_leg_left_out_reads_as_missing() -> None:
+    record = _night(SHA2, _both({_A: tor.PASSED}))
+    del record["nightly"]["status"]["3.13"]
+    record["nightly"]["verdict"] = nc.INCOMPLETE
+    assert nc.night_events(record, None)[0]["statuses"] == {"3.13": "missing"}
 
 
 def test_issues_a_green_record_with_no_triage_has_no_event() -> None:
@@ -4465,7 +4486,7 @@ def test_issues_a_record_with_no_triage_reaches_gh_as_canary_broken(tmp_path: Pa
     record = _night(SHA2, _both({_A: tor.FAILED}))
     assert _issues_cmd(_night_dir(tmp_path, "night", record, None)) == 0
     title = fake_gh.issues()[0]["title"]
-    assert title == f"nightly: the canary produced no usable result on 3.12, 3.13 ({SHA2[:7]})"
+    assert title == f"nightly: the canary has no triage for a night that wasn't green ({SHA2[:7]})"
     assert _marker_tests(fake_gh.issues()[0]["body"]) == [_A]
 
 

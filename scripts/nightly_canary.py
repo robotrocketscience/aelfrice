@@ -1366,8 +1366,8 @@ def night_events(record: dict[str, Any], triage: dict[str, Any] | None) -> list[
     lost = sorted({test for leg in canary for test in nightly["confirmed"].get(leg, [])} - named)
     if triage is None:
         if nightly["verdict"] != GREEN:
-            legs = [leg for leg in canary if nightly["status"].get(leg) != GREEN]
-            events.append({"key": KEY_BROKEN, "kind": KEY_BROKEN, "legs": legs, "tests": lost})
+            statuses = {leg: str(nightly["status"].get(leg, MISSING)) for leg in canary if nightly["status"].get(leg) != GREEN}
+            events.append({"key": KEY_BROKEN, "kind": KEY_BROKEN, "legs": list(statuses), "statuses": statuses, "tests": lost})
         return events
     if not lost:
         return events
@@ -1491,6 +1491,8 @@ def issue_title(event: dict[str, Any], tests: list[str], night: dict[str, Any]) 
         title = f"nightly: {_modules(tests)} can't be collected on main ({parts[0][:7]})"
     elif kind == KEY_BROKEN and event.get("no_record"):
         title = f"nightly: the canary produced no record ({event.get('date', '')})"
+    elif kind == KEY_BROKEN and event.get("statuses"):
+        title = f"nightly: the canary has no triage for a night that wasn't green ({str(night.get('sha', ''))[:7]})"
     elif kind == KEY_BROKEN:
         legs = ", ".join(_plain(str(leg)) for leg in event.get("legs", []))
         title = f"nightly: the canary produced no usable result on {legs} ({str(night.get('sha', ''))[:7]})"
@@ -1535,6 +1537,13 @@ def _intro(event: dict[str, Any], tests: list[str], night: dict[str, Any]) -> st
         return f"pytest can't collect these at {_code(parts[0])}, so it stopped before it ran the suite on that leg."
     if kind == KEY_BROKEN and event.get("no_record"):
         return "This run left no record the canary could read, so it compared nothing tonight. Read the run's logs."
+    if kind == KEY_BROKEN and event.get("statuses"):
+        legs = ", ".join(f"{_code(str(leg))} ({_plain(str(status))})" for leg, status in event["statuses"].items())
+        return (
+            f"These legs weren't green at {_code(str(night.get('sha', ''))[:12])}: {legs}. The triage step left no "
+            "`triage.json`, so the canary compared nothing with the last green night. Any tests below are confirmed "
+            "failures in the night's `record.json`."
+        )
     if kind == KEY_BROKEN:
         legs = ", ".join(_code(str(leg)) for leg in event.get("legs", []))
         return (
