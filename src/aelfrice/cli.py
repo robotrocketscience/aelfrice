@@ -216,6 +216,7 @@ from aelfrice.setup import (
 from aelfrice.db_paths import (
     DEFAULT_DB_DIR,
     DEFAULT_DB_FILENAME,
+    STORE_RULE_MARKER,
     StoreMarkerError,
     _ensure_parent_dir,
     _git_common_dir,
@@ -225,6 +226,7 @@ from aelfrice.db_paths import (
     open_user_store,
     open_user_store_if_present,
     resolve_store,
+    store_file_present,
     user_db_path,
 )
 from aelfrice.store import MemoryStore, ReadOnlyStoreUnavailable
@@ -5889,7 +5891,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
             file=out,  # type: ignore[arg-type]
         )
     _sync_setup_opt_outs_and_stamp(args)
-    _print_setup_next_step(out)
+    _print_setup_next_step(out, _ONBOARD_IN_AGENT)
     _print_setup_jsonl_history_hint(out)
     return 0
 
@@ -5937,34 +5939,54 @@ def _sync_setup_opt_outs_and_stamp(args: argparse.Namespace) -> None:
         pass
 
 
-def _print_setup_next_step(out: object) -> None:
-    """One-line next-step hint when the active project's store is empty.
+# How `_print_setup_next_step` names the onboard command on each host
+# (#1859). The agent commands classify with the agent's model. The terminal
+# command uses the regex classifier unless the direct-API classifier is
+# configured, so it is named only where Codex has no `$aelf-onboard` skill.
+_ONBOARD_IN_AGENT: Final[str] = "`/aelf:onboard .` in your agent"
+_ONBOARD_IN_CODEX: Final[str] = "`$aelf-onboard .` in Codex"
+_ONBOARD_IN_TERMINAL: Final[str] = "`aelf onboard .`"
+
+
+def _print_setup_next_step(out: object, onboard: str) -> None:
+    """One-line next-step hint when the active store is empty.
 
     Closes the loop on issue #116: after `aelf setup` succeeds in a
     fresh project the user otherwise gets no signal that the belief
-    graph is empty and that hooks have nothing to retrieve. Skips the
-    hint when the store already has beliefs, when opening the store
-    fails, or when running in CI (anything that breaks should never
-    derail setup itself).
+    graph is empty and that hooks have nothing to retrieve. `onboard`
+    names the command for the host just set up (#1859).
+
+    A folder outside any git repository has no project to onboard, so
+    the hint sends the user to one first. A `[store]` marker gives a
+    folder its own store without git, so that folder counts as a
+    project. A store file that isn't there counts as empty and isn't
+    created, because Codex setup has never made one. Skips the hint when
+    the store already has beliefs and when reading the store fails,
+    because anything that breaks should never derail setup itself.
     """
     try:
-        store = _open_store()
+        selection = resolve_store()
+        n = 0
+        if store_file_present(selection.path):
+            store = open_store_for_read(selection)
+            try:
+                n = store.count_beliefs()
+            finally:
+                store.close()
     except Exception:  # pragma: no cover - defensive
         return
-    try:
-        n = store.count_beliefs()
-    except Exception:  # pragma: no cover - defensive
-        store.close()
+    if n != 0:
         return
-    finally:
-        try:
-            store.close()
-        except Exception:  # pragma: no cover - defensive
-            pass
-    if n == 0:
+    if selection.rule == STORE_RULE_MARKER or _git_common_dir() is not None:
         print(
-            "next step: this project's belief store is empty. Run "
-            "`aelf onboard .` to populate it from your repo.",
+            "next step: this project's belief store is empty. "
+            f"Run {onboard} to populate it.",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(
+            "next step: this folder isn't in a git repository. "
+            f"Open a project first, then run {onboard}.",
             file=out,  # type: ignore[arg-type]
         )
 
@@ -6107,6 +6129,14 @@ def _cmd_setup_codex(
             "`aelf setup` (default claude host).",
             file=out,  # type: ignore[arg-type]
         )
+    from aelfrice.host_codex import onboard_skill_installed
+
+    _print_setup_next_step(
+        out,
+        _ONBOARD_IN_CODEX
+        if onboard_skill_installed(skills_dest)
+        else _ONBOARD_IN_TERMINAL,
+    )
     return 0
 
 

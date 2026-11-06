@@ -1,0 +1,3 @@
+### Fixed
+
+- **`aelf setup` names the onboard command for your host ([#1859](https://github.com/robotrocketscience/aelfrice/issues/1859)).** The next-step line named `aelf onboard .`, the terminal command that uses the regex classifier, while the README sends you to `/aelf:onboard .` in your agent, which classifies with the agent's model. The line now names `/aelf:onboard .` on the `claude` host. `aelf setup --host codex` printed no next step, and now names `$aelf-onboard .`, or `aelf onboard .` when that skill isn't installed. From a folder outside any git repository, the line no longer says "this project" and tells you to open a project first. The line still prints only when the store is empty.

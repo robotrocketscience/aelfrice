@@ -1186,6 +1186,16 @@ def _remove_owned_skill_dir(
         pruned.append(child.name)
 
 
+def onboard_skill_installed(dest_dir: Path | None = None) -> bool:
+    """True when `$aelf-onboard` runs aelfrice's own generated skill (#1859).
+
+    False after `--no-codex-skills` on a clean home, and when a skill of
+    another origin holds the name, which the installer leaves in place.
+    """
+    target = dest_dir if dest_dir is not None else resolve_agents_skills_dir()
+    return _is_owned_skill_dir(target / f"{_SKILL_PREFIX}onboard")
+
+
 def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
     """Write every bundled command as a Codex skill under ``dest_dir``.
 
