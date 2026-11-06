@@ -25,7 +25,7 @@ jobs:
           days-before-pr-close: 7
           stale-issue-label: stale
           stale-pr-label: stale
-          exempt-issue-labels: "bench-gated,spec-ready,v2.0,v2.x,pinned"
+          exempt-issue-labels: "bench-gated,spec-ready,v2.0,v2.x,pinned,nightly-regression"
           exempt-pr-labels: "WIP,blocked,pinned,spec-ready,v2.0,v2.x"
           stale-issue-message: |
             This issue has had no activity in 60 days. It will close in 14 days

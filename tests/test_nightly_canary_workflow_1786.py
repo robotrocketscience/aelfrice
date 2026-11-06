@@ -34,6 +34,7 @@ import nightly_canary as nc  # noqa: E402
 _WORKFLOW = _REPO / ".github" / "workflows" / "nightly-canary.yml"
 _CI = _REPO / ".github" / "workflows" / "ci.yml"
 _CONTRIBUTING = _REPO / "CONTRIBUTING.md"
+_STALE = _REPO / ".github" / "workflows" / "stale.yml"
 
 _CHECKOUT = "actions/checkout@"
 _MAIN_ONLY = "${{ !cancelled() && github.ref == 'refs/heads/main' }}"
@@ -515,13 +516,24 @@ def test_the_run_url_the_workflow_builds_is_one_the_script_accepts() -> None:
     assert nc._RUN_URL.fullmatch("https://github.com/o/r/actions/runs/123")
 
 
+def test_a_regression_that_still_fails_does_not_close_as_stale() -> None:
+    """The canary closes its own issues, and only on a pass. The input's name is the
+    one in `action.yml` at this pin: a misspelled input would exempt nothing."""
+    steps = _steps(_jobs(_STALE.read_text(encoding="utf-8"))["stale"])
+    stale = next(s for s in steps if (_step_uses(s) or "").startswith("actions/stale@"))
+    assert "actions/stale@b5d41d4e1d5dceea10e7104786b73624c18a190f" in stale
+    labels = _with_input(stale, "exempt-issue-labels")
+    assert labels is not None
+    assert nc.LABEL in labels.strip('"').split(",")
+
+
 def test_the_documents_describe_the_workflow() -> None:
     text = _CONTRIBUTING.read_text(encoding="utf-8")
     start = text.index("### The nightly canary")
     section = text[start : text.index("\n### ", start + 1)]
     for name in (
         "`suite`", "`triage`", "`publish`", "`report`", "`test-results`", "02:17", "`last-green.json`", "`index.jsonl`",
-        "`nightly-regression`", "`recovered at <sha7> (<run url>)`",
+        "`nightly-regression`", "`recovered at <sha7> (<run url>)`", "The `stale` workflow skips this label",
         "`<!-- nightly-canary-event v1 key=<key> -->`",
     ):
         assert name in " ".join(section.split()), name
