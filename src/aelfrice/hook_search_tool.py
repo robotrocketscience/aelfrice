@@ -621,10 +621,43 @@ def _extract_query(payload: dict[str, object]) -> str | None:
             break
     if not isinstance(raw, str) or not raw.strip():
         return None
-    tokens = _TOKEN_RE.findall(raw)
+    tokens = _query_terms(_TOKEN_RE.findall(raw))
     if not tokens:
         return None
     return " OR ".join(tokens[:QUERY_TOKEN_LIMIT])
+
+
+# Function words that pass `_TOKEN_RE` (three letters or more) but match
+# almost every belief, so an OR query built from them returns noise. A
+# WebSearch query is a sentence ("what is the ..."), not a code pattern.
+_QUERY_STOPWORDS: Final[frozenset[str]] = frozenset({
+    "the", "and", "for", "are", "was", "were", "with", "from", "this",
+    "that", "these", "those", "what", "which", "who", "whom", "whose",
+    "when", "where", "why", "how", "does", "did", "doing", "done", "has",
+    "have", "had", "having", "can", "could", "should", "would", "will",
+    "shall", "may", "might", "must", "not", "but", "you", "your", "our",
+    "their", "they", "them", "its", "his", "her", "him", "she", "about",
+    "into", "onto", "over", "than", "then", "there", "here", "also",
+    "any", "all", "some", "just", "very", "more", "most", "such", "own",
+    "being", "been", "out", "use", "using", "used", "get", "got",
+})
+
+
+def _query_terms(tokens: list[str]) -> list[str]:
+    """`tokens` with stopwords and repeats removed, in first-seen order.
+
+    FTS5 matching is case-insensitive, so "Paper" and "paper" are one term,
+    and a repeat would spend one of the `QUERY_TOKEN_LIMIT` slots twice.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for tok in tokens:
+        low = tok.lower()
+        if low in _QUERY_STOPWORDS or low in seen:
+            continue
+        seen.add(low)
+        out.append(tok)
+    return out
 
 
 def _belief_line(b: object, locked_ids: "set[str] | frozenset[str]") -> str | None:
