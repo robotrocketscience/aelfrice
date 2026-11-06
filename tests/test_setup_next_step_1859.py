@@ -14,12 +14,18 @@ from __future__ import annotations
 
 import argparse
 import io
+import sqlite3
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from aelfrice.cli import _cmd_setup_codex, build_parser, main
+from aelfrice.cli import (
+    _cmd_setup_codex,
+    _print_setup_next_step,
+    build_parser,
+    main,
+)
 from aelfrice.db_paths import _open_store
 from aelfrice.models import Belief
 
@@ -157,22 +163,110 @@ def test_codex_setup_still_creates_no_store_file(
     assert not (env / "store" / "memory.db").exists()
 
 
-@pytest.mark.timeout(60)
-def test_a_store_that_cannot_be_read_prints_no_next_step(
-    env: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import aelfrice.cli as cli_mod
+def _store_files(store_dir: Path) -> dict[str, bytes]:
+    """The store's bytes, with an absent write-ahead log read as empty.
 
+    A read-only handle on a WAL store leaves an empty `-wal` and a `-shm`
+    behind, because only a writable connection removes them on close. An
+    empty log holds no data, so the comparison treats it as absent, and
+    `-shm` is a lock file that holds none either.
+    """
+    wal = store_dir / "memory.db-wal"
+    return {
+        "db": (store_dir / "memory.db").read_bytes(),
+        "wal": wal.read_bytes() if wal.exists() else b"",
+    }
+
+
+def _edit_store(env: Path, *statements: str) -> None:
+    conn = sqlite3.connect(env / "store" / "memory.db")
+    try:
+        for statement in statements:
+            conn.execute(statement)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "statements",
+    [
+        pytest.param(("DROP TABLE exploration_events",), id="old-schema"),
+        pytest.param(
+            (
+                "UPDATE beliefs SET lock_level = 'user', "
+                "locked_at = '2020-01-01T00:00:00Z', "
+                "lock_expires_at = '2020-01-02T00:00:00Z'",
+            ),
+            id="expired-lock",
+        ),
+    ],
+)
+def test_codex_setup_leaves_a_store_with_beliefs_byte_identical(
+    env: Path, monkeypatch: pytest.MonkeyPatch, statements: tuple[str, ...]
+) -> None:
     _folder(env, repo=True, monkeypatch=monkeypatch)
     _seed()
-
-    def boom(*_a: object, **_k: object) -> object:
-        raise OSError("store is unreadable")
-
-    monkeypatch.setattr(cli_mod, "open_store_for_read", boom)
+    _edit_store(env, *statements)
+    before = _store_files(env / "store")
     code, lines = _setup("codex")
     assert code == 0
     assert lines == []
+    assert _store_files(env / "store") == before
+
+
+@pytest.mark.timeout(60)
+def test_codex_setup_counts_an_old_empty_store_without_migrating_it(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _folder(env, repo=True, monkeypatch=monkeypatch)
+    _open_store().close()
+    _edit_store(env, "DROP TABLE exploration_events")
+    before = _store_files(env / "store")
+    code, lines = _setup("codex")
+    assert code == 0
+    assert lines == [PROJECT_LINE.format(IN_CODEX)]
+    assert _store_files(env / "store") == before
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("kind", ["zero-byte", "another-app"])
+def test_codex_setup_leaves_a_file_it_cannot_count_byte_identical(
+    env: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    _folder(env, repo=True, monkeypatch=monkeypatch)
+    db = env / "store" / "memory.db"
+    db.parent.mkdir()
+    db.write_bytes(b"")
+    if kind == "another-app":
+        _edit_store(env, "CREATE TABLE mine (a)")
+    before = _store_files(env / "store")
+    code, lines = _setup("codex")
+    assert code == 0
+    assert lines == []
+    assert _store_files(env / "store") == before
+
+
+@pytest.mark.timeout(60)
+def test_the_line_itself_writes_nothing_to_a_healthy_store(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The claude path opens the store for its backfill, so this reads the
+    helper alone: whatever setup writes, the line adds nothing to it."""
+    _folder(env, repo=True, monkeypatch=monkeypatch)
+    _seed()
+    _edit_store(
+        env,
+        "UPDATE beliefs SET lock_level = 'user', "
+        "locked_at = '2020-01-01T00:00:00Z', "
+        "lock_expires_at = '2020-01-02T00:00:00Z'",
+    )
+    before = _store_files(env / "store")
+    buf = io.StringIO()
+    _print_setup_next_step(buf, IN_AGENT)
+    assert buf.getvalue() == ""
+    assert _store_files(env / "store") == before
 
 
 @pytest.mark.timeout(60)

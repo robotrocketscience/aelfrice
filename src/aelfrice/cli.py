@@ -5963,12 +5963,17 @@ def _print_setup_next_step(out: object, onboard: str) -> None:
     created, because Codex setup has never made one. Skips the hint when
     the store already has beliefs and when reading the store fails,
     because anything that breaks should never derail setup itself.
+
+    The handle is `read_only=True` rather than `open_store_for_read()`,
+    whose writable first attempt migrates the store and sweeps expired
+    locks. Codex setup opens no other store, and `AELFRICE_DB` can name
+    a file aelfrice doesn't own. A store too old to read prints no line.
     """
     try:
         selection = resolve_store()
         n = 0
         if store_file_present(selection.path):
-            store = open_store_for_read(selection)
+            store = MemoryStore(str(selection.path), read_only=True)
             try:
                 n = store.count_beliefs()
             finally:
