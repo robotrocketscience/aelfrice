@@ -36,6 +36,7 @@ from aelfrice.derivation_worker import run_worker
 # `entity_extractor` can share the NP regex without closing a
 # store ↔ extractors cycle through this module (#499).
 from aelfrice.np_pattern import NOUN_PHRASE_PATTERN, _NP
+from aelfrice.np_pattern import _DET  # pyright: ignore[reportPrivateUsage]
 from aelfrice.models import (
     CORROBORATION_SOURCE_COMMIT_INGEST,
     EDGE_CITES,
@@ -232,6 +233,8 @@ _INGEST_PATTERNS: Final[tuple[_RelationPattern, ...]] = tuple(
     if p.template not in _INGEST_EXCLUDED_TEMPLATES
 ) + _INGEST_ADDITIONAL_PATTERNS
 
+_BARE_DETERMINER: Final[re.Pattern[str]] = re.compile(_DET, re.IGNORECASE)
+
 
 # --- Extraction -----------------------------------------------------------
 
@@ -281,6 +284,24 @@ def _line_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+def _object_is_a_cut_determiner(
+    text: str, m: re.Match[str], span_end: int,
+) -> bool:
+    """True when a line break left only a determiner as the object.
+
+    Matching per line turns "X supersedes the", with "old parser" wrapped
+    to the next line, into a belief that reads "the". That phrase has one
+    belief id across every commit, so it would collect edges (#1874). A
+    determiner that ends the message, or that has more on its own line,
+    isn't cut.
+    """
+    return (
+        _BARE_DETERMINER.fullmatch(m.group("object")) is not None
+        and not text[m.end():span_end].strip()
+        and bool(text[span_end:].strip())
+    )
+
+
 def extract_triples(
     text: str, *, constrain_collision_verbs: bool = False
 ) -> list[Triple]:
@@ -294,7 +315,8 @@ def extract_triples(
     `constrain_collision_verbs` selects the ingest-constrained bank
     (`_INGEST_PATTERNS`): the six single-token templates that double as
     plural nouns are dropped and TESTS' two passive forms are added. The
-    verb's case is exact, and each match stays on one line of `text`
+    verb's case is exact, each match stays on one line of `text`, and a
+    match whose object a line break cut down to a determiner is dropped
     (#1874). It defaults to False so the read path is unchanged — operator
     ruling of 2026-08-06 scopes #1376 to the write path, and
     `context_rebuilder` calls this on every prompt with behaviour that was
@@ -310,6 +332,10 @@ def extract_triples(
     for pat in patterns:
         for span_start, span_end in spans:
             for m in pat.regex.finditer(text, span_start, span_end):
+                if constrain_collision_verbs and _object_is_a_cut_determiner(
+                    text, m, span_end,
+                ):
+                    continue
                 subj_raw = m.group("subject")
                 obj_raw = m.group("object")
                 subj = _normalize_phrase(subj_raw)

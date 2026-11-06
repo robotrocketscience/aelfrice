@@ -55,6 +55,7 @@ from aelfrice.triple_extractor import (
     _INGEST_PATTERNS,
     _PATTERNS,
     _line_spans,
+    _object_is_a_cut_determiner,
     extract_triples,
 )
 
@@ -86,6 +87,8 @@ def _fires_by_template(
         for pat in patterns:
             for start, end in spans:
                 for hit in pat.regex.finditer(text, start, end):
+                    if per_line and _object_is_a_cut_determiner(text, hit, end):
+                        continue
                     subj = " ".join(hit.group("subject").split())
                     obj = " ".join(hit.group("object").split())
                     if not subj or not obj:
