@@ -77,7 +77,7 @@ Install aelfrice from github.com/robotrocketscience/aelfrice for all my projects
    /aelf:onboard .
    ```
 
-   The command asks which model to use and shows what each costs, then shows the estimated time before it starts. Choose the low-cost model, which is the default and the one the command recommends. The scan uses your agent's existing plan and needs no API key. To scan without a model, add `--no-subagents`.
+   On Codex, run `$aelf-onboard .` instead. The command asks which model to use and shows what each costs, then shows the estimated time before it starts. Choose the low-cost model, which is the default and the one the command recommends. The scan uses your agent's existing plan and needs no API key. To scan without a model, add `--no-subagents`.
 
 3. Lock your first belief:
 

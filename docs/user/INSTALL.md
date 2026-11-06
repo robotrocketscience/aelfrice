@@ -191,12 +191,22 @@ your disk is slow, override the budget with
 
 ## 4. Onboard a project
 
+Start your agent in the project's folder, and then run this command in the agent:
+
+```text
+/aelf:onboard .
+```
+
+On Codex, run `$aelf-onboard .` instead. Both commands classify with your agent's model and need no API key. When the store is empty, `aelf setup` prints the command for the host you set up. If you run `aelf setup` outside a git repository, it tells you to open a project first.
+
+To scan from a terminal without your agent's model, run the command from the project root:
+
 ```bash
 cd <project-root>
 aelf onboard .
 ```
 
-`aelf onboard .` walks the project and ingests the structural facts as candidate beliefs. The command reads the filesystem, the git log, and the Python abstract syntax tree (AST). It typically takes less than one second on a project of 50k lines of code. A second run is idempotent, because the command dedupes on `(source, sentence)`.
+`aelf onboard .` walks the project and ingests the structural facts as candidate beliefs. The command reads the filesystem, the git log, and the Python abstract syntax tree (AST). It classifies with the regular-expression classifier unless you configure the direct-API classifier. It typically takes less than one second on a project of 50k lines of code. A second run is idempotent, because the command dedupes on `(source, sentence)`.
 
 ## 5. Lock the rules you care about
 
