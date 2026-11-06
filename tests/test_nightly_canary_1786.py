@@ -3850,9 +3850,11 @@ if failing is not None and not failing.get("after"):
     sys.exit(1)
 out = ""
 if command == "issue list":
-    out = json.dumps([i for i in state["issues"] if i["state"] == "open"])
+    out = "" if state.get("empty_issue_list") else json.dumps([i for i in state["issues"] if i["state"] == "open"])
 elif command == "label list":
-    out = json.dumps([{"name": name} for name in state["labels"]])
+    # As `gh` 2.86.0 prints it: nothing at all when no label matches, not `[]`.
+    found = [{"name": name} for name in state["labels"] if flag("--search") in name]
+    out = json.dumps(found) if found else ""
 elif command == "label create":
     state["labels"].append(argv[2])
 elif command == "issue create":
@@ -3879,7 +3881,8 @@ if failing is not None:
     save()
     sys.exit(1)
 save()
-print(out)
+if out:
+    print(out)
 '''
 
 
@@ -3974,6 +3977,21 @@ def test_issues_cmd_creates_the_label_only_when_missing_and_needed(tmp_path: Pat
     assert [c["argv"][2] for c in fake_gh.calls("label create")] == [nc.LABEL]
     assert _issues_cmd(night, 201) == 0
     assert fake_gh.writes() == ["label create", "issue create"]
+
+
+def test_issues_cmd_opens_the_first_issue_on_a_repo_with_no_such_label(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    fake_gh.set(labels=["bug"])
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 0
+    assert fake_gh.writes() == ["label create", "issue create"]
+    assert len(fake_gh.issues()) == 1
+
+
+def test_issues_empty_output_from_issue_list_is_still_a_failed_call(tmp_path: Path, fake_gh: _FakeGh) -> None:
+    """Only the label list prints nothing for no match. A silent issue list could
+    be a failure, and reading it as no issue would open a duplicate of each."""
+    fake_gh.set(empty_issue_list=True)
+    assert _issues_cmd(_red_night(tmp_path, _pr_event(_A))) == 1
+    assert fake_gh.writes() == []
 
 
 def test_issues_cmd_touches_no_label_when_nothing_opens(tmp_path: Path, fake_gh: _FakeGh) -> None:

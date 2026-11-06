@@ -2164,9 +2164,12 @@ def _gh(args: list[str], body: str | None = None) -> str:
     return r.stdout
 
 
-def _gh_list(args: list[str]) -> list[dict[str, Any]]:
+def _gh_list(args: list[str], empty_ok: bool = False) -> list[dict[str, Any]]:
+    output = _gh(args)
+    if empty_ok and not output.strip():
+        return []
     try:
-        data = json.loads(_gh(args))
+        data = json.loads(output)
     except ValueError as exc:
         raise GhError(f"gh {' '.join(args[:2])} printed no JSON: {exc}") from exc
     if not isinstance(data, list) or not all(isinstance(row, dict) for row in cast("list[object]", data)):
@@ -2188,7 +2191,11 @@ def _open_issues(repo: str) -> list[dict[str, Any]]:
 
 
 def _ensure_label(repo: str) -> None:
-    labels = _gh_list(["label", "list", "--repo", repo, "--search", LABEL, "--json", "name", "--limit", "100"])
+    # `gh label list --json` prints nothing when no label matches. `gh issue list`
+    # prints `[]`, so empty output there stays a failed call.
+    labels = _gh_list(
+        ["label", "list", "--repo", repo, "--search", LABEL, "--json", "name", "--limit", "100"], empty_ok=True,
+    )
     if not any(label.get("name") == LABEL for label in labels):
         _gh([
             "label", "create", LABEL, "--repo", repo, "--color", "B60205",
