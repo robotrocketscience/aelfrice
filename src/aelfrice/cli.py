@@ -989,6 +989,7 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
         user_lock_ids: set[str] = set()
         if show_conflicts:
             from aelfrice.contradiction import _slot_conflict_preextracted
+            from aelfrice.derivation import decision_text
             from aelfrice.user_locks import (
                 FALLBACK_LIST,
                 is_user_scope_lock,
@@ -1001,7 +1002,8 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
             # repository lock's id, so an id names one lock here.
             locked_beliefs = l0_lock_set(store, fallback=FALLBACK_LIST)
             locked_pairs = [
-                (b, extract_values(b.content)) for b in locked_beliefs
+                (b, extract_values(decision_text(b.id, b.content)))
+                for b in locked_beliefs
             ]
             user_lock_ids = {
                 b.id for b in locked_beliefs if is_user_scope_lock(b)
@@ -9396,6 +9398,7 @@ def _cmd_doctor_prune_noise(
     hooks/graph checks.
     """
     from aelfrice.classification_core import classify_sentence
+    from aelfrice.derivation import decision_text
     from aelfrice.noise_filter import (
         is_stranded_capture_noise,
         is_transcript_noise,
@@ -9417,7 +9420,7 @@ def _cmd_doctor_prune_noise(
             for b in store.list_active_beliefs()
             if b.origin == ORIGIN_AGENT_INFERRED
             and b.lock_level == LOCK_NONE
-            and _is_noise_now(b.content)
+            and _is_noise_now(decision_text(b.id, b.content))
         ]
         total = len(candidates)
         selected = candidates[:max_n] if max_n is not None else candidates

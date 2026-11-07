@@ -7417,10 +7417,10 @@ def _belief_is_lock_candidate(b: "Belief", session_id: str) -> bool:
     # only holds while no path writes these unprompted, which is what the
     # `_belief_is_correction_class` filter at the `_autolock_candidates`
     # call site enforces.
+    from aelfrice.derivation import decision_text  # noqa: PLC0415
     from aelfrice.directive_detector import detect_directive  # noqa: PLC0415
-    from aelfrice.extraction import decision_text  # noqa: PLC0415
 
-    return detect_directive(decision_text(b.content, b.origin))
+    return detect_directive(decision_text(b.id, b.content))
 
 
 def _belief_is_correction_class(b: "Belief") -> bool:
@@ -7587,7 +7587,7 @@ def _format_stop_prompt(candidates: list["Belief"]) -> str:
             "Corrections can be locked automatically instead by setting "
             f"AELF_AUTOLOCK_CORRECTIONS=1{caveat}."
         )
-    from aelfrice.extraction import decision_text  # noqa: PLC0415
+    from aelfrice.derivation import decision_text  # noqa: PLC0415
 
     lines.append("")
     for b in shown:
@@ -7621,7 +7621,7 @@ def _format_stop_prompt(candidates: list["Belief"]) -> str:
         # window resolves to an absolute UTC instant inside `aelf lock
         # --for`, at write time — this renders the spec, it does not
         # resolve it, so there is no second anchor.
-        window = _directive_window_spec(decision_text(b.content, b.origin))
+        window = _directive_window_spec(decision_text(b.id, b.content))
         suffix = f" --for {window}" if window else ""
         lines.append(f"    aelf lock {_shell_quote(b.content)}{suffix}")
     if withheld:

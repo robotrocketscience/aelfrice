@@ -6,6 +6,7 @@ verdicts must be equal once span text is removed from what's stored.
 """
 from __future__ import annotations
 
+import io
 import json
 import random
 import re
@@ -15,7 +16,8 @@ import pytest
 
 from aelfrice.classification_core import USER_SOURCE, classify_sentence
 from aelfrice.contradiction import _slot_conflict_preextracted
-from aelfrice.derivation import DerivationInput, derive
+from aelfrice.cli import main as cli_main
+from aelfrice.derivation import DerivationInput, _belief_id, derive
 from aelfrice.extraction import (
     CODE_FENCE_RE,
     extract_sentences,
@@ -288,7 +290,7 @@ def test_span_text_can_not_change_what_ingest_stores(tmp_path: Path, prompt: str
 def test_a_rule_quoted_in_a_span_is_not_a_lock_candidate() -> None:
     def belief(content: str, origin: str) -> Belief:
         return Belief(
-            id="b1", content=content, content_hash="h", alpha=3.0, beta=1.0,
+            id=_belief_id(content, "transcript"), content=content, content_hash="h", alpha=3.0, beta=1.0,
             type="factual", lock_level="none", locked_at=None,
             created_at="2026-11-06T00:00:00+00:00", last_retrieved_at=None,
             session_id="s1", origin=origin,
@@ -307,7 +309,7 @@ def test_stored_sentences_is_exact_on_an_emphasized_scheme() -> None:
     assert stored_sentences(text) == _frozen_partition(text)[0]
 
 
-def test_a_detector_reads_other_origins_as_stored() -> None:
+def test_a_detector_reads_other_sources_as_stored() -> None:
     """Only a sentence from a prompt has a holed form. Onboard text never did."""
     onboard = Belief(
         id="b1", content="Use `never push to main` as the widget title.", content_hash="h",
@@ -344,8 +346,9 @@ def test_the_classifier_reads_other_sources_as_stored(
 
 def test_a_lock_prompt_takes_no_window_from_inside_a_span() -> None:
     """A correction-class belief is a candidate, so its window must come from prose."""
+    text = "Use `always remember this for 7 days` as the widget title."
     quoted = Belief(
-        id="b1", content="Use `always remember this for 7 days` as the widget title.",
+        id=_belief_id(text, "transcript"), content=text,
         content_hash="h", alpha=3.0, beta=1.0, type="correction", lock_level="none",
         locked_at=None, created_at="2026-11-06T00:00:00+00:00", last_retrieved_at=None,
         session_id="s1", origin=ORIGIN_USER_TRANSCRIPT,
@@ -354,20 +357,21 @@ def test_a_lock_prompt_takes_no_window_from_inside_a_span() -> None:
     assert "--for" not in _format_stop_prompt([quoted])
 
 
-def _typed(content: str, origin: str = ORIGIN_USER_TRANSCRIPT) -> Belief:
+def _typed(content: str, origin: str = ORIGIN_USER_TRANSCRIPT, source: str = "transcript") -> Belief:
     return Belief(
-        id="b1", content=content, content_hash="h", alpha=3.0, beta=1.0, type="factual",
+        id=_belief_id(content, source), content=content, content_hash="h", alpha=3.0, beta=1.0, type="factual",
         lock_level="none", locked_at=None, created_at="2026-11-06T00:00:00+00:00",
         last_retrieved_at=None, session_id="s1", origin=origin,
     )
 
 
 def test_a_value_in_a_span_does_not_conflict_with_a_lock() -> None:
-    lock = _typed("The widget timeout is 60 seconds always.", "user_stated")
+    lock = _typed("The widget timeout is 60 seconds always.", "user_stated", source="user")
     pairs = [(lock, extract_values(lock.content))]
     quoted = "Set `timeout 30` on the widget before the release."
     assert _slot_conflict_preextracted(_typed(quoted), pairs) is None
-    assert _slot_conflict_preextracted(_typed(quoted, "user_validated"), pairs) == "b1"
+    assert _slot_conflict_preextracted(_typed(quoted, "user_validated"), pairs) is None
+    assert _slot_conflict_preextracted(_typed(quoted, source="docs/a.md"), pairs) == lock.id
 
 
 def test_the_introspect_noise_flag_reads_the_holed_form(tmp_path: Path) -> None:
@@ -380,6 +384,97 @@ def test_the_introspect_noise_flag_reads_the_holed_form(tmp_path: Path) -> None:
         assert _signals_for(store, typed, {}).noise
     finally:
         store.close()
+
+
+# --- readers after the origin changes, through the real commands -------------
+
+
+@pytest.fixture
+def cli_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    db = tmp_path / "memory.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.setenv("AELFRICE_USER_DB", str(tmp_path / "user.db"))
+    monkeypatch.setenv("AELF_SHOW_CONFLICTS", "1")
+    return db
+
+
+def _ingest_typed(db: Path, *prompts: str) -> list[str]:
+    store = MemoryStore(str(db))
+    try:
+        return [
+            _ingest_turn(store, p, "transcript", session_id="s1", role="user").inserted[0]
+            for p in prompts
+        ]
+    finally:
+        store.close()
+
+
+def _cli(*argv: str) -> str:
+    out = io.StringIO()
+    assert cli_main(list(argv), out=out) == 0
+    return out.getvalue()
+
+
+def _read(db: Path, belief_id: str) -> Belief:
+    store = MemoryStore(str(db))
+    try:
+        belief = store.get_belief(belief_id)
+    finally:
+        store.close()
+    assert belief is not None
+    return belief
+
+
+def _conflicts(query: str) -> dict[str, object]:
+    return {r["content"]: r.get("slot_conflict_with") for r in json.loads(_cli("search", query, "--json"))}
+
+
+def test_a_value_in_a_locked_span_does_not_conflict(cli_store: Path) -> None:
+    """A lock on a typed row keeps its id, so the lock side reads the holed form too."""
+    locked = "Set `timeout 30 seconds` for the widget service."
+    other = "Use timeout 60 seconds for the widget service."
+    ids = _ingest_typed(cli_store, locked, other)
+    _cli("lock", locked)
+    assert _read(cli_store, ids[0]).origin == "user_stated"
+    assert _conflicts("timeout seconds widget service")[other] is None
+
+
+def test_a_value_in_a_lock_typed_by_hand_still_conflicts(cli_store: Path) -> None:
+    """A lock that isn't a transcript row reads as stored, as it did before #1874."""
+    other = "Use timeout 60 seconds for the widget service."
+    _ingest_typed(cli_store, other)
+    _cli("lock", "Set `timeout 30 seconds` for the whole widget fleet.")
+    assert _conflicts("timeout seconds widget service")[other] is not None
+
+
+def test_prune_noise_reads_the_holed_form_after_validate_and_demote(cli_store: Path) -> None:
+    """Noise as stored, and not noise once holed, so `--apply` must not touch it."""
+    text = "The widget doc is at https://example.invalid/a?"
+    assert is_transcript_noise(text) or not classify_sentence(text, "x").persist
+    [belief_id] = _ingest_typed(cli_store, text)
+    _cli("validate", belief_id)
+    _cli("demote", belief_id)
+    assert _read(cli_store, belief_id).origin == "agent_inferred"
+    assert "prune-noise: 0 active" in _cli("doctor", "--prune-noise")
+
+
+def test_validate_keeps_the_window_from_the_prose(cli_store: Path) -> None:
+    text = "Remember this rule for 2 weeks: always use `for 3 days` on the widget host."
+    [belief_id] = _ingest_typed(cli_store, text)
+    _cli("validate", belief_id)
+    validated = _read(cli_store, belief_id)
+    assert validated.origin == "user_validated"
+    assert _directive_window_spec(validated.content) is None
+    assert "--for 2w" in _format_stop_prompt([validated])
+
+
+def test_validate_does_not_turn_a_quoted_rule_into_a_candidate(cli_store: Path) -> None:
+    text = "The widget note says `always deploy at noon` in the file."
+    [belief_id] = _ingest_typed(cli_store, text)
+    _cli("validate", belief_id)
+    validated = _read(cli_store, belief_id)
+    assert validated.origin == "user_validated"
+    assert not _belief_is_lock_candidate(validated, "s1")
 
 
 def test_a_sub_floor_clause_keeps_its_span_for_the_anchor() -> None:

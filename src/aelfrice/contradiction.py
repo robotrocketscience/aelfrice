@@ -99,7 +99,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Final, Optional, Sequence
 
-from aelfrice.extraction import decision_text
+from aelfrice.derivation import decision_text
 from aelfrice.models import (
     BELIEF_CORRECTION,
     EDGE_CONTRADICTS,
@@ -478,7 +478,7 @@ def _slot_conflict_preextracted(
     """
     if not locked_pairs:
         return None
-    b_slots = extract_values(decision_text(belief.content, belief.origin))
+    b_slots = extract_values(decision_text(belief.id, belief.content))
     for locked, l_slots in locked_pairs:
         if find_conflicts(b_slots, l_slots):
             return locked.id

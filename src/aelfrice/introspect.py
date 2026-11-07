@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from aelfrice import noise_filter
-from aelfrice.extraction import decision_text
+from aelfrice.derivation import decision_text
 from aelfrice.models import (
     EDGE_POTENTIALLY_STALE,
     EDGE_RESOLVES,
@@ -163,7 +163,7 @@ def _signals_for(store: object, belief: object, persistence: dict[str, float]) -
         recurrence=belief.corroboration_count,  # type: ignore[attr-defined]
         grounding=_grounding(persistence.get(belief.id)),  # type: ignore[attr-defined]
         status=_status(store, belief.id),  # type: ignore[attr-defined]
-        noise=noise_filter.is_stranded_capture_noise(decision_text(belief.content, belief.origin)),  # type: ignore[attr-defined]
+        noise=noise_filter.is_stranded_capture_noise(decision_text(belief.id, belief.content)),  # type: ignore[attr-defined]
         lock_level=lock_level,
         lock_tier=belief.lock_tier if lock_level == LOCK_USER else None,  # type: ignore[attr-defined]
         origin=belief.origin,  # type: ignore[attr-defined]

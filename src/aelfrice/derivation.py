@@ -199,6 +199,17 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def decision_text(belief_id: str, content: str) -> str:
+    """A stored belief's text as a detector reads it (#1874).
+
+    Only a sentence the user typed keeps its inline code and URLs, and a rule or
+    value quoted inside a span doesn't count as stated. The id names the source,
+    so the answer survives what validate, demote, and lock do to the origin.
+    """
+    typed = belief_id == _belief_id(content, _TRANSCRIPT_SOURCE_LABEL)
+    return holed_form(content) if typed else content
+
+
 def _belief_id(text: str, source: str) -> str:
     """Deterministic id from sha256(source + NUL + text)[:16].
 
