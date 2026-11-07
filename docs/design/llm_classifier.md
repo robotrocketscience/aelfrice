@@ -443,9 +443,13 @@ Fields:
 - `model` — the model id actually called (so override visible).
 - `input_tokens`, `output_tokens`, `total_tokens` — Anthropic's billed
   counts, summed across shards.
-- `requests`: number of classifier calls that sent a request. A call that
-  fails before sending anything, such as on a refused connection, counts 0.
-  The SDK's own retries of one call count once.
+- `requests`: 1 if the classifier call's last attempt sent a request, and 0 if
+  it failed before sending anything, such as on a refused connection or a key
+  that can't go in a header. The SDK retries a failed attempt up to twice and
+  keeps no record of the earlier ones, so the count can differ from what the
+  server saw: a 429 on every attempt reaches the server 3 times and prints
+  `requests=1`, and a 500 followed by refused connections reaches it once and
+  prints `requests=0`.
 - `fallbacks` — number of candidates that fell back to regex (see
   § 7).
 

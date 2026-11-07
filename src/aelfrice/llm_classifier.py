@@ -125,7 +125,10 @@ _NOT_SENT_CAUSES: Final[frozenset[str]] = frozenset({
 })
 
 # Causes that are the user's proxy, URL, or key config, not the network.
-_CONFIG_CAUSES: Final[frozenset[str]] = frozenset({"UnsupportedProtocol"})
+_CONFIG_CAUSES: Final[frozenset[str]] = frozenset({
+    "LocalProtocolError",
+    "UnsupportedProtocol",
+})
 
 # A cause that means the response arrived and couldn't be decoded.
 _UNDECODABLE_CAUSES: Final[frozenset[str]] = frozenset({"DecodingError"})

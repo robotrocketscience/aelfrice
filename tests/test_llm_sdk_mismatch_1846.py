@@ -105,6 +105,10 @@ class UnsupportedProtocol(Exception):
     pass
 
 
+class LocalProtocolError(Exception):
+    pass
+
+
 class ReadError(Exception):
     pass
 
@@ -267,10 +271,13 @@ def test_undecodable_body_cause_is_unusable_and_counts() -> None:
     assert result.warning == "the classifier response was unusable (DecodingError)"
 
 
-def test_config_cause_warns_and_counts_nothing() -> None:
-    result = _batch(_raising(_connection_error(UnsupportedProtocol)))
+@pytest.mark.parametrize(
+    "cause", [UnsupportedProtocol, LocalProtocolError], ids=lambda c: c.__name__,
+)
+def test_config_cause_warns_and_counts_nothing(cause: type[Exception]) -> None:
+    result = _batch(_raising(_connection_error(cause)))
     assert result.telemetry.requests == 0
-    assert result.warning == "the classifier didn't run (UnsupportedProtocol)"
+    assert result.warning == f"the classifier didn't run ({cause.__name__})"
 
 
 def _responding(resp: Any) -> _FakeSdk:
@@ -908,6 +915,39 @@ def test_installed_sdk_non_ascii_key_falls_back(
     assert _SECRET not in capsys.readouterr().err
     assert "requests=0 " in out.getvalue()
     _assert_onboard_fell_back(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["onboard", "@P", "--llm-classify"], ["onboard", "@P"], ["doctor", "--classify-orphans"]],
+    ids=["onboard-flag", "onboard-default", "doctor"],
+)
+def test_installed_sdk_key_ending_in_cr_counts_nothing(
+    installed_sdk: None,
+    local_api: None,
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    """The connection opens, and the header is refused before a byte is written."""
+    monkeypatch.setenv(llm.ENV_API_KEY, f"{_SECRET}\r")
+    if argv[0] == "doctor":
+        _seed_orphan(tmp_path)
+
+    out = io.StringIO()
+    args = [str(project) if a == "@P" else a for a in argv]
+    rc = cli_module.main(args, out=out)
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert _SECRET not in err
+    lines = _aelf_lines(err)
+    assert len(lines) == 1
+    assert "the classifier didn't run (LocalProtocolError)" in lines[0]
+    assert _Api.hits == 0
+    assert "requests=0 " in out.getvalue()
 
 
 def test_installed_sdk_refused_connection_stays_silent_with_requests_0(
