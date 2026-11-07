@@ -4,7 +4,7 @@ Pure regex over a fixed pattern bank. No POS tagger, no embedding,
 no LLM. Reusable by any v1.x ingest caller that has prose at
 hand. Current call sites: the v1.2.0 commit-ingest hook
 (`hook_commit_ingest.py`) and the context-rebuilder's query-enrichment
-pass (`context_rebuilder.py`, `extract_triples` only). Not currently
+pass (`rebuild_log.py`, `extract_triples` only). Not currently
 wired into transcript-ingest or `aelf remember`.
 
 Two-piece API per docs/design/triple_extractor.md:
@@ -330,7 +330,7 @@ def extract_triples(
     verb's case is exact, each match stays on one line of `text`, and a
     match with a phrase that is only function words on either side is dropped
     (#1874). It defaults to False so the read path is unchanged: operator
-    ruling of 2026-08-06 scopes #1376 to the write path, and `context_rebuilder`
+    ruling of 2026-08-06 scopes #1376 to the write path, and `rebuild_log`
     calls this on every prompt with behaviour that was never measured. Only
     `hook_commit_ingest` passes True.
     """

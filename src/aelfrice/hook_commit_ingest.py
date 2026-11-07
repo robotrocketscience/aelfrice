@@ -285,7 +285,7 @@ def _ingest_message(
     # #1376: commit bodies are the register where single-token relation
     # verbs collide with plural nouns ("Two tests that …"), and this is a
     # write path — a fragment minted here is an irreversible belief. The
-    # read path in `context_rebuilder` deliberately does not pass this.
+    # read path in `rebuild_log` deliberately does not pass this.
     # #1874: it also makes the verb's case exact, keeps each match on one
     # line of the message, and drops a match with a phrase on either side
     # that is only function words.
