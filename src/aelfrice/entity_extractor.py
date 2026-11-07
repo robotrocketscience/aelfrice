@@ -64,10 +64,11 @@ _FILE_PATH_WIN: Final[re.Pattern[str]] = re.compile(
 
 # HTTP(S) URL up to the first whitespace / closing bracket / quote.
 # Conservative on the right boundary so trailing prose punctuation
-# (`see https://x.y/z.`) and a closing code-span backtick (#1874) do
-# not leak into the entity.
+# (`see https://x.y/z.`), a closing code-span backtick, and markdown
+# emphasis (#1874) do not leak into the entity. The left boundary admits
+# an underscore, which `\b` would refuse: `_https://x.y/z_`.
 _URL: Final[re.Pattern[str]] = re.compile(
-    r"\bhttps?://[^\s<>\"')\]`]*[^\s<>\"')\]`.,;:!?]",
+    r"(?<![A-Za-z0-9])https?://[^\s<>\"')\]`]*[^\s<>\"')\]`.,;:!?*_]",
     re.IGNORECASE,
 )
 

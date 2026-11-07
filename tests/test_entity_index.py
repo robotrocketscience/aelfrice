@@ -197,6 +197,8 @@ def test_ac1_per_kind_negative_fixtures(
         ("see https://x.y/z.", "https://x.y/z"),
         ("is it https://x.y/z?", "https://x.y/z"),
         ("see https://x.y/a/b.html first", "https://x.y/a/b.html"),
+        ("See _https://x.y/a_ for the widget.", "https://x.y/a"),
+        ("See **https://x.y/a** for the widget.", "https://x.y/a"),
     ],
 )
 def test_url_entity_is_the_bare_link_alone(text: str, expected: str) -> None:
