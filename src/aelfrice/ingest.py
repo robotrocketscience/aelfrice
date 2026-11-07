@@ -27,6 +27,7 @@ from typing import Final, cast
 from aelfrice.classification_core import INGEST_CLASSIFIER_VERSION, rule_set_hash
 from aelfrice.derivation import META_DERIVED_FROM, META_HOLED, META_TURN_SHA, TURN_SHA_LEN
 from aelfrice.derivation_worker import run_worker
+from aelfrice.noise_filter import cut_relay
 from aelfrice.session_resolution import resolve_session_id
 from aelfrice.models import (
     ANCHOR_TEXT_MAX_LEN,
@@ -709,8 +710,14 @@ def _user_speech(text: str) -> str | None:
     wrapper cannot be told from the user's own by any deterministic test.
     Pasted terminal and tool output is not kept: before #1691 each line of
     a pasted `git status` became a belief (`_pasted_prose`).
+
+    Relay text from other agents is cut first, and only where it opens the
+    record, by the rule in `noise_filter.cut_relay`. The transcript logger
+    writes the same cut, so a record and the row logged for it read the same.
+    A relay after the user's first word, or behind a marker or a reminder,
+    stays, so a relay cut never takes their words.
     """
-    rest = _HOST_MARKER_LINE_RE.sub("", text)
+    rest = _HOST_MARKER_LINE_RE.sub("", cut_relay(text))
     rest = _SYSTEM_REMINDER_RE.sub("", rest).strip()
     if not rest or _COMMAND_WRAPPER_RE.match(rest):
         return None

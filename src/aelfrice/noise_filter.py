@@ -84,6 +84,7 @@ from __future__ import annotations
 
 import re
 import sys
+from bisect import bisect_right
 import tomllib
 import traceback
 from dataclasses import dataclass, field
@@ -253,6 +254,128 @@ _TRANSCRIPT_XML_PREFIXES: Final[tuple[str, ...]] = (
     # are NOT added here — they are a separate inventory, not this block.
     "<local-command-caveat",
 )
+
+# Relay text from other agents: a teammate's brief, a background agent's report,
+# and another session's message. The host writes each as a user record. See
+# `cut_relay` for when one counts.
+_RELAY_TAG_ALT: Final[str] = "teammate-message|agent-message|cross-session-message"
+# The tag name ends at whitespace or `>`. Attributes stay on the tag's line, and
+# a `>` inside a quoted value doesn't end the tag. The repeat is possessive, so
+# it can't back up: a long run of attributes with no `>` costs one pass.
+_RELAY_TAG: Final[str] = (
+    r"<(" + _RELAY_TAG_ALT + r")"
+    r"(?:[^\S\n\r]+[^\s=>/\"'<]+"
+    r"(?:=(?:\"[^\"\n\r]*\"|'[^'\n\r]*'|[^\s>/\"'<]*))?)*+"
+    r"[^\S\n\r]*>"
+)
+_RELAY_LEAD: Final[str] = r"[\s\ufeff]*"
+# After whitespace, an opening tag with nothing else on its line.
+_RELAY_OPENER_RE: Final[re.Pattern[str]] = re.compile(
+    _RELAY_LEAD + _RELAY_TAG + r"[^\S\n\r]*(?:\r\n|\n|\r|\Z)", re.IGNORECASE,
+)
+_RELAY_CLOSER_RE: Final[re.Pattern[str]] = re.compile(
+    r"</(" + _RELAY_TAG_ALT + r")[^\S\n\r]*>", re.IGNORECASE,
+)
+# The rest of a closer's line when only whitespace is left on it. The line has to
+# end with LF, CRLF, or the record, which is where ingest's patterns see a line
+# start, so a cut never moves the next tag to the start of a line.
+_LINE_END_RE: Final[re.Pattern[str]] = re.compile(r"[^\S\n\r]*(?:\r?\n|\Z)")
+_RELAY_HINT_RE: Final[re.Pattern[str]] = re.compile(
+    _RELAY_LEAD + r"<(?:" + _RELAY_TAG_ALT + r")", re.IGNORECASE,
+)
+# A closed reminder, found the way ingest's reminder pattern finds one. The
+# attribute run is bounded, so a flood of unclosed openers stays linear.
+_REMINDER_OPENER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<system-reminder\b[^>]{0,2000}>", re.IGNORECASE | re.MULTILINE,
+)
+_REMINDER_CLOSER_RE: Final[re.Pattern[str]] = re.compile(
+    r"</system-reminder\s*>", re.IGNORECASE,
+)
+# A paste's opening tag, as ingest reads one.
+_PASTE_OPENER_RE: Final[re.Pattern[str]] = re.compile(
+    r"<pasted_content\b[^>\n]{0,200}>", re.IGNORECASE,
+)
+
+
+def _reminder_spans(text: str) -> list[tuple[int, int]]:
+    """Each closed reminder in `text`, in order, from opener to first closer.
+
+    An opener inside a reminder gives a span that ends at the same closer, so
+    it changes no lookup.
+    """
+    closers = list(_REMINDER_CLOSER_RE.finditer(text))
+    spans: list[tuple[int, int]] = []
+    at = 0
+    for m in _REMINDER_OPENER_RE.finditer(text):
+        while at < len(closers) and closers[at].start() < m.end():
+            at += 1
+        if at == len(closers):
+            break
+        spans.append((m.start(), closers[at].end()))
+    return spans
+
+
+def _in_spans(spans: list[tuple[int, int]], starts: list[int], index: int) -> bool:
+    """True when `index` falls inside one of `spans`, whose starts are `starts`."""
+    at = bisect_right(starts, index) - 1
+    return at >= 0 and index < spans[at][1]
+
+
+def cut_relay(text: str) -> str:
+    """`text` without the relay blocks it opens with, or `text` unchanged.
+
+    The host writes relay text from other agents as a user record. A tag named
+    `teammate-message`, `agent-message`, or `cross-session-message`, in any
+    case, counts only at the start of the record, after optional whitespace or
+    a byte order mark, and only as an opening tag with nothing else on its line.
+
+    - A closed block runs from that opener through the first closer of its tag
+      and the end of the closer's line. The closer must come before the first
+      paste, and a closer inside a closed `<system-reminder>` doesn't count.
+      When the closer's line holds anything else, or ends in a lone CR, the
+      block stays and the cut stops.
+    - The cut repeats while the next thing, after optional whitespace, is
+      another such opener.
+    - An opener with no closer takes the record up to the first paste.
+
+    Everything from the user's first word on stays, including any later relay
+    block. A one-line block, a tag with prose on its line, a self-closed tag, a
+    name that only starts like a tag (`<agent-messages>`), and a tag whose
+    attributes don't end on its line aren't openers. A paste is never cut.
+
+    What's left comes back as it was, from the start of the line after the cut,
+    so every pattern that reads line starts sees the same lines it did before.
+    """
+    if not _RELAY_HINT_RE.match(text):
+        return text
+    reminders = _reminder_spans(text)
+    starts = [start for start, _ in reminders]
+    limit = len(text)
+    for m in _PASTE_OPENER_RE.finditer(text):
+        if not _in_spans(reminders, starts, m.start()):
+            limit = m.start()
+            break
+    pos = 0
+    # Each round moves `pos` forward or ends the scan, so the bound is never hit.
+    for _ in range(len(text) + 1):
+        opener = _RELAY_OPENER_RE.match(text, pos)
+        if not opener:
+            break
+        tag = opener.group(1).lower()
+        closer = next(
+            (m for m in _RELAY_CLOSER_RE.finditer(text, opener.end(), limit)
+             if m.group(1).lower() == tag and not _in_spans(reminders, starts, m.start())),
+            None,
+        )
+        if closer is None:
+            pos = limit
+            break
+        line_end = _LINE_END_RE.match(text, closer.end())
+        if not line_end:
+            break
+        pos = line_end.end()
+    return text[pos:]
+
 
 # #1025: a sentence that begins with a CLOSING tag ("</…") is a stray
 # harness fragment (e.g. "</task-notification>", "</event>"). No prose
