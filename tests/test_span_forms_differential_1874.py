@@ -17,7 +17,7 @@ import pytest
 from aelfrice.classification_core import USER_SOURCE, classify_sentence
 from aelfrice.contradiction import _slot_conflict_preextracted
 from aelfrice.cli import main as cli_main
-from aelfrice.derivation import META_HOLED, DerivationInput, _belief_id, derive
+from aelfrice.derivation import META_HOLED, DerivationInput, _belief_id, derive, typed_text
 from aelfrice.extraction import (
     CODE_FENCE_RE,
     extract_sentences,
@@ -314,6 +314,21 @@ def test_a_long_sentence_stores_without_its_spans(tmp_path: Path, padding: int, 
     assert (report.matched, report.mismatched) == (1, 0)
 
 
+@pytest.mark.parametrize(
+    ("meta", "expected"),
+    [
+        (None, "stored"),
+        ({}, "stored"),
+        ({META_HOLED: "holed"}, "holed"),
+        ({META_HOLED: ""}, ""),
+        ({META_HOLED: 3}, "stored"),
+        ({META_HOLED: None}, "stored"),
+    ],
+)
+def test_typed_text_takes_only_a_string_from_the_row(meta: dict[str, object] | None, expected: str) -> None:
+    assert typed_text("stored", meta) == expected
+
+
 def test_a_row_from_before_1874_replays_as_it_was_written() -> None:
     """A row with no holed text reads as stored, even with a URL in it."""
     raw = "Run https://example.invalid/a!"
@@ -575,6 +590,41 @@ def test_a_sub_floor_clause_keeps_its_span_for_the_anchor() -> None:
     full, between = partition_sentences(text)
     assert full == ["Run the first thing here now.", "Then do the second thing now."]
     assert between == [[], ["Use this one: `zqtool`"]]
+
+
+@pytest.mark.parametrize(
+    ("span", "token"),
+    [
+        ("`ZQ_KEY=zqanca`", "zqanca"),
+        ("`Bearer zqancb`", "zqancb"),
+        ("`api_key: zqancc`", "zqancc"),
+        ("https://example.invalid/x?k=zqancd", "zqancd"),
+        ("https://bot:zqance@example.invalid/x", "zqance"),
+        ("`gh" + "p_zqancf" + "a1b2" * 8 + "`", "zqancf"),
+        ("`zqancg" + "x" * 300 + "`", "zqancg"),
+    ],
+)
+def test_the_credential_rule_covers_the_anchor_text(tmp_path: Path, span: str, token: str) -> None:
+    text = f"Run the first thing here now.\nUse this one: {span}\nThen do the second thing now."
+    store = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        _ingest_turn(store, text, "transcript", session_id="s1", role="user")
+        anchors = store._conn.execute(  # noqa: SLF001
+            "SELECT anchor_text FROM edges WHERE anchor_text IS NOT NULL",
+        ).fetchall()
+    finally:
+        store.close()
+    assert anchors
+    assert not [a for a in anchors if token in a[0]]
+
+
+def test_a_kept_span_in_a_sub_floor_clause_reaches_search(cli_store: Path) -> None:
+    """The anchor text is searchable, so a search for the span returns both neighbors."""
+    first, second = "Run the first thing here now.", "Then do the second thing now."
+    _ingest_typed(cli_store, f"{first}\nUse this one: `zqanchor`\n{second}")
+    found = _cli("search", "zqanchor")
+    assert first in found
+    assert second in found
 
 
 def test_a_phantom_with_a_span_still_fails_the_residue_check() -> None:
