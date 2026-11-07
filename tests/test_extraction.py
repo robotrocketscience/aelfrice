@@ -144,6 +144,7 @@ def test_the_whole_form_keeps_each_span_exactly(sentence: str) -> None:
         ("1. `zqtool` runs the rest here.", ["`zqtool` runs the rest here."]),
         ("# `zqtool` runs the rest here.", ["`zqtool` runs the rest here."]),
         ("- `zqtool`\nruns the rest here.", ["`zqtool` runs the rest here."]),
+        ("`zqtool` 1. runs the rest here.", ["`zqtool` runs the rest here."]),
         ("| `a` | b |\nUse `c` for the widget now.", ["Use `c` for the widget now."]),
         ("`a` is short.\nUse `c` for the widget now.", ["Use `c` for the widget now."]),
         ("Stop right there. https://example.invalid/a runs next here.", ["Stop right there.", "https://example.invalid/a runs next here."]),
