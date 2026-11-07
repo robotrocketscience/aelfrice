@@ -570,7 +570,7 @@ Auth, model selection, and provider choice are NOT configurable here. aelfrice r
 
 The classifier sends no temperature, so two onboard runs can label a sentence differently, including whether to keep it. A belief already in the store keeps its label when you onboard again.
 
-If you set `ANTHROPIC_BASE_URL` to send the request through a gateway, the gateway must accept the key as `Authorization: Bearer <key>`, because the SDK sends no `X-Api-Key` header. If the gateway reads only `X-Api-Key`, change it, or set `ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: <key>"` to send the key in both headers. For everything else a gateway must accept, see [Gateway requirements](../design/llm_classifier.md#gateway-requirements).
+If you set `ANTHROPIC_BASE_URL` to send the request through a gateway, the gateway must accept the key as `Authorization: Bearer <key>`, because the SDK sends no `X-Api-Key` header. If the gateway reads only `X-Api-Key`, change it, or set `ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: <key>"` to send the key in both headers. With that setting, a gateway that redirects to another host, port, or scheme sends your key to the redirect's target, because the HTTP library drops `Authorization` on such a redirect and keeps `X-Api-Key`. For everything else a gateway must accept, see [Gateway requirements](../design/llm_classifier.md#gateway-requirements).
 
 ## Worked examples
 

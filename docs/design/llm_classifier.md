@@ -111,10 +111,12 @@ calling Haiku directly.
   stays SQLite + FTS5 + BM25 at every milestone (see
   [ROADMAP.md § Non-goals](../concepts/ROADMAP.md#non-goals)).
 - Streaming or partial classification — onboard is a batch operation.
-- Caching Haiku responses across `aelf onboard` runs. The deterministic
-  belief id (`sha256(source\x00text)[:16]`) already deduplicates against
-  the local store, so re-onboard does not re-call Haiku for any
-  candidate already present. No cross-machine cache.
+- Caching responses across `aelf onboard` runs. Every run sends every
+  candidate that passes the noise filter, including candidates whose belief
+  is already in the store, and counts that call in `requests`. The
+  deterministic belief id (`sha256(source\x00text)[:16]`) then dedupes the
+  result against the store, so a belief already there keeps its type. No
+  cross-machine cache.
 - Replacing the regex classifier. `--llm-classify` is opt-in. Default
   remains regex.
 
@@ -206,10 +208,14 @@ The boundary policy is therefore non-negotiable.
   the SDK ignores `ANTHROPIC_AUTH_TOKEN` and its profile settings.
 - **The key stays out of what aelfrice prints.** A 401 or 403 prints the status
   and the response's `error.type`, never the response's text, because a server
-  can echo the key. The classifier also holds the SDK's and the HTTP library's
-  loggers at `WARNING`, so `ANTHROPIC_LOG=debug` has no effect on an aelfrice
-  run. At debug level those loggers print response headers and the exception
-  for a key that can't go in a header.
+  can echo the key. During the call, the classifier also raises the SDK's and
+  the HTTP library's loggers, and each child logger that has its own level, to
+  `WARNING` or above, and then sets each one back to its exact level. So
+  `ANTHROPIC_LOG=debug` or a host's DEBUG level prints nothing from them during
+  the call. At debug level those loggers print response headers and the
+  exception for a key that can't go in a header. A host that runs its own SDK
+  client in another thread at the same time loses that client's debug output
+  for the call too.
 
 ### Gateway requirements
 
@@ -218,7 +224,10 @@ a gateway. A gateway set this way must do the following:
 
 - Accept the key in `Authorization: Bearer <key>`. If it reads only `X-Api-Key`,
   change it, or set `ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: <key>"`. With that
-  setting, the request carries the key in both headers.
+  setting, the request carries the key in both headers. The HTTP library drops
+  `Authorization` when it follows a redirect to another host, port, or scheme,
+  but it keeps a custom `X-Api-Key`, so a gateway that answers with such a
+  redirect sends your key to the redirect's target.
 - Accept `POST <base URL>/v1/messages`. A path in the base URL is kept, so
   `https://gateway.example/llm` becomes `https://gateway.example/llm/v1/messages`.
 - Accept the `anthropic-version` header that the SDK sends. SDK 2.0.0 and 2.6.0
@@ -476,20 +485,15 @@ Fields:
 - `model` — the model id actually called (so override visible).
 - `input_tokens`, `output_tokens`, `total_tokens` — Anthropic's billed
   counts, summed across shards.
-- `requests`: 1 if the classifier call's last attempt sent a request, and 0 if
-  it failed before sending anything, such as on a refused connection or a key
-  that can't go in a header. The SDK retries a failed attempt up to twice and
-  keeps no record of the earlier ones, so the count can differ from what the
-  server saw: a 429 on every attempt reaches the server 3 times and prints
-  `requests=1`, and a 500 followed by refused connections reaches it once and
-  prints `requests=0`.
-
-  A redirect or a bad header can also leave `requests=0` after the server saw
-  the request. A 307 to a closed port reaches the server 3 times and prints no
-  warning. A 307 to an `ftp` URL reaches it 3 times, and the warning says the
-  classifier didn't run (`UnsupportedProtocol`). A 429 or 500 with a `Retry-After`
-  date the SDK can't parse, such as `Mon, 01 Jan 99999 00:00:00 GMT`, reaches it
-  once, and the warning says the classifier didn't run (`ValueError`).
+- `requests`: the number of attempts that sent a request, out of the up to 3
+  the classifier makes (see § 7). An attempt counts when a response came back,
+  or when the request went out and the response didn't, such as on a read
+  timeout. An attempt that failed before sending, such as on a refused
+  connection or a key that can't go in a header, doesn't count. So a 429 on
+  every attempt prints `requests=3`, a 500 followed by refused connections
+  prints `requests=1`, and a 307 to a closed port prints `requests=3`. A 307 to
+  an `ftp` URL prints `requests=1`, and the warning says the response was
+  unusable (`UnsupportedProtocol`).
 - `fallbacks` — number of candidates that fell back to regex (see
   § 7).
 
@@ -516,13 +520,21 @@ clear marker that LLM classification didn't run.
 
 - Connection refused / DNS failure / TLS error.
 - 5xx from Anthropic.
-- 429 (rate limit): the SDK retries up to twice, so the server sees up to 3
-  requests, and then the run falls back. `aelf onboard` adds no retries of its
-  own. The SDK honors a `Retry-After` of up to 60 seconds per retry, so the
-  total wait can pass 30 seconds.
+- 429 (rate limit), 408, 409, a 5xx, a refused connection, and a timeout: the
+  classifier tries up to 3 times, so the server sees up to 3 requests, and then
+  the run falls back. The SDK's own retries are off, because SDK 2.x waits as
+  long as `Retry-After` asks, a day included. The classifier reads
+  `retry-after-ms`, then `Retry-After` as seconds or as a date, and waits at
+  most 60 seconds before each retry. With neither header, it waits 0.5 seconds,
+  then 1 second. A wait longer than 1 second prints one line on stderr, such as
+  `aelf: the classifier is waiting 60 s before it tries the request again, the
+  longest aelfrice waits`. A response with `x-should-retry: false` isn't
+  retried, and one with `x-should-retry: true` is.
 - Request timeout: 30 seconds for each connect, read, write, and pool wait of an
-  attempt. The SDK retries a timeout up to twice, so a hung server sees 3
-  requests, and the run takes more than 90 seconds before it falls back.
+  attempt. A hung server sees 3 requests, and the run takes more than 90
+  seconds before it falls back. Nothing bounds a whole attempt: the read
+  timeout restarts with each byte, so a server that sends a byte inside every
+  30 seconds holds the attempt open as long as it keeps sending.
 - 401/403 (auth) — **do not** fall back. The user explicitly opted in
   with a key that is broken or revoked; surfacing that is more
   important than papering over it. Exit 1 with the status and the
@@ -551,8 +563,9 @@ user took the explicit step of setting `ANTHROPIC_API_KEY` and turning
 on `--llm-classify`; if the key is bad we want them to see that, not
 silently degrade to a regex run that they didn't ask for.
 
-The error prints the status and a short `error.type`, and nothing else from the
-response, because a server can echo the key it refused. When
+The error prints the status and the response's `error.type` if it's one the API
+documents, and nothing else from the response, because a server can echo the
+key it refused. When
 `ANTHROPIC_BASE_URL` is set, the error also says that a gateway must accept
 `Authorization: Bearer`, without printing the URL. See § 4, Gateway requirements.
 
@@ -573,7 +586,8 @@ way, with no beliefs updated.
 A failed SDK import isn't a mismatch. The gate before the call catches it first:
 `--llm-classify` and `aelf doctor --classify-orphans` exit 1 and say the
 `[onboard-llm]` extra is required, and a default `aelf onboard` uses the regex
-classifier.
+classifier. If the import passes the gate and then fails at request time, the
+run falls back to the regex classifier with `requests=0` and no warning.
 
 An exception raised from inside `create` doesn't stop the run, even a
 `TypeError`, because a request may have left by then.
@@ -604,9 +618,9 @@ too long for Python to read.
 
 A 400, 404, 413, or 422 response means the API rejected the request. The run
 falls back as listed above and exits 0, and stderr gets one warning per run.
-The warning names the status, adds the response's `error.type` if it's a short
-identifier such as `not_found_error`, and says to check the model name, billing,
-and the base URL. It prints nothing else from the response, because a server can
+The warning names the status, adds the response's `error.type` if it's one the
+API documents, such as `not_found_error`, and says to check the model name,
+billing, and the base URL. It prints nothing else from the response, because a server can
 echo the base URL or the key. The request was sent, so `requests` counts it.
 `aelf doctor --classify-orphans` has no regex path: it prints the same warning,
 skips every orphan, and exits 0.
@@ -710,7 +724,7 @@ may decide either way:
   Acceptance only requires correct telemetry; a single-request
   implementation is fine for v1.3.0.
 - Exact retry policy for 429s (with or without Retry-After header
-  parsing). The SDK's defaults apply, per § 7.
+  parsing). The classifier's own retry rule applies, per § 7.
 - Whether to write the per-run JSON audit line (§ 6 last paragraph).
   Useful for debugging but not required for acceptance.
 - Whether `--revoke-consent` is a flag on `onboard` or its own
