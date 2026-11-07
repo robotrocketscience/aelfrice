@@ -15,7 +15,9 @@ import json
 import re
 import subprocess
 import sys
+import textwrap
 import time
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
@@ -26,6 +28,7 @@ from aelfrice.derivation import DerivationInput, derive
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.hook_commit_ingest import _ingest_message, git_hook_ingest
 from aelfrice.models import (
+    EDGE_DERIVED_FROM,
     EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
     EDGE_TESTS,
@@ -164,9 +167,45 @@ _FUNCTION_WORDS = (
     "which", "who", "whom", "whose", "what", "where", "when", "why", "how",
     "all", "both", "each", "every", "either", "neither", "some", "any", "none",
     "many", "most", "few", "several", "another", "such", "other", "others",
-    "one",
+    "one", "more", "less", "much",
     "something", "anything", "everything", "nothing", "someone", "anyone",
     "everyone",
+    "and", "or", "but", "nor", "yet", "so", "for", "if", "unless", "because",
+    "although", "though", "while", "whereas", "whether", "than", "as", "since",
+    "until", "till", "once",
+    "of", "to", "in", "on", "at", "by", "with", "from", "about", "into", "onto",
+    "over", "under", "after", "before", "between", "among", "through", "during",
+    "without", "within", "against", "above", "below", "across", "along",
+    "around", "behind", "beside", "besides", "beyond", "despite", "except",
+    "inside", "outside", "near", "off", "out", "up", "down", "per", "via",
+    "toward", "towards", "upon", "unlike", "versus",
+    "am", "is", "are", "was", "were", "be", "been", "being", "do", "does",
+    "did", "has", "have", "had", "having", "can", "could", "will", "would",
+    "shall", "should", "may", "might", "must", "ought", "isn", "aren", "wasn",
+    "weren", "don", "doesn", "didn", "hasn", "haven", "hadn", "won", "wouldn",
+    "shouldn", "couldn", "mustn", "shan", "ain",
+    "not", "no", "never", "cannot",
+    "also", "then", "just", "only", "even", "still", "too", "very", "now",
+    "here", "there", "thus", "hence", "however", "therefore", "instead",
+    "already", "again", "ever", "rather", "quite", "perhaps", "maybe",
+)
+
+_WRAP_TABLE = {"identical": 311, "shorter": 284, "lost": 269}
+
+# The relation sentences behind the wrapped-text table in the PR description.
+_WRAP_SENTENCES = (
+    "the new fetcher supersedes the old fetcher",
+    "this parser is based on the older grammar",
+    "the retry queue contradicts the delivery guarantee in the old design note",
+    "that config loader is derived from the first bootstrap script",
+    "the index writer is tested by the golden corpus runner",
+    "our session table relates to the hook audit log",
+    "the planner mentions a missing path on startup",
+    "the batch importer supersedes the nightly export job in the deploy runbook",
+    "the store migration is covered by the upgrade smoke test",
+    "the lock budget disagrees with the injection cap",
+    "a single worker implements the queue contract",
+    "the short form cites the spec",
 )
 
 
@@ -235,6 +274,34 @@ def test_a_passive_form_still_swaps_its_phrases() -> None:
     ]
     assert _pairs("the new parser is tested by the golden corpus") == [
         ("the golden corpus", EDGE_TESTS, "the new parser"),
+    ]
+
+
+@pytest.mark.parametrize("space", ["\t", "  ", " \t "], ids=["tab", "two", "mixed"])
+def test_any_whitespace_inside_a_line_separates_the_verb(space: str) -> None:
+    assert _pairs(f"the new fetcher{space}supersedes{space}the old fetcher") == [
+        ("the new fetcher", EDGE_SUPERSEDES, "the old fetcher"),
+    ]
+    assert _pairs(f"the spec{space}is{space}derived{space}from{space}the memo") == [
+        ("the spec", EDGE_DERIVED_FROM, "the memo"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "3way supersedes the old parser",
+        "--force supersedes the old parser",
+        "_private supersedes the old parser",
+    ],
+)
+def test_a_phrase_doesnt_start_inside_a_word(text: str) -> None:
+    assert _pairs(text) == []
+
+
+def test_non_ascii_letters_stay_inside_their_word() -> None:
+    assert _pairs("the caf\u00e9menu supersedes the na\u00efve parser") == [
+        ("the caf\u00e9menu", EDGE_SUPERSEDES, "the na\u00efve parser"),
     ]
 
 
@@ -333,7 +400,7 @@ def test_every_determiner_the_noun_phrase_admits_is_a_function_word() -> None:
 
 
 @pytest.mark.parametrize("word", _FUNCTION_WORDS)
-@pytest.mark.parametrize("form", [str.lower, str.title, str.upper], ids=["low", "title", "up"])
+@pytest.mark.parametrize("form", [str.lower, str.title], ids=["low", "title"])
 def test_a_function_word_on_either_side_stores_nothing(
     word: str, form: Callable[[str], str],
 ) -> None:
@@ -351,12 +418,96 @@ def test_a_function_word_inside_a_longer_phrase_doesnt_count(word: str) -> None:
     ]
 
 
+@pytest.mark.parametrize("word", [w for w in _FUNCTION_WORDS if len(w) > 1])
+def test_a_word_in_all_capitals_counts_as_a_name(word: str) -> None:
+    name = word.upper()
+    assert _pairs(f"{name} supersedes the old parser") == [
+        (name, EDGE_SUPERSEDES, "the old parser"),
+    ]
+    assert _pairs(f"the new parser supersedes {name}") == [
+        ("the new parser", EDGE_SUPERSEDES, name),
+    ]
+
+
+@pytest.mark.parametrize("word", ["A", "I", "A-", "I_"])
+def test_a_single_capital_letter_is_still_a_function_word(word: str) -> None:
+    assert _pairs(f"{word} supersedes the old parser") == []
+    assert _pairs(f"the new parser supersedes {word}") == []
+
+
+def test_a_trailing_hyphen_on_a_name_keeps_it_a_name() -> None:
+    assert _pairs("IT- supersedes the old parser") == [
+        ("IT-", EDGE_SUPERSEDES, "the old parser"),
+    ]
+
+
+@pytest.mark.parametrize("word", ["None", "Any", "Some", "One", "Each", "Will", "May"])
+def test_a_capitalized_listed_word_stores_nothing(word: str) -> None:
+    """The loss the docs name: a code name or a person's name matches the list."""
+    assert _pairs(f"{word} supersedes the old parser") == []
+    assert _pairs(f"the new parser supersedes {word}") == []
+
+
+@pytest.mark.parametrize(
+    "word",
+    ["one-shot", "each-other", "any-of", "if-else", "all_of", "each_line", "one_of"],
+)
+def test_a_word_with_an_inner_hyphen_or_underscore_counts_as_one_word(word: str) -> None:
+    assert _pairs(f"{word} supersedes the old parser") == [
+        (word, EDGE_SUPERSEDES, "the old parser"),
+    ]
+    assert _pairs(f"the new parser supersedes {word}") == [
+        ("the new parser", EDGE_SUPERSEDES, word),
+    ]
+
+
+@pytest.mark.parametrize("word", ["it-", "the-", "this-", "all-", "one_", "all_", "it_", "the-_"])
+def test_a_trailing_hyphen_or_underscore_is_a_fragment_of_the_word(word: str) -> None:
+    assert _pairs(f"{word} supersedes the old parser") == []
+    assert _pairs(f"the new parser supersedes {word}") == []
+
+
+def test_a_trailing_hyphen_on_a_content_word_still_stores() -> None:
+    assert _pairs("parser- supersedes the old one") == [
+        ("parser-", EDGE_SUPERSEDES, "the old one"),
+    ]
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "\u2019"], ids=["straight", "curly"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "it{a}s supersedes the old parser",
+        "that{a}s cites the memo",
+        "doesn{a}t cites the memo",
+        "the old parser is based on it{a}s",
+        "the new parser supersedes doesn{a}t",
+        "the new parser supersedes isn{a}t",
+    ],
+)
+def test_a_contraction_leaves_no_fragment(text: str, apostrophe: str) -> None:
+    assert _pairs(text.format(a=apostrophe)) == []
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "\u2019"], ids=["straight", "curly"])
+def test_a_phrase_doesnt_start_after_an_apostrophe(apostrophe: str) -> None:
+    assert _pairs(f"the parser{apostrophe}s cache supersedes the old one") == [
+        ("cache", EDGE_SUPERSEDES, "the old one"),
+    ]
+    assert _pairs(f"the new parser supersedes the module{apostrophe}s own") == [
+        ("the new parser", EDGE_SUPERSEDES, "the module"),
+    ]
+
+
 @pytest.mark.parametrize(
     "text",
     [
         "the new parser supersedes all the",
         "both these supersedes the old parser",
         "the new parser supersedes this one",
+        "the median separation the comment cites does not",
+        "which also contradicts the documented",
+        "or one that contradicts pyproject",
     ],
 )
 def test_a_phrase_of_only_function_words_stores_nothing(text: str) -> None:
@@ -376,6 +527,11 @@ def test_a_phrase_of_only_function_words_stores_nothing(text: str) -> None:
         "and the claim contradicts the `doc` text",
         "so a function whose prose cites a `ref` here",
         "fix: tidy the parser\n\nThis supersedes the old parser",
+        "the new parser handles retries\nand supersedes the old parser",
+        "the new parser handles retries\nand contradicts the memo",
+        "the new parser handles retries\nalso cites the paper",
+        "the planner cites of\nthe paper",
+        "the doc is derived from and\nthe rest",
     ],
 )
 def test_a_review_case_stores_nothing(text: str) -> None:
@@ -396,6 +552,12 @@ def test_an_adjective_with_no_noun_still_stores(text: str, obj: str) -> None:
     assert [(r, o) for _, r, o in _pairs(text)] == [(EDGE_SUPERSEDES, obj)]
 
 
+def test_the_read_path_keeps_contraction_fragments() -> None:
+    assert [
+        (t.subject, t.object) for t in extract_triples("it's supersedes the old parser")
+    ] == [("s", "the old parser")]
+
+
 def test_the_read_path_keeps_function_word_phrases() -> None:
     assert [
         (t.subject, t.object) for t in extract_triples("This supersedes the old parser")
@@ -403,6 +565,27 @@ def test_the_read_path_keeps_function_word_phrases() -> None:
     assert [
         (t.subject, t.object) for t in extract_triples("the new parser supersedes it")
     ] == [("the new parser", "it")]
+
+
+def test_the_wrapped_text_table_reproduces() -> None:
+    """Each sentence at all 72 offsets behind a run of letters and a period,
+    which no phrase can cross, wrapped at 72 columns and compared with the same
+    text unwrapped. A lost relation either has the break touching its verb or
+    leaves only function words on a side."""
+    counts: Counter[str] = Counter()
+    for sentence in _WRAP_SENTENCES:
+        for pad in range(72):
+            flat = ("a" * pad + ". " if pad else "") + sentence
+            unwrapped = _pairs(flat)
+            assert len(unwrapped) == 1, flat
+            wrapped = _pairs(textwrap.fill(flat, 72))
+            if wrapped == unwrapped:
+                counts["identical"] += 1
+            elif wrapped:
+                counts["shorter"] += 1
+            else:
+                counts["lost"] += 1
+    assert counts == _WRAP_TABLE
 
 
 # --- The read path and the entity index --------------------------------------
@@ -496,6 +679,7 @@ def test_the_installed_block_stores_only_what_the_rules_allow(
         "refactor: tidy the fetch\n\nThe new fetcher\nsupersedes\nthe old fetcher",
         "feat: new parser supersedes that\n\nCloses 12",
         "fix: tidy the parser\n\nThis supersedes the old parser",
+        "fix: tidy the reader\n\nThe new reader retries\nand supersedes the old reader",
         "feat: the new codec supersedes the old codec",
     )
     for i, message in enumerate(messages, start=1):
@@ -609,10 +793,13 @@ def test_the_block_comment_describes_what_the_hook_stores(tmp_path: Path) -> Non
         ln.lstrip("# ") for ln in _hook(tmp_path).read_text().splitlines()
         if ln.startswith("# ") and "aelfrice commit-ingest" not in ln
     )
-    assert "Records this commit's message" not in comments
-    assert "stores the words on each side" in comments
-    assert "Skips commits that a rebase replays." in comments
-    assert "Delete this block to stop it." in comments
+    assert comments == (
+        "aelfrice created this file. "
+        "Reads this commit's message in the background, so the commit "
+        "doesn't wait. On a phrase such as \"X supersedes Y\", stores the "
+        "words on each side in aelfrice memory. Skips commits that a "
+        "rebase replays. Delete this block to stop it."
+    )
 
 
 @pytest.mark.timeout(60)
