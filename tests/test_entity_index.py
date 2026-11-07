@@ -217,6 +217,24 @@ def test_url_entity_stops_at_the_first_backtick() -> None:
     assert [e.raw for e in entities if e.kind == KIND_URL] == ["https://x.y/a", "https://x.y/b"]
 
 
+def test_two_links_after_a_list_marker_are_two_entities(tmp_path: Path) -> None:
+    store = MemoryStore(str(tmp_path / "ingest.db"))
+    try:
+        ingest_turn(
+            store,
+            "- https://one.example.invalid/a https://two.example.invalid/b are the widget docs.",
+            source="user",
+        )
+        rows = store._conn.execute(  # noqa: SLF001
+            "SELECT entity_lower FROM belief_entities WHERE kind = ?", (KIND_URL,),
+        ).fetchall()
+    finally:
+        store.close()
+    assert sorted(r[0] for r in rows) == [
+        "https://one.example.invalid/a", "https://two.example.invalid/b",
+    ]
+
+
 def test_a_stored_code_span_writes_path_and_url_entities(tmp_path: Path) -> None:
     """#1874: a path or a link in a prompt reaches the entity index."""
     store = MemoryStore(str(tmp_path / "ingest.db"))

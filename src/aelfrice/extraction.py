@@ -96,9 +96,13 @@ def holed_form(sentence: str) -> str:
 
 
 def _spans_only(match: re.Match[str]) -> str:
-    """What a pass that removes `match` leaves: the spans inside it, if any."""
-    count = match.group(0).count(_HOLD)
-    return _HOLD * count + " " if count else ""
+    """What a pass that removes `match` leaves: the spans inside it, if any.
+
+    Spans that touched stay touching, and spans with anything between them keep
+    one space between them.
+    """
+    runs = re.findall(f"{_HOLD}+", match.group(0))
+    return " ".join(runs) + " " if runs else ""
 
 
 def sentence_forms(text: str) -> list[SentenceForms]:

@@ -169,6 +169,42 @@ def test_the_floor_reads_the_holed_form(line: str) -> None:
     assert sentence_forms(line) == []
 
 
+@pytest.mark.parametrize(
+    "first, second",
+    [
+        ("`zqone`", "`zqtwo`"),
+        ("https://one.example.invalid/a", "https://two.example.invalid/b"),
+        ("`zqone`", "https://two.example.invalid/b"),
+        ("https://one.example.invalid/a", "`zqtwo`"),
+    ],
+)
+@pytest.mark.parametrize(
+    "prefix, kept",
+    [
+        ("- ", ""),
+        ("* ", ""),
+        ("1. ", ""),
+        ("# ", ""),
+        ("Stop right there. ", "Stop right there."),
+        ("Stop right there! ", "Stop right there!"),
+    ],
+)
+def test_two_spans_keep_their_separator_after_a_removed_marker(
+    first: str, second: str, prefix: str, kept: str,
+) -> None:
+    out = _whole(f"{prefix}{first} {second} are the widget docs.")
+    expected = [kept] if kept else []
+    assert out == [*expected, f"{first} {second} are the widget docs."]
+
+
+def test_spans_that_touched_stay_touching_after_a_removed_marker() -> None:
+    assert _whole("- `zqone``zqtwo` are the widget docs.") == ["`zqone``zqtwo` are the widget docs."]
+
+
+def test_spans_in_a_table_row_do_not_join_the_next_line() -> None:
+    assert _whole("| `a` | `b` |\nUse `c` for the widget now.") == ["Use `c` for the widget now."]
+
+
 def test_backticks_paired_across_lines_stay_removed() -> None:
     text = "A stray ` opens here\n15 +cd some-folder\nand ` closes it there at last."
     assert _whole(text) == ["A stray   closes it there at last."]
