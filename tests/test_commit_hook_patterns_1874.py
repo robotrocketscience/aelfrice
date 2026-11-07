@@ -300,8 +300,8 @@ def test_a_phrase_doesnt_start_inside_a_word(text: str) -> None:
 
 
 def test_non_ascii_letters_stay_inside_their_word() -> None:
-    assert _pairs("the caf\u00e9menu supersedes the na\u00efve parser") == [
-        ("the caf\u00e9menu", EDGE_SUPERSEDES, "the na\u00efve parser"),
+    assert _pairs("the na\u00efve menu supersedes the na\u00efve parser") == [
+        ("the na\u00efve menu", EDGE_SUPERSEDES, "the na\u00efve parser"),
     ]
 
 
