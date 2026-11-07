@@ -60,13 +60,17 @@ _CREDENTIAL_CODE_RE: re.Pattern[str] = re.compile(
 # Known credential shapes, alone in a code span or anywhere in a URL: vendor key
 # prefixes, a chat app's token or webhook, a JWT, and a private key header.
 _KNOWN_CREDENTIAL_RE: re.Pattern[str] = re.compile(
-    # Only these two end ordinary words, as in `task-` and `shelf_`. An encoded
-    # character before one is a separator and not part of a word.
-    r"(?:(?<![A-Za-z])|(?<=%[0-9A-Fa-f]{2}))(?:sk-[\w-]{16,}|hf_\w{30,})"
-    r"|AIza[\w-]{30,}|gh[pousr]_\w{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}"
-    r"|A[KS]IA[0-9A-Z]{16}|[rs]k_live_\w{16,}|npm_\w{30,}|pypi-[\w-]{16,}"
+    # A prefix can also sit in an ordinary name, as in `risk_live_`, `pnpm_config_`,
+    # `sk-learn`, or `pypi-publish`. So a body that a real key writes without an
+    # underscore excludes one, and `sk-` and `pypi-`, whose bodies do hold
+    # separators, need a digit. `sk-` and `hf_` also end words, as in `task-` and
+    # `shelf_`, so they need no letter before them. An encoded character there is
+    # a separator.
+    r"(?:(?<![A-Za-z])|(?<=%[0-9A-Fa-f]{2}))(?:sk-(?=[\w-]*\d)[\w-]{16,}|hf_[A-Za-z0-9]{30,})"
+    r"|AIza[\w-]{30,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}"
+    r"|A[KS]IA[0-9A-Z]{16}|[rs]k_live_[A-Za-z0-9]{16,}|npm_[A-Za-z0-9]{30,}|pypi-(?=[\w-]*\d)[\w-]{16,}"
     r"|xox[a-z]-[\w-]{10,}|\d{8,10}:[\w-]{30,}|eyJ[\w-]{5,}\.[\w-]{5,}\."
-    r"|(?i:hooks\.slack\.com/services/|discord(?:app)?\.com/api/(?:v\d+/)?webhooks/"
+    r"|(?i:hooks\.slack\.com/|discord(?:app)?\.com/api/(?:v\d+/)?webhooks/"
     r"|BEGIN [A-Z ]*PRIVATE KEY)"
 )
 # A run this long, with this many bits per character, reads as random. On the
