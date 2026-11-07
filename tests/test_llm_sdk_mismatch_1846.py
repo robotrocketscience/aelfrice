@@ -136,7 +136,7 @@ _SECRET = "PROXYSECRET"
 
 
 def _batch(sdk: Any) -> llm.BatchResult:
-    return llm.classify_batch(_CANDIDATES, api_key="k", sdk_module=sdk)
+    return llm.classify_batch(_CANDIDATES, api_key="test-key-1846", sdk_module=sdk)
 
 
 # --- What stops the run ---------------------------------------------------
@@ -316,6 +316,22 @@ def test_unusable_response_warns_and_counts(resp: Any) -> None:
     assert result.warning.startswith("the classifier response was unusable (")
 
 
+def test_response_with_no_text_block_says_so() -> None:
+    warning = _batch(_responding(SimpleNamespace(content=[], usage=None))).warning
+    assert warning == (
+        "the classifier response was unusable (response contains no text block)"
+    )
+
+
+def test_parse_failure_prints_its_whole_reason() -> None:
+    resp = SimpleNamespace(content=[SimpleNamespace(text="not json")], usage=None)
+    warning = _batch(_responding(resp)).warning
+    assert warning == (
+        "the classifier response was unusable (malformed JSON response: "
+        "Expecting value: line 1 column 1 (char 0))"
+    )
+
+
 @pytest.mark.parametrize("status", [400, 404, 413, 422])
 def test_rejected_status_names_itself_and_counts_the_request(status: int) -> None:
     result = _batch(_raising(_StatusError(status)))
@@ -338,6 +354,56 @@ def test_rejection_text_is_one_bounded_line() -> None:
     ).removesuffix(")")
     assert detail.startswith("<html> <p>too large</p>")
     assert len(detail) == 200
+
+
+def _batch_with_key(sdk: Any, key: str) -> llm.BatchResult:
+    return llm.classify_batch(_CANDIDATES, api_key=key, sdk_module=sdk)
+
+
+@pytest.mark.parametrize(
+    "key", ["sk-FAKE1234", " sk-FAKE1234\r"], ids=["plain", "with-whitespace"],
+)
+def test_rejection_warning_replaces_the_key(key: str) -> None:
+    exc = _StatusError(400)
+    exc.args = ("bad credential sk-FAKE1234 for this request",)
+    warning = _batch_with_key(_raising(exc), key).warning
+    assert warning is not None
+    assert "sk-FAKE1234" not in warning
+    assert "bad credential [key] for this request" in warning
+
+
+def test_mismatch_text_replaces_the_key() -> None:
+    result = _batch_with_key(_ctor_raising(TypeError("bad sk-FAKE1234")), "sk-FAKE1234")
+    assert result.sdk_mismatch_error == "TypeError: bad [key]"
+
+
+def test_empty_key_leaves_the_text_alone() -> None:
+    exc = _StatusError(400)
+    exc.args = ("no key here",)
+    warning = _batch_with_key(_raising(exc), "").warning
+    assert warning is not None
+    assert "status 400: no key here)" in warning
+
+
+def test_rejection_warning_collapses_whitespace_runs() -> None:
+    exc = _StatusError(400)
+    exc.args = ("first\n\n  \t second",)
+    warning = _batch(_raising(exc)).warning
+    assert warning is not None
+    assert "status 400: first second)" in warning
+
+
+@pytest.mark.parametrize(
+    "char", ["\x1b", "\x00", "\x07", "\x7f", "\x9b", "\r", "\n", "\t"],
+    ids=["esc", "nul", "bel", "del", "csi", "cr", "lf", "tab"],
+)
+def test_rejection_warning_strips_control_characters(char: str) -> None:
+    exc = _StatusError(413)
+    exc.args = (f"{char}[31mred{char}text",)
+    warning = _batch(_raising(exc)).warning
+    assert warning is not None
+    assert char not in warning
+    assert "[31mred text" in warning
 
 
 # --- What falls back in silence -------------------------------------------
@@ -948,6 +1014,36 @@ def test_installed_sdk_key_ending_in_cr_counts_nothing(
     assert "the classifier didn't run (LocalProtocolError)" in lines[0]
     assert _Api.hits == 0
     assert "requests=0 " in out.getvalue()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["onboard", "@P", "--llm-classify"], ["onboard", "@P"], ["doctor", "--classify-orphans"]],
+    ids=["onboard-flag", "onboard-default", "doctor"],
+)
+def test_installed_sdk_warning_hides_an_echoed_key_and_escape_bytes(
+    installed_sdk: None,
+    local_api: None,
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    monkeypatch.setenv(llm.ENV_API_KEY, _SECRET)
+    body = {"type": "error", "error": {"type": "x", "message": f"bad {_SECRET}"}}
+    _Api.reply = (400, _JSON, json.dumps(body).encode() + b"\x1b[31m")
+    if argv[0] == "doctor":
+        _seed_orphan(tmp_path)
+    args = [str(project) if a == "@P" else a for a in argv]
+
+    rc = cli_module.main(args, out=io.StringIO())
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert _SECRET not in err
+    assert "\x1b" not in err
+    assert "status 400: " in err
 
 
 def test_installed_sdk_refused_connection_stays_silent_with_requests_0(

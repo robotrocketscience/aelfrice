@@ -911,8 +911,9 @@ def _call_anthropic(
         create = client.messages.create
         inspect.signature(create).bind(**call_args)
     except (TypeError, AttributeError) as exc:
-        raise LLMSDKMismatchError(f"{type(exc).__name__}: {exc}") from exc
-    except Exception as exc:  # noqa: BLE001 — proxy, URL, and cert config vary
+        detail = _safe_detail(str(exc), api_key)
+        raise LLMSDKMismatchError(f"{type(exc).__name__}: {detail}") from exc
+    except Exception as exc:  # noqa: BLE001 - proxy, URL, and cert config vary
         raise LLMTransientError(
             str(exc), warning=_did_not_run(type(exc).__name__),
         ) from exc
@@ -922,7 +923,7 @@ def _call_anthropic(
     except Exception as exc:  # noqa: BLE001 — SDK exception classes vary
         if _is_auth_error(exc):
             raise LLMAuthError(str(exc)) from exc
-        raise _fault_from_call(exc) from exc
+        raise _fault_from_call(exc, api_key) from exc
 
     text = _extract_text_from_response(resp)
     input_tokens, output_tokens = _extract_usage(resp)
@@ -948,6 +949,18 @@ def _is_auth_error(exc: BaseException) -> bool:
     if status in (401, 403):
         return True
     return False
+
+
+def _safe_detail(text: str, api_key: str) -> str:
+    """Return error text fit for stderr: one bounded line with no key in it.
+
+    A server can echo the key, and a body can carry terminal escape bytes.
+    """
+    secret = api_key.strip()
+    if secret:
+        text = text.replace(secret, "[key]")
+    printable = "".join(ch if ch.isprintable() else " " for ch in text)
+    return " ".join(printable.split())[:_WARNING_DETAIL_CHARS]
 
 
 def _did_not_run(name: str) -> str:
@@ -981,7 +994,7 @@ def _reached_response_handling(exc: BaseException) -> bool:
     return False
 
 
-def _fault_from_call(exc: BaseException) -> LLMTransientError:
+def _fault_from_call(exc: BaseException, api_key: str) -> LLMTransientError:
     """Sort an exception from `create` into a fallback, with or without a warning.
 
     Status errors and the `APIError` family are read by status and by cause,
@@ -991,13 +1004,12 @@ def _fault_from_call(exc: BaseException) -> LLMTransientError:
     """
     status = getattr(exc, "status_code", None)
     if status in _REJECTED_STATUSES:
-        detail = " ".join(str(exc).split())[:_WARNING_DETAIL_CHARS]
         return LLMTransientError(
             str(exc),
             request_sent=True,
             warning=(
                 "the API rejected the classifier request "
-                f"(status {status}: {detail})"
+                f"(status {status}: {_safe_detail(str(exc), api_key)})"
             ),
         )
     if status is not None:
@@ -1161,7 +1173,9 @@ def classify_batch(
     except LLMTransientError as exc:
         result.fallback_used = True
         result.fallback_reason = "parse:" + str(exc)[:64]
-        result.warning = _unusable_response(str(exc)[:64]).warning
+        result.warning = _unusable_response(
+            _safe_detail(str(exc), api_key),
+        ).warning
         result.telemetry.fallbacks = len(candidates)
         return result
 
