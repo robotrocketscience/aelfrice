@@ -6,6 +6,7 @@ discard fragments. No classification, no keyword filtering.
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 
 # Triple-backtick region, including the language tag. Exported rather
@@ -37,20 +38,45 @@ CODE_FENCE_RE: re.Pattern[str] = re.compile(
 # Minimum character length for a sentence fragment to be kept.
 _MIN_LEN: int = 10
 
-# An inline code span, or a URL. A sentence keeps the text of both (#1874), and
-# the later passes must not read it: `__init__` isn't bold, and the `. ` in
-# `a. b` doesn't end a sentence. A URL stops short of a trailing stop, so the
-# stop still ends the sentence, and of a trailing `*`, so bold still closes. It
-# stops at a backtick too, so that it can't change how backticks pair.
-_INLINE_SPAN_RE: re.Pattern[str] = re.compile(r"`[^`]*`|https?://[^\s`]*[^\s`.!?*]")
+_CODE_SPAN_RE: re.Pattern[str] = re.compile(r"`[^`]*`")
+_URL_RE: re.Pattern[str] = re.compile(r"https?://\S+")
 
-# Stands in for a held span during the markdown and sentence passes. Input
-# can't forge one: extract_sentences blanks every NUL before it holds spans.
-_HELD_SPAN_RE: re.Pattern[str] = re.compile("\x00([0-9]+)\x00")
+# Stands in for each kept span while the markdown and sentence passes run. Every
+# pattern and `.strip()` reads it as whitespace, and `splitlines` doesn't break on
+# it, so a pass sees what it would see if the span were a space. Only `[ \t]` can
+# tell the two apart, so the list patterns name it.
+_HOLD: str = "\x1f"
 
 
-def extract_sentences(text: str) -> list[str]:
-    """Extract atomic sentences from conversation text.
+class SentenceForms(NamedTuple):
+    """One sentence in the two forms that #1874 separates.
+
+    `holed` has each inline code span and URL removed. Every decision reads it:
+    the noise gate, the sub-floor rule, the length floor, and the classifier.
+    `whole` keeps the spans, and it's the form that the store gets.
+    """
+
+    holed: str
+    whole: str
+
+
+def holed_form(sentence: str) -> str:
+    """The form of a stored transcript sentence that decisions read (#1874).
+
+    For a caller that holds only the stored text. It equals the `holed` half of
+    `sentence_forms` for every sentence that function returns.
+    """
+    return _URL_RE.sub(" ", _CODE_SPAN_RE.sub(" ", sentence)).strip()
+
+
+def _spans_only(match: re.Match[str]) -> str:
+    """What a pass that removes `match` leaves: the spans inside it, if any."""
+    count = match.group(0).count(_HOLD)
+    return _HOLD * count + " " if count else ""
+
+
+def sentence_forms(text: str) -> list[SentenceForms]:
+    """Extract atomic sentences from conversation text, in both forms.
 
     Process:
     1. Strip code blocks (triple-backtick regions)
@@ -58,31 +84,37 @@ def extract_sentences(text: str) -> list[str]:
     3. Strip markdown formatting (headers, bold, italic, table rows, list markers)
     4. Split on newlines first
     5. Within each line, split on sentence-ending punctuation followed by space
-    6. Discard fragments that are only held spans, then put the spans back
-    7. Discard fragments under 10 characters
-
-    Returns list of clean sentences.
+    6. Discard fragments under 10 characters once the held spans are removed
     """
     # Step 1: strip code blocks (triple-backtick regions, including language tag)
-    cleaned: str = CODE_FENCE_RE.sub(" ", text)
+    cleaned: str = CODE_FENCE_RE.sub(" ", text).replace(_HOLD, " ")
 
-    # Step 2: hold inline code spans and URLs out of the later passes
+    # Step 2: hold inline code spans and URLs out of the later passes. Backticks
+    # pair first, across the whole text, and a URL ends at the hole a span leaves.
+    code: list[str] = []
     held: list[str] = []
 
-    def hold(match: re.Match[str]) -> str:
+    def hold_code(match: re.Match[str]) -> str:
         span = match.group(0)
         # Backticks paired across lines aren't inline code, and what they
         # enclose is often a pasted diff or log, so that text stays removed.
         if len(span.splitlines()) > 1:
             return " "
-        held.append(span)
-        return f"\x00{len(held) - 1}\x00"
+        code.append(span)
+        return _HOLD
 
-    cleaned = _INLINE_SPAN_RE.sub(hold, cleaned.replace("\x00", " "))
+    cleaned = _CODE_SPAN_RE.sub(hold_code, cleaned)
+    codes = iter(code)
+
+    def hold_in_order(match: re.Match[str]) -> str:
+        held.append(next(codes) if match.group(0) == _HOLD else match.group(0))
+        return _HOLD
+
+    cleaned = re.sub(f"{_HOLD}|{_URL_RE.pattern}", hold_in_order, cleaned)
 
     # Step 3: strip markdown formatting
     # Headers: lines starting with one or more # characters
-    cleaned = re.sub(r"^#{1,6}\s+", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^#{1,6}\s+", _spans_only, cleaned, flags=re.MULTILINE)
     # Bold: **text** or __text__
     cleaned = re.sub(r"\*{2}([^*]*)\*{2}", r"\1", cleaned)
     # Underscore-bold/italic must be at a true word boundary so
@@ -99,33 +131,43 @@ def extract_sentences(text: str) -> list[str]:
         r"(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])", r"\1", cleaned,
     )
     # Markdown table rows: lines containing | characters
-    cleaned = re.sub(r"^\s*\|.*\|\s*$", " ", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(
+        r"^\s*\|.*\|\s*$",
+        lambda m: " " + _spans_only(m),
+        cleaned,
+        flags=re.MULTILINE,
+    )
     # List markers: leading -, *, +, or numbered list items
-    cleaned = re.sub(r"^[ \t]*[-*+]\s+", "", cleaned, flags=re.MULTILINE)
-    cleaned = re.sub(r"^[ \t]*\d+\.\s+", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(rf"^[ \t{_HOLD}]*[-*+]\s+", _spans_only, cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(rf"^[ \t{_HOLD}]*\d+\.\s+", _spans_only, cleaned, flags=re.MULTILINE)
 
+    # Every pass above keeps every stand-in, in order, so the next one read is
+    # always the stand-in for the next held span, even in a discarded fragment.
+    spans = iter(held)
+    forms: list[SentenceForms] = []
     # Step 4: split on newlines first
-    lines: list[str] = cleaned.splitlines()
-
-    sentences: list[str] = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        # Step 5: within each line, split on sentence-ending punctuation followed by space
-        # Use re.split with a lookbehind so the punctuation stays with the preceding sentence.
-        parts: list[str] = re.split(r"(?<=[.!?])\s+", line)
+    for line in cleaned.splitlines():
+        # Step 5: within each line, split on sentence-ending punctuation followed
+        # by space. The stop stays with the preceding sentence, and a span in the
+        # whitespace goes with the following one.
+        parts = re.sub(
+            r"(?<=[.!?])\s+",
+            lambda m: "\n" + _spans_only(m),
+            line,
+        ).split("\n")
         for part in parts:
-            part = part.strip()
-            # Step 6: discard fragments that are only held spans, then put
-            # the spans back
-            prose = _HELD_SPAN_RE.sub(" ", part)
-            if prose != part and not re.search(r"\w", prose):
-                continue
-            part = _HELD_SPAN_RE.sub(lambda m: held[int(m.group(1))], part)
-            # Step 7: discard fragments under 10 characters
-            if len(part) >= _MIN_LEN:
-                sentences.append(part)
+            holed = part.replace(_HOLD, " ").strip()
+            whole = re.sub(_HOLD, lambda _: next(spans), part).strip()
+            # Step 6: discard fragments under 10 characters
+            if len(holed) >= _MIN_LEN:
+                forms.append(SentenceForms(holed, whole))
 
-    return sentences
+    return forms
+
+
+def extract_sentences(text: str) -> list[str]:
+    """The sentences of `text` as decisions read them: inline code and URLs removed.
+
+    `sentence_forms` also gives the form with them kept.
+    """
+    return [form.holed for form in sentence_forms(text)]

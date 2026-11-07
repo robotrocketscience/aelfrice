@@ -1,0 +1,338 @@
+"""#1874: keeping inline code and URLs changes the stored text and no decision.
+
+The differential compares the shipped code with a frozen copy of the extraction
+that ran before #1874. Admitted sentences, their boundaries, and their type
+verdicts must be equal once span text is removed from what's stored.
+"""
+from __future__ import annotations
+
+import json
+import random
+import re
+from pathlib import Path
+
+import pytest
+
+from aelfrice.classification_core import USER_SOURCE, classify_sentence
+from aelfrice.derivation import DerivationInput, derive
+from aelfrice.extraction import (
+    CODE_FENCE_RE,
+    extract_sentences,
+    holed_form,
+    sentence_forms,
+)
+from aelfrice.hook import _belief_is_lock_candidate
+from aelfrice.ingest import _ingest_turn, ingest_turn
+from aelfrice.models import INGEST_SOURCE_TRANSCRIPT, ORIGIN_USER_TRANSCRIPT, Belief
+from aelfrice.noise_filter import is_transcript_noise, is_transcript_scaffolding
+from aelfrice.phantom_promotion_opportunity import _PHANTOM_RESIDUE_ALLOWED
+from aelfrice.sentence_partition import (
+    _looks_like_subfloor_noise,
+    partition_sentences,
+    stored_sentences,
+)
+from aelfrice.store import MemoryStore
+from aelfrice.supports_log import iter_reworded_candidates
+
+
+def _frozen_extract_sentences(text: str) -> list[str]:
+    """`extract_sentences` as it was before #1874. Don't update this copy."""
+    cleaned: str = CODE_FENCE_RE.sub(" ", text)
+    cleaned = re.sub(r"`[^`]*`", " ", cleaned)
+    cleaned = re.sub(r"https?://\S+", " ", cleaned)
+    cleaned = re.sub(r"^#{1,6}\s+", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"\*{2}([^*]*)\*{2}", r"\1", cleaned)
+    cleaned = re.sub(
+        r"(?<![A-Za-z0-9])_{2}([^_]*)_{2}(?![A-Za-z0-9])", r"\1", cleaned,
+    )
+    cleaned = re.sub(r"\*([^*]+)\*", r"\1", cleaned)
+    cleaned = re.sub(
+        r"(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])", r"\1", cleaned,
+    )
+    cleaned = re.sub(r"^\s*\|.*\|\s*$", " ", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^[ \t]*[-*+]\s+", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^[ \t]*\d+\.\s+", "", cleaned, flags=re.MULTILINE)
+    sentences: list[str] = []
+    for line in cleaned.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        for part in re.split(r"(?<=[.!?])\s+", line):
+            part = part.strip()
+            if len(part) >= 10:
+                sentences.append(part)
+    return sentences
+
+
+def _frozen_partition(text: str) -> tuple[list[str], list[list[str]]]:
+    """`partition_sentences` before #1874, on the frozen extraction."""
+    full: list[str] = []
+    between: list[list[str]] = []
+    pending: list[str] = []
+    for sentence in _frozen_extract_sentences(text):
+        if is_transcript_noise(sentence):
+            continue
+        if _looks_like_subfloor_noise(sentence):
+            pending.append(sentence)
+        else:
+            full.append(sentence)
+            between.append(pending)
+            pending = []
+    return full, between
+
+
+def _frozen_gate(prompt: str) -> bool:
+    """The transcript logger's gate before #1874: True when it logs `prompt`."""
+    if is_transcript_scaffolding(prompt):
+        return False
+    if is_transcript_noise(prompt):
+        parts = [s for s in _frozen_extract_sentences(prompt) if s.strip()]
+        return not all(is_transcript_noise(s) for s in parts)
+    return True
+
+
+_HEADS = (
+    "Yes", "No", "Ready", "Nothing", "Polling", "yes", "ok", "thanks", "lgtm",
+    "/review", "/loop 5m", "git log", "gh pr view", "uv run", "pytest", "python",
+    "cd /tmp", "Running.", "<task-notification>", "<system-reminder>", "</x>",
+    "⏺", "⎿", "┌─", "$", ">>>", "INFO", "ERROR", "remote:",
+    "To", "curl", "Note:", "Run", "- ", "1. ", "# ", "| a |", "**", "_", "*",
+)
+_SPANS = (
+    "`a`", "`make all`", "`a. b`", "`x? y`", "`long --flag --value=3`",
+    "https://ex.invalid/a", "https://ex.invalid/a?t=1", "http://e.io/x.html",
+    "`https://ex.invalid/c`", "`__init__`", "`don't do that`", "`never push to main`",
+    "`prefer_fast`", "`maybe we go`", "https://ex.invalid/required-status-checks",
+    "https://u:p@ex.invalid/a", "`KEY=value`", "`Authorization: Bearer abc`",
+)
+_TAILS = (
+    "", ".", "!", "?", ":", " ok", " ok.", " now.", " please", " then go",
+    " Then go ahead now.", " and then the rest of it.", "\nmore text on a line here",
+    "\n`x y z`", ". Then go", ". ok", " |", "*", "_", "**",
+)
+_WORDS = (
+    "word", "the", "widget", "**bold**", "*it*", "__u__", "_i_", "snake_case",
+    "a.b.c", "src/a/b.py", "e.g.", "x.", "y?", "z!", "- ", "1. ", "# ", "| t |",
+    "\n", "\n\n", "No", "Yes", "<x>", "www.ex.invalid/a", "`", "``", "```", "```py\n",
+    "`a`", "`b c`", "`d\ne`", "https://ex.invalid/a", "https://ex.invalid/a.",
+    "https://ex.invalid/a`b", "https://", "\t", "|", " ", "\x0b", "\x00",
+)
+
+
+def _corpus() -> list[str]:
+    rng = random.Random(18742)
+    prompts = [h + " " + s + t for h in _HEADS for s in _SPANS for t in _TAILS]
+    prompts += [
+        " ".join(rng.choice(_WORDS) for _ in range(rng.randint(1, 14)))
+        for _ in range(6000)
+    ]
+    return prompts
+
+
+CORPUS = _corpus()
+
+
+def test_the_corpus_holds_the_shapes_that_flipped_before() -> None:
+    """Without these, a green differential says nothing about the review's flips."""
+    span_prompts = sum(1 for p in CORPUS if "`" in p or "://" in p)
+    assert span_prompts > 12000
+    assert "Yes https://ex.invalid/a. Then go" in CORPUS
+    differing = sum(
+        1 for p in CORPUS for form in sentence_forms(p) if form.holed != form.whole
+    )
+    assert differing > 3000
+
+
+def test_extract_sentences_equals_the_frozen_extraction() -> None:
+    mismatches = [p for p in CORPUS if extract_sentences(p) != _frozen_extract_sentences(p)]
+    assert mismatches == []
+
+
+def test_holed_form_recovers_the_holed_half_from_the_stored_text() -> None:
+    """derive() and the hooks only hold the stored text, so they rely on this."""
+    mismatches = [
+        (p, form) for p in CORPUS for form in sentence_forms(p)
+        if holed_form(form.whole) != form.holed
+    ]
+    assert mismatches == []
+
+
+def test_the_admitted_sentences_and_the_sub_floor_clauses_equal_the_frozen_ones() -> None:
+    def holed(partition: tuple[list[str], list[list[str]]]) -> tuple[list[str], list[list[str]]]:
+        full, between = partition
+        return [holed_form(s) for s in full], [[holed_form(c) for c in g] for g in between]
+
+    mismatches = [p for p in CORPUS if holed(partition_sentences(p)) != _frozen_partition(p)]
+    assert mismatches == []
+
+
+def test_stored_sentences_reads_the_holed_form() -> None:
+    mismatches = [p for p in CORPUS if stored_sentences(p) != _frozen_partition(p)[0]]
+    assert mismatches == []
+
+
+def test_every_type_verdict_equals_the_one_on_the_holed_text() -> None:
+    mismatches = []
+    for prompt in CORPUS:
+        whole, _ = partition_sentences(prompt)
+        for sentence, frozen in zip(whole, _frozen_partition(prompt)[0], strict=True):
+            derived = derive(
+                DerivationInput(
+                    raw_text=sentence,
+                    source_kind=INGEST_SOURCE_TRANSCRIPT,
+                    source_path="transcript",
+                    raw_meta={"role": "user"},
+                    ts="2026-11-06T00:00:00+00:00",
+                )
+            ).belief
+            expected = classify_sentence(frozen, USER_SOURCE)
+            got = (derived.type, derived.alpha, derived.beta) if derived else None
+            want = (
+                (expected.belief_type, expected.alpha, expected.beta)
+                if expected.persist else None
+            )
+            if got != want:
+                mismatches.append((prompt, sentence, got, want))
+    assert mismatches == []
+
+
+@pytest.mark.parametrize(
+    ("sentence", "belief_type"),
+    [
+        ("See https://ex.invalid/required-status-checks for the widget.", "factual"),
+        ("Use `don't do that` as the widget title.", "factual"),
+        ("Set `prefer_fast` on the widget.", "factual"),
+    ],
+)
+def test_span_text_can_not_set_the_type(sentence: str, belief_type: str) -> None:
+    belief = derive(
+        DerivationInput(
+            raw_text=sentence,
+            source_kind=INGEST_SOURCE_TRANSCRIPT,
+            source_path="transcript",
+            raw_meta={"role": "user"},
+            ts="2026-11-06T00:00:00+00:00",
+        )
+    ).belief
+    assert belief is not None
+    assert belief.type == belief_type
+    assert belief.content == sentence
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Which `a. b` one?",
+        "Is it `a? b` right?",
+        "Use `maybe we go` here as title.",
+        "| col | https://ex.invalid/x|",
+        "thanks https://ex.invalid/a",
+        "curl -sS https://ex.invalid/a",
+        "GET https://ex.invalid/x 200",
+        "ok `git status`",
+    ],
+)
+def test_span_text_can_not_change_what_ingest_stores(tmp_path: Path, prompt: str) -> None:
+    store = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        ingest_turn(store, prompt, source="user")
+        count = store.count_beliefs()
+    finally:
+        store.close()
+    frozen = [
+        s for s in _frozen_partition(prompt)[0] if classify_sentence(s, "user").persist
+    ]
+    assert count == len(frozen)
+
+
+def test_a_rule_quoted_in_a_span_is_not_a_lock_candidate() -> None:
+    def belief(content: str, origin: str) -> Belief:
+        return Belief(
+            id="b1", content=content, content_hash="h", alpha=3.0, beta=1.0,
+            type="factual", lock_level="none", locked_at=None,
+            created_at="2026-11-06T00:00:00+00:00", last_retrieved_at=None,
+            session_id="s1", origin=origin,
+        )
+
+    quoted = "Use `never push to main` as the widget title."
+    assert not _belief_is_lock_candidate(belief(quoted, ORIGIN_USER_TRANSCRIPT), "s1")
+    assert _belief_is_lock_candidate(
+        belief("Never push to main on the widget.", ORIGIN_USER_TRANSCRIPT), "s1",
+    )
+
+
+def test_a_phantom_with_a_span_still_fails_the_residue_check() -> None:
+    """Promotion keeps the phantom's whole text, and a span in it stays residue."""
+    phantom = "Always run `zqtool --frobnicate` before the widget release starts."
+    residue = phantom
+    for sentence in stored_sentences(phantom):
+        residue = residue.replace(sentence, " ", 1)
+    assert any(not c.isspace() and c not in _PHANTOM_RESIDUE_ALLOWED for c in residue)
+
+
+# --- the transcript logger's gate, on the real handler ----------------------
+
+
+def _log(tmp_path: Path, prompt: str, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    from aelfrice import transcript_logger
+
+    monkeypatch.setenv("AELFRICE_DOTDIR", str(tmp_path / "dot"))
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(transcript_logger, "transcripts_dir", lambda: tdir)
+    transcript_logger._handle_user_prompt_submit(
+        {"session_id": "s1", "prompt": prompt, "cwd": "/tmp"}
+    )
+    out = tdir / transcript_logger.TURNS_FILENAME
+    if not out.exists():
+        return []
+    return [json.loads(x) for x in out.read_text().splitlines() if x.strip()]
+
+
+@pytest.mark.parametrize(
+    ("prompt", "logged"),
+    [
+        # Noise as a whole, and its sentences are [False, True] once holed: the
+        # gate keeps it only by reading sentences.
+        ("No `x` it broke. Yes keep it", True),
+        # Noise as a whole, and noise once holed. Its whole form would pass, so
+        # the gate drops it only by reading the holed form.
+        ("No https://ex.invalid/a. Then go", False),
+        ("Yes https://ex.invalid/a. ok", False),
+        ("Ready http://e.io/x.html. ok", False),
+        ("Yes `widget_flag_name`.", False),
+    ],
+)
+def test_the_logger_gate_equals_the_frozen_one_on_the_real_handler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prompt: str,
+    logged: bool,
+) -> None:
+    assert _frozen_gate(prompt) is logged
+    assert bool(_log(tmp_path, prompt, monkeypatch)) is logged
+
+
+def test_the_support_log_matches_on_the_holed_form(tmp_path: Path) -> None:
+    """A reworded restatement can't be earned or lost through span text."""
+    store = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        store.insert_belief(Belief(
+            id="p1",
+            content="The scanner reliably detects leaked secrets in committed source code.",
+            content_hash="h_p1", alpha=1.0, beta=1.0, type="factual", lock_level="none",
+            locked_at=None, created_at="2026-10-01T00:00:00Z", last_retrieved_at=None,
+            session_id="s1", origin="agent_inferred",
+        ))
+        turn = _ingest_turn(
+            store, "The scanner detects `zqextra` leaked secrets in source code.",
+            "transcript", session_id="s2", created_at="2026-10-02T00:00:00Z", role="user",
+        )
+        bid = turn.inserted[0]
+        log_id = store._conn.execute(  # noqa: SLF001
+            "SELECT id FROM ingest_log WHERE derived_belief_ids LIKE ?", (f'%"{bid}"%',),
+        ).fetchone()[0]
+        candidates = list(iter_reworded_candidates(store, [(bid, str(log_id))]))
+    finally:
+        store.close()
+    assert [c.target_id for c in candidates if c.match is not None] == ["p1"]

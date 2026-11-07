@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Final, cast
 
 from aelfrice.config_discovery import discover_config
+from aelfrice.extraction import holed_form
 from aelfrice.models import (
     INGEST_SOURCE_TRANSCRIPT,
     ORIGIN_USER_CORRECTED,
@@ -213,7 +214,10 @@ def iter_reworded_candidates(
         supporter = store.get_belief(belief_id)
         if supporter is None:
             continue
-        terms = candidate_terms(supporter.content)
+        # #1874: the matcher reads a typed sentence without its inline code
+        # and URLs, as it reads the target's sentences.
+        typed = holed_form(supporter.content)
+        terms = candidate_terms(typed)
         if not terms:
             continue
         candidates = store.support_candidates(
@@ -227,7 +231,7 @@ def iter_reworded_candidates(
                 supporter_id=belief_id, supporter_text=supporter.content,
                 ingest_log_id=log_id, session_id=session,
                 target_id=target_id, target_text=content,
-                match=match_reworded(supporter.content, content),
+                match=match_reworded(typed, content),
             )
 
 

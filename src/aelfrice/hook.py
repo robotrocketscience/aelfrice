@@ -7419,7 +7419,19 @@ def _belief_is_lock_candidate(b: "Belief", session_id: str) -> bool:
     # call site enforces.
     from aelfrice.directive_detector import detect_directive  # noqa: PLC0415
 
-    return detect_directive(b.content)
+    return detect_directive(_decision_text(b))
+
+
+def _decision_text(b: "Belief") -> str:
+    """`b.content` as a detector reads it (#1874).
+
+    A sentence from a prompt keeps its inline code and URLs in the store, and
+    a rule quoted inside a span doesn't make it a directive.
+    """
+    from aelfrice.extraction import holed_form  # noqa: PLC0415
+    from aelfrice.models import ORIGIN_USER_TRANSCRIPT  # noqa: PLC0415
+
+    return holed_form(b.content) if b.origin == ORIGIN_USER_TRANSCRIPT else b.content
 
 
 def _belief_is_correction_class(b: "Belief") -> bool:
@@ -7618,7 +7630,7 @@ def _format_stop_prompt(candidates: list["Belief"]) -> str:
         # window resolves to an absolute UTC instant inside `aelf lock
         # --for`, at write time — this renders the spec, it does not
         # resolve it, so there is no second anchor.
-        window = _directive_window_spec(b.content)
+        window = _directive_window_spec(_decision_text(b))
         suffix = f" --for {window}" if window else ""
         lines.append(f"    aelf lock {_shell_quote(b.content)}{suffix}")
     if withheld:

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from aelfrice.extraction import extract_sentences
+from aelfrice.extraction import extract_sentences, sentence_forms
 
 
 def test_extracts_simple_sentences() -> None:
@@ -20,14 +20,15 @@ def test_strips_code_blocks() -> None:
     assert any("Hello there friend" in s for s in out)
 
 
-def test_keeps_inline_code() -> None:
+def test_strips_inline_code() -> None:
     out = extract_sentences("Use the `foo()` function carefully here.")
-    assert out == ["Use the `foo()` function carefully here."]
+    assert len(out) == 1
+    assert "foo" not in out[0]
 
 
-def test_keeps_urls() -> None:
+def test_strips_urls() -> None:
     out = extract_sentences("See https://example.com/path for the docs page.")
-    assert out == ["See https://example.com/path for the docs page."]
+    assert all("example.com" not in s for s in out)
 
 
 def test_strips_markdown_headers_and_emphasis() -> None:
@@ -111,7 +112,11 @@ def test_mixed_italic_and_identifier() -> None:
     assert "auth_service.py" in joined
 
 
-# --- #1874: inline code and URL text stays in the stored sentence ----------
+# --- #1874: the store gets the whole form, and decisions read the holed one --
+
+
+def _whole(text: str) -> list[str]:
+    return [form.whole for form in sentence_forms(text)]
 
 
 @pytest.mark.parametrize(
@@ -120,35 +125,32 @@ def test_mixed_italic_and_identifier() -> None:
         "Use `__init__` and `**kwargs` in the widget constructor.",
         "Set `*a*` and `_b_` as the two widget flags here.",
         "Read https://example.invalid/a_b_c/*d*/__e__ for the widget docs.",
+        "The note says `alpha. beta` is one flag to keep together.",
+        "Open `src/widget/core.py` and example.invalid/a.b for the widget.",
+        "See https://example.invalid/a. Then read the second part.",
+        "Is it https://example.invalid/a? Then read the second part.",
+        "Read **https://example.invalid/a** for the docs.",
     ],
 )
-def test_markdown_passes_do_not_read_held_spans(sentence: str) -> None:
-    assert extract_sentences(sentence) == [sentence]
+def test_the_whole_form_keeps_each_span_exactly(sentence: str) -> None:
+    assert _whole(sentence) == [sentence]
 
 
-def test_a_stop_inside_a_code_span_does_not_split_the_sentence() -> None:
-    sentence = "The note says `alpha. beta` is one flag to keep together."
-    assert extract_sentences(sentence) == [sentence]
-
-
-def test_a_stop_after_a_url_still_ends_the_sentence() -> None:
-    out = extract_sentences("See https://example.invalid/a. Then read the second part.")
-    assert out == ["See https://example.invalid/a.", "Then read the second part."]
-
-
-def test_a_question_mark_after_a_url_still_ends_the_sentence() -> None:
-    out = extract_sentences("Is it https://example.invalid/a? Then read the second part.")
-    assert out == ["Is it https://example.invalid/a?", "Then read the second part."]
-
-
-def test_bold_around_a_url_still_closes() -> None:
-    out = extract_sentences("Read **https://example.invalid/a** for the docs.")
-    assert out == ["Read https://example.invalid/a for the docs."]
-
-
-def test_a_dotted_name_does_not_split_the_sentence() -> None:
-    sentence = "Open `src/widget/core.py` and example.invalid/a.b for the widget."
-    assert extract_sentences(sentence) == [sentence]
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Stop right there. `zqtool` runs the rest here.", ["Stop right there.", "`zqtool` runs the rest here."]),
+        ("- `zqtool` runs the rest here.", ["`zqtool` runs the rest here."]),
+        ("1. `zqtool` runs the rest here.", ["`zqtool` runs the rest here."]),
+        ("# `zqtool` runs the rest here.", ["`zqtool` runs the rest here."]),
+        ("- `zqtool`\nruns the rest here.", ["`zqtool` runs the rest here."]),
+        ("| `a` | b |\nUse `c` for the widget now.", ["Use `c` for the widget now."]),
+        ("`a` is short.\nUse `c` for the widget now.", ["Use `c` for the widget now."]),
+        ("Stop right there. https://example.invalid/a runs next here.", ["Stop right there.", "https://example.invalid/a runs next here."]),
+    ],
+)
+def test_each_span_lands_in_its_own_sentence(text: str, expected: list[str]) -> None:
+    assert _whole(text) == expected
 
 
 @pytest.mark.parametrize(
@@ -159,49 +161,37 @@ def test_a_dotted_name_does_not_split_the_sentence() -> None:
         "https://example.invalid/only/a/link/on/this/line",
         "- https://example.invalid/a/link/in/a/list/item",
         "⎿ `pasted --command --after --a --glyph`",
+        "Run `pytest -q tests/`.",
     ],
 )
-def test_a_fragment_of_only_spans_stays_dropped(line: str) -> None:
-    assert extract_sentences(line) == []
-
-
-def test_a_span_with_prose_passes_the_floor_on_its_full_length() -> None:
-    assert extract_sentences("Run `pytest -q tests/`.") == ["Run `pytest -q tests/`."]
-
-
-def test_the_floor_still_applies_with_the_span_counted() -> None:
-    assert extract_sentences("Run `ls`.") == []
-
-
-def test_a_punctuation_line_without_a_span_is_unchanged() -> None:
-    """The span-only rule needs a span: it isn't a general filter."""
-    assert extract_sentences("|   ^^^^^^^^^^^^^^^") == ["|   ^^^^^^^^^^^^^^^"]
+def test_the_floor_reads_the_holed_form(line: str) -> None:
+    assert sentence_forms(line) == []
 
 
 def test_backticks_paired_across_lines_stay_removed() -> None:
     text = "A stray ` opens here\n15 +cd some-folder\nand ` closes it there at last."
-    assert extract_sentences(text) == ["A stray   closes it there at last."]
+    assert _whole(text) == ["A stray   closes it there at last."]
 
 
-def test_a_url_cannot_take_a_backtick_and_change_the_pairing() -> None:
+def test_a_url_ends_at_the_hole_a_span_leaves() -> None:
     text = "Read https://example.invalid/a`b first\n15 +cd some-folder\nand ` closes it there."
-    assert extract_sentences(text) == ["Read https://example.invalid/a  closes it there."]
+    assert _whole(text) == ["Read https://example.invalid/a  closes it there."]
 
 
 def test_a_fence_stays_removed_next_to_inline_code() -> None:
     text = "Run `widget --check` first.\n```bash\nwidget --other-flag\n```\nThen stop here."
-    assert extract_sentences(text) == ["Run `widget --check` first.", "Then stop here."]
+    assert _whole(text) == ["Run `widget --check` first.", "Then stop here."]
 
 
 def test_a_long_span_stays_whole() -> None:
     """Pins the decision to set no span cap, from the #1874 measurement."""
     span = "`" + "x" * 5000 + "`"
-    assert extract_sentences(f"Paste {span} into the widget.") == [f"Paste {span} into the widget."]
+    assert _whole(f"Paste {span} into the widget.") == [f"Paste {span} into the widget."]
 
 
 def test_input_cannot_forge_a_held_span() -> None:
-    out = extract_sentences("Before \x000\x00 and `real --span` after this.")
-    assert out == ["Before  0  and `real --span` after this."]
+    out = _whole("Before \x1f and `real --span` after this.")
+    assert out == ["Before   and `real --span` after this."]
 
 
 @pytest.mark.parametrize(
@@ -214,10 +204,6 @@ def test_input_cannot_forge_a_held_span() -> None:
     ],
 )
 def test_extraction_is_stable_on_its_own_output(text: str) -> None:
-    """`stored_sentences(belief.content)` re-splits stored text (#1650).
-
-    Backticks stay in the stored sentence for this: without them `__init__`
-    loses its underscores and `alpha. beta` splits on the second pass.
-    """
-    for sentence in extract_sentences(text):
-        assert extract_sentences(sentence) == [sentence]
+    """A belief's stored text splits to itself, as `stored_sentences` needs."""
+    for form in sentence_forms(text):
+        assert sentence_forms(form.whole) == [form]

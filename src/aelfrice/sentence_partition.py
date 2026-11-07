@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from typing import Final
 
-from aelfrice.extraction import extract_sentences
+from aelfrice.extraction import holed_form, sentence_forms
 from aelfrice.noise_filter import is_transcript_noise
 
 # #809 / #785 § 3: pattern-based subfloor-noise detector with
@@ -85,15 +85,17 @@ def partition_sentences(text: str) -> tuple[list[str], list[list[str]]]:
     that preceded `full_sentences[i]`; clauses before the first full
     sentence and after the last are unanchored and dropped.
     """
-    sentences = [s for s in extract_sentences(text) if not is_transcript_noise(s)]
     full_sentences: list[str] = []
     subfloor_between: list[list[str]] = []
     pending_subfloor: list[str] = []
-    for sentence in sentences:
-        if _looks_like_subfloor_noise(sentence):
-            pending_subfloor.append(sentence)
+    for form in sentence_forms(text):
+        # #1874: the filters read the holed form, and the store gets the whole one.
+        if is_transcript_noise(form.holed):
+            continue
+        if _looks_like_subfloor_noise(form.holed):
+            pending_subfloor.append(form.whole)
         else:
-            full_sentences.append(sentence)
+            full_sentences.append(form.whole)
             subfloor_between.append(pending_subfloor)
             pending_subfloor = []
     return full_sentences, subfloor_between
@@ -105,5 +107,8 @@ def stored_sentences(text: str) -> list[str]:
     The same split and filters a turn goes through, so a caller can ask
     which beliefs typing ``text`` would produce. ``derive()`` can still
     decline one (``classify_sentence(...).persist``).
+
+    Returns each sentence in the form decisions read: inline code and URLs
+    removed (#1874).
     """
-    return partition_sentences(text)[0]
+    return [holed_form(sentence) for sentence in partition_sentences(text)[0]]
