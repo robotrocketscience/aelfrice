@@ -210,7 +210,7 @@ A kept span in a short clause between two stored sentences also goes into the ed
 
 Inline code and URLs that aelfrice keeps are part of the belief. You can search for them, retrieval can inject them, and the outbound paths on this page send them with the rest of the belief's content.
 
-The rule covers beliefs and nothing else. The transcript log, `turns.jsonl`, holds each prompt as you typed it, and an edge between two turns of a session keeps the start of the earlier prompt as you typed it.
+The rule covers sentences from your prompts and nothing else. The commit hook reads a commit message without it, so a token in a message can reach a belief through the words it stores, and the edge keeps about 80 characters of the message as written. The transcript log, `turns.jsonl`, holds each prompt as you typed it, and an edge between two turns of a session keeps the start of the earlier prompt as you typed it.
 
 ## Batch ingest of historical sessions
 
