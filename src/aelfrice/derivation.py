@@ -453,9 +453,9 @@ def derive(inp: DerivationInput) -> DerivationOutput:
         and raw_meta.get("role") == "user"
     )
     classify_source = USER_SOURCE if is_user_transcript else source
-    # #1874: a transcript sentence keeps its inline code and URLs in the store,
-    # and the classifier reads it without them.
-    classify_text = holed_form(raw) if inp.source_kind == INGEST_SOURCE_TRANSCRIPT else raw
+    # #1874: a sentence the user typed keeps its inline code and URLs in the
+    # store, and the classifier reads it without them.
+    classify_text = holed_form(raw) if is_user_transcript else raw
     result = classify_sentence(classify_text, classify_source)
     if not result.persist:
         return DerivationOutput(

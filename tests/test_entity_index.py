@@ -41,7 +41,7 @@ from aelfrice.entity_extractor import (
     Entity,
     extract_entities,
 )
-from aelfrice.ingest import ingest_turn
+from aelfrice.ingest import _ingest_turn
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.retrieval import (
     DEFAULT_L25_LIMIT,
@@ -220,10 +220,11 @@ def test_url_entity_stops_at_the_first_backtick() -> None:
 def test_two_links_after_a_list_marker_are_two_entities(tmp_path: Path) -> None:
     store = MemoryStore(str(tmp_path / "ingest.db"))
     try:
-        ingest_turn(
+        _ingest_turn(
             store,
             "- https://one.example.invalid/a https://two.example.invalid/b are the widget docs.",
-            source="user",
+            "transcript",
+            role="user",
         )
         rows = store._conn.execute(  # noqa: SLF001
             "SELECT entity_lower FROM belief_entities WHERE kind = ?", (KIND_URL,),
@@ -239,10 +240,11 @@ def test_a_stored_code_span_writes_path_and_url_entities(tmp_path: Path) -> None
     """#1874: a path or a link in a prompt reaches the entity index."""
     store = MemoryStore(str(tmp_path / "ingest.db"))
     try:
-        ingest_turn(
+        _ingest_turn(
             store,
             "Edit `src/widget/core.py` and read https://example.invalid/runbook first.",
-            source="user",
+            "transcript",
+            role="user",
         )
         rows = store._conn.execute(  # noqa: SLF001
             "SELECT kind, entity_lower FROM belief_entities WHERE kind != ?",

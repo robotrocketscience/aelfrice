@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from typing import Final
 
-from aelfrice.extraction import holed_form, sentence_forms
+from aelfrice.extraction import sentence_forms
 from aelfrice.noise_filter import is_transcript_noise
 
 # #809 / #785 § 3: pattern-based subfloor-noise detector with
@@ -76,7 +76,9 @@ def _looks_like_subfloor_noise(sentence: str) -> bool:
     return False
 
 
-def partition_sentences(text: str) -> tuple[list[str], list[list[str]]]:
+def partition_sentences(
+    text: str, *, keep_spans: bool = True,
+) -> tuple[list[str], list[list[str]]]:
     """The sentences a turn stores as beliefs, and the clauses between them.
 
     #809: sentences are split, transcript noise is dropped, and sub-floor
@@ -84,18 +86,21 @@ def partition_sentences(text: str) -> tuple[list[str], list[list[str]]]:
     `subfloor_between[i]` holds the sub-floor clauses (in original order)
     that preceded `full_sentences[i]`; clauses before the first full
     sentence and after the last are unanchored and dropped.
+
+    #1874: the filters always read the holed form. `keep_spans` says which
+    form the caller gets back.
     """
     full_sentences: list[str] = []
     subfloor_between: list[list[str]] = []
     pending_subfloor: list[str] = []
     for form in sentence_forms(text):
-        # #1874: the filters read the holed form, and the store gets the whole one.
+        sentence = form.whole if keep_spans else form.holed
         if is_transcript_noise(form.holed):
             continue
         if _looks_like_subfloor_noise(form.holed):
-            pending_subfloor.append(form.whole)
+            pending_subfloor.append(sentence)
         else:
-            full_sentences.append(form.whole)
+            full_sentences.append(sentence)
             subfloor_between.append(pending_subfloor)
             pending_subfloor = []
     return full_sentences, subfloor_between
@@ -111,4 +116,4 @@ def stored_sentences(text: str) -> list[str]:
     Returns each sentence in the form decisions read: inline code and URLs
     removed (#1874).
     """
-    return [holed_form(sentence) for sentence in partition_sentences(text)[0]]
+    return partition_sentences(text, keep_spans=False)[0]

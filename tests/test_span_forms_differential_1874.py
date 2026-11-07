@@ -26,7 +26,7 @@ from aelfrice.hook import (
     _directive_window_spec,
     _format_stop_prompt,
 )
-from aelfrice.ingest import _ingest_turn, ingest_turn
+from aelfrice.ingest import _ingest_turn
 from aelfrice.models import INGEST_SOURCE_TRANSCRIPT, ORIGIN_USER_TRANSCRIPT, Belief
 from aelfrice.noise_filter import is_transcript_noise, is_transcript_scaffolding
 from aelfrice.phantom_promotion_opportunity import _PHANTOM_RESIDUE_ALLOWED
@@ -244,12 +244,12 @@ def test_span_text_can_not_set_the_type(sentence: str, belief_type: str) -> None
 def test_span_text_can_not_change_what_ingest_stores(tmp_path: Path, prompt: str) -> None:
     store = MemoryStore(str(tmp_path / "m.db"))
     try:
-        ingest_turn(store, prompt, source="user")
+        _ingest_turn(store, prompt, "transcript", role="user")
         count = store.count_beliefs()
     finally:
         store.close()
     frozen = [
-        s for s in _frozen_partition(prompt)[0] if classify_sentence(s, "user").persist
+        s for s in _frozen_partition(prompt)[0] if classify_sentence(s, USER_SOURCE).persist
     ]
     assert count == len(frozen)
 
@@ -270,6 +270,12 @@ def test_a_rule_quoted_in_a_span_is_not_a_lock_candidate() -> None:
     )
 
 
+def test_stored_sentences_is_exact_on_an_emphasized_scheme() -> None:
+    """It reads the holed half directly, so a phantom's split never moves."""
+    text = "Run *http*://example.invalid/a before the widget release."
+    assert stored_sentences(text) == _frozen_partition(text)[0]
+
+
 def test_a_detector_reads_other_origins_as_stored() -> None:
     """Only a sentence from a prompt has a holed form. Onboard text never did."""
     onboard = Belief(
@@ -281,16 +287,27 @@ def test_a_detector_reads_other_origins_as_stored() -> None:
     assert _belief_is_lock_candidate(onboard, "s1")
 
 
-def test_the_classifier_reads_other_sources_as_stored() -> None:
+@pytest.mark.parametrize(
+    ("source_kind", "source_path", "role"),
+    [
+        ("filesystem", "docs/a.md", None),
+        (INGEST_SOURCE_TRANSCRIPT, "session-end", "user"),
+        (INGEST_SOURCE_TRANSCRIPT, "transcript", None),
+    ],
+)
+def test_the_classifier_reads_other_sources_as_stored(
+    source_kind: str, source_path: str, role: str | None,
+) -> None:
     text = "Use `never push to main` as the widget title."
     derived = derive(
         DerivationInput(
-            raw_text=text, source_kind="filesystem", source_path="docs/a.md",
+            raw_text=text, source_kind=source_kind, source_path=source_path,
+            raw_meta={"role": role} if role else None,
             ts="2026-11-06T00:00:00+00:00",
         )
     ).belief
     assert derived is not None
-    assert derived.type == classify_sentence(text, "docs/a.md").belief_type
+    assert derived.type == classify_sentence(text, source_path).belief_type
     assert derived.type == "correction"
 
 

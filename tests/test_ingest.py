@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice.ingest import _ingest_turn_ids, ingest_turn
+from aelfrice.ingest import _ingest_turn, _ingest_turn_ids, ingest_turn
 from aelfrice.replay import replay_full_equality
 from aelfrice.store import MemoryStore
 
@@ -69,10 +69,24 @@ def test_ingest_turn_stores_and_finds_inline_code_and_urls(store: MemoryStore) -
         "Run `zqtool --frobnicate` and read "
         "https://example.invalid/zqdocs before you tag a widget release."
     )
-    ingest_turn(store, sentence, source="user")
+    _ingest_turn(store, sentence, "transcript", role="user")
     for query in ("zqtool", "frobnicate", "zqdocs"):
         hits = store.search_beliefs(query, limit=10)
         assert [h.content for h in hits] == [sentence], query
+
+
+@pytest.mark.parametrize(
+    ("source", "role"),
+    [("session-end", "user"), ("transcript:widget", "user"), ("transcript", None)],
+)
+def test_only_the_user_transcript_path_keeps_spans(
+    store: MemoryStore, source: str, role: str | None,
+) -> None:
+    """Those rows are agent_inferred, and readers of that origin can't tell them from onboard text."""
+    _ingest_turn(store, "Run `zqtool --frobnicate` before the widget release.", source, role=role)
+    row = store._conn.execute("SELECT content, origin FROM beliefs").fetchone()  # noqa: SLF001
+    assert row[0] == "Run   before the widget release."
+    assert row[1] == "agent_inferred"
 
 
 def test_reingest_after_1874_adds_a_belief_next_to_the_holed_one(
@@ -84,9 +98,9 @@ def test_reingest_after_1874_adds_a_belief_next_to_the_holed_one(
     """
     holed = "Run   before you tag a widget release."
     whole = "Run `zqtool --frobnicate` before you tag a widget release."
-    ingest_turn(store, holed, source="user")
-    ingest_turn(store, whole, source="user")
-    ingest_turn(store, whole, source="user")
+    _ingest_turn(store, holed, "transcript", role="user")
+    _ingest_turn(store, whole, "transcript", role="user")
+    _ingest_turn(store, whole, "transcript", role="user")
     assert store.count_beliefs() == 2
     report = replay_full_equality(store)
     assert report.mismatched == 0
