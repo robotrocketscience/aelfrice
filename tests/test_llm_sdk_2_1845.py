@@ -899,3 +899,8 @@ def test_the_extra_declares_the_2_x_range_and_the_installed_sdk_is_in_it(
     assert _extra_spec() == f"{_SDK}>=2,<3"
     assert re.fullmatch(r"2\.\d+\.\d+", importlib.import_module(_SDK).__version__)
 
+
+def test_the_consent_prompt_says_labels_vary_and_cites_no_figure() -> None:
+    text = " ".join(llm._PROMPT_TEXT.split())  # pyright: ignore[reportPrivateUsage]
+    assert "two runs can label a sentence differently" in text
+    assert "macro-F1" not in text

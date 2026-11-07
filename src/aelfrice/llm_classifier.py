@@ -204,9 +204,10 @@ class LLMConfig:
     ON (see `resolve_enabled`). `max_tokens` is the per-run cap;
     0 disables. `model` is the Anthropic model id; pinned by default.
 
-    Default flipped from OFF to ON in v1.5.0: the regex classifier
-    misses ~12pp of macro-F1 on real-world prose vs Haiku, and the
-    onboard cost is one-time and sub-dollar. Users who want strict
+    Default flipped from OFF to ON in v1.5.0, on the view that the LLM
+    labels prose better than the regex classifier. No in-tree measurement
+    backs a figure for the difference. The onboard cost is one-time and
+    sub-dollar. Users who want strict
     offline onboard set `[onboard.llm].enabled = false` or pass
     `--llm-classify=false`. When `enabled` resolves to True via the
     default (no flag, no config) and the SDK or API key is missing,
@@ -511,11 +512,14 @@ _PROMPT_TEXT: Final[str] = (
     "  - files marked INEDIBLE\n"
     "  - anything outside the extracted candidate text\n"
     "\n"
-    "Why default-on. The regex classifier misses ~12pp of macro-F1\n"
-    "vs Haiku on real prose, which translates to noticeably worse\n"
-    "retrieval quality from day one. Default-on means you get the\n"
-    "good classifier without thinking about it; default-off meant\n"
-    "most users never flipped it.\n"
+    "Why default-on. The LLM classifier is meant to label prose\n"
+    "more accurately than the regex classifier, so default-on gives\n"
+    "you it without a setting. aelfrice has no in-tree measurement\n"
+    "of how large the difference is.\n"
+    "\n"
+    "Labels can vary. The classifier sets no temperature, so two\n"
+    "runs can label a sentence differently, including whether to\n"
+    "keep it. A belief already in your store keeps its label.\n"
     "\n"
     "Audit before you accept:\n"
     "  aelf onboard <path> --llm-classify --dry-run\n"
