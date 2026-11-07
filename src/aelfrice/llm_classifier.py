@@ -1056,8 +1056,9 @@ def _retry_wait(
     """Seconds to wait before the next attempt, or None to stop here.
 
     A fault with a warning is a rejection, a config error, or an unusable
-    response, and trying again gets the same answer. A raw exception from
-    inside `create` isn't the SDK's to retry, so it isn't the classifier's.
+    response, and trying again gets the same answer. Every raw exception from
+    inside `create` carries one of those warnings, so only status errors and
+    the SDK's connection errors get this far.
     """
     if attempt + 1 >= _MAX_ATTEMPTS or fault.warning is not None:
         return None
@@ -1069,8 +1070,6 @@ def _retry_wait(
             return None
         if should_retry != "true" and status not in _RETRY_STATUSES and status < 500:
             return None
-    elif not _is_api_error(exc):
-        return None
     asked = _retry_after_seconds(headers)
     if asked is not None:
         return min(asked, _MAX_RETRY_WAIT_SECONDS)
