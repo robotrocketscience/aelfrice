@@ -1,0 +1,3 @@
+### Fixed
+
+- **The `[onboard-llm]` extra installs an SDK the classifier can call ([#1844](https://github.com/robotrocketscience/aelfrice/issues/1844)).** The extra required SDK `>=0.40`, so a new install could resolve SDK 1.0 or later. SDK 1.0 removed `temperature` from `messages.create()`, so every classifier request raised `TypeError` before it was sent, and `aelf onboard --llm-classify` fell back to the regex classifier without an error. The extra now requires SDK `>=2,<3`, and the classifier no longer sends `temperature` ([#1845](https://github.com/robotrocketscience/aelfrice/issues/1845)). If you installed the extra with `uv tool install "aelfrice[onboard-llm]"`, run `uv tool upgrade aelfrice`.
