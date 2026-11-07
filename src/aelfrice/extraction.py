@@ -56,6 +56,10 @@ _CREDENTIAL_CODE_RE: re.Pattern[str] = re.compile(
 )
 # A code span right after one of these is the value of an assignment or a query.
 _VALUE_INTRODUCERS: str = "=?&"
+# A span longer than this stays removed. The longest in the #1874 corpus is 118
+# characters. Entity extraction is quadratic in a run of dots, and a span at this
+# length costs it about 0.13 ms, where 100,000 characters cost 10 s.
+_SPAN_MAX_CHARS: int = 256
 
 
 def _is_credential_url(url: str) -> bool:
@@ -128,7 +132,7 @@ def sentence_forms(text: str) -> list[SentenceForms]:
         span = match.group(0)
         # Backticks paired across lines aren't inline code, and what they
         # enclose is often a pasted diff or log, so that text stays removed.
-        if len(span.splitlines()) > 1:
+        if len(span.splitlines()) > 1 or len(span) > _SPAN_MAX_CHARS:
             return " "
         if _CREDENTIAL_CODE_RE.search(span[1:-1]):
             return " "
@@ -143,7 +147,7 @@ def sentence_forms(text: str) -> list[SentenceForms]:
 
     def hold_in_order(match: re.Match[str]) -> str:
         span = match.group(0)
-        if span != _HOLD and _is_credential_url(span):
+        if span != _HOLD and (len(span) > _SPAN_MAX_CHARS or _is_credential_url(span)):
             return " "
         held.append(next(codes) if span == _HOLD else span)
         return _HOLD

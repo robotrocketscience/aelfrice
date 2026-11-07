@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from aelfrice import extraction
 from aelfrice.extraction import extract_sentences, sentence_forms
 
 
@@ -220,10 +221,28 @@ def test_a_fence_stays_removed_next_to_inline_code() -> None:
     assert _whole(text) == ["Run `widget --check` first.", "Then stop here."]
 
 
-def test_a_long_span_stays_whole() -> None:
-    """Pins the decision to set no span cap, from the #1874 measurement."""
-    span = "`" + "x" * 5000 + "`"
+def test_a_code_span_up_to_the_cap_stays_whole() -> None:
+    span = "`" + "x" * 254 + "`"
+    assert len(span) == 256
     assert _whole(f"Paste {span} into the widget.") == [f"Paste {span} into the widget."]
+
+
+def test_a_code_span_over_the_cap_stays_removed() -> None:
+    """Pins the #1874 cap: the longest span measured is 118 characters."""
+    assert extraction._SPAN_MAX_CHARS == 256  # noqa: SLF001
+    span = "`" + "x" * 255 + "`"
+    assert _whole(f"Paste {span} into the widget.") == ["Paste   into the widget."]
+
+
+def test_a_url_up_to_the_cap_stays_whole() -> None:
+    url = "https://e.invalid/" + "x" * 238
+    assert len(url) == 256
+    assert _whole(f"Read {url} for the widget.") == [f"Read {url} for the widget."]
+
+
+def test_a_url_over_the_cap_stays_removed() -> None:
+    url = "https://e.invalid/" + "x" * 239
+    assert _whole(f"Read {url} for the widget.") == ["Read   for the widget."]
 
 
 def test_input_cannot_forge_a_held_span() -> None:
