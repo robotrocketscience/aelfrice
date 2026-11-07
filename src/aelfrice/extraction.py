@@ -5,7 +5,9 @@ discard fragments. No classification, no keyword filtering.
 """
 from __future__ import annotations
 
+import math
 import re
+from collections import Counter
 from typing import NamedTuple
 
 from aelfrice.models import ORIGIN_USER_TRANSCRIPT
@@ -45,8 +47,9 @@ _URL_RE: re.Pattern[str] = re.compile(r"https?://\S+")
 
 # Spans that stay removed, because they commonly hold a credential (operator
 # ruling, #1874). This is a fixed list of shapes, not a secret scanner: a token
-# in a URL's path or fragment, or alone in a code span, is kept. The rule may
-# remove too much, because removal is what happened to every span before #1874.
+# with no known shape in a URL's path or fragment, or alone in a code span, is
+# kept. The rule may remove too much, because removal is what happened to every
+# span before #1874.
 #
 # In a code span: any `=`, a `?` with text right after it (a query, with or
 # without a scheme), a `:` and then `@` (userinfo, under any scheme), "bearer", or a
@@ -56,6 +59,20 @@ _CREDENTIAL_CODE_RE: re.Pattern[str] = re.compile(
     r"|(?:key|token|secret|passw(?:or)?d|pwd|auth\w*|cookie|credential)s?[\"']?(?:\s*:|\s+\S)",
     re.IGNORECASE,
 )
+# Known credential shapes, alone in a code span or anywhere in a URL: vendor key
+# prefixes, a chat app's token or webhook, a JWT, and a private key header.
+_KNOWN_CREDENTIAL_RE: re.Pattern[str] = re.compile(
+    r"\b(?:sk-[\w-]{16,}|AIza[\w-]{30,}|gh[pousr]_\w{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}"
+    r"|A[KS]IA[0-9A-Z]{16}|[rs]k_live_\w{16,}|npm_\w{30,}|pypi-[\w-]{16,}|hf_\w{30,}"
+    r"|xox[a-z]-[\w-]{10,}|\d{8,10}:[\w-]{30,}|eyJ[\w-]{5,}\.[\w-]{5,}\.)"
+    r"|hooks\.slack\.com/services/|discord(?:app)?\.com/api/webhooks/"
+    r"|BEGIN [A-Z ]*PRIVATE KEY"
+)
+# A run this long, with this many bits per character, reads as random. On the
+# #1874 corpus it removes 0 of 344 spans. A hexadecimal token tops out at 4.0
+# bits, so a digest stays.
+_LONG_TOKEN_RE: re.Pattern[str] = re.compile(r"[A-Za-z0-9+=_-]{32,}")
+_RANDOM_MIN_BITS: float = 4.5
 # A code span right after one of these is the value of an assignment or a query.
 _VALUE_INTRODUCERS: str = "=?&"
 # A span longer than this stays removed. The longest in the #1874 corpus is 118
@@ -64,13 +81,30 @@ _VALUE_INTRODUCERS: str = "=?&"
 _SPAN_MAX_CHARS: int = 256
 
 
+def _bits_per_char(token: str) -> float:
+    """Shannon entropy of `token`, in bits per character."""
+    length = len(token)
+    return -sum(n / length * math.log2(n / length) for n in Counter(token).values())
+
+
+def _holds_known_credential(span: str) -> bool:
+    """True for a known credential shape, or a long run that reads as random."""
+    return bool(_KNOWN_CREDENTIAL_RE.search(span)) or any(
+        _bits_per_char(token) >= _RANDOM_MIN_BITS for token in _LONG_TOKEN_RE.findall(span)
+    )
+
+
 def _is_credential_url(url: str) -> bool:
-    """True for a URL with a query string or an `@` anywhere.
+    """True for a URL with a query string, an `@` anywhere, or a known credential.
 
     The whole URL goes, because a partial one needs a second rule about which
     part is safe. A `?` that only ends a sentence isn't a query string.
     """
-    return "@" in url or "?" in url.rstrip(".,;:!?)]'\"`*_")
+    return (
+        "@" in url
+        or "?" in url.rstrip(".,;:!?)]'\"`*_")
+        or _holds_known_credential(url)
+    )
 
 
 # Stands in for each kept span while the markdown and sentence passes run. Every
@@ -150,7 +184,7 @@ def sentence_forms(text: str) -> list[SentenceForms]:
         # enclose is often a pasted diff or log, so that text stays removed.
         if len(span.splitlines()) > 1 or len(span) > _SPAN_MAX_CHARS:
             return " "
-        if _CREDENTIAL_CODE_RE.search(span[1:-1]):
+        if _CREDENTIAL_CODE_RE.search(span[1:-1]) or _holds_known_credential(span[1:-1]):
             return " "
         start = match.start()
         if start and match.string[start - 1] in _VALUE_INTRODUCERS:

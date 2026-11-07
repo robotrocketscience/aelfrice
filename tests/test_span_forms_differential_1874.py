@@ -472,6 +472,111 @@ def test_the_support_log_matches_on_the_holed_form(tmp_path: Path) -> None:
 
 # --- spans that stay removed (operator ruling) ------------------------------
 
+# Built at runtime, so this source holds no full key shape for a pattern scan to hit.
+_RANDOM = "q1W2e3R4t5Y6u7I8o9P0a1S2d3F4g5H6"
+_KNOWN_SHAPES = {
+    "model vendor, new": "sk" + "-ant-api03-" + _RANDOM,
+    "model vendor, project": "sk" + "-proj-" + _RANDOM,
+    "model vendor, old": "sk" + "-" + _RANDOM,
+    "model vendor, cloud": "AI" + "za" + _RANDOM + "abcde",
+    "code host, classic": "gh" + "p_" + _RANDOM,
+    "code host, oauth": "gh" + "o_" + _RANDOM,
+    "code host, server": "gh" + "s_" + _RANDOM,
+    "code host, refresh": "gh" + "r_" + _RANDOM,
+    "code host, user": "gh" + "u_" + _RANDOM,
+    "code host, fine-grained": "github" + "_pat_" + _RANDOM,
+    "code host, other": "gl" + "pat-" + _RANDOM[:20],
+    "cloud access key": "AK" + "IA" + "Q1W2E3R4T5Y6U7I8",
+    "cloud session key": "AS" + "IA" + "Q1W2E3R4T5Y6U7I8",
+    "payments": "sk" + "_live_" + _RANDOM,
+    "payments, restricted": "rk" + "_live_" + _RANDOM,
+    "package registry": "np" + "m_" + _RANDOM,
+    "package index": "py" + "pi-" + _RANDOM,
+    "model hub": "h" + "f_" + _RANDOM,
+    "chat bot token": "xo" + "xb-1234567890-" + _RANDOM,
+    "chat user token": "xo" + "xp-1234567890-" + _RANDOM,
+    "chat app bot token": "123456" + "7890:" + _RANDOM,
+    "JWT": "ey" + "JhbGciOiJIUzI1NiJ9." + "ey" + "JzdWIiOiIxMjM0In0." + _RANDOM,
+    "RSA key header": "-----BEG" + "IN RSA PRIVATE KEY-----",
+    "key header": "-----BEG" + "IN PRIVATE KEY-----",
+    "SSH key header": "-----BEG" + "IN OPENSSH PRIVATE KEY-----",
+    "random token": "Zk3vQ9xL" + "2mN7bT5c" + "R8wY1pH6" + "dF4gJ0sA" + "3eU7iO9q",
+    "encoded token": "aGVsbG8g" + "d29ybGQg" + "dGhpcyBp" + "cyBhIHNl" + "Y3JldCB2" + "YWx1",
+}
+
+
+@pytest.mark.parametrize("value", _KNOWN_SHAPES.values(), ids=_KNOWN_SHAPES.keys())
+def test_a_known_credential_alone_in_a_code_span_stays_removed(value: str) -> None:
+    sentence = f"Run `{value}` before the widget release."
+    assert [form.whole for form in sentence_forms(sentence)] == _frozen_extract_sentences(sentence)
+
+
+@pytest.mark.parametrize(
+    "value",
+    # A key header holds spaces, so it can't sit inside a URL.
+    [value for name, value in _KNOWN_SHAPES.items() if "header" not in name],
+    ids=[name for name in _KNOWN_SHAPES if "header" not in name],
+)
+def test_a_known_credential_in_a_url_stays_removed(value: str) -> None:
+    sentence = f"Read https://example.invalid/x/{value} before the widget release."
+    assert [form.whole for form in sentence_forms(sentence)] == _frozen_extract_sentences(sentence)
+
+
+@pytest.mark.parametrize(
+    "host", ["hooks." + "slack.com/services/T0/B0", "discord" + ".com/api/webhooks/1/a", "discordapp" + ".com/api/webhooks/1/a"],
+)
+def test_a_chat_webhook_url_stays_removed(host: str) -> None:
+    sentence = f"Post to https://{host} for the widget release."
+    assert [form.whole for form in sentence_forms(sentence)] == _frozen_extract_sentences(sentence)
+
+
+def test_a_known_credential_never_reaches_the_store(tmp_path: Path) -> None:
+    store = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        for i, value in enumerate(_KNOWN_SHAPES.values()):
+            _ingest_turn(store, f"Run `{value}` before release {i}.", "transcript", role="user")
+        stored = store._conn.execute(  # noqa: SLF001
+            "SELECT content FROM beliefs UNION ALL SELECT raw_text FROM ingest_log "
+            "UNION ALL SELECT entity_lower FROM belief_entities"
+        ).fetchall()
+    finally:
+        store.close()
+    assert stored
+    assert not [row for row in stored if "`" in str(row[0]) or _RANDOM.lower() in str(row[0]).lower()]
+
+
+def _token(distinct: int, length: int) -> str:
+    """`distinct` symbols used equally, so the entropy is log2(distinct) when `length` divides."""
+    symbols = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz"[:distinct]
+    return "".join(symbols[i % distinct] for i in range(length))
+
+
+@pytest.mark.parametrize(
+    ("token", "kept"),
+    [
+        (_token(32, 32), False),  # 5.0 bits at the length floor
+        (_token(23, 46), False),  # 4.52 bits
+        (_token(22, 44), True),  # 4.46 bits
+        (_token(31, 31), True),  # under the length floor
+        (_token(16, 64), True),  # 4.0 bits, as a digest has
+        ("a" * 64, True),
+        ("test_a_credential_shape_stays_removed_as_before", True),
+    ],
+)
+def test_the_entropy_check_has_a_length_and_a_bit_floor(token: str, kept: bool) -> None:
+    sentence = f"Run `{token}` before the widget release."
+    whole = [form.whole for form in sentence_forms(sentence)]
+    assert whole == ([sentence] if kept else _frozen_extract_sentences(sentence))
+
+
+@pytest.mark.parametrize(
+    "span",
+    ["`risk-assessment-for-the-widget`", "`task_manager_for_widget`", "`build-1234567:ok`", "`-----BEGIN CERTIFICATE-----`"],
+)
+def test_a_known_shape_needs_its_whole_prefix(span: str) -> None:
+    sentence = f"Check {span} in the widget config."
+    assert [form.whole for form in sentence_forms(sentence)] == [sentence]
+
 
 @pytest.mark.parametrize(
     ("prompt", "token"),
