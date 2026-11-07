@@ -673,6 +673,30 @@ _KNOWN_SHAPES = {
 }
 
 
+_GLUED = {name: value for name, value in _KNOWN_SHAPES.items() if "header" not in name}
+
+
+@pytest.mark.parametrize("value", _GLUED.values(), ids=_GLUED.keys())
+@pytest.mark.parametrize(
+    "template",
+    [
+        "Run `MY_{}` before the widget release.",
+        "Run `9{}` before the widget release.",
+        "Read https://example.invalid/x_{} before the widget release.",
+        "Read https://example.invalid/a%3D{} before the widget release.",
+        "Read https://example.invalid/a%3d{} before the widget release.",
+    ],
+)
+def test_a_known_credential_stays_removed_after_a_separator(template: str, value: str) -> None:
+    sentence = template.format(value)
+    assert [form.whole for form in sentence_forms(sentence)] == _frozen_extract_sentences(sentence)
+
+
+def test_a_key_header_in_any_case_stays_removed() -> None:
+    sentence = "Run `-----beg" + "in rsa private key-----` before the widget release."
+    assert [form.whole for form in sentence_forms(sentence)] == _frozen_extract_sentences(sentence)
+
+
 @pytest.mark.parametrize("value", _KNOWN_SHAPES.values(), ids=_KNOWN_SHAPES.keys())
 def test_a_known_credential_alone_in_a_code_span_stays_removed(value: str) -> None:
     sentence = f"Run `{value}` before the widget release."
@@ -691,9 +715,22 @@ def test_a_known_credential_in_a_url_stays_removed(value: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "host", ["hooks." + "slack.com/services/T0/B0", "discord" + ".com/api/webhooks/1/a", "discordapp" + ".com/api/webhooks/1/a"],
+    "host",
+    [
+        "hooks." + "slack.com/services/T0/B0",
+        "Hooks." + "Slack.com/services/T0/B0",
+        "HOOKS." + "SLACK.COM/SERVICES/T0/B0",
+        "discord" + ".com/api/webhooks/1/a",
+        "discordapp" + ".com/api/webhooks/1/a",
+        "ptb.discord" + ".com/api/webhooks/1/a",
+        "DISCORD" + ".COM/API/WEBHOOKS/1/a",
+        "discord" + ".com/api/v10/webhooks/1/a",
+    ],
 )
 def test_a_chat_webhook_url_stays_removed(host: str) -> None:
+    # A hook in a code span goes the same way.
+    span = f"Post to `https://{host}` for the widget release."
+    assert [form.whole for form in sentence_forms(span)] == _frozen_extract_sentences(span)
     sentence = f"Post to https://{host} for the widget release."
     assert [form.whole for form in sentence_forms(sentence)] == _frozen_extract_sentences(sentence)
 
@@ -739,7 +776,14 @@ def test_the_entropy_check_has_a_length_and_a_bit_floor(token: str, kept: bool) 
 
 @pytest.mark.parametrize(
     "span",
-    ["`risk-assessment-for-the-widget`", "`task_manager_for_widget`", "`build-1234567:ok`", "`-----BEGIN CERTIFICATE-----`"],
+    [
+        "`risk-assessment-for-the-widget`",
+        "`task-management-for-the-widget`",
+        "`shelf_" + "a1b2" * 8 + "`",
+        "`task_manager_for_widget`",
+        "`build-1234567:ok`",
+        "`-----BEGIN CERTIFICATE-----`",
+    ],
 )
 def test_a_known_shape_needs_its_whole_prefix(span: str) -> None:
     sentence = f"Check {span} in the widget config."
@@ -773,6 +817,7 @@ def test_a_known_shape_needs_its_whole_prefix(span: str) -> None:
         ("Use `ftp://bot:ZQASCHM0006@e.invalid/w` for the widget.", "ZQASCHM0006"),
         ("Use `ssh://ZQASCHM0007@e.invalid/w` for the widget.", "ZQASCHM0007"),
         ("Use `bot:ZQASCHM0008@db.invalid/w` for the widget.", "ZQASCHM0008"),
+        ("Use `tool: bot@ZQASCHM0011.invalid` for the widget.", "ZQASCHM0011"),
         ("See `example.invalid/x?ZQASCHM0009` for the widget endpoint.", "ZQASCHM0009"),
         ("See `?ZQASCHM0010` for the widget endpoint.", "ZQASCHM0010"),
         # An `=` in any company.

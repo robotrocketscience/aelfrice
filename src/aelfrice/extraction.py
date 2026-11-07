@@ -53,18 +53,21 @@ _URL_RE: re.Pattern[str] = re.compile(r"https?://\S+")
 # without a scheme), a `:` and then `@` (userinfo, under any scheme), "bearer", or a
 # credential word followed by a colon or a value.
 _CREDENTIAL_CODE_RE: re.Pattern[str] = re.compile(
-    r"=|\?\S|:\S*@|bearer"
+    r"=|\?\S|:.*@|bearer"
     r"|(?:key|token|secret|passw(?:or)?d|pwd|auth\w*|cookie|credential)s?[\"']?(?:\s*:|\s+\S)",
     re.IGNORECASE,
 )
 # Known credential shapes, alone in a code span or anywhere in a URL: vendor key
 # prefixes, a chat app's token or webhook, a JWT, and a private key header.
 _KNOWN_CREDENTIAL_RE: re.Pattern[str] = re.compile(
-    r"\b(?:sk-[\w-]{16,}|AIza[\w-]{30,}|gh[pousr]_\w{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}"
-    r"|A[KS]IA[0-9A-Z]{16}|[rs]k_live_\w{16,}|npm_\w{30,}|pypi-[\w-]{16,}|hf_\w{30,}"
-    r"|xox[a-z]-[\w-]{10,}|\d{8,10}:[\w-]{30,}|eyJ[\w-]{5,}\.[\w-]{5,}\.)"
-    r"|hooks\.slack\.com/services/|discord(?:app)?\.com/api/webhooks/"
-    r"|BEGIN [A-Z ]*PRIVATE KEY"
+    # Only these two end ordinary words, as in `task-` and `shelf_`. An encoded
+    # character before one is a separator and not part of a word.
+    r"(?:(?<![A-Za-z])|(?<=%[0-9A-Fa-f]{2}))(?:sk-[\w-]{16,}|hf_\w{30,})"
+    r"|AIza[\w-]{30,}|gh[pousr]_\w{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}"
+    r"|A[KS]IA[0-9A-Z]{16}|[rs]k_live_\w{16,}|npm_\w{30,}|pypi-[\w-]{16,}"
+    r"|xox[a-z]-[\w-]{10,}|\d{8,10}:[\w-]{30,}|eyJ[\w-]{5,}\.[\w-]{5,}\."
+    r"|(?i:hooks\.slack\.com/services/|discord(?:app)?\.com/api/(?:v\d+/)?webhooks/"
+    r"|BEGIN [A-Z ]*PRIVATE KEY)"
 )
 # A run this long, with this many bits per character, reads as random. On the
 # #1874 corpus it removes 0 of 344 spans. A hexadecimal token tops out at 4.0
