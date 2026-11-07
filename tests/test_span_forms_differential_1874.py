@@ -423,12 +423,16 @@ def _log(tmp_path: Path, prompt: str, monkeypatch: pytest.MonkeyPatch) -> list[d
         # Noise as a whole, and its sentences are [False, True] once holed: the
         # gate keeps it only by reading sentences.
         ("No `x` it broke. Yes keep it", True),
-        # Noise as a whole, and noise once holed. Its whole form would pass, so
-        # the gate drops it only by reading the holed form.
+        # Noise as a whole, with no sentence past the floor once holed.
         ("No https://ex.invalid/a. Then go", False),
         ("Yes https://ex.invalid/a. ok", False),
         ("Ready http://e.io/x.html. ok", False),
         ("Yes `widget_flag_name`.", False),
+        # Noise as a whole, and every holed sentence is noise, while a sentence
+        # that keeps its span isn't. These pin that the gate reads the holed form.
+        ("Yes ok. `x` Yes keep going", False),
+        ("Yes ok. https://e.io/a Yes keep going", False),
+        ("Yes done! `a` No more of it", False),
     ],
 )
 def test_the_logger_gate_equals_the_frozen_one_on_the_real_handler(
