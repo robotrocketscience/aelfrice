@@ -614,17 +614,57 @@ def _extract_query(payload: dict[str, object]) -> str | None:
     # prompt is the part worth searching memory for — a bare URL
     # tokenises into host fragments that match nothing useful.
     raw: object = None
+    is_pattern = False
     for field in ("pattern", "query", "prompt"):
         candidate = ti.get(field)
         if isinstance(candidate, str) and candidate.strip():
             raw = candidate
+            is_pattern = field == "pattern"
             break
     if not isinstance(raw, str) or not raw.strip():
         return None
-    tokens = _TOKEN_RE.findall(raw)
+    tokens = _query_terms(
+        _TOKEN_RE.findall(raw), stopwords=frozenset() if is_pattern else _QUERY_STOPWORDS,
+    )
     if not tokens:
         return None
     return " OR ".join(tokens[:QUERY_TOKEN_LIMIT])
+
+
+# Function words that pass `_TOKEN_RE` (three letters or more) but match
+# almost every belief, so an OR query built from them returns noise. A
+# WebSearch query or WebFetch prompt is a sentence ("what is the ..."). A Grep
+# or Glob pattern is code, where `get` and `from` are identifiers, so it keeps
+# them.
+_QUERY_STOPWORDS: Final[frozenset[str]] = frozenset({
+    "the", "and", "for", "are", "was", "were", "with", "from", "this",
+    "that", "these", "those", "what", "which", "who", "whom", "whose",
+    "when", "where", "why", "how", "does", "did", "doing", "done", "has",
+    "have", "had", "having", "can", "could", "should", "would", "will",
+    "shall", "may", "might", "must", "not", "but", "you", "your", "our",
+    "their", "they", "them", "its", "his", "her", "him", "she", "about",
+    "into", "onto", "over", "than", "then", "there", "here", "also",
+    "any", "all", "some", "just", "very", "more", "most", "such", "own",
+    "being", "been", "out", "use", "using", "used", "get", "got",
+})
+
+
+def _query_terms(tokens: list[str], *, stopwords: frozenset[str]) -> list[str]:
+    """`tokens` with `stopwords` and repeats removed, in first-seen order.
+
+    FTS5 matching is case-insensitive, so "Paper" and "paper" are one term,
+    and a repeat would spend one of the `QUERY_TOKEN_LIMIT` slots twice. Each
+    term keeps its original case.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for tok in tokens:
+        low = tok.lower()
+        if low in stopwords or low in seen:
+            continue
+        seen.add(low)
+        out.append(tok)
+    return out
 
 
 def _belief_line(b: object, locked_ids: "set[str] | frozenset[str]") -> str | None:
