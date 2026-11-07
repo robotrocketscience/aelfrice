@@ -32,7 +32,8 @@ most of the junk but does not make precision positive, because the fires that
 remain come from templates the #1376 ruling does not cover and fail for a
 different reason — the noun-phrase capture is unanchored and runs across
 clause boundaries. That is #1159 §2's territory, not this leaf's. Since #1874
-the ingest bank's verb case is exact and its matches stay on one line.
+the ingest bank's verb case is exact, its matches stay on one line, and a match
+with a phrase that is only function words on either side is dropped.
 
 Usage::
 
@@ -54,8 +55,8 @@ from aelfrice.triple_extractor import (
     _INGEST_EXCLUDED_TEMPLATES,
     _INGEST_PATTERNS,
     _PATTERNS,
+    _has_function_word_endpoint,
     _line_spans,
-    _object_is_a_cut_determiner,
     extract_triples,
 )
 
@@ -78,20 +79,20 @@ def _commit_bodies(limit: int, ref: str, root: Path) -> list[str]:
 
 
 def _fires_by_template(
-    bodies: list[str], patterns: tuple[Any, ...], *, per_line: bool = False
+    bodies: list[str], patterns: tuple[Any, ...], *, ingest_rules: bool = False
 ) -> tuple[collections.Counter[str], dict[str, list[str]]]:
     counts: collections.Counter[str] = collections.Counter()
     samples: dict[str, list[str]] = {}
     for text in bodies:
-        spans = _line_spans(text) if per_line else [(0, len(text))]
+        spans = _line_spans(text) if ingest_rules else [(0, len(text))]
         for pat in patterns:
             for start, end in spans:
                 for hit in pat.regex.finditer(text, start, end):
-                    if per_line and _object_is_a_cut_determiner(text, hit, end):
-                        continue
                     subj = " ".join(hit.group("subject").split())
                     obj = " ".join(hit.group("object").split())
                     if not subj or not obj:
+                        continue
+                    if ingest_rules and _has_function_word_endpoint(subj, obj):
                         continue
                     key = f"{pat.template} -> {pat.edge_type}"
                     counts[key] += 1
@@ -117,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
 
     before_counts, before_samples = _fires_by_template(bodies, _PATTERNS)
     after_counts, after_samples = _fires_by_template(
-        bodies, _INGEST_PATTERNS, per_line=True
+        bodies, _INGEST_PATTERNS, ingest_rules=True
     )
 
     # Cross-check the per-pattern walk against the public entry point, so a

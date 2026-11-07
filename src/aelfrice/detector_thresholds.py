@@ -100,7 +100,7 @@ from typing import Any, Final, cast
 # Bump when any pinned value below changes, and append the new content
 # digest to DIGEST_HISTORY at the bottom of this module. The guard in
 # tests/test_detector_thresholds_manifest_1355.py fails until you do.
-DETECTOR_THRESHOLDS_VERSION: Final[int] = 6
+DETECTOR_THRESHOLDS_VERSION: Final[int] = 7
 
 # --- Kinds -------------------------------------------------------------
 
@@ -478,7 +478,7 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         overridable=OVERRIDE_NONE,
         gates=(
             "The bank the WRITE path uses (#1376). `_PATTERNS` above is "
-            "what `context_rebuilder` queries with; this is what "
+            "what `rebuild_log` queries with; this is what "
             "`hook_commit_ingest` mints beliefs and edges from, so it is "
             "the one whose false positives are irreversible. It is "
             "`_PATTERNS` minus the six single-token templates that are "
@@ -490,6 +490,26 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
             "so no relation was made unreachable. Pinned separately because "
             "the two banks can now drift apart, and a change to either "
             "alone changes what one path writes or reads."
+        ),
+    ),
+    PinnedThreshold(
+        module="aelfrice.triple_extractor",
+        name="_INGEST_FUNCTION_WORDS",
+        kind=KIND_TOKEN_SET,
+        value="sha256:7eeed56939765677b63fcdcc3d4439045eeba8ed5f459ebd586e33829b173ec8",
+        size=72,
+        edge_types=(
+            "SUPPORTS", "CITES", "CONTRADICTS", "SUPERSEDES",
+            "RELATES_TO", "DERIVED_FROM", "IMPLEMENTS", "TESTS",
+            "TEMPORAL_NEXT",
+        ),
+        overridable=OVERRIDE_NONE,
+        gates=(
+            "The write path stores nothing for a match with a phrase on "
+            "either side made only of these words (#1874), because that "
+            "phrase has one belief id across every commit and would collect "
+            "edges. Adding a word removes edges of all nine types. The read "
+            "path doesn't use this set."
         ),
     ),
     PinnedThreshold(
@@ -838,6 +858,11 @@ DIGEST_HISTORY: Final[dict[int, str]] = {
     # kept its digest, so the read path did not move. Ingest matches also stay on
     # one line now, which lives in `extract_triples` and has no pin of its own.
     6: "2a2ac6df2ded790dbdcc9e0e10a58991c1165f30f2edfc84ce5cbfc449f86beb",
+    # 7 (#1874): the ingest path stores nothing for a phrase that is only
+    # function words. `_INGEST_FUNCTION_WORDS` was pinned as a new entry. The
+    # read path doesn't use it. `_INGEST_PATTERNS`' note now names `rebuild_log`
+    # as the read path's caller, and that bank's digest didn't move.
+    7: "335c888cbe0fde557a597865e97f69bb4d79a6af2b7197896b05f0eb4d4a03f8",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.

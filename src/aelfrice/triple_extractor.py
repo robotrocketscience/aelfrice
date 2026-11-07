@@ -36,7 +36,6 @@ from aelfrice.derivation_worker import run_worker
 # `entity_extractor` can share the NP regex without closing a
 # store ↔ extractors cycle through this module (#499).
 from aelfrice.np_pattern import NOUN_PHRASE_PATTERN, _NP
-from aelfrice.np_pattern import _DET  # pyright: ignore[reportPrivateUsage]
 from aelfrice.models import (
     CORROBORATION_SOURCE_COMMIT_INGEST,
     EDGE_CITES,
@@ -233,7 +232,30 @@ _INGEST_PATTERNS: Final[tuple[_RelationPattern, ...]] = tuple(
     if p.template not in _INGEST_EXCLUDED_TEMPLATES
 ) + _INGEST_ADDITIONAL_PATTERNS
 
-_BARE_DETERMINER: Final[re.Pattern[str]] = re.compile(_DET, re.IGNORECASE)
+# #1874: a phrase made only of these words names nothing, and it has one belief
+# id across every commit, so it would collect edges. The ingest path stores
+# nothing for a match with such a phrase on either side. A determiner plus a
+# content word, such as "the old", stays: telling it from "the parser" takes a
+# grammar check, which this module doesn't do.
+_INGEST_FUNCTION_WORDS: Final[frozenset[str]] = frozenset({
+    # The determiners in `np_pattern._DET`, which the noun phrase admits.
+    "the", "a", "an", "our", "their", "its", "this", "that", "these", "those",
+    "my", "your", "his", "her",
+    # Personal pronouns, which stand for something the phrase doesn't name.
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "us", "them",
+    # Reflexive and possessive pronouns, for the same reason.
+    "myself", "yourself", "himself", "herself", "itself", "ourselves",
+    "yourselves", "themselves", "mine", "yours", "hers", "ours", "theirs",
+    # Relative and interrogative words, which open a clause the match cut off.
+    "which", "who", "whom", "whose", "what", "where", "when", "why", "how",
+    # Quantifiers, which count something the phrase doesn't name.
+    "all", "both", "each", "every", "either", "neither", "some", "any", "none",
+    "many", "most", "few", "several", "another", "such", "other", "others",
+    "one",
+    # Indefinite pronouns, which name no particular thing.
+    "something", "anything", "everything", "nothing", "someone", "anyone",
+    "everyone",
+})
 
 
 # --- Extraction -----------------------------------------------------------
@@ -284,21 +306,11 @@ def _line_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _object_is_a_cut_determiner(
-    text: str, m: re.Match[str], span_end: int,
-) -> bool:
-    """True when a line break left only a determiner as the object.
-
-    Matching per line turns "X supersedes the", with "old parser" wrapped
-    to the next line, into a belief that reads "the". That phrase has one
-    belief id across every commit, so it would collect edges (#1874). A
-    determiner that ends the message, or that has more on its own line,
-    isn't cut.
-    """
-    return (
-        _BARE_DETERMINER.fullmatch(m.group("object")) is not None
-        and not text[m.end():span_end].strip()
-        and bool(text[span_end:].strip())
+def _has_function_word_endpoint(subject: str, obj: str) -> bool:
+    """True when a phrase on either side is only function words (#1874)."""
+    return any(
+        all(word.lower() in _INGEST_FUNCTION_WORDS for word in phrase.split())
+        for phrase in (subject, obj)
     )
 
 
@@ -316,11 +328,11 @@ def extract_triples(
     (`_INGEST_PATTERNS`): the six single-token templates that double as
     plural nouns are dropped and TESTS' two passive forms are added. The
     verb's case is exact, each match stays on one line of `text`, and a
-    match whose object a line break cut down to a determiner is dropped
-    (#1874). It defaults to False so the read path is unchanged — operator
-    ruling of 2026-08-06 scopes #1376 to the write path, and
-    `context_rebuilder` calls this on every prompt with behaviour that was
-    never measured. Only `hook_commit_ingest` passes True.
+    match with a phrase that is only function words on either side is dropped
+    (#1874). It defaults to False so the read path is unchanged: operator
+    ruling of 2026-08-06 scopes #1376 to the write path, and `context_rebuilder`
+    calls this on every prompt with behaviour that was never measured. Only
+    `hook_commit_ingest` passes True.
     """
     if not text:
         return []
@@ -332,15 +344,15 @@ def extract_triples(
     for pat in patterns:
         for span_start, span_end in spans:
             for m in pat.regex.finditer(text, span_start, span_end):
-                if constrain_collision_verbs and _object_is_a_cut_determiner(
-                    text, m, span_end,
-                ):
-                    continue
                 subj_raw = m.group("subject")
                 obj_raw = m.group("object")
                 subj = _normalize_phrase(subj_raw)
                 obj = _normalize_phrase(obj_raw)
                 if not subj or not obj:
+                    continue
+                if constrain_collision_verbs and _has_function_word_endpoint(
+                    subj, obj,
+                ):
                     continue
                 anchor = _expand_anchor(text, m.start(), m.end())
                 if pat.swap:
