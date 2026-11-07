@@ -896,8 +896,8 @@ def _call_anthropic(
       LLMAuthError on 401/403.
       LLMSDKMismatchError when the call doesn't fit the installed SDK:
         a `TypeError` or `AttributeError` building the client or resolving
-        `create`, a keyword `create` doesn't take, or a failed SDK import.
-        All of these sit before `create` runs, so nothing has been sent.
+        `create`, or a keyword `create` doesn't take. All of these sit before
+        `create` runs, so nothing has been sent.
       LLMTransientError on everything else: connect / timeout / 429 / 5xx /
         parse / proxy, URL, and key config.
     """
@@ -905,7 +905,9 @@ def _call_anthropic(
         try:
             import anthropic as sdk_module  # type: ignore[import-not-found,no-redef]
         except ImportError as exc:
-            raise LLMSDKMismatchError(f"ImportError: {exc}") from exc
+            raise LLMTransientError(
+                "anthropic SDK not importable at request time"
+            ) from exc
 
     sdk: Any = sdk_module
     call_args: dict[str, Any] = {

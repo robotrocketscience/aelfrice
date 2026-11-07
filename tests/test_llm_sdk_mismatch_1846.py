@@ -175,16 +175,16 @@ def test_keyword_create_does_not_take_is_a_mismatch() -> None:
     assert result.telemetry.requests == 0
 
 
-def test_sdk_import_failure_at_request_time_is_a_mismatch(
+def test_sdk_import_failure_at_request_time_is_not_a_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The SDK's module name, without spelling it.
     module = llm.ENV_API_KEY.partition("_")[0].lower()
     monkeypatch.setitem(sys.modules, module, None)
     result = llm.classify_batch(_CANDIDATES, api_key="k")
-    assert result.sdk_mismatch_error is not None
-    assert result.sdk_mismatch_error.startswith("ImportError")
-    assert not result.fallback_used
+    assert result.sdk_mismatch_error is None
+    assert result.fallback_used
+    assert result.telemetry.requests == 0
 
 
 # --- What falls back with a warning ---------------------------------------

@@ -517,11 +517,15 @@ when the call provably doesn't fit the installed SDK:
   `client.messages.create`.
 - A keyword the classifier sends that `create` doesn't take, checked with
   `inspect.signature(create).bind()` before the call.
-- A failed import of the SDK at request time.
 
-All of these sit before `create` runs, so nothing has been sent. The error
-names the exception. `aelf doctor --classify-orphans` shares the call and exits
-1 the same way, with no beliefs updated.
+Both sit before `create` runs, so nothing has been sent. The error names the
+exception. `aelf doctor --classify-orphans` shares the call and exits 1 the same
+way, with no beliefs updated.
+
+A failed SDK import isn't a mismatch. The gate before the call catches it first:
+`--llm-classify` and `aelf doctor --classify-orphans` exit 1 and say the
+`[onboard-llm]` extra is required, and a default `aelf onboard` uses the regex
+classifier.
 
 An exception raised from inside `create` doesn't stop the run, even a
 `TypeError`, because a request may have left by then.
