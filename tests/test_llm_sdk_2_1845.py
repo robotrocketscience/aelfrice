@@ -37,6 +37,14 @@ _ROW = {"belief_type": "preference", "origin": "document_recent", "persist": Tru
 _JSON = {"content-type": "application/json"}
 
 
+@pytest.fixture
+def waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Every wait the classifier asks for, with none of them slept."""
+    asked: list[float] = []
+    monkeypatch.setattr(llm, "_sleep", asked.append)
+    return asked
+
+
 class _FakeSdk:
     """Answers any attribute with the client factory, as `sdk_module`."""
 
@@ -68,9 +76,12 @@ def _message(rows: int, row: dict[str, object] = _ROW) -> bytes:
 
 
 class _Gateway(BaseHTTPRequestHandler):
-    """Records each request. With no `reply` set, it answers with one row per candidate."""
+    """Records each request. It answers from `queue` first, then `reply`, then
+    with one row per candidate."""
 
+    server: ThreadingHTTPServer | None = None
     requests: list[tuple[str, dict[str, str], dict[str, Any]]] = []
+    queue: list[tuple[int, dict[str, str], bytes]] = []
     reply: tuple[int, dict[str, str], bytes] | None = None
     hang = False
     release = threading.Event()
@@ -85,11 +96,14 @@ class _Gateway(BaseHTTPRequestHandler):
             cls.release.wait(timeout=300)
             return
         rows = body["messages"][0]["content"].count('"index"')
-        status, extra, reply = cls.reply or (200, _JSON, _message(rows))
+        queued = cls.queue.pop(0) if cls.queue else None
+        status, extra, reply = queued or cls.reply or (200, _JSON, _message(rows))
         self.send_response(status)
         self.send_header("content-length", str(len(reply)))
-        # The SDK waits this long before its retries.
-        self.send_header("retry-after-ms", "1")
+        # The classifier waits this long before its retries, unless the reply
+        # names its own wait or asks for none.
+        if not any(name.startswith(("retry-after", "x-no-wait")) for name in extra):
+            self.send_header("retry-after-ms", "1")
         for name, value in extra.items():
             self.send_header(name, value)
         self.end_headers()
@@ -135,6 +149,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture
 def gateway(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     _Gateway.requests = []
+    _Gateway.queue = []
     _Gateway.reply = None
     _Gateway.hang = False
     _Gateway.release = threading.Event()
@@ -143,6 +158,7 @@ def gateway(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     thread.start()
     url = f"http://127.0.0.1:{server.server_port}"
     monkeypatch.setenv(llm.ENV_BASE_URL, url)
+    _Gateway.server = server
     try:
         yield url
     finally:
@@ -344,12 +360,13 @@ def test_doctor_writes_the_label_it_read(
     assert _orphan_type(tmp_path) == "preference"
 
 
-@pytest.mark.parametrize("status", [408, 409, 500, 529])
-def test_a_retried_status_reaches_the_server_3_times_and_counts_once(
+@pytest.mark.parametrize("status", [408, 409, 429, 500, 529])
+def test_a_retried_status_reaches_the_server_3_times_and_counts_3(
     project: Path,
     gateway: str,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    waits: list[float],
     status: int,
 ) -> None:
     _Gateway.reply = (status, _JSON, b'{"type":"error","error":{"type":"x_y","message":"m"}}')
@@ -359,7 +376,8 @@ def test_a_retried_status_reaches_the_server_3_times_and_counts_once(
     assert rc == 0
     assert capsys.readouterr().err == ""
     assert len(_Gateway.requests) == 3
-    assert "requests=1 " in out
+    assert "requests=3 " in out
+    assert waits == [0.001, 0.001]
 
 
 @pytest.mark.timeout(10)
@@ -371,6 +389,7 @@ def test_a_hung_server_times_out_and_falls_back_in_silence(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(llm, "_REQUEST_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(llm, "_sleep", lambda _seconds: None)
     _Gateway.hang = True
 
     rc, out = _main(["onboard", "@P"], project, tmp_path)
@@ -378,8 +397,179 @@ def test_a_hung_server_times_out_and_falls_back_in_silence(
     assert rc == 0
     assert capsys.readouterr().err == ""
     assert len(_Gateway.requests) == 3
-    assert "requests=1 " in out
+    assert "requests=3 " in out
     assert _belief_count(tmp_path) > 0
+
+
+_RATE_LIMITED = b'{"type":"error","error":{"type":"rate_limit_error","message":"m"}}'
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected", "line"),
+    [
+        ({"retry-after": "86400"}, [60.0], "waiting 60 s before it tries the request again, the longest aelfrice waits"),
+        ({"retry-after": "Wed, 21 Oct 2099 07:28:00 GMT"}, [60.0], "waiting 60 s before it tries the request again, the longest aelfrice waits"),
+        ({"retry-after-ms": "2500"}, [2.5], "waiting 2 s before it tries the request again"),
+        ({"retry-after-ms": "1"}, [0.001], None),
+        ({"x-no-wait": "1"}, [0.5], None),
+        ({"retry-after": "Mon, 01 Jan 99999 00:00:00 GMT"}, [0.5], None),
+    ],
+    ids=["a-day", "a-date", "2.5-s", "1-ms", "none-named", "a-date-out-of-range"],
+)
+def test_a_429_waits_at_most_60_seconds_and_says_so_past_1(
+    project: Path,
+    gateway: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    waits: list[float],
+    headers: dict[str, str],
+    expected: list[float],
+    line: str | None,
+) -> None:
+    _Gateway.queue = [(429, {**_JSON, **headers}, _RATE_LIMITED)]
+
+    rc, out = _main(["onboard", "@P"], project, tmp_path)
+
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert waits == expected
+    assert len(_Gateway.requests) == 2
+    assert "requests=2 " in out
+    assert "fallbacks=0" in out
+    if line is None:
+        assert err == ""
+    else:
+        assert err.splitlines() == [f"aelf: the classifier is {line}"]
+
+
+def test_a_server_that_says_not_to_retry_gets_one_request(
+    project: Path, gateway: str, tmp_path: Path, waits: list[float],
+) -> None:
+    _Gateway.reply = (500, {**_JSON, "x-should-retry": "false"}, b"{}")
+
+    rc, out = _main(["onboard", "@P"], project, tmp_path)
+
+    assert rc == 0
+    assert waits == []
+    assert len(_Gateway.requests) == 1
+    assert "requests=1 " in out
+
+
+def test_a_500_then_a_refused_connection_counts_the_one_request_sent(
+    project: Path,
+    gateway: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _Gateway.reply = (500, _JSON, b"{}")
+    server = _Gateway.server
+    assert server is not None
+
+    def _close_the_server(_seconds: float) -> None:
+        server.shutdown()
+        server.server_close()
+
+    monkeypatch.setattr(llm, "_sleep", _close_the_server)
+
+    rc, out = _main(["onboard", "@P"], project, tmp_path)
+
+    assert rc == 0
+    assert capsys.readouterr().err == ""
+    assert len(_Gateway.requests) == 1
+    assert "requests=1 " in out
+
+
+class _Redirect(BaseHTTPRequestHandler):
+    """Answers every request with a 307 to `target`, another origin."""
+
+    target = ""
+
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("content-length", "0")))
+        self.send_response(307)
+        self.send_header("location", type(self).target + self.path)
+        self.send_header("content-length", "0")
+        self.end_headers()
+
+    def log_message(self, format: str, *args: Any) -> None:
+        """Keep request lines out of the test output."""
+
+
+def test_a_cross_origin_redirect_carries_a_custom_x_api_key_and_drops_bearer(
+    project: Path, gateway: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The risk the docs state for the `ANTHROPIC_CUSTOM_HEADERS` route."""
+    _Redirect.target = gateway
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Redirect)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv(llm.ENV_BASE_URL, f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", f"X-Api-Key: {_KEY}")
+    try:
+        rc, _ = _main(["onboard", "@P"], project, tmp_path)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert rc == 0
+    headers = _Gateway.requests[0][1]
+    assert headers["x-api-key"] == _KEY
+    assert "authorization" not in headers
+
+
+class _RedirectToFtp(_Redirect):
+    target = "ftp://127.0.0.1"
+
+
+@pytest.mark.parametrize(
+    ("handler", "requests", "warning"),
+    [
+        (_Redirect, "requests=3 ", ""),
+        (_RedirectToFtp, "requests=1 ", "aelf: the classifier response was unusable (UnsupportedProtocol)"),
+    ],
+    ids=["to-a-closed-port", "to-ftp"],
+)
+def test_a_redirect_that_fails_still_counts_the_request_the_server_saw(
+    project: Path,
+    gateway: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    waits: list[float],
+    handler: type[_Redirect],
+    requests: str,
+    warning: str,
+) -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    saved_target = _Redirect.target
+    if handler is _Redirect:
+        _Redirect.target = _closed_port_url()
+    monkeypatch.setenv(llm.ENV_BASE_URL, f"http://127.0.0.1:{server.server_port}")
+    try:
+        rc, out = _main(["onboard", "@P"], project, tmp_path)
+    finally:
+        _Redirect.target = saved_target
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert rc == 0
+    assert requests in out
+    assert capsys.readouterr().err.strip() == (
+        f"{warning}. Classified with the regex classifier." if warning else ""
+    )
+
+
+def _closed_port_url() -> str:
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return f"http://127.0.0.1:{probe.getsockname()[1]}"
 
 
 # --- A call that can't match the SDK stops the run ------------------------
@@ -432,7 +622,10 @@ def test_a_constructor_keyword_the_installed_sdk_refuses_stops_the_run(
 ) -> None:
     sdk = importlib.import_module(_SDK)
     client_class = getattr(sdk, _SDK.capitalize())
-    wrapped = _FakeSdk(lambda **kw: client_class(**kw, no_such_keyword=1))
+    # Only the client class, so no HTTP client is built ahead of it.
+    wrapped = type("Sdk", (), {
+        _SDK.capitalize(): staticmethod(lambda **kw: client_class(**kw, no_such_keyword=1)),
+    })()
     real = llm._call_anthropic  # pyright: ignore[reportPrivateUsage]
     monkeypatch.setattr(
         llm, "_call_anthropic", lambda **kw: real(**{**kw, "sdk_module": wrapped}),
@@ -611,3 +804,4 @@ def test_the_extra_declares_the_2_x_range_and_the_installed_sdk_is_in_it(
 ) -> None:
     assert _extra_spec() == f"{_SDK}>=2,<3"
     assert re.fullmatch(r"2\.\d+\.\d+", importlib.import_module(_SDK).__version__)
+

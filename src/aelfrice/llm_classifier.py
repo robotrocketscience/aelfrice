@@ -35,7 +35,9 @@ Failure semantics (docs/design/llm_classifier.md § 7):
   - Connection refused / DNS / TLS / 5xx / 429 / timeout / malformed
     response → fall back to regex `classify_sentence` for the whole
     batch, exit 0, write one `feedback_history` audit row per fallback
-    insertion tagged `onboard.llm.fallback:<reason>`.
+    insertion tagged `onboard.llm.fallback:<reason>`. A refused connection,
+    timeout, 408, 409, 429, or 5xx is tried up to 3 times first, waiting at
+    most 60 seconds between tries.
   - 401/403 (auth) → DO NOT fall back. Exit 1, no beliefs inserted,
     error message names Anthropic auth.
     It prints the status and error type only, since the response's text can
@@ -57,17 +59,20 @@ Failure semantics (docs/design/llm_classifier.md § 7):
     deterministic belief id ensures a re-run resumes from the cap-hit
     point.
 
-Telemetry: stdout-only. The "no telemetry" stance in PRIVACY.md is
+Telemetry: stdout-only. `requests` counts the attempts that sent a request. The "no telemetry" stance in PRIVACY.md is
 preserved — aelfrice does not phone-home about its own LLM usage.
 """
 from __future__ import annotations
 
+import email.utils
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,8 +125,19 @@ _PERMITTED_ORIGINS: Final[frozenset[str]] = frozenset({
 
 # Timeout in seconds for each connect, read, write, and pool wait of one
 # attempt, so a hung server doesn't freeze onboard. It doesn't cap the whole
-# call: the SDK makes up to 3 attempts and waits between them.
+# call: a server that sends a byte inside every window keeps a read going.
 _REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
+
+# The classifier makes its own retries, so it can bound the wait. SDK 2.x
+# sleeps for whatever `Retry-After` asks, and 0.x capped it at 60 seconds.
+_MAX_ATTEMPTS: Final[int] = 3
+_MAX_RETRY_WAIT_SECONDS: Final[float] = 60.0
+# The wait before the second and third attempt when the server names none.
+_BACKOFF_SECONDS: Final[tuple[float, ...]] = (0.5, 1.0)
+# A wait longer than this prints a line, so a long pause doesn't look hung.
+_WAIT_NOTICE_SECONDS: Final[float] = 1.0
+# Statuses worth another attempt, as the SDK's own retry rule has them.
+_RETRY_STATUSES: Final[frozenset[int]] = frozenset({408, 409, 429})
 
 # The SDK raises its connection error `from` the HTTP library's exception.
 # These causes mean the failure came before any request was written.
@@ -157,6 +173,9 @@ _MISMATCH_DETAIL_CHARS: Final[int] = 200
 # The loggers of the HTTP library under the SDK. Below WARNING, these and the
 # SDK's own print exception text and response headers, which can hold the key.
 _HTTP_LOGGERS: Final[tuple[str, ...]] = ("httpx2", "httpcore2")
+
+# `time.sleep`, behind a name tests can replace.
+_sleep = time.sleep
 
 
 # --- Config dataclass ----------------------------------------------------
@@ -789,9 +808,10 @@ class LLMAuthError(Exception):
 class LLMTransientError(Exception):
     """Raised on connect/timeout/429/5xx/malformed. Triggers regex fallback.
 
-    `request_sent` says whether a request left the machine, which decides
-    the telemetry's `requests` count on the fallback path. `warning` is the
-    text the user sees when the run shouldn't fall back in silence.
+    `request_sent` says whether this attempt's request left the machine.
+    `requests` is the telemetry's count for the whole call, every attempt
+    that sent a request. `warning` is the text the user sees when the run
+    shouldn't fall back in silence.
     """
 
     def __init__(
@@ -803,6 +823,7 @@ class LLMTransientError(Exception):
     ) -> None:
         super().__init__(message)
         self.request_sent = request_sent
+        self.requests = int(request_sent)
         self.warning = warning
 
 
@@ -888,6 +909,8 @@ class ClientResponse:
     text: str
     input_tokens: int
     output_tokens: int
+    # The attempts that sent a request, the successful one included.
+    requests: int = 1
 
 
 def _call_anthropic(
@@ -905,6 +928,9 @@ def _call_anthropic(
     an `Anthropic(...)` constructor whose `.messages.create(...)`
     method returns a fake response. Production callers pass `None`
     and the real `anthropic` is imported here, locally.
+
+    The SDK's own retries are off. The classifier makes up to
+    `_MAX_ATTEMPTS` and waits at most `_MAX_RETRY_WAIT_SECONDS` between them.
 
     Raises:
       LLMAuthError on 401/403. Its text is the status and error type only.
@@ -924,15 +950,36 @@ def _call_anthropic(
             ) from exc
         _quiet_sdk_loggers(sdk_module.__name__)
 
-    sdk: Any = sdk_module
     call_args = _request_args(
         model=model,
         max_output_tokens=max_output_tokens,
         system_prompt=system_prompt,
         user_message=user_message,
     )
+    return _call_with_retries(sdk_module, api_key, call_args)
+
+
+def _call_with_retries(
+    sdk: Any, api_key: str, call_args: dict[str, Any],
+) -> ClientResponse:
+    """Build the client, then make up to `_MAX_ATTEMPTS` attempts."""
+    # Each response's status, from a hook on the SDK's public HTTP client. A
+    # response arriving is what proves a raw exception came after a send.
+    arrivals: list[int] = []
+    http_client: Any = None
     try:
-        client = sdk.Anthropic(api_key=api_key, timeout=_REQUEST_TIMEOUT_SECONDS)
+        http_factory = getattr(sdk, "DefaultHttpxClient", None)
+        client_args: dict[str, Any] = {
+            "api_key": api_key,
+            "timeout": _REQUEST_TIMEOUT_SECONDS,
+            "max_retries": 0,
+        }
+        if http_factory is not None:
+            http_client = http_factory(
+                event_hooks={"response": [lambda r: arrivals.append(r.status_code)]},
+            )
+            client_args["http_client"] = http_client
+        client = sdk.Anthropic(**client_args)
         create = client.messages.create
         inspect.signature(create).bind(**call_args)
     except (TypeError, AttributeError) as exc:
@@ -943,20 +990,109 @@ def _call_anthropic(
             str(exc), warning=_did_not_run(type(exc).__name__),
         ) from exc
 
+    sent = 0
     try:
-        resp = create(**call_args)
-    except Exception as exc:  # noqa: BLE001 — SDK exception classes vary
-        if _is_auth_error(exc):
-            raise LLMAuthError(_auth_failure_text(exc)) from exc
-        raise _fault_from_call(exc) from exc
+        for attempt in range(_MAX_ATTEMPTS):
+            arrived_before = len(arrivals)
+            try:
+                resp = create(**call_args)
+            except Exception as exc:  # noqa: BLE001 — SDK exception classes vary
+                if _is_auth_error(exc):
+                    raise LLMAuthError(_auth_failure_text(exc)) from exc
+                fault = _fault_from_call(exc, arrived=len(arrivals) > arrived_before)
+                sent += int(fault.request_sent)
+                wait = _retry_wait(exc, fault, attempt)
+                if wait is None:
+                    fault.requests = sent
+                    raise fault from exc
+                _wait_before_retry(wait)
+                continue
+            sent += 1
+            try:
+                text = _extract_text_from_response(resp)
+                input_tokens, output_tokens = _extract_usage(resp)
+            except LLMTransientError as fault:
+                fault.requests = sent
+                raise
+            return ClientResponse(
+                text=text,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                requests=sent,
+            )
+        raise AssertionError("unreachable: the last attempt returns or raises")
+    finally:
+        close = getattr(http_client, "close", None)
+        if callable(close):
+            close()
 
-    text = _extract_text_from_response(resp)
-    input_tokens, output_tokens = _extract_usage(resp)
-    return ClientResponse(
-        text=text,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-    )
+
+def _retry_wait(
+    exc: BaseException, fault: LLMTransientError, attempt: int,
+) -> float | None:
+    """Seconds to wait before the next attempt, or None to stop here.
+
+    A fault with a warning is a rejection, a config error, or an unusable
+    response, and trying again gets the same answer. A raw exception from
+    inside `create` isn't the SDK's to retry, so it isn't the classifier's.
+    """
+    if attempt + 1 >= _MAX_ATTEMPTS or fault.warning is not None:
+        return None
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        should_retry = headers.get("x-should-retry") if headers is not None else None
+        if should_retry == "false":
+            return None
+        if should_retry != "true" and status not in _RETRY_STATUSES and status < 500:
+            return None
+    elif not _is_api_error(exc):
+        return None
+    asked = _retry_after_seconds(headers)
+    if asked is not None:
+        return min(asked, _MAX_RETRY_WAIT_SECONDS)
+    return _BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)]
+
+
+def _retry_after_seconds(headers: Any) -> float | None:
+    """The wait a response asks for, in seconds, or None if it names none.
+
+    Reads `retry-after-ms`, then `retry-after` as seconds or as a date, the
+    order the SDK reads them in.
+    """
+    if headers is None:
+        return None
+    for name, scale in (("retry-after-ms", 1000.0), ("retry-after", 1.0)):
+        raw = headers.get(name)
+        try:
+            value = float(raw) / scale
+        except (TypeError, ValueError):
+            continue
+        return value if value > 0 and not math.isnan(value) else None
+    raw = headers.get("retry-after")
+    parsed = email.utils.parsedate_tz(raw) if isinstance(raw, str) else None
+    if parsed is None:
+        return None
+    try:
+        value = float(email.utils.mktime_tz(parsed) - time.time())
+    except (OverflowError, ValueError):
+        # A date the platform can't convert, such as the year 99999.
+        return None
+    return value if value > 0 else None
+
+
+def _wait_before_retry(wait: float) -> None:
+    """Sleep before the next attempt, with a line on stderr for a long wait."""
+    if wait > _WAIT_NOTICE_SECONDS:
+        capped = wait >= _MAX_RETRY_WAIT_SECONDS
+        print(
+            f"aelf: the classifier is waiting {wait:.0f} s before it tries "
+            "the request again"
+            + (", the longest aelfrice waits" if capped else ""),
+            file=sys.stderr,
+            flush=True,
+        )
+    _sleep(wait)
 
 
 def _request_args(
@@ -1035,18 +1171,9 @@ def _unusable_response(reason: str) -> LLMTransientError:
     )
 
 
-def _reached_response_handling(exc: BaseException) -> bool:
-    """Return True if the traceback runs through the SDK's response handling.
-
-    A raw exception from inside `create` has no status code or cause to read,
-    and the same frame name holds on SDK 2.0.0 and 2.6.0.
-    """
-    tb = exc.__traceback__
-    while tb is not None:
-        if tb.tb_frame.f_code.co_name == "_process_response":
-            return True
-        tb = tb.tb_next
-    return False
+def _is_api_error(exc: BaseException) -> bool:
+    """Whether the exception is in the SDK's `APIError` family, by class name."""
+    return any(cls.__name__ == "APIError" for cls in type(exc).__mro__)
 
 
 def _error_type(exc: BaseException) -> str | None:
@@ -1089,13 +1216,15 @@ def _auth_failure_text(exc: BaseException) -> str:
     return label
 
 
-def _fault_from_call(exc: BaseException) -> LLMTransientError:
+def _fault_from_call(exc: BaseException, *, arrived: bool) -> LLMTransientError:
     """Sort an exception from `create` into a fallback, with or without a warning.
 
     Status errors and the `APIError` family are read by status and by cause,
     since the SDK raises its connection error `from` the HTTP library's
     exception. Like `_is_auth_error`, this checks names and attributes to avoid
-    importing the SDK at module load.
+    importing the SDK at module load. `arrived` says a response came back
+    during the attempt, which is what makes a raw exception an unusable
+    response rather than a failure before a send.
     """
     status = getattr(exc, "status_code", None)
     if not isinstance(status, int):
@@ -1108,18 +1237,21 @@ def _fault_from_call(exc: BaseException) -> LLMTransientError:
         )
     if status is not None:
         return LLMTransientError(str(exc), request_sent=True)
-    if not any(cls.__name__ == "APIError" for cls in type(exc).__mro__):
+    if not _is_api_error(exc):
         name = type(exc).__name__
-        if _reached_response_handling(exc):
+        if arrived:
             return _unusable_response(name)
         return LLMTransientError(str(exc), warning=_did_not_run(name))
     cause = type(exc.__cause__).__name__
     if cause in _CONFIG_CAUSES:
+        # After a response, this is a redirect to a URL the client can't use.
+        if arrived:
+            return _unusable_response(cause)
         return LLMTransientError(str(exc), warning=_did_not_run(cause))
     if cause in _UNDECODABLE_CAUSES:
         return _unusable_response(cause)
     return LLMTransientError(
-        str(exc), request_sent=cause not in _NOT_SENT_CAUSES,
+        str(exc), request_sent=arrived or cause not in _NOT_SENT_CAUSES,
     )
 
 
@@ -1251,12 +1383,12 @@ def classify_batch(
         result.fallback_reason = type(exc).__name__ + ":transient"
         result.telemetry.fallbacks = len(candidates)
         result.warning = exc.warning
-        result.telemetry.requests = int(exc.request_sent)
+        result.telemetry.requests = exc.requests
         return result
 
     result.telemetry.input_tokens += resp.input_tokens
     result.telemetry.output_tokens += resp.output_tokens
-    result.telemetry.requests += 1
+    result.telemetry.requests += resp.requests
 
     # Post-call cap check: if the response usage pushed us past the
     # cap, abort before parsing. Already-classified candidates from

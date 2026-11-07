@@ -131,7 +131,7 @@ def test_the_installed_sdk_sends_the_classifier_request(
     def _client(**kwargs: Any) -> Any:
         http_client = _http.Client(transport=_http.MockTransport(_handler))
         clients.append(http_client)
-        return anthropic.Anthropic(**kwargs, http_client=http_client, max_retries=0)
+        return anthropic.Anthropic(**{**kwargs, "http_client": http_client})
 
     try:
         resp = _call(SimpleNamespace(Anthropic=_client))

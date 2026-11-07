@@ -135,6 +135,12 @@ _CANDIDATES = [llm.CandidateInput(index=0, text="a sentence", source="doc:a.md:p
 _SECRET = "PROXYSECRET"
 
 
+@pytest.fixture(autouse=True)
+def _no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The classifier's retries wait up to 1.5 s a call; these tests don't."""
+    monkeypatch.setattr(llm, "_sleep", lambda _seconds: None)
+
+
 def _batch(sdk: Any) -> llm.BatchResult:
     return llm.classify_batch(_CANDIDATES, api_key="test-key-1846", sdk_module=sdk)
 
@@ -233,14 +239,31 @@ def test_raw_exception_inside_create_warns_by_class_only(exc: Exception) -> None
     assert result.warning == f"the classifier didn't run ({type(exc).__name__})"
 
 
-def _raising_in_response_handling(exc: BaseException) -> _FakeSdk:
-    def _process_response() -> Any:
-        raise exc
+class _SdkWithHooks:
+    """A fake SDK whose HTTP client keeps the response hooks it's given."""
+
+    def __init__(self, create: Callable[..., Any]) -> None:
+        self.hooks: list[Callable[[Any], None]] = []
+        self._create = create
+
+    def DefaultHttpxClient(self, *, event_hooks: dict[str, Any]) -> Any:  # noqa: N802
+        self.hooks.extend(event_hooks["response"])
+        return SimpleNamespace(close=lambda: None)
+
+    def __getattr__(self, _name: str) -> Callable[..., Any]:
+        return lambda **_kwargs: SimpleNamespace(messages=SimpleNamespace(create=self._create))
+
+
+def _raising_after_a_response(exc: BaseException) -> _SdkWithHooks:
+    """Raise from `create` after the HTTP client saw a response, as a parse failure does."""
 
     def _create(**_kwargs: Any) -> Any:
-        return _process_response()
+        for hook in sdk.hooks:
+            hook(SimpleNamespace(status_code=200))
+        raise exc
 
-    return _client_with(_create)
+    sdk = _SdkWithHooks(_create)
+    return sdk
 
 
 @pytest.mark.parametrize(
@@ -253,10 +276,10 @@ def _raising_in_response_handling(exc: BaseException) -> _FakeSdk:
     ],
     ids=lambda e: type(e).__name__,
 )
-def test_raw_exception_in_response_handling_is_unusable_and_counts(
+def test_raw_exception_after_a_response_is_unusable_and_counts(
     exc: Exception,
 ) -> None:
-    result = _batch(_raising_in_response_handling(exc))
+    result = _batch(_raising_after_a_response(exc))
     assert result.sdk_mismatch_error is None
     assert result.fallback_used
     assert result.telemetry.requests == 1
@@ -498,21 +521,22 @@ def test_mismatch_text_strips_control_characters(char: str) -> None:
 # --- What falls back in silence -------------------------------------------
 
 
+# Every one of these is tried 3 times, and `requests` counts the tries that sent.
 @pytest.mark.parametrize(
     ("exc", "requests"),
     [
         (_connection_error(ConnectError), 0),
         (_connection_error(ConnectTimeout), 0),
         (_connection_error(ProxyError), 0),
-        (_connection_error(ReadError), 1),
-        (_connection_error(ReadTimeout), 1),
-        (APIError("bare"), 1),
-        (_StatusError(408), 1),
-        (_StatusError(409), 1),
-        (_StatusError(429), 1),
-        (_StatusError(500), 1),
-        (_StatusError(503), 1),
-        (_StatusError(529), 1),
+        (_connection_error(ReadError), 3),
+        (_connection_error(ReadTimeout), 3),
+        (APIError("bare"), 3),
+        (_StatusError(408), 3),
+        (_StatusError(409), 3),
+        (_StatusError(429), 3),
+        (_StatusError(500), 3),
+        (_StatusError(503), 3),
+        (_StatusError(529), 3),
     ],
     ids=[
         "ConnectError", "ConnectTimeout", "ProxyError", "ReadError", "ReadTimeout",
@@ -537,7 +561,7 @@ def test_status_code_outside_the_family_counts_as_a_response() -> None:
     result = _batch(_raising(exc))
     assert result.fallback_used
     assert result.warning is None
-    assert result.telemetry.requests == 1
+    assert result.telemetry.requests == 3
 
 
 @pytest.mark.parametrize("status", [401, 403])
@@ -1198,7 +1222,7 @@ def test_installed_sdk_rate_limit_stays_silent_with_requests_1(
     assert rc == 0
     assert capsys.readouterr().err == ""
     assert _Api.hits == 3
-    assert "requests=1 " in out.getvalue()
+    assert "requests=3 " in out.getvalue()
 
 
 @pytest.mark.parametrize("status", [400, 404, 413, 422])
