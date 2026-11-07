@@ -48,7 +48,7 @@ _URL_USERINFO_RE: re.Pattern[str] = re.compile(r"https?://[^/?#\s]*@")
 # In a code span: a KEY=value assignment, a bearer token, or an Authorization
 # header. `==`, `<=`, and `!=` aren't assignments.
 _CREDENTIAL_CODE_RE: re.Pattern[str] = re.compile(
-    r"[\w.-]\s*=(?!=)\s*[^\s=`]|\bbearer\s+\S|\bauthorization\s*:",
+    r"[\w.-]\s*=\s*[^\s=`]|\bbearer\s+\S|\bauthorization\s*:",
     re.IGNORECASE,
 )
 
