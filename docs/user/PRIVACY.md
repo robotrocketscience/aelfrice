@@ -175,6 +175,25 @@ The cloud LLM that receives your prompt sees everything that aelfrice injects. T
 
 If a fact must never leave your machine, don't store it.
 
+## Secrets in your prompts
+
+aelfrice has no general secret scanner. A secret you type in plain text is stored as you typed it, and later sessions can retrieve and inject it. For example, `The widget API key is zqk-1234.` becomes a belief.
+
+When aelfrice stores a sentence from a prompt, it keeps inline code and URLs in the sentence, and it removes fenced code blocks and these shapes:
+
+- A URL with a query string or with a username or password, such as `https://example.invalid/export?token=zqk-1234` or `https://bot:zqk-1234@example.invalid/widget.tar`. The whole URL is removed.
+- Inline code that holds a `KEY=value` assignment, a bearer token, or an `Authorization:` header, such as `` `ZQ_API_KEY=zqk-1234` `` or `` `Authorization: Bearer zqk-1234` ``. The whole span is removed.
+
+This rule is a fixed list of shapes, and it misses a secret in any other shape. aelfrice stores all of these:
+
+- A token in a URL's path: `https://hooks.example.invalid/services/T0/B0/zqk-1234`.
+- A token in a URL's fragment: `https://example.invalid/cb#access_token=zqk-1234`.
+- Inline code with another shape: `` `ZQ_API_KEY: zqk-1234` ``, a `curl -u` command with a user and a password, or `` `zqk-1234` ``.
+
+Inline code and URLs that aelfrice keeps are part of the belief. You can search for them, retrieval can inject them, and the outbound paths on this page send them with the rest of the belief's content.
+
+The rule covers beliefs and nothing else. The transcript log, `turns.jsonl`, holds each prompt as you typed it, and an edge between two turns of a session keeps the start of the earlier prompt as you typed it.
+
 ## Batch ingest of historical sessions
 
 `aelf ingest-transcript --batch ~/.claude/projects/` pulls existing Claude Code session JSONL files into the local belief graph. Those files might contain pasted secrets, customer data, or anything else you typed in chat, and the v1.2 ingest path has no scrubber for personally identifiable information (PII). Review them before you backfill. If older logs predate your secret-handling discipline, use `--since` to scope the run to recent sessions.
