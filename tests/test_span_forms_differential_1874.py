@@ -473,30 +473,31 @@ def test_the_support_log_matches_on_the_holed_form(tmp_path: Path) -> None:
 # --- spans that stay removed (operator ruling) ------------------------------
 
 # Built at runtime, so this source holds no full key shape for a pattern scan to hit.
-_RANDOM = "q1W2e3R4t5Y6u7I8o9P0a1S2d3F4g5H6"
+# The body is low in entropy, so a prefix's own pattern is what removes each one.
+_BODY = "a1b2c3d4" * 5
 _KNOWN_SHAPES = {
-    "model vendor, new": "sk" + "-ant-api03-" + _RANDOM,
-    "model vendor, project": "sk" + "-proj-" + _RANDOM,
-    "model vendor, old": "sk" + "-" + _RANDOM,
-    "model vendor, cloud": "AI" + "za" + _RANDOM + "abcde",
-    "code host, classic": "gh" + "p_" + _RANDOM,
-    "code host, oauth": "gh" + "o_" + _RANDOM,
-    "code host, server": "gh" + "s_" + _RANDOM,
-    "code host, refresh": "gh" + "r_" + _RANDOM,
-    "code host, user": "gh" + "u_" + _RANDOM,
-    "code host, fine-grained": "github" + "_pat_" + _RANDOM,
-    "code host, other": "gl" + "pat-" + _RANDOM[:20],
+    "model vendor, new": "sk" + "-ant-api03-" + _BODY,
+    "model vendor, project": "sk" + "-proj-" + _BODY,
+    "model vendor, old": "sk" + "-" + _BODY,
+    "model vendor, cloud": "AI" + "za" + _BODY + "abcde",
+    "code host, classic": "gh" + "p_" + _BODY,
+    "code host, oauth": "gh" + "o_" + _BODY,
+    "code host, server": "gh" + "s_" + _BODY,
+    "code host, refresh": "gh" + "r_" + _BODY,
+    "code host, user": "gh" + "u_" + _BODY,
+    "code host, fine-grained": "github" + "_pat_" + _BODY,
+    "code host, other": "gl" + "pat-" + _BODY[:20],
     "cloud access key": "AK" + "IA" + "Q1W2E3R4T5Y6U7I8",
     "cloud session key": "AS" + "IA" + "Q1W2E3R4T5Y6U7I8",
-    "payments": "sk" + "_live_" + _RANDOM,
-    "payments, restricted": "rk" + "_live_" + _RANDOM,
-    "package registry": "np" + "m_" + _RANDOM,
-    "package index": "py" + "pi-" + _RANDOM,
-    "model hub": "h" + "f_" + _RANDOM,
-    "chat bot token": "xo" + "xb-1234567890-" + _RANDOM,
-    "chat user token": "xo" + "xp-1234567890-" + _RANDOM,
-    "chat app bot token": "123456" + "7890:" + _RANDOM,
-    "JWT": "ey" + "JhbGciOiJIUzI1NiJ9." + "ey" + "JzdWIiOiIxMjM0In0." + _RANDOM,
+    "payments": "sk" + "_live_" + _BODY,
+    "payments, restricted": "rk" + "_live_" + _BODY,
+    "package registry": "np" + "m_" + _BODY,
+    "package index": "py" + "pi-" + _BODY,
+    "model hub": "h" + "f_" + _BODY,
+    "chat bot token": "xo" + "xb-1234567890-" + _BODY,
+    "chat user token": "xo" + "xp-1234567890-" + _BODY,
+    "chat app bot token": "123456" + "7890:" + _BODY,
+    "JWT": "ey" + "JhbGciOiJIUzI1NiJ9." + "ey" + "JzdWIiOiIxMjM0In0." + _BODY,
     "RSA key header": "-----BEG" + "IN RSA PRIVATE KEY-----",
     "key header": "-----BEG" + "IN PRIVATE KEY-----",
     "SSH key header": "-----BEG" + "IN OPENSSH PRIVATE KEY-----",
@@ -542,7 +543,7 @@ def test_a_known_credential_never_reaches_the_store(tmp_path: Path) -> None:
     finally:
         store.close()
     assert stored
-    assert not [row for row in stored if "`" in str(row[0]) or _RANDOM.lower() in str(row[0]).lower()]
+    assert not [row for row in stored if "`" in str(row[0]) or _BODY.lower() in str(row[0]).lower()]
 
 
 def _token(distinct: int, length: int) -> str:
