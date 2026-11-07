@@ -306,6 +306,8 @@ _CROSS_SESSION_NOTICE_RE: Final[re.Pattern[str]] = re.compile(
     r"|No idle signal arrived from \"[^\"\n\r]*\" within"
     r"))[^\n\r]*(?:\r?\n|\Z)",
 )
+_SPACE_RUN_RE: Final[re.Pattern[str]] = re.compile(r"\s*")
+_BLANKS_RE: Final[re.Pattern[str]] = re.compile(r"[ \t]*")
 # A closed reminder, found the way ingest's reminder pattern finds one. The
 # attribute run is bounded, so a flood of unclosed openers stays linear.
 _REMINDER_OPENER_RE: Final[re.Pattern[str]] = re.compile(
@@ -348,10 +350,10 @@ def cut_relay(text: str) -> str:
     """`text` without the relay blocks it opens with, or `text` unchanged.
 
     The host writes relay text from other agents, and its own cross-session
-    notices, as a user record. A tag named
-    `teammate-message`, `agent-message`, or `cross-session-message`, in any
-    case, counts only at the start of the record, after optional whitespace or
-    a byte order mark, and only as an opening tag with nothing else on its line.
+    notices, as a user record. A tag named `teammate-message`, `agent-message`,
+    or `cross-session-message`, in any case, counts only at the start of the
+    record, after optional whitespace or a byte order mark, and only as an
+    opening tag with nothing else on its line.
 
     - A closed block runs from that opener through the first closer of its tag
       and the end of the closer's line. The closer must come before the first
@@ -374,6 +376,8 @@ def cut_relay(text: str) -> str:
 
     What's left comes back as it was, from the start of the line after the cut,
     so every pattern that reads line starts sees the same lines it did before.
+    When the first word after the cut, past any closed reminders, sits behind
+    whitespace a line start doesn't skip, such as a lone CR, nothing is cut.
     """
     if not _RELAY_HINT_RE.match(text):
         return text
@@ -407,7 +411,32 @@ def cut_relay(text: str) -> str:
         if not line_end:
             break
         pos = line_end.end()
+    if pos == 0 or not _opens_a_line(text, pos, reminders, starts):
+        return text
     return text[pos:]
+
+
+def _opens_a_line(
+    text: str, pos: int, reminders: list[tuple[int, int]], starts: list[int],
+) -> bool:
+    """True when the first word at or after line start `pos` opens its line.
+
+    Ingest drops closed reminders and strips the record, then reads tags at line
+    starts. If the first word sits behind whitespace a line start doesn't skip,
+    such as a lone CR, stripping would move it to a line start, and a harness
+    tag there could take the words after it. A reminder opens its own line, so
+    only the whitespace after the last reminder matters.
+    """
+    end = pos
+    for _ in range(len(reminders) + 1):
+        space = _SPACE_RUN_RE.match(text, pos)
+        end = space.end() if space else pos
+        at = bisect_right(starts, end) - 1
+        if at < 0 or end >= reminders[at][1]:
+            break
+        pos = reminders[at][1]
+    line = text.rfind("\n", pos, end) + 1 or pos
+    return bool(_BLANKS_RE.fullmatch(text, line, end))
 
 
 # #1025: a sentence that begins with a CLOSING tag ("</…") is a stray

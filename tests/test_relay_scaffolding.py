@@ -332,3 +332,30 @@ def test_a_reminder_closer_inside_its_opener_does_not_end_the_reminder() -> None
         f"</system-reminder>\n{BODY}\n</agent-message>\n{MINE}"
     )
     assert cut_relay(text) == MINE
+
+
+@pytest.mark.parametrize("space", ["\r", "\x85", "\x0b", "\u2028", " \r "])
+def test_nothing_is_cut_when_stripping_would_move_a_tag_to_a_line_start(space: str) -> None:
+    text = f"{RELAY_BLOCKS[3]}\n{space}<result>\n{MINE}"
+    assert cut_relay(text) == text
+    assert MINE in (_user_speech(text) or "")
+
+
+@pytest.mark.parametrize("space", ["", "  ", "\n", "\n\t", "\r\n  "])
+def test_blank_lines_and_spaces_after_the_cut_are_fine(space: str) -> None:
+    assert cut_relay(f"{RELAY_BLOCKS[3]}\n{space}{MINE}") == f"{space}{MINE}"
+
+
+@pytest.mark.parametrize("between", [
+    "<system-reminder>x</system-reminder>\r",
+    "<system-reminder>x</system-reminder>\n<system-reminder>y</system-reminder>\r",
+])
+def test_the_strip_guard_looks_past_a_reminder(between: str) -> None:
+    text = f"{RELAY_BLOCKS[3]}\n{between}<result>\n{MINE}"
+    assert cut_relay(text) == text
+    assert MINE in (_user_speech(text) or "")
+
+
+def test_a_reminder_after_the_cut_is_fine_when_a_line_follows() -> None:
+    reminder = "<system-reminder>x</system-reminder>"
+    assert cut_relay(f"{RELAY_BLOCKS[3]}\n{reminder}\n{MINE}") == f"{reminder}\n{MINE}"
