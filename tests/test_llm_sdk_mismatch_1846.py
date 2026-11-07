@@ -474,11 +474,12 @@ def test_rejection_prints_nothing_else_from_the_body(body: object) -> None:
     assert warning == f"the API rejected the classifier request (status 400). {_CHECK}"
 
 
-def test_error_type_at_the_length_limit_prints() -> None:
-    kind = "a_" + "b" * 38
-    assert len(kind) == 40
+@pytest.mark.parametrize(
+    "kind", ["invented_review_key", "a_" + "b" * 38, "rate_limit_errors"],
+)
+def test_an_error_type_the_api_does_not_document_never_prints(kind: str) -> None:
     warning = _batch(_raising(_BodyError(400, {"error": {"type": kind}}))).warning
-    assert warning is not None and f"(status 400, {kind})" in warning
+    assert warning == f"the API rejected the classifier request (status 400). {_CHECK}"
 
 
 def _mismatch(text: str, key: str = "test-key-1846") -> str | None:

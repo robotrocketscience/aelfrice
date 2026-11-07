@@ -70,7 +70,6 @@ import json
 import logging
 import math
 import os
-import re
 import sys
 import time
 from collections.abc import Iterator
@@ -162,12 +161,25 @@ _UNDECODABLE_CAUSES: Final[frozenset[str]] = frozenset({"DecodingError"})
 # run still falls back, and the user gets one warning naming the status.
 _REJECTED_STATUSES: Final[frozenset[int]] = frozenset({400, 404, 413, 422})
 
-# The only part of a rejection the warning prints beyond the status. Anything
-# else a server sends can echo the base URL or the key. Letters and underscores,
-# with at least one underscore, match every documented `error.type` and refuse
-# a token.
-_ERROR_TYPE: Final[re.Pattern[str]] = re.compile(r"[a-z]+(?:_[a-z]+)+")
-_ERROR_TYPE_MAX_CHARS: Final[int] = 40
+# The only part of a rejection the warning prints beyond the status: an
+# `error.type` the API documents. Anything else a server sends, a key-shaped
+# type included, can echo the base URL or the key. These are the SDK 2.6.0
+# `ErrorType` values plus the 413 type.
+_KNOWN_ERROR_TYPES: Final[frozenset[str]] = frozenset({
+    "api_error",
+    "authentication_error",
+    "billing_error",
+    "conflict_error",
+    "invalid_request_error",
+    "memory_path_conflict_error",
+    "memory_precondition_failed_error",
+    "not_found_error",
+    "overloaded_error",
+    "permission_error",
+    "rate_limit_error",
+    "request_too_large",
+    "timeout_error",
+})
 
 # Bound on the exception text in an SDK-mismatch error.
 _MISMATCH_DETAIL_CHARS: Final[int] = 200
@@ -1198,7 +1210,7 @@ def _is_api_error(exc: BaseException) -> bool:
 
 
 def _error_type(exc: BaseException) -> str | None:
-    """Return the decoded body's `error.type` if it's a short identifier."""
+    """Return the decoded body's `error.type` if it's one the API documents."""
     body = getattr(exc, "body", None)
     if not isinstance(body, dict):
         return None
@@ -1206,9 +1218,7 @@ def _error_type(exc: BaseException) -> str | None:
     if not isinstance(error, dict):
         return None
     kind = cast(dict[str, Any], error).get("type")
-    if not isinstance(kind, str) or len(kind) > _ERROR_TYPE_MAX_CHARS:
-        return None
-    return kind if _ERROR_TYPE.fullmatch(kind) else None
+    return kind if isinstance(kind, str) and kind in _KNOWN_ERROR_TYPES else None
 
 
 def _status_label(status: int, exc: BaseException) -> str:

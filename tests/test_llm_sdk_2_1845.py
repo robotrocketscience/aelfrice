@@ -720,6 +720,28 @@ def _auth_text(exc: Exception) -> str | None:
     return llm.classify_batch(candidates, api_key=_KEY, sdk_module=_sdk_raising(exc)).auth_error
 
 
+@_EVERY_COMMAND
+def test_a_key_shaped_error_type_never_prints(
+    project: Path,
+    gateway: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    key = "invented_review_key"
+    monkeypatch.setenv(llm.ENV_API_KEY, key)
+    body = json.dumps({"error": {"type": key, "message": "m"}}).encode()
+    _Gateway.reply = (401, _JSON, body)
+
+    rc, _ = _main(argv, project, tmp_path)
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert key not in err
+    assert "status 401;" in err
+
+
 _HELD = (_SDK, f"{_SDK}._base_client", "httpx2", "httpcore2", "httpcore2.http11")
 
 
