@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Final, cast
 
 from aelfrice.config_discovery import discover_config
-from aelfrice.extraction import holed_form
+from aelfrice.derivation import typed_text
 from aelfrice.models import (
     INGEST_SOURCE_TRANSCRIPT,
     ORIGIN_USER_CORRECTED,
@@ -216,7 +216,10 @@ def iter_reworded_candidates(
             continue
         # #1874: the matcher reads a typed sentence without its inline code
         # and URLs, as it reads the target's sentences.
-        typed = holed_form(supporter.content)
+        typed = typed_text(
+            supporter.content,
+            cast("Mapping[str, Any]", entry).get("raw_meta"),
+        )
         terms = candidate_terms(typed)
         if not terms:
             continue

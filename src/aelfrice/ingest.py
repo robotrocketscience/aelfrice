@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Final, cast
 
 from aelfrice.classification_core import INGEST_CLASSIFIER_VERSION, rule_set_hash
-from aelfrice.derivation import META_DERIVED_FROM, META_TURN_SHA, TURN_SHA_LEN
+from aelfrice.derivation import META_DERIVED_FROM, META_HOLED, META_TURN_SHA, TURN_SHA_LEN
 from aelfrice.derivation_worker import run_worker
 from aelfrice.session_resolution import resolve_session_id
 from aelfrice.models import (
@@ -216,11 +216,13 @@ def _ingest_turn(
     """
     # #1874: only a sentence the user typed keeps its inline code and URLs, so
     # every other row, including agent_inferred ones, reads as it did before.
-    full_sentences, subfloor_between = partition_sentences(
-        text, keep_spans=is_typed_by_user(source, role),
-    )
+    keep_spans = is_typed_by_user(source, role)
+    full_sentences, subfloor_between = partition_sentences(text, keep_spans=keep_spans)
     if not full_sentences:
         return TurnIngest(inserted=[], resolved=[])
+    holed_sentences = (
+        partition_sentences(text, keep_spans=False)[0] if keep_spans else full_sentences
+    )
 
     ts = created_at or _now_utc_iso()
 
@@ -270,6 +272,8 @@ def _ingest_turn(
                     "prior_text": full_sentences[idx - 1],
                     "anchor_text": " | ".join(between)[:ANCHOR_TEXT_MAX_LEN],
                 }
+            if holed_sentences[idx] != sentence:
+                row_meta = {**row_meta, META_HOLED: holed_sentences[idx]}
             log_id = store.record_ingest(
                 source_kind=INGEST_SOURCE_TRANSCRIPT,
                 source_path=source,

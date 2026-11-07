@@ -12,6 +12,7 @@ No `MemoryStore` dependency anywhere in this module.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Final
@@ -88,6 +89,13 @@ _DF_ANCHOR_TEXT: Final[str] = "anchor_text"
 # and only the ingest entry point sees the turn. `derive()` never reads
 # it, which keeps replay equality independent of it.
 META_TURN_SHA: Final[str] = "turn_sha"
+
+# #1874: what the classifier reads for a sentence that keeps a span. It rides in
+# `raw_meta` for the same reason, and only when it differs from the sentence. The
+# stored text can't give it back: a URL that markdown emphasis assembled reads
+# the same as one that was held, and the classifier reads the first and not the
+# second. A row without it reads as stored, as every row before #1874 does.
+META_HOLED: Final[str] = "holed"
 TURN_SHA_LEN: Final[int] = 16
 
 
@@ -197,6 +205,12 @@ class DerivationOutput:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def typed_text(raw: str, raw_meta: Mapping[str, object] | None) -> str:
+    """The text the classifier reads for an ingest_log row the user typed (#1874)."""
+    holed = (raw_meta or {}).get(META_HOLED)
+    return holed if isinstance(holed, str) else raw
 
 
 def decision_text(belief_id: str, content: str) -> str:
@@ -473,7 +487,7 @@ def derive(inp: DerivationInput) -> DerivationOutput:
     classify_source = USER_SOURCE if is_user_transcript else source
     # #1874: a sentence the user typed keeps its inline code and URLs in the
     # store, and the classifier reads it without them.
-    classify_text = holed_form(raw) if is_user_transcript else raw
+    classify_text = typed_text(raw, raw_meta) if is_user_transcript else raw
     result = classify_sentence(classify_text, classify_source)
     if not result.persist:
         return DerivationOutput(

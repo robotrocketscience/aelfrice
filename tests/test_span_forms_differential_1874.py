@@ -17,7 +17,7 @@ import pytest
 from aelfrice.classification_core import USER_SOURCE, classify_sentence
 from aelfrice.contradiction import _slot_conflict_preextracted
 from aelfrice.cli import main as cli_main
-from aelfrice.derivation import DerivationInput, _belief_id, derive
+from aelfrice.derivation import META_HOLED, DerivationInput, _belief_id, derive
 from aelfrice.extraction import (
     CODE_FENCE_RE,
     extract_sentences,
@@ -38,6 +38,7 @@ from aelfrice.noise_filter import (
     is_transcript_scaffolding,
 )
 from aelfrice.phantom_promotion_opportunity import _PHANTOM_RESIDUE_ALLOWED
+from aelfrice.replay import replay_full_equality
 from aelfrice.sentence_partition import (
     _looks_like_subfloor_noise,
     partition_sentences,
@@ -218,12 +219,15 @@ def test_every_type_verdict_equals_the_one_on_the_holed_text() -> None:
     for prompt in CORPUS:
         whole, _ = partition_sentences(prompt)
         for sentence, frozen in zip(whole, _frozen_partition(prompt)[0], strict=True):
+            meta: dict[str, object] = {"role": "user"}
+            if frozen != sentence:
+                meta[META_HOLED] = frozen
             derived = derive(
                 DerivationInput(
                     raw_text=sentence,
                     source_kind=INGEST_SOURCE_TRANSCRIPT,
                     source_path="transcript",
-                    raw_meta={"role": "user"},
+                    raw_meta=meta,
                     ts="2026-11-06T00:00:00+00:00",
                 )
             ).belief
@@ -246,19 +250,87 @@ def test_every_type_verdict_equals_the_one_on_the_holed_text() -> None:
         ("Set `prefer_fast` on the widget.", "factual"),
     ],
 )
-def test_span_text_can_not_set_the_type(sentence: str, belief_type: str) -> None:
-    belief = derive(
-        DerivationInput(
-            raw_text=sentence,
-            source_kind=INGEST_SOURCE_TRANSCRIPT,
-            source_path="transcript",
-            raw_meta={"role": "user"},
-            ts="2026-11-06T00:00:00+00:00",
-        )
-    ).belief
+def test_span_text_can_not_set_the_type(tmp_path: Path, sentence: str, belief_type: str) -> None:
+    store = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        [belief_id] = _ingest_turn(store, sentence, "transcript", role="user").inserted
+        belief = store.get_belief(belief_id)
+        report = replay_full_equality(store)
+    finally:
+        store.close()
     assert belief is not None
     assert belief.type == belief_type
     assert belief.content == sentence
+    assert (report.matched, report.mismatched) == (1, 0)
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "*http*://example.invalid/standalone",
+        "Run **https**://example.invalid/a!",
+        "Run http*s*://example.invalid/a!",
+        "See __https__://example.invalid/never-push-to-main for the widget.",
+    ],
+)
+def test_a_url_that_emphasis_assembled_stores_and_classifies_as_before(
+    tmp_path: Path, prompt: str,
+) -> None:
+    [frozen] = _frozen_partition(prompt)[0]
+    expected = classify_sentence(frozen, USER_SOURCE)
+    assert expected.persist
+    store = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        [belief_id] = _ingest_turn(store, prompt, "transcript", role="user").inserted
+        belief = store.get_belief(belief_id)
+        report = replay_full_equality(store)
+    finally:
+        store.close()
+    assert belief is not None
+    assert (belief.content, belief.type, belief.alpha, belief.beta) == (
+        frozen, expected.belief_type, expected.alpha, expected.beta,
+    )
+    assert (report.matched, report.mismatched) == (1, 0)
+
+
+def test_a_row_from_before_1874_replays_as_it_was_written() -> None:
+    """A row with no holed text reads as stored, even with a URL in it."""
+    raw = "Run https://example.invalid/a!"
+    derived = derive(
+        DerivationInput(
+            raw_text=raw, source_kind=INGEST_SOURCE_TRANSCRIPT, source_path="transcript",
+            raw_meta={"role": "user"}, ts="2026-11-06T00:00:00+00:00",
+        )
+    ).belief
+    expected = classify_sentence(raw, USER_SOURCE)
+    assert derived is not None
+    assert derived.type == expected.belief_type
+    assert derived.type == "correction"
+
+
+def test_the_log_row_carries_the_holed_text_only_when_it_differs(tmp_path: Path) -> None:
+    store = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        _ingest_turn(store, "Run `zqtool` before the widget release.", "transcript", role="user")
+        _ingest_turn(store, "The plain widget sentence has no span.", "transcript", role="user")
+        rows = dict(store._conn.execute("SELECT raw_text, raw_meta FROM ingest_log").fetchall())  # noqa: SLF001
+    finally:
+        store.close()
+    assert json.loads(rows["Run `zqtool` before the widget release."])[META_HOLED] == "Run   before the widget release."
+    assert META_HOLED not in json.loads(rows["The plain widget sentence has no span."])
+
+
+def test_other_sources_ignore_the_holed_text() -> None:
+    text = "Use `never push to main` as the widget title."
+    derived = derive(
+        DerivationInput(
+            raw_text=text, source_kind=INGEST_SOURCE_TRANSCRIPT, source_path="session-end",
+            raw_meta={"role": "user", META_HOLED: "Use   as the widget title."},
+            ts="2026-11-06T00:00:00+00:00",
+        )
+    ).belief
+    assert derived is not None
+    assert derived.type == "correction"
 
 
 @pytest.mark.parametrize(
