@@ -281,7 +281,30 @@ _RELAY_CLOSER_RE: Final[re.Pattern[str]] = re.compile(
 # start, so a cut never moves the next tag to the start of a line.
 _LINE_END_RE: Final[re.Pattern[str]] = re.compile(r"[^\S\n\r]*(?:\r?\n|\Z)")
 _RELAY_HINT_RE: Final[re.Pattern[str]] = re.compile(
-    _RELAY_LEAD + r"<(?:" + _RELAY_TAG_ALT + r")", re.IGNORECASE,
+    _RELAY_LEAD + r"(?:<(?:" + _RELAY_TAG_ALT + r")|\[Cross-session )", re.IGNORECASE,
+)
+# The host's cross-session notices, by the words its templates fix, after
+# whitespace. A notice is one line ending in LF, CRLF, or the record, and the
+# whole line goes. A line that only resembles one stays, even one that quotes
+# the header.
+_CROSS_SESSION_NOTICE_RE: Final[re.Pattern[str]] = re.compile(
+    _RELAY_LEAD + r"(?:"
+    r"\[Cross-session delivery notice\] (?:"
+    r"(?:Your message to another session was"
+    r"|\d+ of your messages to another session were) (?:"
+    r"held by that session"
+    r"|denied by the recipient user"
+    r"|not approved before expiry"
+    r"|approved and released to that session"
+    r"|refused)"
+    r"|Do not resend now: (?:one of your messages to another session was"
+    r"|\d+ of your messages to another session were)"
+    r" dropped at that session's inbox"
+    r")|\[Cross-session idle notice\] (?:"
+    r"\"[^\"\n\r]*\"(?:, which you asked to be notified about, (?:is idle now|has exited)"
+    r"| is not holding your idle subscription \()"
+    r"|No idle signal arrived from \"[^\"\n\r]*\" within"
+    r"))[^\n\r]*(?:\r?\n|\Z)",
 )
 # A closed reminder, found the way ingest's reminder pattern finds one. The
 # attribute run is bounded, so a flood of unclosed openers stays linear.
@@ -324,7 +347,8 @@ def _in_spans(spans: list[tuple[int, int]], starts: list[int], index: int) -> bo
 def cut_relay(text: str) -> str:
     """`text` without the relay blocks it opens with, or `text` unchanged.
 
-    The host writes relay text from other agents as a user record. A tag named
+    The host writes relay text from other agents, and its own cross-session
+    notices, as a user record. A tag named
     `teammate-message`, `agent-message`, or `cross-session-message`, in any
     case, counts only at the start of the record, after optional whitespace or
     a byte order mark, and only as an opening tag with nothing else on its line.
@@ -334,14 +358,19 @@ def cut_relay(text: str) -> str:
       paste, and a closer inside a closed `<system-reminder>` doesn't count.
       When the closer's line holds anything else, or ends in a lone CR, the
       block stays and the cut stops.
+    - A host notice counts the same way: a whole line, before the first paste,
+      that opens with the host's delivery or idle header and the fixed words of
+      one of its templates, and ends in LF, CRLF, or the record. The whole line
+      goes.
     - The cut repeats while the next thing, after optional whitespace, is
-      another such opener.
+      another such opener or notice.
     - An opener with no closer takes the record up to the first paste.
 
     Everything from the user's first word on stays, including any later relay
     block. A one-line block, a tag with prose on its line, a self-closed tag, a
     name that only starts like a tag (`<agent-messages>`), and a tag whose
-    attributes don't end on its line aren't openers. A paste is never cut.
+    attributes don't end on its line aren't openers. A bracketed line that only
+    resembles a notice isn't one. A paste is never cut.
 
     What's left comes back as it was, from the start of the line after the cut,
     so every pattern that reads line starts sees the same lines it did before.
@@ -358,6 +387,10 @@ def cut_relay(text: str) -> str:
     pos = 0
     # Each round moves `pos` forward or ends the scan, so the bound is never hit.
     for _ in range(len(text) + 1):
+        notice = _CROSS_SESSION_NOTICE_RE.match(text, pos, limit)
+        if notice:
+            pos = notice.end()
+            continue
         opener = _RELAY_OPENER_RE.match(text, pos)
         if not opener:
             break
