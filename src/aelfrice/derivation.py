@@ -219,6 +219,9 @@ def decision_text(belief_id: str, content: str) -> str:
     Only a sentence the user typed keeps its inline code and URLs, and a rule or
     value quoted inside a span doesn't count as stated. The id names the source,
     so the answer survives what validate, demote, and lock do to the origin.
+
+    An assistant or role-less row on the same label shares the id. It holds no
+    held span, so only a URL that emphasis assembled reads differently.
     """
     typed = belief_id == _belief_id(content, _TRANSCRIPT_SOURCE_LABEL)
     return holed_form(content) if typed else content

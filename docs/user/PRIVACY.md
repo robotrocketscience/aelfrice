@@ -184,10 +184,11 @@ When aelfrice stores a sentence from a prompt, it keeps inline code and URLs in 
 - A URL with a query string or an `@` anywhere, such as `https://example.invalid/export?token=zqk-1234` or `https://bot:zqk-1234@example.invalid/widget.tar`.
 - Inline code that holds an `=`, a `?` with text right after it, a `:` and later an `@`, or the word `bearer`, such as `` `ZQ_API_KEY=zqk-1234` ``, `` `example.invalid/x?zqk-1234` ``, `` `postgres://bot:zqk-1234@db.invalid/w` ``, or `` `Bearer zqk-1234` ``.
 - Inline code with `key`, `token`, `secret`, `password`, `passwd`, `pwd`, `cookie`, `credential`, or a word starting with `auth`, followed by a colon or a value, such as `` `X-Api-Key: zqk-1234` `` or `` `tool --token zqk-1234` ``.
-- Inline code or a URL that holds a known credential shape: a key prefix used by a model vendor (`sk-`, `AIza`), a code host (`ghp_`, `gho_`, `ghs_`, `ghr_`, `ghu_`, `github_pat_`, `glpat-`), a cloud access key (`AKIA`, `ASIA`), payments (`sk_live_`, `rk_live_`), a package registry (`npm_`, `pypi-`), or a model hub (`hf_`), a chat token (`xox` and a letter, or a numeric bot id, a colon, and a token), a Slack or Discord webhook URL in any letter case, a JSON Web Token (JWT), or a `BEGIN ... PRIVATE KEY` header in any letter case.
+- Inline code or a URL that holds a known credential shape: a key prefix used by a model vendor (`sk-`, `AIza`), a code host (`ghp_`, `gho_`, `ghs_`, `ghr_`, `ghu_`, `github_pat_`, `glpat-`), a cloud access key (`AKIA`, `ASIA`), payments (`sk_live_`, `rk_live_`), a package registry (`npm_`, `pypi-`), or a model hub (`hf_`), a chat token (`xox` and a letter, or a numeric bot id, a colon, and a token), any URL under `hooks.slack.com` or a Discord webhook URL, in any letter case, a JSON Web Token (JWT), or a `BEGIN ... PRIVATE KEY` header in any letter case.
 - Inline code or a URL that holds a run of at least 32 letters, digits, or `+=_-` with at least 4.5 bits of entropy per character, which reads as random.
 - Inline code right after `=`, `?`, or `&`, such as ``https://example.invalid/x?k=`zqk-1234` ``.
 - Any span longer than 256 characters.
+- Every span in a sentence longer than 1,024 characters with its spans.
 
 This rule can remove text that isn't a secret, such as `` `a == b` `` or `` `monkey patch` ``. Earlier releases removed every span, so that text is stored as it was before.
 
@@ -200,10 +201,12 @@ This rule is a fixed list of shapes, and it misses a secret in any other shape. 
 - Inline code with another shape: a `curl -u` command with a user and a password, `` `session zqk-1234` ``, `` `KEY＝zqk-1234` `` with a full-width equals sign, or `` `zqk-1234` `` alone.
 - A token with no known prefix that's short or low in entropy, such as a hexadecimal token, which tops out at 4.0 bits per character.
 - A known key or a private key header in plain text, outside inline code and URLs, which earlier releases stored too.
-- A known key prefix in another letter case, such as `GHP_`, or `sk-` or `hf_` right after a letter.
+- A known key prefix in another letter case, such as `GHP_`, `sk-` or `hf_` right after a letter, `sk-` or `pypi-` with no digit in the key, or a key that holds an underscore where the vendor's keys don't.
 - A URL that markdown emphasis builds from a split scheme, query string included, which earlier releases stored too: `**https**://example.invalid/b?token=zqk-1234`. The emphasis pass runs after the URL rule, so the rule never sees it as a URL.
 
 Only a prompt that the default transcript path ingests keeps its spans. A transcript that you ingest with `--source-label` stores each sentence without inline code or URLs, as earlier releases did.
+
+A kept span in a short clause between two stored sentences also goes into the edge between them, so a search for that span returns both sentences. Every shape above stays out of that text too.
 
 Inline code and URLs that aelfrice keeps are part of the belief. You can search for them, retrieval can inject them, and the outbound paths on this page send them with the rest of the belief's content.
 
