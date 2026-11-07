@@ -411,6 +411,40 @@ def test_the_support_log_matches_on_the_holed_form(tmp_path: Path) -> None:
         ("thanks https://example.invalid/hook?key=ZQALONE5555", "ZQALONE5555"),
         ("curl -sS https://example.invalid/api?apikey=ZQACURL6666", "ZQACURL6666"),
         ("Never paste `ZQ_API_KEY=ZQALOCK1212` into the widget channel.", "ZQALOCK1212"),
+        # Any scheme, in any case, once it's in a code span.
+        ("Run `HTTPS://example.invalid/x?ZQASCHM0001` for the widget now.", "ZQASCHM0001"),
+        ("Run `git clone HTTPS://bot:ZQASCHM0002@example.invalid/r` for the widget.", "ZQASCHM0002"),
+        ("Run `Https://bot:ZQASCHM0003@example.invalid/r` for the widget.", "ZQASCHM0003"),
+        ("Use `postgres://bot:ZQASCHM0004@db.invalid/w` for the widget.", "ZQASCHM0004"),
+        ("Use `redis://:ZQASCHM0005@db.invalid/0` for the widget.", "ZQASCHM0005"),
+        ("Use `ftp://bot:ZQASCHM0006@e.invalid/w` for the widget.", "ZQASCHM0006"),
+        ("Use `ssh://ZQASCHM0007@e.invalid/w` for the widget.", "ZQASCHM0007"),
+        ("Use `bot:ZQASCHM0008@db.invalid/w` for the widget.", "ZQASCHM0008"),
+        ("See `example.invalid/x?ZQASCHM0009` for the widget endpoint.", "ZQASCHM0009"),
+        # An `=` in any company.
+        ('Set `"api_key"="ZQAEQLS0001"` before the widget release.', "ZQAEQLS0001"),
+        ("Set `API_KEY:=ZQAEQLS0002` before the widget release.", "ZQAEQLS0002"),
+        ("Set `API_KEY+=ZQAEQLS0003` before the widget release.", "ZQAEQLS0003"),
+        ("Set `cfg[0]=ZQAEQLS0004` before the widget release.", "ZQAEQLS0004"),
+        # A credential word, then a colon or a value.
+        ('Set `{"token":"ZQAWORD0001"}` before the widget release.', "ZQAWORD0001"),
+        ("Use `Bearer: ZQAWORD0002` for the widget endpoint.", "ZQAWORD0002"),
+        ("Use `my_authorization: ZQAWORD0003` for the widget endpoint.", "ZQAWORD0003"),
+        ("Use `X-Api-Key: ZQAWORD0004` for the widget endpoint.", "ZQAWORD0004"),
+        ("Use `password: ZQAWORD0005` for the widget release.", "ZQAWORD0005"),
+        ("Use `client_secret: ZQAWORD0006` for the widget release.", "ZQAWORD0006"),
+        ("Use `Cookies: ZQAWORD0007` for the widget release.", "ZQAWORD0007"),
+        ("Use `credentials: ZQAWORD0008` for the widget release.", "ZQAWORD0008"),
+        ("Use `passwd: ZQAWORD0009` for the widget release.", "ZQAWORD0009"),
+        ("Use `pwd: ZQAWORD0010` for the widget release.", "ZQAWORD0010"),
+        ("Run `tool --token ZQAWORD0011` for the widget endpoint.", "ZQAWORD0011"),
+        ("Run `curl -H Token ZQAWORD0012` for the widget endpoint.", "ZQAWORD0012"),
+        # An `@` anywhere in a bare URL.
+        ("Use https://bot:a#ZQAURLA2224@example.invalid/w for the widget.", "ZQAURLA2224"),
+        ("Use https://bot:ZQAURLA2225/x@example.invalid/w for the widget.", "ZQAURLA2225"),
+        # A span that's the value of a query or an assignment.
+        ("Fetch https://example.invalid/x?k=`ZQAVALU0001` for the widget now.", "ZQAVALU0001"),
+        ("Fetch https://example.invalid/x?a=1&`ZQAVALU0002` for the widget now.", "ZQAVALU0002"),
     ],
 )
 def test_a_credential_shape_stays_removed_as_before(
@@ -419,7 +453,7 @@ def test_a_credential_shape_stays_removed_as_before(
     assert [form.whole for form in sentence_forms(prompt)] == _frozen_extract_sentences(prompt)
     store = MemoryStore(str(tmp_path / "m.db"))
     try:
-        ingest_turn(store, prompt, source="user")
+        _ingest_turn(store, prompt, "transcript", role="user")
         stored = store._conn.execute(  # noqa: SLF001
             "SELECT content FROM beliefs UNION ALL SELECT raw_text FROM ingest_log "
             "UNION ALL SELECT entity_lower FROM belief_entities"
@@ -434,18 +468,47 @@ def test_a_credential_shape_stays_removed_as_before(
     [
         # What the rule keeps on purpose.
         "Is it https://example.invalid/a? Then read the second part.",
-        "See https://example.invalid/@zq/page for the widget docs.",
-        "Check `a == b` and `a != b` and `a <= b` and `a >= b` in the widget.",
         "See `https://example.invalid/a?` for the widget docs.",
+        "Is `this one?` the widget flag to use here?",
+        "See `git@example.invalid:zq/widget.git` for the widget docs.",
+        "Use `pkg@1.2.3` for the widget build.",
         # What the rule misses. It's a list of shapes and not a scanner, and
         # these invented credentials reach the store.
         "Post to https://hooks.example.invalid/services/T0/B0/ZQMISS1 for the widget.",
         "Use https://example.invalid/cb#access_token=ZQMISS2 for the widget.",
-        "Use `ZQ_API_KEY: ZQMISS3` for the widget endpoint.",
+        "Use `https://example.invalid/cb#ZQMISS3` for the widget endpoint.",
         "Use `zqk-ZQMISS4` as the widget credential.",
         "Run `curl -u " + "bot:ZQMISS5 https://example.invalid/a` for the widget.",
         "The widget API key is ZQMISS6 for the release.",
+        "Read https://example.invalid/ZQMISS7? for the widget release.",
+        "Read https://example.invalid/a%3Fk=ZQMISS8 for the widget release.",
+        "Read HTTPS://bot:ZQMISS9@example.invalid/a for the widget release.",
+        "Read postgres://bot:ZQMISS10@db.invalid/w for the widget release.",
+        "Use `KEY\uff1dZQMISS11` for the widget release.",
+        "Use `session ZQMISS12` for the widget release.",
     ],
 )
 def test_the_rule_is_a_list_of_shapes_and_not_a_scanner(sentence: str) -> None:
     assert [form.whole for form in sentence_forms(sentence)] == [sentence]
+
+
+@pytest.mark.parametrize(
+    "span",
+    ["`a == b`", "`--flag=3`", "`monkey patch`", "`key: value`", "`auth: on`"],
+)
+def test_the_rule_may_remove_more_than_a_secret(span: str) -> None:
+    """Over-removal costs what every span cost before #1874, so it's accepted."""
+    sentence = f"Check {span} in the widget config."
+    assert [form.whole for form in sentence_forms(sentence)] == _frozen_extract_sentences(sentence)
+
+
+def test_a_span_right_after_a_question_mark_stays_removed() -> None:
+    sentence = "Fetch https://example.invalid/x?`ZQAVALU0003` for the widget now."
+    assert "ZQAVALU0003" not in " ".join(form.whole for form in sentence_forms(sentence))
+
+
+def test_a_span_after_prose_keeps_its_text_when_a_stop_ends_the_word() -> None:
+    sentence = "Is it this one? `zqtool` is the widget flag to use."
+    assert [form.whole for form in sentence_forms(sentence)] == [
+        "Is it this one?", "`zqtool` is the widget flag to use.",
+    ]

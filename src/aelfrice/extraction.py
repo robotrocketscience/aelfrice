@@ -43,23 +43,28 @@ _URL_RE: re.Pattern[str] = re.compile(r"https?://\S+")
 
 # Spans that stay removed, because they commonly hold a credential (operator
 # ruling, #1874). This is a fixed list of shapes, not a secret scanner: a token
-# in a URL's path or fragment, or in a code span with no `=`, is kept.
-_URL_USERINFO_RE: re.Pattern[str] = re.compile(r"https?://[^/?#\s]*@")
-# In a code span: a KEY=value assignment, a bearer token, or an Authorization
-# header. `==`, `<=`, and `!=` aren't assignments.
+# in a URL's path or fragment, or alone in a code span, is kept. The rule may
+# remove too much, because removal is what happened to every span before #1874.
+#
+# In a code span: any `=`, a `?` inside a word (a query, with or without a
+# scheme), a `:` and then `@` (userinfo, under any scheme), "bearer", or a
+# credential word followed by a colon or a value.
 _CREDENTIAL_CODE_RE: re.Pattern[str] = re.compile(
-    r"[\w.-]\s*=\s*[^\s=`]|\bbearer\s+\S|\bauthorization\s*:",
+    r"=|\S\?\S|:\S*@|bearer"
+    r"|(?:key|token|secret|passw(?:or)?d|pwd|auth\w*|cookie|credential)s?[\"']?(?:\s*:|\s+\S)",
     re.IGNORECASE,
 )
+# A code span right after one of these is the value of an assignment or a query.
+_VALUE_INTRODUCERS: str = "=?&"
 
 
 def _is_credential_url(url: str) -> bool:
-    """True for a URL with userinfo or a query string.
+    """True for a URL with a query string or an `@` anywhere.
 
     The whole URL goes, because a partial one needs a second rule about which
     part is safe. A `?` that only ends a sentence isn't a query string.
     """
-    return "?" in url.rstrip(".,;:!?)]'\"`*_") or bool(_URL_USERINFO_RE.match(url))
+    return "@" in url or "?" in url.rstrip(".,;:!?)]'\"`*_")
 
 
 # Stands in for each kept span while the markdown and sentence passes run. Every
@@ -121,9 +126,10 @@ def sentence_forms(text: str) -> list[SentenceForms]:
         # enclose is often a pasted diff or log, so that text stays removed.
         if len(span.splitlines()) > 1:
             return " "
-        if _CREDENTIAL_CODE_RE.search(span) or any(
-            _is_credential_url(url.group(0)) for url in _URL_RE.finditer(span)
-        ):
+        if _CREDENTIAL_CODE_RE.search(span[1:-1]):
+            return " "
+        start = match.start()
+        if start and match.string[start - 1] in _VALUE_INTRODUCERS:
             return " "
         code.append(span)
         return _HOLD
