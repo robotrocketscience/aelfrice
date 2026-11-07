@@ -21,7 +21,11 @@ from aelfrice.extraction import (
     holed_form,
     sentence_forms,
 )
-from aelfrice.hook import _belief_is_lock_candidate
+from aelfrice.hook import (
+    _belief_is_lock_candidate,
+    _directive_window_spec,
+    _format_stop_prompt,
+)
 from aelfrice.ingest import _ingest_turn, ingest_turn
 from aelfrice.models import INGEST_SOURCE_TRANSCRIPT, ORIGIN_USER_TRANSCRIPT, Belief
 from aelfrice.noise_filter import is_transcript_noise, is_transcript_scaffolding
@@ -122,6 +126,11 @@ _WORDS = (
 def _corpus() -> list[str]:
     rng = random.Random(18742)
     prompts = [h + " " + s + t for h in _HEADS for s in _SPANS for t in _TAILS]
+    # A span where a line's markup starts, which a pattern must read as a space.
+    prompts += [
+        s + mark + " the rest of this line stays here."
+        for s in _SPANS for mark in (" 1.", " -", " *", " +", " #", " |", " 12.")
+    ]
     prompts += [
         " ".join(rng.choice(_WORDS) for _ in range(rng.randint(1, 14)))
         for _ in range(6000)
@@ -259,6 +268,49 @@ def test_a_rule_quoted_in_a_span_is_not_a_lock_candidate() -> None:
     assert _belief_is_lock_candidate(
         belief("Never push to main on the widget.", ORIGIN_USER_TRANSCRIPT), "s1",
     )
+
+
+def test_a_detector_reads_other_origins_as_stored() -> None:
+    """Only a sentence from a prompt has a holed form. Onboard text never did."""
+    onboard = Belief(
+        id="b1", content="Use `never push to main` as the widget title.", content_hash="h",
+        alpha=3.0, beta=1.0, type="factual", lock_level="none", locked_at=None,
+        created_at="2026-11-06T00:00:00+00:00", last_retrieved_at=None,
+        session_id="s1", origin="user_validated",
+    )
+    assert _belief_is_lock_candidate(onboard, "s1")
+
+
+def test_the_classifier_reads_other_sources_as_stored() -> None:
+    text = "Use `never push to main` as the widget title."
+    derived = derive(
+        DerivationInput(
+            raw_text=text, source_kind="filesystem", source_path="docs/a.md",
+            ts="2026-11-06T00:00:00+00:00",
+        )
+    ).belief
+    assert derived is not None
+    assert derived.type == classify_sentence(text, "docs/a.md").belief_type
+    assert derived.type == "correction"
+
+
+def test_a_lock_prompt_takes_no_window_from_inside_a_span() -> None:
+    """A correction-class belief is a candidate, so its window must come from prose."""
+    quoted = Belief(
+        id="b1", content="Use `always remember this for 7 days` as the widget title.",
+        content_hash="h", alpha=3.0, beta=1.0, type="correction", lock_level="none",
+        locked_at=None, created_at="2026-11-06T00:00:00+00:00", last_retrieved_at=None,
+        session_id="s1", origin=ORIGIN_USER_TRANSCRIPT,
+    )
+    assert _directive_window_spec(quoted.content) is not None
+    assert "--for" not in _format_stop_prompt([quoted])
+
+
+def test_a_sub_floor_clause_keeps_its_span_for_the_anchor() -> None:
+    text = "Run the first thing here now.\nUse this one: `zqtool`\nThen do the second thing now."
+    full, between = partition_sentences(text)
+    assert full == ["Run the first thing here now.", "Then do the second thing now."]
+    assert between == [[], ["Use this one: `zqtool`"]]
 
 
 def test_a_phantom_with_a_span_still_fails_the_residue_check() -> None:
