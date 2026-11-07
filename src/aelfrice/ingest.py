@@ -35,7 +35,7 @@ from aelfrice.models import (
     INGEST_SOURCE_TRANSCRIPT,
     Edge,
 )
-from aelfrice.derivation import _TRANSCRIPT_SOURCE_LABEL
+from aelfrice.derivation import is_typed_by_user
 from aelfrice.sentence_partition import (
     partition_sentences,
     stored_sentences as stored_sentences,
@@ -217,7 +217,7 @@ def _ingest_turn(
     # #1874: only a sentence the user typed keeps its inline code and URLs, so
     # every other row, including agent_inferred ones, reads as it did before.
     full_sentences, subfloor_between = partition_sentences(
-        text, keep_spans=role == "user" and source == _TRANSCRIPT_SOURCE_LABEL,
+        text, keep_spans=is_typed_by_user(source, role),
     )
     if not full_sentences:
         return TurnIngest(inserted=[], resolved=[])

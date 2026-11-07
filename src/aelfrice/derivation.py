@@ -47,6 +47,14 @@ from aelfrice.models import (
 # document content (origin=agent_inferred, deflated alpha).
 _TRANSCRIPT_SOURCE_LABEL: Final[str] = "transcript"
 
+
+def is_typed_by_user(source: str, role: object) -> bool:
+    """True for a transcript row the user typed, on the default label (#888).
+
+    Every other transcript row is `agent_inferred`, the origin onboard text uses.
+    """
+    return source == _TRANSCRIPT_SOURCE_LABEL and role == "user"
+
 _BELIEF_ID_HEX_LEN: Final[int] = 16
 
 # Source label used by triple-derived beliefs; matches
@@ -449,8 +457,7 @@ def derive(inp: DerivationInput) -> DerivationOutput:
     raw_meta = inp.raw_meta or {}
     is_user_transcript = (
         inp.source_kind == INGEST_SOURCE_TRANSCRIPT
-        and source == _TRANSCRIPT_SOURCE_LABEL
-        and raw_meta.get("role") == "user"
+        and is_typed_by_user(source, raw_meta.get("role"))
     )
     classify_source = USER_SOURCE if is_user_transcript else source
     # #1874: a sentence the user typed keeps its inline code and URLs in the
