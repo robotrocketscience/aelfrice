@@ -1,0 +1,23 @@
+{
+ "canary_legs": [
+  "3.12",
+  "3.13"
+ ],
+ "candidates": [],
+ "collection_errors": [],
+ "drift_check": null,
+ "events": [],
+ "format": 1,
+ "last_green": {
+  "attempt": 1,
+  "date": "2026-11-06",
+  "path": "runs/2026-11-06-42190271783-a1",
+  "run_id": 42190271783,
+  "sha": "332d807da9a6aee9a1239f328ea598ec7658ad03"
+ },
+ "mass_failure": false,
+ "new_failing": [],
+ "run_id": 42329859064,
+ "sha": "fecbe3e185b59ce3c30634646fe2035d455bf2b6",
+ "verdict": "green"
+}
