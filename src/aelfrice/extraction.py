@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from typing import NamedTuple
 
+from aelfrice.models import ORIGIN_USER_TRANSCRIPT
+
 
 # Triple-backtick region, including the language tag. Exported rather
 # than inlined because the onboard path strips fences too (#1371 §10) and
@@ -97,6 +99,15 @@ def holed_form(sentence: str) -> str:
     `sentence_forms` for every sentence that function returns.
     """
     return _URL_RE.sub(" ", _CODE_SPAN_RE.sub(" ", sentence)).strip()
+
+
+def decision_text(content: str, origin: str) -> str:
+    """A stored belief's text as a detector reads it (#1874).
+
+    Only a sentence the user typed into a transcript keeps its inline code and
+    URLs, and a rule or value quoted inside a span doesn't count as stated.
+    """
+    return holed_form(content) if origin == ORIGIN_USER_TRANSCRIPT else content
 
 
 def _spans_only(match: re.Match[str]) -> str:

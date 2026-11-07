@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice.classification_core import USER_SOURCE, classify_sentence
+from aelfrice.contradiction import _slot_conflict_preextracted
 from aelfrice.derivation import DerivationInput, derive
 from aelfrice.extraction import (
     CODE_FENCE_RE,
@@ -27,8 +28,13 @@ from aelfrice.hook import (
     _format_stop_prompt,
 )
 from aelfrice.ingest import _ingest_turn
+from aelfrice.introspect import _signals_for
 from aelfrice.models import INGEST_SOURCE_TRANSCRIPT, ORIGIN_USER_TRANSCRIPT, Belief
-from aelfrice.noise_filter import is_transcript_noise, is_transcript_scaffolding
+from aelfrice.noise_filter import (
+    is_stranded_capture_noise,
+    is_transcript_noise,
+    is_transcript_scaffolding,
+)
 from aelfrice.phantom_promotion_opportunity import _PHANTOM_RESIDUE_ALLOWED
 from aelfrice.sentence_partition import (
     _looks_like_subfloor_noise,
@@ -37,6 +43,7 @@ from aelfrice.sentence_partition import (
 )
 from aelfrice.store import MemoryStore
 from aelfrice.supports_log import iter_reworded_candidates
+from aelfrice.value_compare import extract_values
 
 
 def _frozen_extract_sentences(text: str) -> list[str]:
@@ -321,6 +328,34 @@ def test_a_lock_prompt_takes_no_window_from_inside_a_span() -> None:
     )
     assert _directive_window_spec(quoted.content) is not None
     assert "--for" not in _format_stop_prompt([quoted])
+
+
+def _typed(content: str, origin: str = ORIGIN_USER_TRANSCRIPT) -> Belief:
+    return Belief(
+        id="b1", content=content, content_hash="h", alpha=3.0, beta=1.0, type="factual",
+        lock_level="none", locked_at=None, created_at="2026-11-06T00:00:00+00:00",
+        last_retrieved_at=None, session_id="s1", origin=origin,
+    )
+
+
+def test_a_value_in_a_span_does_not_conflict_with_a_lock() -> None:
+    lock = _typed("The widget timeout is 60 seconds always.", "user_stated")
+    pairs = [(lock, extract_values(lock.content))]
+    quoted = "Set `timeout 30` on the widget before the release."
+    assert _slot_conflict_preextracted(_typed(quoted), pairs) is None
+    assert _slot_conflict_preextracted(_typed(quoted, "user_validated"), pairs) == "b1"
+
+
+def test_the_introspect_noise_flag_reads_the_holed_form(tmp_path: Path) -> None:
+    store = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        # A stranded header once holed, and no header as stored.
+        typed = _typed("Recommendation: `zqtool --check`")
+        assert is_stranded_capture_noise(holed_form(typed.content))
+        assert not is_stranded_capture_noise(typed.content)
+        assert _signals_for(store, typed, {}).noise
+    finally:
+        store.close()
 
 
 def test_a_sub_floor_clause_keeps_its_span_for_the_anchor() -> None:
