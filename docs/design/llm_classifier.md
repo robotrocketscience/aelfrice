@@ -450,6 +450,13 @@ Fields:
   server saw: a 429 on every attempt reaches the server 3 times and prints
   `requests=1`, and a 500 followed by refused connections reaches it once and
   prints `requests=0`.
+
+  A redirect or a bad header can also leave `requests=0` after the server saw
+  the request. A 307 to a closed port reaches the server 3 times and prints no
+  warning. A 307 to an `ftp` URL reaches it 3 times, and the warning says the
+  classifier didn't run (`UnsupportedProtocol`). A 429 or 500 with a `Retry-After`
+  date the SDK can't parse, such as `Mon, 01 Jan 99999 00:00:00 GMT`, reaches it
+  once, and the warning says the classifier didn't run (`ValueError`).
 - `fallbacks` — number of candidates that fell back to regex (see
   § 7).
 
@@ -476,9 +483,10 @@ clear marker that LLM classification didn't run.
 
 - Connection refused / DNS failure / TLS error.
 - 5xx from Anthropic.
-- 429 (rate limit) — no retry inside the `aelf onboard` run; fall back
-  immediately. Retry-after handling is implementation choice but must
-  not exceed 30s of total wait.
+- 429 (rate limit): the SDK retries up to twice, so the server sees up to 3
+  requests, and then the run falls back. `aelf onboard` adds no retries of its
+  own. The SDK honors a `Retry-After` of up to 60 seconds per retry, so the
+  total wait can pass 30 seconds.
 - Request timeout (default 30s per request).
 - 401/403 (auth) — **do not** fall back. The user explicitly opted in
   with a key that is broken or revoked; surfacing that is more
@@ -532,12 +540,15 @@ An exception raised from inside `create` doesn't stop the run, even a
 
 ### Config-failure behavior
 
-Any other failure before a send falls back and exits 0, with `requests=0` and
-one warning per run that says the classifier didn't run and names the exception
-class. This covers a SOCKS proxy without `socksio`, an unknown proxy scheme, a
-bad port in a URL, a missing `SSL_CERT_FILE`, and a key that can't go in a
-header. The warning leaves out the exception's text, because that text can
-quote a password from the URL.
+A local setting that stops the classifier from running falls back and exits 0,
+with `requests=0` and one warning per run that says the classifier didn't run and
+names the exception class. This covers a SOCKS proxy without `socksio`, an
+unknown proxy scheme, a bad port in a URL, a missing `SSL_CERT_FILE`, and a key
+that can't go in a header. The warning leaves out the exception's text, because
+that text can quote a password from the URL.
+
+A refused connection also falls back with `requests=0`, but prints no warning,
+because it's a network fault.
 
 ### Unusable-response behavior
 
@@ -545,7 +556,9 @@ A malformed or undecodable response falls back as listed above and exits 0.
 The request was sent, so `requests` counts it, and stderr gets one warning per
 run, because the model's answer wasn't used. This covers a body that isn't
 JSON or UTF-8, an empty 200 or 204, a body the SDK can't decompress, a body with
-no list of content blocks, and model text that fails the parse.
+no list of content blocks, a token count too large to convert, and model text
+that fails the parse, including text that's nested too deeply or holds an integer
+too long for Python to read.
 
 ### Rejected-request behavior
 
@@ -658,7 +671,7 @@ may decide either way:
   Acceptance only requires correct telemetry; a single-request
   implementation is fine for v1.3.0.
 - Exact retry policy for 429s (with or without Retry-After header
-  parsing). Capped at 30s total per § 7.
+  parsing). The SDK's defaults apply, per § 7.
 - Whether to write the per-run JSON audit line (§ 6 last paragraph).
   Useful for debugging but not required for acceptance.
 - Whether `--revoke-consent` is a flag on `onboard` or its own
