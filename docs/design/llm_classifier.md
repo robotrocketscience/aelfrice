@@ -506,13 +506,38 @@ silently degrade to a regex run that they didn't ask for.
 
 ### SDK-mismatch behavior
 
-Any exception from the SDK call that isn't a network fault or an API
-response also exits 1, with no candidates classified and no beliefs
-inserted. The SDK wraps every failure of the HTTP send in an `APIError`
-subclass, so a `TypeError` or an `AttributeError` means the call doesn't
-match the installed SDK, and a re-run fails the same way. The error names
-the exception. `aelf doctor --classify-orphans` shares the call and exits
+The run exits 1, with no candidates classified and no beliefs inserted, only
+when the call provably doesn't fit the installed SDK:
+
+- A `TypeError` or `AttributeError` while building the client or resolving
+  `client.messages.create`.
+- A keyword the classifier sends that `create` doesn't take, checked with
+  `inspect.signature(create).bind()` before the call.
+- A failed import of the SDK at request time.
+
+All of these sit before `create` runs, so nothing has been sent. The error
+names the exception. `aelf doctor --classify-orphans` shares the call and exits
 1 the same way, with no beliefs updated.
+
+An exception raised from inside `create` doesn't stop the run, even a
+`TypeError`, because a request may have left by then.
+
+### Config-failure behavior
+
+Any other failure before a send falls back and exits 0, with `requests=0` and
+one warning per run that says the classifier didn't run and names the exception
+class. This covers a SOCKS proxy without `socksio`, an unknown proxy scheme, a
+bad port in a URL, a missing `SSL_CERT_FILE`, and a key that can't go in a
+header. The warning leaves out the exception's text, because that text can
+quote a password from the URL.
+
+### Unusable-response behavior
+
+A malformed or undecodable response falls back as listed above and exits 0.
+The request was sent, so `requests` counts it, and stderr gets one warning per
+run, because the model's answer wasn't used. This covers a body that isn't
+JSON or UTF-8, an empty 200 or 204, a body the SDK can't decompress, a body with
+no list of content blocks, and model text that fails the parse.
 
 ### Rejected-request behavior
 

@@ -946,10 +946,9 @@ def _run_llm_onboard(
         return 1
     finally:
         store.close()
-    if router.rejection is not None:
+    if router.warning is not None:
         print(
-            f"aelf: the API rejected the classifier request "
-            f"({router.rejection}). Classified with the regex classifier.",
+            f"aelf: {router.warning}. Classified with the regex classifier.",
             file=sys.stderr,
         )
     print(
@@ -8928,12 +8927,8 @@ def _cmd_doctor_classify_orphans(
     finally:
         store.close()
 
-    if orphan_report.rejection is not None:
-        print(
-            f"aelf: the API rejected the classifier request "
-            f"({orphan_report.rejection}). No beliefs updated.",
-            file=sys.stderr,
-        )
+    if orphan_report.warning is not None:
+        print(f"aelf: {orphan_report.warning}. No beliefs updated.", file=sys.stderr)
     print(_format_orphan_report(orphan_report), file=out)  # type: ignore[arg-type]
     return 0
 

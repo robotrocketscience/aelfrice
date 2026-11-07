@@ -1,14 +1,23 @@
-"""An SDK call that can't run stops with an error instead of falling back (#1846).
+"""Classifier failures: which stop the run, which warn, which stay silent (#1846).
 
-Each test runs the real `_call_anthropic` against a fake SDK module. The
-CLI tests drive `main`, so they cover what the user sees: exit code, stderr,
-the telemetry line, and the store.
+A call that doesn't fit the installed SDK stops the run. Everything else falls
+back to regex: a network fault or rate limit in silence, a rejected request, a
+malformed response, or a config failure before a send with one stderr warning.
+
+The fake-SDK tests run the real `_call_anthropic`. The CLI tests drive `main`, so
+they cover what the user sees: exit code, stderr, the telemetry line, and the
+store. The installed-SDK tests use a closed port or a server on 127.0.0.1, so
+nothing leaves the machine.
 """
 from __future__ import annotations
 
+import importlib.util
 import io
+import json
 import socket
+import sys
 import threading
+from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -46,14 +55,21 @@ def _raising(exc: BaseException) -> _FakeSdk:
     return _client_with(_create)
 
 
+def _ctor_raising(exc: BaseException) -> _FakeSdk:
+    def _factory(**_kwargs: Any) -> Any:
+        raise exc
+
+    return _FakeSdk(_factory)
+
+
 def _create_without_temperature(
     *, model: str, max_tokens: int, system: str, messages: list[dict[str, str]],
 ) -> Any:
     """The keyword-only shape of `create` on an SDK that dropped the keyword."""
-    raise AssertionError("the call must raise TypeError before reaching the body")
+    raise AssertionError("the bind check must refuse this call before the body")
 
 
-# The SDK's own class names, which `_falls_back` reads off the MRO.
+# The SDK's own class names, which `_fault_from_call` reads off the MRO.
 class SdkBaseError(Exception):
     pass
 
@@ -72,94 +88,7 @@ class _StatusError(APIError):
         self.status_code = status_code
 
 
-_CANDIDATES = [llm.CandidateInput(index=0, text="a sentence", source="doc:a.md:p1")]
-
-
-def _batch(sdk: Any) -> llm.BatchResult:
-    return llm.classify_batch(_CANDIDATES, api_key="k", sdk_module=sdk)
-
-
-@pytest.mark.parametrize(
-    "exc",
-    [
-        TypeError("got an unexpected keyword argument 'temperature'"),
-        AttributeError("no attribute 'messages'"),
-        ImportError("cannot import name"),
-        ValueError("bad value"),
-        KeyError("missing"),
-        SdkBaseError("an SDK error outside the APIError family"),
-    ],
-    ids=lambda e: type(e).__name__,
-)
-def test_exception_outside_the_network_family_is_a_mismatch(exc: Exception) -> None:
-    result = _batch(_raising(exc))
-    assert result.sdk_mismatch_error is not None
-    assert result.sdk_mismatch_error.startswith(type(exc).__name__)
-    assert not result.fallback_used
-    assert result.telemetry.fallbacks == 0
-
-
-def test_client_constructor_failure_is_a_mismatch() -> None:
-    def _factory(**_kwargs: Any) -> Any:
-        raise TypeError("unexpected keyword argument 'timeout'")
-
-    result = _batch(_FakeSdk(_factory))
-    assert result.sdk_mismatch_error is not None
-    assert "timeout" in result.sdk_mismatch_error
-
-
-def test_real_keyword_rejection_is_a_mismatch() -> None:
-    result = _batch(_client_with(_create_without_temperature))
-    assert result.sdk_mismatch_error is not None
-    assert "TypeError" in result.sdk_mismatch_error
-    assert "temperature" in result.sdk_mismatch_error
-
-
-@pytest.mark.parametrize(
-    "exc",
-    [
-        OSError("network unreachable"),
-        ConnectionRefusedError("refused"),
-        TimeoutError("timed out"),
-        APIError("bare"),
-        APIConnectionError("Connection error."),
-        _StatusError(429),
-        _StatusError(500),
-        _StatusError(529),
-        _StatusError(400),
-        _StatusError(404),
-        _StatusError(413),
-        _StatusError(422),
-    ],
-    ids=lambda e: f"{type(e).__name__}-{getattr(e, 'status_code', '')}",
-)
-def test_network_fault_or_api_response_falls_back(exc: Exception) -> None:
-    result = _batch(_raising(exc))
-    assert result.sdk_mismatch_error is None
-    assert result.auth_error is None
-    assert result.fallback_used
-    assert result.telemetry.fallbacks == len(_CANDIDATES)
-
-
-def test_status_code_alone_falls_back() -> None:
-    """A status error whose class isn't in the `APIError` family still falls back."""
-    exc = RuntimeError("status 503")
-    exc.status_code = 503  # type: ignore[attr-defined]
-    result = _batch(_raising(exc))
-    assert result.sdk_mismatch_error is None
-    assert result.fallback_used
-
-
-@pytest.mark.parametrize("status", [401, 403])
-def test_auth_failure_stays_an_auth_failure(status: int) -> None:
-    result = _batch(_raising(_StatusError(status)))
-    assert result.auth_error is not None
-    assert result.sdk_mismatch_error is None
-
-
-# --- The request count ----------------------------------------------------
-
-
+# The HTTP library's class names, which it reads off `__cause__`.
 class ConnectError(Exception):
     pass
 
@@ -184,41 +113,164 @@ class ReadTimeout(Exception):
     pass
 
 
+class DecodingError(Exception):
+    pass
+
+
+class InvalidURL(Exception):
+    pass
+
+
 def _connection_error(cause: type[Exception]) -> APIConnectionError:
     exc = APIConnectionError("Connection error.")
     exc.__cause__ = cause("from the HTTP library")
     return exc
 
 
+_CANDIDATES = [llm.CandidateInput(index=0, text="a sentence", source="doc:a.md:p1")]
+_SECRET = "PROXYSECRET"
+
+
+def _batch(sdk: Any) -> llm.BatchResult:
+    return llm.classify_batch(_CANDIDATES, api_key="k", sdk_module=sdk)
+
+
+# --- What stops the run ---------------------------------------------------
+
+
 @pytest.mark.parametrize(
-    ("exc", "expected"),
-    [
-        (_connection_error(ConnectError), 0),
-        (_connection_error(ConnectTimeout), 0),
-        (_connection_error(ProxyError), 0),
-        (_connection_error(UnsupportedProtocol), 0),
-        (OSError("raised outside the SDK's send"), 0),
-        (_connection_error(ReadError), 1),
-        (_connection_error(ReadTimeout), 1),
-        (_StatusError(429), 1),
-        (_StatusError(500), 1),
-        (_StatusError(400), 1),
-    ],
-    ids=[
-        "ConnectError", "ConnectTimeout", "ProxyError", "UnsupportedProtocol",
-        "raw-OSError", "ReadError", "ReadTimeout", "429", "500", "400",
-    ],
+    "exc",
+    [TypeError("unexpected keyword argument 'proxies'"), AttributeError("no Client")],
+    ids=["TypeError", "AttributeError"],
 )
-def test_fallback_counts_only_a_request_that_was_sent(
-    exc: Exception, expected: int,
+def test_constructor_type_or_attribute_error_is_a_mismatch(exc: Exception) -> None:
+    result = _batch(_ctor_raising(exc))
+    assert result.sdk_mismatch_error == f"{type(exc).__name__}: {exc}"
+    assert not result.fallback_used
+    assert result.telemetry.requests == 0
+
+
+def test_client_without_messages_is_a_mismatch() -> None:
+    result = _batch(_FakeSdk(lambda **_kwargs: SimpleNamespace()))
+    assert result.sdk_mismatch_error is not None
+    assert result.sdk_mismatch_error.startswith("AttributeError")
+
+
+def test_messages_without_create_is_a_mismatch() -> None:
+    client = SimpleNamespace(messages=SimpleNamespace())
+    result = _batch(_FakeSdk(lambda **_kwargs: client))
+    assert result.sdk_mismatch_error is not None
+    assert result.sdk_mismatch_error.startswith("AttributeError")
+
+
+def test_keyword_create_does_not_take_is_a_mismatch() -> None:
+    result = _batch(_client_with(_create_without_temperature))
+    assert result.sdk_mismatch_error is not None
+    assert "TypeError" in result.sdk_mismatch_error
+    assert "temperature" in result.sdk_mismatch_error
+    assert result.telemetry.requests == 0
+
+
+def test_sdk_import_failure_at_request_time_is_a_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    result = _batch(_raising(exc))
+    # The SDK's module name, without spelling it.
+    module = llm.ENV_API_KEY.partition("_")[0].lower()
+    monkeypatch.setitem(sys.modules, module, None)
+    result = llm.classify_batch(_CANDIDATES, api_key="k")
+    assert result.sdk_mismatch_error is not None
+    assert result.sdk_mismatch_error.startswith("ImportError")
+    assert not result.fallback_used
+
+
+# --- What falls back with a warning ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ImportError(f"socksio is missing for socks5://u:{_SECRET}@h"),
+        ValueError(f"Unknown scheme for proxy URL socks://u:{_SECRET}@h"),
+        InvalidURL(f"Invalid port: '{_SECRET}'"),
+        OSError(f"no such cert {_SECRET}"),
+        KeyError(_SECRET),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+def test_constructor_config_failure_warns_by_class_only(exc: Exception) -> None:
+    result = _batch(_ctor_raising(exc))
+    assert result.sdk_mismatch_error is None
     assert result.fallback_used
-    assert result.telemetry.requests == expected
+    assert result.telemetry.requests == 0
+    assert result.warning == f"the classifier didn't run ({type(exc).__name__})"
 
 
-def test_mismatch_counts_no_request() -> None:
-    assert _batch(_raising(TypeError("nope"))).telemetry.requests == 0
+@pytest.mark.parametrize(
+    "exc",
+    [
+        TypeError(_SECRET),
+        AttributeError(_SECRET),
+        ImportError(_SECRET),
+        ValueError(_SECRET),
+        UnicodeEncodeError("ascii", _SECRET, 0, 1, "nope"),
+        OSError(_SECRET),
+        ConnectionRefusedError(_SECRET),
+        SdkBaseError(_SECRET),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+def test_raw_exception_inside_create_warns_by_class_only(exc: Exception) -> None:
+    """Past the bind check, a `TypeError` doesn't prove the call is at fault."""
+    result = _batch(_raising(exc))
+    assert result.sdk_mismatch_error is None
+    assert result.auth_error is None
+    assert result.fallback_used
+    assert result.telemetry.requests == 0
+    assert result.warning == f"the classifier didn't run ({type(exc).__name__})"
+
+
+def _raising_in_response_handling(exc: BaseException) -> _FakeSdk:
+    def _process_response() -> Any:
+        raise exc
+
+    def _create(**_kwargs: Any) -> Any:
+        return _process_response()
+
+    return _client_with(_create)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        json.JSONDecodeError("Expecting value", _SECRET, 0),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        TypeError(_SECRET),
+        AttributeError(_SECRET),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+def test_raw_exception_in_response_handling_is_unusable_and_counts(
+    exc: Exception,
+) -> None:
+    result = _batch(_raising_in_response_handling(exc))
+    assert result.sdk_mismatch_error is None
+    assert result.fallback_used
+    assert result.telemetry.requests == 1
+    assert result.warning == (
+        f"the classifier response was unusable ({type(exc).__name__})"
+    )
+
+
+def test_undecodable_body_cause_is_unusable_and_counts() -> None:
+    result = _batch(_raising(_connection_error(DecodingError)))
+    assert result.telemetry.requests == 1
+    assert result.warning == "the classifier response was unusable (DecodingError)"
+
+
+def test_config_cause_warns_and_counts_nothing() -> None:
+    result = _batch(_raising(_connection_error(UnsupportedProtocol)))
+    assert result.telemetry.requests == 0
+    assert result.warning == "the classifier didn't run (UnsupportedProtocol)"
 
 
 def _responding(resp: Any) -> _FakeSdk:
@@ -231,32 +283,134 @@ def _responding(resp: Any) -> _FakeSdk:
 @pytest.mark.parametrize(
     "resp",
     [
+        None,
+        "text the SDK returned for a non-JSON content type",
+        [],
         SimpleNamespace(usage=None),
+        SimpleNamespace(content=None, usage=None),
+        SimpleNamespace(content=5, usage=None),
+        SimpleNamespace(content="abc", usage=None),
         SimpleNamespace(content=[], usage=None),
+        SimpleNamespace(content=[5], usage=None),
         SimpleNamespace(content=[SimpleNamespace(text="not json")], usage=None),
+        SimpleNamespace(content=[SimpleNamespace(text="[]")], usage=None),
     ],
-    ids=["no-content", "no-text-block", "malformed-json"],
+    ids=[
+        "none", "str", "list", "no-content", "content-none", "content-int",
+        "content-str", "content-empty", "content-int-block", "malformed-json",
+        "wrong-length",
+    ],
 )
-def test_unusable_response_counts_the_request(resp: Any) -> None:
+def test_unusable_response_warns_and_counts(resp: Any) -> None:
     result = _batch(_responding(resp))
     assert result.fallback_used
     assert result.telemetry.requests == 1
+    assert result.warning is not None
+    assert result.warning.startswith("the classifier response was unusable (")
 
 
-def test_transient_error_defaults_to_no_request(
+@pytest.mark.parametrize("status", [400, 404, 413, 422])
+def test_rejected_status_names_itself_and_counts_the_request(status: int) -> None:
+    result = _batch(_raising(_StatusError(status)))
+    assert result.fallback_used
+    assert result.warning is not None
+    assert result.warning.startswith(
+        f"the API rejected the classifier request (status {status}: "
+    )
+    assert result.telemetry.requests == 1
+
+
+def test_rejection_text_is_one_bounded_line() -> None:
+    exc = _StatusError(413)
+    exc.args = ("<html>\n" + "<p>too large</p>\n" * 200,)
+    warning = _batch(_raising(exc)).warning
+    assert warning is not None
+    assert "\n" not in warning
+    detail = warning.removeprefix(
+        "the API rejected the classifier request (status 413: "
+    ).removesuffix(")")
+    assert detail.startswith("<html> <p>too large</p>")
+    assert len(detail) == 200
+
+
+# --- What falls back in silence -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("exc", "requests"),
+    [
+        (_connection_error(ConnectError), 0),
+        (_connection_error(ConnectTimeout), 0),
+        (_connection_error(ProxyError), 0),
+        (_connection_error(ReadError), 1),
+        (_connection_error(ReadTimeout), 1),
+        (APIError("bare"), 1),
+        (_StatusError(408), 1),
+        (_StatusError(409), 1),
+        (_StatusError(429), 1),
+        (_StatusError(500), 1),
+        (_StatusError(503), 1),
+        (_StatusError(529), 1),
+    ],
+    ids=[
+        "ConnectError", "ConnectTimeout", "ProxyError", "ReadError", "ReadTimeout",
+        "bare-APIError", "408", "409", "429", "500", "503", "529",
+    ],
+)
+def test_network_fault_or_passing_status_stays_silent(
+    exc: Exception, requests: int,
+) -> None:
+    result = _batch(_raising(exc))
+    assert result.sdk_mismatch_error is None
+    assert result.auth_error is None
+    assert result.fallback_used
+    assert result.telemetry.fallbacks == len(_CANDIDATES)
+    assert result.telemetry.requests == requests
+    assert result.warning is None
+
+
+def test_status_code_outside_the_family_counts_as_a_response() -> None:
+    exc = RuntimeError("status 503")
+    exc.status_code = 503  # type: ignore[attr-defined]
+    result = _batch(_raising(exc))
+    assert result.fallback_used
+    assert result.warning is None
+    assert result.telemetry.requests == 1
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_failure_stays_an_auth_failure(status: int) -> None:
+    result = _batch(_raising(_StatusError(status)))
+    assert result.auth_error is not None
+    assert result.sdk_mismatch_error is None
+    assert result.warning is None
+
+
+def test_transient_error_defaults_to_no_request_and_no_warning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The request-time import failure raises with no flag, before any send."""
     def _fail(**_kwargs: Any) -> Any:
-        raise llm.LLMTransientError("SDK not importable at request time")
+        raise llm.LLMTransientError("a fault with no details")
 
     monkeypatch.setattr(llm, "_call_anthropic", _fail)
     result = _batch(None)
     assert result.fallback_used
     assert result.telemetry.requests == 0
+    assert result.warning is None
 
 
-# --- Through `main` -------------------------------------------------------
+def test_router_keeps_the_first_warning_across_batches() -> None:
+    router = llm.ScannerRouter(api_key="k", sdk_module=_raising(_StatusError(400)))
+    candidate = SimpleNamespace(text="a sentence", source="doc:a.md:p1")
+    router.classify([candidate])
+    first = router.warning
+    assert first is not None and "status 400: " in first
+    router._sdk_module = _raising(_StatusError(404))  # pyright: ignore[reportPrivateUsage]
+    router.classify([candidate])
+    assert router.warning == first
+
+
+# --- Through `main`, with a fake SDK --------------------------------------
 
 
 @pytest.fixture
@@ -321,11 +475,38 @@ def _seed_orphan(tmp_path: Path) -> None:
     store.close()
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [["--llm-classify"], []],
-    ids=["explicit-flag", "default-on"],
+def _aelf_lines(err: str) -> list[str]:
+    """The lines aelf wrote. An SDK's own `__del__` noise can sit beside them."""
+    return [ln for ln in err.splitlines() if ln.startswith("aelf: ")]
+
+
+def _assert_onboard_fell_back(tmp_path: Path) -> None:
+    store = _open_db(tmp_path)
+    try:
+        assert store.count_beliefs() > 0
+        assert any(
+            e.source.startswith("onboard.llm.fallback")
+            for e in store.list_feedback_events()
+        )
+    finally:
+        store.close()
+
+
+def _assert_orphan_untouched(tmp_path: Path) -> None:
+    store = _open_db(tmp_path)
+    try:
+        belief = store.get_belief("orphan1846")
+        assert belief is not None and belief.type == "unknown"
+    finally:
+        store.close()
+
+
+_FLAG_AND_DEFAULT = pytest.mark.parametrize(
+    "argv", [["--llm-classify"], []], ids=["explicit-flag", "default-on"],
 )
+
+
+@_FLAG_AND_DEFAULT
 def test_onboard_stops_and_names_the_exception(
     project: Path,
     tmp_path: Path,
@@ -351,7 +532,7 @@ def test_onboard_stops_and_names_the_exception(
         store.close()
 
 
-def test_doctor_classify_orphans_stops_and_names_the_exception(
+def test_doctor_stops_and_names_the_exception(
     project: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -368,280 +549,112 @@ def test_doctor_classify_orphans_stops_and_names_the_exception(
     assert "TypeError" in err and "temperature" in err
     assert "No beliefs updated" in err
     assert "requests=" not in out.getvalue()
-    store = _open_db(tmp_path)
-    try:
-        belief = store.get_belief("orphan1846")
-        assert belief is not None and belief.type == "unknown"
-    finally:
-        store.close()
-
-
-def test_onboard_still_falls_back_on_a_network_fault(
-    project: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _use_sdk(monkeypatch, _raising(APIConnectionError("Connection error.")))
-
-    out = io.StringIO()
-    rc = cli_module.main(["onboard", str(project), "--llm-classify"], out=out)
-
-    assert rc == 0
-    assert "SDK" not in capsys.readouterr().err
-    assert "onboard.llm:" in out.getvalue()
-    store = _open_db(tmp_path)
-    try:
-        assert store.count_beliefs() > 0
-        assert any(
-            e.source.startswith("onboard.llm.fallback")
-            for e in store.list_feedback_events()
-        )
-    finally:
-        store.close()
-
-
-def test_onboard_prints_requests_0_when_nothing_was_sent(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _use_sdk(monkeypatch, _raising(_connection_error(ConnectError)))
-
-    out = io.StringIO()
-    rc = cli_module.main(["onboard", str(project), "--llm-classify"], out=out)
-
-    assert rc == 0
-    assert "requests=0 " in out.getvalue()
-
-
-def test_doctor_prints_requests_0_when_nothing_was_sent(
-    project: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _seed_orphan(tmp_path)
-    _use_sdk(monkeypatch, _raising(_connection_error(ConnectError)))
-
-    out = io.StringIO()
-    rc = cli_module.main(["doctor", "--classify-orphans"], out=out)
-
-    assert rc == 0
-    assert "requests=0 " in out.getvalue()
-
-
-# --- The installed SDK, against a server on 127.0.0.1 --------------------
-#
-# These prove the real SDK's exceptions land where `_falls_back` and
-# `_request_was_sent` expect, by class name and by `__cause__`. Nothing leaves
-# the machine: the base URL is a closed local port or the server below.
-
-
-class _RateLimited(BaseHTTPRequestHandler):
-    hits = 0
-
-    def do_POST(self) -> None:
-        type(self).hits += 1
-        self.rfile.read(int(self.headers.get("content-length", "0")))
-        body = b'{"type":"error","error":{"type":"rate_limit_error","message":"x"}}'
-        self.send_response(429)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(body)))
-        # The SDK waits this long before its retries.
-        self.send_header("retry-after-ms", "1")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, format: str, *args: Any) -> None:
-        del format, args
-
-
-@pytest.fixture
-def installed_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
-    if not llm._anthropic_importable(None):  # pyright: ignore[reportPrivateUsage]
-        pytest.skip("requires the onboard-llm extra")
-    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
-
-
-def test_installed_sdk_refused_connection_falls_back_with_requests_0(
-    installed_sdk: None,
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-    monkeypatch.setenv("ANTHROPIC_BASE_URL", f"http://127.0.0.1:{port}")
-
-    out = io.StringIO()
-    rc = cli_module.main(["onboard", str(project), "--llm-classify"], out=out)
-
-    assert rc == 0
-    assert "requests=0 " in out.getvalue()
-
-
-def test_installed_sdk_rate_limit_falls_back_with_requests_1(
-    installed_sdk: None,
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _RateLimited.hits = 0
-    server = HTTPServer(("127.0.0.1", 0), _RateLimited)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    monkeypatch.setenv("ANTHROPIC_BASE_URL", f"http://127.0.0.1:{server.server_port}")
-    try:
-        out = io.StringIO()
-        rc = cli_module.main(["onboard", str(project), "--llm-classify"], out=out)
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
-
-    assert rc == 0
-    assert _RateLimited.hits >= 1
-    assert "requests=1 " in out.getvalue()
-
-
-# --- A rejected request warns once and carries on ------------------------
-
-
-_REJECTED = [400, 404, 413, 422]
-_NOT_REJECTED = [401, 403, 408, 409, 429, 500, 503, 529]
-
-
-@pytest.mark.parametrize("status", _REJECTED)
-def test_rejected_status_names_itself_and_counts_the_request(status: int) -> None:
-    result = _batch(_raising(_StatusError(status)))
-    assert result.fallback_used
-    assert result.rejection is not None
-    assert result.rejection.startswith(f"status {status}: ")
-    assert result.telemetry.requests == 1
-
-
-@pytest.mark.parametrize("status", _NOT_REJECTED)
-def test_other_status_is_not_a_rejection(status: int) -> None:
-    assert _batch(_raising(_StatusError(status))).rejection is None
+    _assert_orphan_untouched(tmp_path)
 
 
 @pytest.mark.parametrize(
-    "exc",
+    ("sdk", "expected", "requests"),
     [
-        _connection_error(ConnectError),
-        _connection_error(ReadTimeout),
-        OSError("network unreachable"),
+        (_raising(_StatusError(400)), "status 400: ", 1),
+        (_raising(_StatusError(404)), "status 404: ", 1),
+        (_raising(_StatusError(413)), "status 413: ", 1),
+        (_raising(_StatusError(422)), "status 422: ", 1),
+        (_responding(SimpleNamespace(content=5, usage=None)), "unusable", 1),
+        (_ctor_raising(InvalidURL(_SECRET)), "didn't run (InvalidURL)", 0),
     ],
-    ids=["refused", "read-timeout", "raw-OSError"],
+    ids=["400", "404", "413", "422", "unusable", "config"],
 )
-def test_network_fault_is_not_a_rejection(exc: Exception) -> None:
-    assert _batch(_raising(exc)).rejection is None
-
-
-def test_rejection_text_is_one_bounded_line() -> None:
-    exc = _StatusError(413)
-    exc.args = ("<html>\n" + "<p>too large</p>\n" * 200,)
-    rejection = _batch(_raising(exc)).rejection
-    assert rejection is not None
-    assert "\n" not in rejection
-    detail = rejection.removeprefix("status 413: ")
-    assert detail.startswith("<html> <p>too large</p>")
-    assert len(detail) == 200
-
-
-def test_router_keeps_the_first_rejection_across_batches() -> None:
-    router = llm.ScannerRouter(api_key="k", sdk_module=_raising(_StatusError(400)))
-    candidate = SimpleNamespace(text="a sentence", source="doc:a.md:p1")
-    router.classify([candidate])
-    first = router.rejection
-    assert first is not None and first.startswith("status 400: ")
-    router._sdk_module = _raising(_StatusError(404))  # pyright: ignore[reportPrivateUsage]
-    router.classify([candidate])
-    assert router.rejection == first
-
-
-def _warnings(err: str) -> list[str]:
-    return [ln for ln in err.splitlines() if "rejected the classifier request" in ln]
-
-
-@pytest.mark.parametrize("status", _REJECTED)
-@pytest.mark.parametrize(
-    "argv",
-    [["--llm-classify"], []],
-    ids=["explicit-flag", "default-on"],
-)
-def test_onboard_warns_once_on_a_rejection_and_finishes_on_regex(
+@_FLAG_AND_DEFAULT
+def test_onboard_warns_once_and_finishes_on_regex(
     project: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     argv: list[str],
-    status: int,
+    sdk: Any,
+    expected: str,
+    requests: int,
 ) -> None:
-    _use_sdk(monkeypatch, _raising(_StatusError(status)))
+    _use_sdk(monkeypatch, sdk)
 
     out = io.StringIO()
     rc = cli_module.main(["onboard", str(project), *argv], out=out)
 
     assert rc == 0
-    warnings = _warnings(capsys.readouterr().err)
-    assert len(warnings) == 1
-    assert f"status {status}: " in warnings[0]
-    assert "regex classifier" in warnings[0]
-    assert "requests=1 " in out.getvalue()
-    store = _open_db(tmp_path)
-    try:
-        assert store.count_beliefs() > 0
-        assert any(
-            e.source.startswith("onboard.llm.fallback")
-            for e in store.list_feedback_events()
-        )
-    finally:
-        store.close()
+    err = capsys.readouterr().err
+    assert _SECRET not in err
+    lines = err.splitlines()
+    assert len(lines) == 1
+    assert expected in lines[0]
+    assert "regex classifier" in lines[0]
+    assert f"requests={requests} " in out.getvalue()
+    _assert_onboard_fell_back(tmp_path)
 
 
-@pytest.mark.parametrize("status", _REJECTED)
-def test_doctor_warns_once_on_a_rejection_and_skips_the_orphans(
+@pytest.mark.parametrize(
+    ("sdk", "expected", "requests"),
+    [
+        (_raising(_StatusError(400)), "status 400: ", 1),
+        (_raising(_StatusError(404)), "status 404: ", 1),
+        (_raising(_StatusError(413)), "status 413: ", 1),
+        (_raising(_StatusError(422)), "status 422: ", 1),
+        (_responding(SimpleNamespace(content=5, usage=None)), "unusable", 1),
+        (_ctor_raising(InvalidURL(_SECRET)), "didn't run (InvalidURL)", 0),
+    ],
+    ids=["400", "404", "413", "422", "unusable", "config"],
+)
+def test_doctor_warns_once_and_skips_the_orphans(
     project: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    status: int,
+    sdk: Any,
+    expected: str,
+    requests: int,
 ) -> None:
     _seed_orphan(tmp_path)
-    _use_sdk(monkeypatch, _raising(_StatusError(status)))
+    _use_sdk(monkeypatch, sdk)
 
     out = io.StringIO()
     rc = cli_module.main(["doctor", "--classify-orphans"], out=out)
 
     assert rc == 0
-    warnings = _warnings(capsys.readouterr().err)
-    assert len(warnings) == 1
-    assert f"status {status}: " in warnings[0]
-    assert "No beliefs updated" in warnings[0]
-    assert "requests=1 " in out.getvalue()
-    store = _open_db(tmp_path)
-    try:
-        belief = store.get_belief("orphan1846")
-        assert belief is not None and belief.type == "unknown"
-    finally:
-        store.close()
+    err = capsys.readouterr().err
+    assert _SECRET not in err
+    lines = err.splitlines()
+    assert len(lines) == 1
+    assert expected in lines[0]
+    assert "No beliefs updated" in lines[0]
+    assert f"requests={requests} " in out.getvalue()
+    _assert_orphan_untouched(tmp_path)
 
 
-@pytest.mark.parametrize("status", [429, 500, 529])
+@pytest.mark.parametrize(
+    "exc",
+    [
+        _StatusError(429),
+        _StatusError(500),
+        _StatusError(529),
+        _connection_error(ConnectError),
+        _connection_error(ReadTimeout),
+    ],
+    ids=["429", "500", "529", "ConnectError", "ReadTimeout"],
+)
 @pytest.mark.parametrize(
     "argv",
-    [["onboard", "@P", "--llm-classify"], ["doctor", "--classify-orphans"]],
-    ids=["onboard", "doctor"],
+    [["onboard", "@P", "--llm-classify"], ["onboard", "@P"], ["doctor", "--classify-orphans"]],
+    ids=["onboard-flag", "onboard-default", "doctor"],
 )
-def test_other_fallback_status_stays_silent(
+def test_network_fault_and_passing_status_stay_silent_through_main(
     project: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     argv: list[str],
-    status: int,
+    exc: Exception,
 ) -> None:
     _seed_orphan(tmp_path)
-    _use_sdk(monkeypatch, _raising(_StatusError(status)))
+    _use_sdk(monkeypatch, _raising(exc))
 
     args = [str(project) if a == "@P" else a for a in argv]
     rc = cli_module.main(args, out=io.StringIO())
@@ -667,3 +680,286 @@ def test_successful_run_prints_no_warning(
 
     assert rc == 0
     assert capsys.readouterr().err == ""
+
+
+# --- Through `main`, with the installed SDK ------------------------------
+#
+# These prove the real SDK's exceptions land where `_call_anthropic` expects, by
+# class name, by `__cause__`, and by frame name, on whichever SDK is installed.
+#
+# A failed client constructor leaves the SDK's HTTP wrapper half built, and its
+# `__del__` raises when collected, so those tests ignore the unraisable warning.
+
+
+class _Api(BaseHTTPRequestHandler):
+    reply: tuple[int, dict[str, str], bytes] = (200, {}, b"")
+    hits = 0
+
+    def do_POST(self) -> None:
+        cls = type(self)
+        cls.hits += 1
+        self.rfile.read(int(self.headers.get("content-length", "0")))
+        status, headers, body = cls.reply
+        self.send_response(status)
+        self.send_header("content-length", str(len(body)))
+        # The SDK waits this long before its retries.
+        self.send_header("retry-after-ms", "1")
+        for name, value in headers.items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        del format, args
+
+
+@pytest.fixture
+def installed_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    if not llm._anthropic_importable(None):  # pyright: ignore[reportPrivateUsage]
+        pytest.skip("requires the onboard-llm extra")
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    for name in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+
+
+@pytest.fixture
+def local_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    _Api.hits = 0
+    server = HTTPServer(("127.0.0.1", 0), _Api)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", f"http://127.0.0.1:{server.server_port}")
+    try:
+        yield
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _closed_port_url() -> str:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return f"http://127.0.0.1:{probe.getsockname()[1]}"
+
+
+_JSON = {"content-type": "application/json"}
+_MALFORMED = pytest.mark.parametrize(
+    ("reply", "name"),
+    [
+        ((200, _JSON, b"not json"), "JSONDecodeError"),
+        ((200, _JSON, b'{"content": [{"type":"text","text":"['), "JSONDecodeError"),
+        ((200, _JSON, bytes([0xff, 0xfe, 0x00])), "UnicodeDecodeError"),
+        ((204, _JSON, b""), "JSONDecodeError"),
+        ((200, _JSON, b'{"content": 5}'), "no content list"),
+        ((200, _JSON, b"null"), "no content list"),
+        ((200, {"content-type": "text/html"}, b"<html>login</html>"), "no content list"),
+        ((200, {**_JSON, "content-encoding": "gzip"}, b"not gzip"), "DecodingError"),
+    ],
+    ids=[
+        "not-json", "truncated", "non-utf8", "204-empty", "content-int", "null",
+        "html", "bad-gzip",
+    ],
+)
+
+
+@_MALFORMED
+@_FLAG_AND_DEFAULT
+def test_installed_sdk_malformed_response_warns_and_counts(
+    installed_sdk: None,
+    local_api: None,
+    project: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    reply: tuple[int, dict[str, str], bytes],
+    name: str,
+) -> None:
+    _Api.reply = reply
+
+    out = io.StringIO()
+    rc = cli_module.main(["onboard", str(project), *argv], out=out)
+
+    assert rc == 0
+    lines = _aelf_lines(capsys.readouterr().err)
+    assert len(lines) == 1
+    assert "response was unusable" in lines[0] and name in lines[0]
+    assert _Api.hits >= 1
+    assert "requests=1 " in out.getvalue()
+    _assert_onboard_fell_back(tmp_path)
+
+
+@_MALFORMED
+def test_installed_sdk_malformed_response_warns_on_doctor(
+    installed_sdk: None,
+    local_api: None,
+    project: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    reply: tuple[int, dict[str, str], bytes],
+    name: str,
+) -> None:
+    _seed_orphan(tmp_path)
+    _Api.reply = reply
+
+    out = io.StringIO()
+    rc = cli_module.main(["doctor", "--classify-orphans"], out=out)
+
+    assert rc == 0
+    lines = _aelf_lines(capsys.readouterr().err)
+    assert len(lines) == 1
+    assert "response was unusable" in lines[0] and name in lines[0]
+    assert "requests=1 " in out.getvalue()
+    _assert_orphan_untouched(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("env", "name"),
+    [
+        ({"ALL_PROXY": f"socks://u:{_SECRET}@127.0.0.1:1"}, "ValueError"),
+        ({"ALL_PROXY": f"http://u:{_SECRET}/x@127.0.0.1:80"}, "InvalidURL"),
+        ({"ANTHROPIC_BASE_URL": f"http://u:{_SECRET}/x@127.0.0.1:80"}, "InvalidURL"),
+        ({"ANTHROPIC_BASE_URL": "http://127.0.0.1:notaport"}, "InvalidURL"),
+        ({"ANTHROPIC_BASE_URL": "ftp://127.0.0.1"}, "UnsupportedProtocol"),
+        ({"SSL_CERT_FILE": "/nonexistent/ca.pem"}, "FileNotFoundError"),
+    ],
+    ids=["socks-scheme", "proxy-bad-port", "url-bad-port", "url-not-a-port", "ftp", "cert"],
+)
+@pytest.mark.parametrize(
+    "argv",
+    [["onboard", "@P", "--llm-classify"], ["onboard", "@P"], ["doctor", "--classify-orphans"]],
+    ids=["onboard-flag", "onboard-default", "doctor"],
+)
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
+def test_installed_sdk_config_failure_warns_by_class_only(
+    installed_sdk: None,
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    env: dict[str, str],
+    name: str,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", _closed_port_url())
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    if argv[0] == "doctor":
+        _seed_orphan(tmp_path)
+
+    out = io.StringIO()
+    args = [str(project) if a == "@P" else a for a in argv]
+    rc = cli_module.main(args, out=out)
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert _SECRET not in err
+    assert "notaport" not in err
+    lines = _aelf_lines(err)
+    assert len(lines) == 1
+    assert f"the classifier didn't run ({name})" in lines[0]
+    assert "requests=0 " in out.getvalue()
+    if argv[0] == "doctor":
+        _assert_orphan_untouched(tmp_path)
+    else:
+        _assert_onboard_fell_back(tmp_path)
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
+def test_installed_sdk_socks_proxy_without_socksio_warns(
+    installed_sdk: None,
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    if importlib.util.find_spec("socksio") is not None:
+        pytest.skip("needs an environment without socksio")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", _closed_port_url())
+    monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:1")
+
+    out = io.StringIO()
+    rc = cli_module.main(["onboard", str(project)], out=out)
+
+    assert rc == 0
+    lines = _aelf_lines(capsys.readouterr().err)
+    assert len(lines) == 1
+    assert "the classifier didn't run (ImportError)" in lines[0]
+    assert "requests=0 " in out.getvalue()
+    _assert_onboard_fell_back(tmp_path)
+
+
+def test_installed_sdk_non_ascii_key_falls_back(
+    installed_sdk: None,
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """0.97.0 raises `UnicodeEncodeError`; 2.3.0 wraps it, so it reads as a network fault."""
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", _closed_port_url())
+    monkeypatch.setenv(llm.ENV_API_KEY, f"{_SECRET}’x")
+
+    out = io.StringIO()
+    rc = cli_module.main(["onboard", str(project)], out=out)
+
+    assert rc == 0
+    assert _SECRET not in capsys.readouterr().err
+    assert "requests=0 " in out.getvalue()
+    _assert_onboard_fell_back(tmp_path)
+
+
+def test_installed_sdk_refused_connection_stays_silent_with_requests_0(
+    installed_sdk: None,
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", _closed_port_url())
+
+    out = io.StringIO()
+    rc = cli_module.main(["onboard", str(project), "--llm-classify"], out=out)
+
+    assert rc == 0
+    assert capsys.readouterr().err == ""
+    assert "requests=0 " in out.getvalue()
+
+
+def test_installed_sdk_rate_limit_stays_silent_with_requests_1(
+    installed_sdk: None,
+    local_api: None,
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _Api.reply = (429, _JSON, b'{"type":"error","error":{"type":"x","message":"x"}}')
+
+    out = io.StringIO()
+    rc = cli_module.main(["onboard", str(project), "--llm-classify"], out=out)
+
+    assert rc == 0
+    assert capsys.readouterr().err == ""
+    assert _Api.hits == 3
+    assert "requests=1 " in out.getvalue()
+
+
+@pytest.mark.parametrize("status", [400, 404, 413, 422])
+def test_installed_sdk_rejection_warns_with_requests_1(
+    installed_sdk: None,
+    local_api: None,
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    status: int,
+) -> None:
+    body = {"type": "error", "error": {"type": "x", "message": "no"}}
+    _Api.reply = (status, _JSON, json.dumps(body).encode())
+
+    out = io.StringIO()
+    rc = cli_module.main(["onboard", str(project)], out=out)
+
+    assert rc == 0
+    lines = _aelf_lines(capsys.readouterr().err)
+    assert len(lines) == 1
+    assert f"status {status}: " in lines[0]
+    assert _Api.hits == 1
+    assert "requests=1 " in out.getvalue()

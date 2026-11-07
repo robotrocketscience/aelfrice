@@ -38,11 +38,18 @@ Failure semantics (docs/design/llm_classifier.md § 7):
     insertion tagged `onboard.llm.fallback:<reason>`.
   - 401/403 (auth) → DO NOT fall back. Exit 1, no beliefs inserted,
     error message names Anthropic auth.
-  - Any other exception from the SDK call, such as a `TypeError` when the
-    installed SDK doesn't take the classifier's keywords → DO NOT fall
-    back. Exit 1, no beliefs inserted, error message names the exception.
+  - A `TypeError` or `AttributeError` building the client or resolving
+    `client.messages.create`, a keyword that `create` doesn't take, or a
+    failed import of the SDK at request time → DO NOT fall back. Exit 1,
+    no beliefs inserted, error message names the exception. Nothing has
+    been sent at that point, so the call can't be the network's fault.
   - 400/404/413/422 → fall back as above, and print one stderr warning
     per run naming the status. The request was sent, so it counts.
+  - Malformed or undecodable response → fall back as above, and print one
+    stderr warning. The request was sent, so it counts.
+  - Any other failure before a send, such as proxy, URL, or key config →
+    fall back as above, and print one stderr warning naming the exception
+    class only, since its text can quote a password.
   - Token cap exceeded → exit 1 with partial-insertion message; the
     deterministic belief id ensures a re-run resumes from the cap-hit
     point.
@@ -52,6 +59,7 @@ preserved — aelfrice does not phone-home about its own LLM usage.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import sys
@@ -114,15 +122,20 @@ _NOT_SENT_CAUSES: Final[frozenset[str]] = frozenset({
     "ConnectError",
     "ConnectTimeout",
     "ProxyError",
-    "UnsupportedProtocol",
 })
+
+# Causes that are the user's proxy, URL, or key config, not the network.
+_CONFIG_CAUSES: Final[frozenset[str]] = frozenset({"UnsupportedProtocol"})
+
+# A cause that means the response arrived and couldn't be decoded.
+_UNDECODABLE_CAUSES: Final[frozenset[str]] = frozenset({"DecodingError"})
 
 # Responses that reject this request rather than report a passing fault. The
 # run still falls back, and the user gets one warning naming the status.
 _REJECTED_STATUSES: Final[frozenset[int]] = frozenset({400, 404, 413, 422})
 
-# Bound on the error text in that warning. A proxy can answer 413 with a page.
-_REJECTION_DETAIL_CHARS: Final[int] = 200
+# Bound on the error text in a warning. A proxy can answer 413 with a page.
+_WARNING_DETAIL_CHARS: Final[int] = 200
 
 
 # --- Config dataclass ----------------------------------------------------
@@ -756,8 +769,8 @@ class LLMTransientError(Exception):
     """Raised on connect/timeout/429/5xx/malformed. Triggers regex fallback.
 
     `request_sent` says whether a request left the machine, which decides
-    the telemetry's `requests` count on the fallback path. `rejection` names
-    the status and error when the API rejected the request.
+    the telemetry's `requests` count on the fallback path. `warning` is the
+    text the user sees when the run shouldn't fall back in silence.
     """
 
     def __init__(
@@ -765,15 +778,15 @@ class LLMTransientError(Exception):
         message: str,
         *,
         request_sent: bool = False,
-        rejection: str | None = None,
+        warning: str | None = None,
     ) -> None:
         super().__init__(message)
         self.request_sent = request_sent
-        self.rejection = rejection
+        self.warning = warning
 
 
 class LLMSDKMismatchError(Exception):
-    """Raised when the SDK call itself fails. Causes a hard exit; no fallback."""
+    """Raised when the call doesn't fit the installed SDK. Hard exit; no fallback."""
 
 
 class LLMTokenCapExceeded(Exception):
@@ -869,38 +882,44 @@ def _call_anthropic(
 
     Raises:
       LLMAuthError on 401/403.
-      LLMSDKMismatchError on anything that isn't a network fault or an
-        API response, such as a keyword the installed SDK doesn't take.
-      LLMTransientError on connect / timeout / 429 / 5xx / parse.
+      LLMSDKMismatchError when the call doesn't fit the installed SDK:
+        a `TypeError` or `AttributeError` building the client or resolving
+        `create`, a keyword `create` doesn't take, or a failed SDK import.
+        All of these sit before `create` runs, so nothing has been sent.
+      LLMTransientError on everything else: connect / timeout / 429 / 5xx /
+        parse / proxy, URL, and key config.
     """
     if sdk_module is None:
         try:
             import anthropic as sdk_module  # type: ignore[import-not-found,no-redef]
         except ImportError as exc:
-            raise LLMTransientError(
-                "anthropic SDK not importable at request time"
-            ) from exc
+            raise LLMSDKMismatchError(f"ImportError: {exc}") from exc
 
     sdk: Any = sdk_module
+    call_args: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_output_tokens,
+        "temperature": _REQUEST_TEMPERATURE,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": user_message}],
+    }
     try:
         client = sdk.Anthropic(api_key=api_key, timeout=_REQUEST_TIMEOUT_SECONDS)
-        resp = client.messages.create(
-            model=model,
-            max_tokens=max_output_tokens,
-            temperature=_REQUEST_TEMPERATURE,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
-        )
+        create = client.messages.create
+        inspect.signature(create).bind(**call_args)
+    except (TypeError, AttributeError) as exc:
+        raise LLMSDKMismatchError(f"{type(exc).__name__}: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 — proxy, URL, and cert config vary
+        raise LLMTransientError(
+            str(exc), warning=_did_not_run(type(exc).__name__),
+        ) from exc
+
+    try:
+        resp = create(**call_args)
     except Exception as exc:  # noqa: BLE001 — SDK exception classes vary
         if _is_auth_error(exc):
             raise LLMAuthError(str(exc)) from exc
-        if not _falls_back(exc):
-            raise LLMSDKMismatchError(f"{type(exc).__name__}: {exc}") from exc
-        raise LLMTransientError(
-            str(exc),
-            request_sent=_request_was_sent(exc),
-            rejection=_rejection(exc),
-        ) from exc
+        raise _fault_from_call(exc) from exc
 
     text = _extract_text_from_response(resp)
     input_tokens, output_tokens = _extract_usage(resp)
@@ -928,41 +947,71 @@ def _is_auth_error(exc: BaseException) -> bool:
     return False
 
 
-def _falls_back(exc: BaseException) -> bool:
-    """Return True for a network fault or an API response.
+def _did_not_run(name: str) -> str:
+    """Warning text for a failure before a send, by exception class only.
 
-    The SDK wraps every failure of the HTTP send in an `APIError` subclass,
-    and raises one for every 4xx or 5xx response. Anything else means the
-    call itself failed, and a re-run would fail the same way. Like
-    `_is_auth_error`, this checks names and attributes to avoid importing
-    the SDK at module load.
+    The exception's own text can quote a proxy or base URL, password included.
     """
-    if isinstance(exc, OSError):
-        return True
-    if getattr(exc, "status_code", None) is not None:
-        return True
-    return any(cls.__name__ == "APIError" for cls in type(exc).__mro__)
+    return f"the classifier didn't run ({name})"
 
 
-def _request_was_sent(exc: BaseException) -> bool:
-    """Return True if the fault in `exc` came after a request left the machine.
+def _unusable_response(reason: str) -> LLMTransientError:
+    """The error for a response that came back and can't be used."""
+    return LLMTransientError(
+        f"unusable response: {reason}",
+        request_sent=True,
+        warning=f"the classifier response was unusable ({reason})",
+    )
 
-    Takes an exception `_falls_back` accepted. A bare `OSError` isn't from
-    the SDK's send, which wraps its failures, so it doesn't count. A status
-    error has no cause, so it counts: a response came back.
+
+def _reached_response_handling(exc: BaseException) -> bool:
+    """Return True if the traceback runs through the SDK's response handling.
+
+    A raw exception from inside `create` has no status code or cause to read,
+    and the same frame name holds on SDK 0.40.0, 0.97.0, and 2.3.0.
     """
-    if isinstance(exc, OSError):
-        return False
-    return type(exc.__cause__).__name__ not in _NOT_SENT_CAUSES
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_name == "_process_response":
+            return True
+        tb = tb.tb_next
+    return False
 
 
-def _rejection(exc: BaseException) -> str | None:
-    """Return `status <n>: <error>` for a rejected request, else None."""
+def _fault_from_call(exc: BaseException) -> LLMTransientError:
+    """Sort an exception from `create` into a fallback, with or without a warning.
+
+    Status errors and the `APIError` family are read by status and by cause,
+    since the SDK raises its connection error `from` the HTTP library's
+    exception. Like `_is_auth_error`, this checks names and attributes to avoid
+    importing the SDK at module load.
+    """
     status = getattr(exc, "status_code", None)
-    if status not in _REJECTED_STATUSES:
-        return None
-    detail = " ".join(str(exc).split())[:_REJECTION_DETAIL_CHARS]
-    return f"status {status}: {detail}"
+    if status in _REJECTED_STATUSES:
+        detail = " ".join(str(exc).split())[:_WARNING_DETAIL_CHARS]
+        return LLMTransientError(
+            str(exc),
+            request_sent=True,
+            warning=(
+                "the API rejected the classifier request "
+                f"(status {status}: {detail})"
+            ),
+        )
+    if status is not None:
+        return LLMTransientError(str(exc), request_sent=True)
+    if not any(cls.__name__ == "APIError" for cls in type(exc).__mro__):
+        name = type(exc).__name__
+        if _reached_response_handling(exc):
+            return _unusable_response(name)
+        return LLMTransientError(str(exc), warning=_did_not_run(name))
+    cause = type(exc.__cause__).__name__
+    if cause in _CONFIG_CAUSES:
+        return LLMTransientError(str(exc), warning=_did_not_run(cause))
+    if cause in _UNDECODABLE_CAUSES:
+        return _unusable_response(cause)
+    return LLMTransientError(
+        str(exc), request_sent=cause not in _NOT_SENT_CAUSES,
+    )
 
 
 def _extract_text_from_response(resp: Any) -> str:
@@ -972,17 +1021,15 @@ def _extract_text_from_response(resp: Any) -> str:
     text block has `.text`. Tests pass a fake with the same shape.
     """
     content = getattr(resp, "content", None)
-    if content is None:
-        raise LLMTransientError("response has no content", request_sent=True)
+    if not isinstance(content, list):
+        raise _unusable_response("response has no content list")
     parts: list[str] = []
-    for block in content:
+    for block in cast(list[Any], content):
         text = getattr(block, "text", None)
         if isinstance(text, str):
             parts.append(text)
     if not parts:
-        raise LLMTransientError(
-            "response contains no text block", request_sent=True,
-        )
+        raise _unusable_response("response contains no text block")
     return "".join(parts)
 
 
@@ -1013,8 +1060,8 @@ class BatchResult:
     `fallback_used=True` means every candidate was reclassified by
     the regex fallback. `auth_error` is non-None for 401/403, and
     `sdk_mismatch_error` is non-None when the SDK call itself failed;
-    the caller exits 1 in both cases. `rejection` is non-None when the
-    API rejected the request; the caller warns once and carries on.
+    the caller exits 1 in both cases. `warning` is non-None when the
+    fallback shouldn't be silent; the caller warns once and carries on.
     """
 
     classifications: list[CandidateClassification] = field(
@@ -1023,7 +1070,7 @@ class BatchResult:
     telemetry: BatchTelemetry = field(default_factory=BatchTelemetry)
     fallback_used: bool = False
     fallback_reason: str | None = None
-    rejection: str | None = None
+    warning: str | None = None
     auth_error: str | None = None
     sdk_mismatch_error: str | None = None
     token_cap_exceeded: bool = False
@@ -1089,7 +1136,7 @@ def classify_batch(
         result.fallback_used = True
         result.fallback_reason = type(exc).__name__ + ":transient"
         result.telemetry.fallbacks = len(candidates)
-        result.rejection = exc.rejection
+        result.warning = exc.warning
         result.telemetry.requests = int(exc.request_sent)
         return result
 
@@ -1111,6 +1158,7 @@ def classify_batch(
     except LLMTransientError as exc:
         result.fallback_used = True
         result.fallback_reason = "parse:" + str(exc)[:64]
+        result.warning = _unusable_response(str(exc)[:64]).warning
         result.telemetry.fallbacks = len(candidates)
         return result
 
@@ -1172,8 +1220,8 @@ class ScannerRouter:
         self._max_tokens = max_tokens
         self._sdk_module = sdk_module
         self.telemetry = BatchTelemetry()
-        # The first rejection of the run, for the CLI's one warning.
-        self.rejection: str | None = None
+        # The first warning of the run, for the CLI's one line on stderr.
+        self.warning: str | None = None
 
     @property
     def model(self) -> str:
@@ -1228,7 +1276,7 @@ class ScannerRouter:
         self.telemetry.requests += batch.telemetry.requests
         self.telemetry.fallbacks += batch.telemetry.fallbacks
         self.telemetry.skipped_invalid += batch.telemetry.skipped_invalid
-        self.rejection = self.rejection or batch.rejection
+        self.warning = self.warning or batch.warning
 
         routes: list[Any] = []
         if batch.fallback_used:
