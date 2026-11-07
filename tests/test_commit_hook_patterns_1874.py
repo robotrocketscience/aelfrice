@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
+import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -27,7 +31,7 @@ from aelfrice.models import (
     EDGE_TESTS,
     INGEST_SOURCE_GIT,
 )
-from aelfrice.np_pattern import NOUN_PHRASE_PATTERN
+from aelfrice.np_pattern import _DET, NOUN_PHRASE_PATTERN
 from aelfrice.rebuild_log import RecentTurn, _query_for_recent_turns
 from aelfrice.replay import replay_full_equality
 from aelfrice.setup import (
@@ -41,7 +45,6 @@ from aelfrice.triple_extractor import (
     _INGEST_PATTERNS,
     _PATTERNS,
     Triple,
-    _build_pattern,
     extract_triples,
     ingest_triples,
 )
@@ -57,7 +60,7 @@ _SUBJECT_AND_BODY = (
 # each one is a way for a match to cross a line.
 _LINE_BREAKS = (
     "\n", "\r\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85",
-    " ", " ",
+    "\u2028", "\u2029",
 )
 
 _SINGLE_LINE_LOWERCASE = (
@@ -91,6 +94,80 @@ _READ_OUTPUT_DIGEST = "5297f4cca211f6c83901845526cb278bc22cfc40cb728c351a95ac440
 _READ_QUERY_DIGEST = "0c38f30b7d6f96fbbc4ee67aa3f31a898233dda1eb8cea389fe9ecae7104f331"
 _NP_PATTERN_DIGEST = "bf82703a2320d4c2cf5ab05b7b38168ea32894bf04b0a29606e962a9f68997eb"
 _ENTITY_OUTPUT_DIGEST = "7263d5d003e349b710ff0d8ab1e0ef4bb0fcaa17a331908aa67783d78edf5aa5"
+
+
+# What base's ingest bank wrote for each message, frozen as literals on
+# `github/main` at fecbe3e1, so a bug in the new loop can't also move the
+# reference. Each is lowercase in its verb, on one line, and free of a phrase
+# that is only function words, so nothing here may change.
+_FROZEN_SINGLE_LINE: dict[str, list[tuple[str, str, str, str]]] = {
+    "feat: the new fetcher supersedes the old fetcher": [
+        ("the new fetcher", "SUPERSEDES", "the old fetcher",
+         "feat: the new fetcher supersedes the old fetcher"),
+    ],
+    "The big old red fast car supersedes a slow blue van": [
+        ("The big old red fast car", "SUPERSEDES", "a slow blue van",
+         "The big old red fast car supersedes a slow blue van"),
+    ],
+    "the slow blue van supersedes The big old red fast car": [
+        ("the slow blue van", "SUPERSEDES", "The big old red fast car",
+         "the slow blue van supersedes The big old red fast car"),
+    ],
+    "THE NEW FETCHER supersedes THE OLD FETCHER": [
+        ("THE NEW FETCHER", "SUPERSEDES", "THE OLD FETCHER",
+         "THE NEW FETCHER supersedes THE OLD FETCHER"),
+    ],
+    "fix: crash when the config mentions a missing path on startup": [
+        ("crash when the config", "CITES", "a missing path on startup",
+         "fix: crash when the config mentions a missing path on startup"),
+    ],
+    "the spec is derived from the prior memo": [
+        ("the spec", "DERIVED_FROM", "the prior memo",
+         "the spec is derived from the prior memo"),
+    ],
+    "the new index is supported by faster queries": [
+        ("faster queries", "SUPPORTS", "the new index",
+         "the new index is supported by faster queries"),
+    ],
+    "this parser is tested by the golden corpus and is covered by nightly runs": [
+        ("the golden corpus and is covered", "TESTS", "this parser",
+         "this parser is tested by the golden corpus and is covered by nightly runs"),
+        ("nightly runs", "TESTS", "by the golden corpus and",
+         "parser is tested by the golden corpus and is covered by nightly runs"),
+    ],
+    "the planner contradicts the memo, and the memo cites the paper": [
+        ("the planner", "CONTRADICTS", "the memo",
+         "the planner contradicts the memo, and the memo cites the"),
+        ("and the memo", "CITES", "the paper",
+         "planner contradicts the memo, and the memo cites the paper"),
+    ],
+    "Our writer implements the spec. Their reader is based on the writer.": [
+        ("Our writer", "IMPLEMENTS", "the spec",
+         "Our writer implements the spec. Their reader is based on"),
+        ("Their reader", "DERIVED_FROM", "the writer",
+         "implements the spec. Their reader is based on the writer."),
+    ],
+    "the writer supersedes the old, and the reader supersedes the new": [
+        ("the writer", "SUPERSEDES", "the old",
+         "the writer supersedes the old, and the reader supersedes"),
+        ("and the reader", "SUPERSEDES", "the new",
+         "writer supersedes the old, and the reader supersedes the new"),
+    ],
+}
+
+_FUNCTION_WORDS = (
+    "the", "a", "an", "our", "their", "its", "this", "that", "these", "those",
+    "my", "your", "his", "her",
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "us", "them",
+    "myself", "yourself", "himself", "herself", "itself", "ourselves",
+    "yourselves", "themselves", "mine", "yours", "hers", "ours", "theirs",
+    "which", "who", "whom", "whose", "what", "where", "when", "why", "how",
+    "all", "both", "each", "every", "either", "neither", "some", "any", "none",
+    "many", "most", "few", "several", "another", "such", "other", "others",
+    "one",
+    "something", "anything", "everything", "nothing", "someone", "anyone",
+    "everyone",
+)
 
 
 def _digest(value: object) -> str:
@@ -171,33 +248,20 @@ def test_an_edge_type_name_used_as_a_noun_is_not_a_verb() -> None:
 
 
 def test_the_phrases_on_each_side_keep_ignoring_case() -> None:
-    """A global flag removal keeps `The` out of the determiner slot, so a
-    five-token phrase loses it."""
-    assert _pairs("The big old red fast car supersedes THE slow blue van") == [
-        ("The big old red fast car", EDGE_SUPERSEDES, "THE slow blue van"),
+    """Six tokens with an uppercase determiner fit a phrase only when case is
+    ignored there, so this fails if either side loses it."""
+    assert _pairs(
+        "The big old red fast car supersedes The slow blue old rusty van"
+    ) == [
+        ("The big old red fast car", EDGE_SUPERSEDES, "The slow blue old rusty van"),
     ]
 
 
-@pytest.mark.parametrize(
-    "text",
-    (
-        *_SINGLE_LINE_LOWERCASE,
-        "This supersedes the old parser",
-        "the new parser supersedes this",
-        "the new parser supersedes the",
-    ),
-)
-def test_a_lowercase_verb_on_one_line_stores_what_the_old_bank_stored(
-    text: str, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    new = _ingest(text)
-    old_bank = tuple(
-        _build_pattern(p.template, p.edge_type, swap=p.swap)
-        for p in _INGEST_PATTERNS
-    )
-    monkeypatch.setattr(te, "_INGEST_PATTERNS", old_bank)
-    assert new == _ingest(text)
-    assert new
+@pytest.mark.parametrize("text", _FROZEN_SINGLE_LINE)
+def test_a_lowercase_verb_on_one_line_stores_what_base_stored(text: str) -> None:
+    assert [
+        (t.subject, t.relation, t.object, t.anchor_text) for t in _ingest(text)
+    ] == _FROZEN_SINGLE_LINE[text]
 
 
 # --- Line crossing -----------------------------------------------------------
@@ -237,36 +301,12 @@ def test_a_relation_on_each_of_two_lines_stores_both() -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "the new parser supersedes the\nold parser",
-        "the new parser supersedes the  \nold parser",
-        "the new parser supersedes A\nold parser",
-        "the parser is tested by the\ngolden corpus",
-    ],
-)
-def test_a_determiner_a_line_break_cut_off_stores_nothing(text: str) -> None:
-    assert _pairs(text) == []
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "the new parser supersedes the",
-        "the new parser supersedes the\n",
-        "the new parser supersedes this, for now\nmore text",
-    ],
-)
-def test_a_determiner_no_line_break_cut_off_still_stores(text: str) -> None:
-    [(subject, relation, obj)] = _pairs(text)
-    assert (subject, relation) == ("the new parser", EDGE_SUPERSEDES)
-    assert obj in {"the", "this"}
-
-
-def test_a_body_line_that_opens_with_a_determiner_keeps_its_subject() -> None:
-    assert _pairs("fix: tidy the parser\n\nThis supersedes the old parser") == [
-        ("This", EDGE_SUPERSEDES, "the old parser"),
+def test_two_relations_with_one_verb_on_one_line_store_both() -> None:
+    assert _pairs(
+        "the writer supersedes the old, and the reader supersedes the new"
+    ) == [
+        ("the writer", EDGE_SUPERSEDES, "the old"),
+        ("and the reader", EDGE_SUPERSEDES, "the new"),
     ]
 
 
@@ -276,6 +316,93 @@ def test_the_anchor_still_reads_past_the_matched_line() -> None:
     assert triple.anchor_text == (
         "fix: retry\n\nthe writer supersedes the reader\n\nmore context"
     )
+
+
+# --- Function words ----------------------------------------------------------
+
+
+def test_the_function_word_list_is_exactly_the_reviewed_one() -> None:
+    assert te._INGEST_FUNCTION_WORDS == frozenset(_FUNCTION_WORDS)
+    assert len(_FUNCTION_WORDS) == len(set(_FUNCTION_WORDS))
+
+
+def test_every_determiner_the_noun_phrase_admits_is_a_function_word() -> None:
+    determiners = re.findall(r"[a-z]+", _DET)
+    assert len(determiners) == 14
+    assert set(determiners) <= set(_FUNCTION_WORDS)
+
+
+@pytest.mark.parametrize("word", _FUNCTION_WORDS)
+@pytest.mark.parametrize("form", [str.lower, str.title, str.upper], ids=["low", "title", "up"])
+def test_a_function_word_on_either_side_stores_nothing(
+    word: str, form: Callable[[str], str],
+) -> None:
+    word = form(word)
+    assert _pairs(f"{word} supersedes the old parser") == []
+    assert _pairs(f"the new parser supersedes {word}") == []
+    assert _pairs(f"the new parser is tested by {word}") == []
+    assert _pairs(f"{word} is tested by the golden corpus") == []
+
+
+@pytest.mark.parametrize("word", _FUNCTION_WORDS)
+def test_a_function_word_inside_a_longer_phrase_doesnt_count(word: str) -> None:
+    assert _pairs(f"parser {word} supersedes {word} parser") == [
+        (f"parser {word}", EDGE_SUPERSEDES, f"{word} parser"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "the new parser supersedes all the",
+        "both these supersedes the old parser",
+        "the new parser supersedes this one",
+    ],
+)
+def test_a_phrase_of_only_function_words_stores_nothing(text: str) -> None:
+    assert _pairs(text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "feat: new parser supersedes that",
+        "feat: new parser supersedes that\n\nCloses 12",
+        "X supersedes it\nlater text",
+        "X supersedes all\nlater text",
+        "X supersedes both\nlater text",
+        "the new parser supersedes the\nold parser",
+        "the new parser supersedes the `old` parser",
+        "and the claim contradicts the `doc` text",
+        "so a function whose prose cites a `ref` here",
+        "fix: tidy the parser\n\nThis supersedes the old parser",
+    ],
+)
+def test_a_review_case_stores_nothing(text: str) -> None:
+    assert _pairs(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "obj"),
+    [
+        ("the new fetcher supersedes the old\nfetcher", "the old"),
+        ("the new fetcher supersedes the earlier\nfetcher", "the earlier"),
+        ("X supersedes old\nlater text", "old"),
+    ],
+)
+def test_an_adjective_with_no_noun_still_stores(text: str, obj: str) -> None:
+    """Telling `the old` from `the parser` takes a grammar check, so the rule
+    leaves these in. A later change to that decision has to change this test."""
+    assert [(r, o) for _, r, o in _pairs(text)] == [(EDGE_SUPERSEDES, obj)]
+
+
+def test_the_read_path_keeps_function_word_phrases() -> None:
+    assert [
+        (t.subject, t.object) for t in extract_triples("This supersedes the old parser")
+    ] == [("This", "the old parser")]
+    assert [
+        (t.subject, t.object) for t in extract_triples("the new parser supersedes it")
+    ] == [("the new parser", "it")]
 
 
 # --- The read path and the entity index --------------------------------------
@@ -336,6 +463,50 @@ def test_the_hook_opens_no_store_for_an_uppercase_noun(db: Path) -> None:
         session_id="s", project_context="p",
     )
     assert not db.exists()
+
+
+def _hook_ran(done: Path) -> int:
+    return len(done.read_text(encoding="utf-8").splitlines()) if done.exists() else 0
+
+
+@pytest.mark.timeout(120)
+def test_the_installed_block_stores_only_what_the_rules_allow(
+    tmp_path: Path, db: Path,
+) -> None:
+    """Commits go through the real `post-commit` block. A wrapper records each
+    finished background run, so the test waits on that and not on a clock."""
+    script = Path(sys.executable).parent / "aelf-commit-ingest"
+    if not script.exists():
+        pytest.skip("aelf-commit-ingest is not installed next to the interpreter")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "T")
+    _git(repo, "config", "commit.gpgsign", "false")
+    done = tmp_path / "done"
+    wrapper = tmp_path / "ingest-and-report"
+    wrapper.write_text(
+        f"#!/bin/sh\n'{script}' \"$@\"\necho ran >> '{done}'\n", encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    assert install_commit_ingest_git_hook(repo, command=str(wrapper)).status == "installed"
+    messages = (
+        "docs: describe the SUPERSEDES writer for new readers",
+        "refactor: tidy the fetch\n\nThe new fetcher\nsupersedes\nthe old fetcher",
+        "feat: new parser supersedes that\n\nCloses 12",
+        "fix: tidy the parser\n\nThis supersedes the old parser",
+        "feat: the new codec supersedes the old codec",
+    )
+    for i, message in enumerate(messages, start=1):
+        (repo / f"f{i}").write_text(message, encoding="utf-8")
+        _git(repo, "add", f"f{i}")
+        _git(repo, "commit", "-q", "-m", message)
+        deadline = time.monotonic() + 30
+        while _hook_ran(done) < i:
+            assert time.monotonic() < deadline, f"the block didn't run for commit {i}"
+            time.sleep(0.05)
+    assert _edges(db) == [("the new codec", EDGE_SUPERSEDES, "the old codec")]
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -440,6 +611,7 @@ def test_the_block_comment_describes_what_the_hook_stores(tmp_path: Path) -> Non
     )
     assert "Records this commit's message" not in comments
     assert "stores the words on each side" in comments
+    assert "Skips commits that a rebase replays." in comments
     assert "Delete this block to stop it." in comments
 
 
@@ -477,6 +649,7 @@ _BENCHMARK_BODIES = (
     "refactor: tidy the fetch\n\nThe new fetcher\nsupersedes\nthe old fetcher",
     "the writer supersedes the old\nthe reader supersedes the new",
     "the new parser supersedes the\nold parser",
+    "This supersedes the old parser",
     "docs: describe the SUPERSEDES writer for new readers",
 )
 
@@ -485,7 +658,7 @@ def test_the_benchmark_replica_agrees_with_extract_triples() -> None:
     """`triple_precision_1376` exits when its replica loop and `extract_triples`
     disagree, so its ingest walk has to match per line too."""
     for body in _BENCHMARK_BODIES:
-        ingest_counts, _ = _fires_by_template([body], _INGEST_PATTERNS, per_line=True)
+        ingest_counts, _ = _fires_by_template([body], _INGEST_PATTERNS, ingest_rules=True)
         assert sum(ingest_counts.values()) == len(_ingest(body)), body
         read_counts, _ = _fires_by_template([body], _PATTERNS)
         assert sum(read_counts.values()) == len(extract_triples(body)), body
