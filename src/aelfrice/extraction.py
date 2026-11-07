@@ -63,11 +63,10 @@ _KNOWN_CREDENTIAL_RE: re.Pattern[str] = re.compile(
     # A prefix can also sit in an ordinary name, as in `risk_live_`, `pnpm_config_`,
     # `sk-learn`, or `pypi-publish`. So a body that a real key writes without an
     # underscore excludes one, and `sk-` and `pypi-`, whose bodies do hold
-    # separators, need a digit. `sk-` and `hf_` also end words, as in `task-` and
-    # `shelf_`, so they need no letter before them. An encoded character there is
-    # a separator.
-    r"(?:(?<![A-Za-z])|(?<=%[0-9A-Fa-f]{2}))(?:sk-(?=[\w-]*\d)[\w-]{16,}|hf_[A-Za-z0-9]{30,})"
-    r"|AIza[\w-]{30,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}"
+    # separators, need a digit. `sk-` also ends words, as in `task-`, so it needs no
+    # letter before it. An encoded character there is a separator.
+    r"(?:(?<![A-Za-z])|(?<=%[0-9A-Fa-f]{2}))sk-(?=[\w-]*\d)[\w-]{16,}"
+    r"|hf_[A-Za-z0-9]{30,}|AIza[\w-]{30,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}"
     r"|A[KS]IA[0-9A-Z]{16}|[rs]k_live_[A-Za-z0-9]{16,}|npm_[A-Za-z0-9]{30,}|pypi-(?=[\w-]*\d)[\w-]{16,}"
     r"|xox[a-z]-[\w-]{10,}|\d{8,10}:[\w-]{30,}|eyJ[\w-]{5,}\.[\w-]{5,}\."
     r"|(?i:hooks\.slack\.com/|discord(?:app)?\.com/api/(?:v\d+/)?webhooks/"

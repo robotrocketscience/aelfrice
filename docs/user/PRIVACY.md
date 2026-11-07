@@ -201,7 +201,7 @@ This rule is a fixed list of shapes, and it misses a secret in any other shape. 
 - Inline code with another shape: a `curl -u` command with a user and a password, `` `session zqk-1234` ``, `` `KEY＝zqk-1234` `` with a full-width equals sign, or `` `zqk-1234` `` alone.
 - A token with no known prefix that's short or low in entropy, such as a hexadecimal token, which tops out at 4.0 bits per character.
 - A known key or a private key header in plain text, outside inline code and URLs, which earlier releases stored too.
-- A known key prefix in another letter case, such as `GHP_`, `sk-` or `hf_` right after a letter, `sk-` or `pypi-` with no digit in the key, or a key that holds an underscore where the vendor's keys don't.
+- A known key prefix in another letter case, such as `GHP_`, `sk-` right after a letter, `sk-` or `pypi-` with no digit in the key, or a key that holds an underscore where the vendor's keys don't.
 - A URL that markdown emphasis builds from a split scheme, query string included, which earlier releases stored too: `**https**://example.invalid/b?token=zqk-1234`. The emphasis pass runs after the URL rule, so the rule never sees it as a URL.
 
 Only a prompt that the default transcript path ingests keeps its spans. A transcript that you ingest with `--source-label` stores each sentence without inline code or URLs, as earlier releases did.

@@ -852,7 +852,8 @@ def test_the_entropy_check_has_a_length_and_a_bit_floor(token: str, kept: bool) 
     [
         "`risk-assessment-for-the-widget`",
         "`task-management-for-the-widget`",
-        "`shelf_" + "a1b2" * 8 + "`",
+        "`task-2024-widget-report-final`",
+        "`risk-2024-widget-report-final`",
         "`task_manager_for_widget`",
         "`risk_live_trading_enabled_flag`",
         "`disk_live_migration_status_check`",
