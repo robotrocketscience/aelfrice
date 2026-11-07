@@ -48,11 +48,11 @@ _URL_RE: re.Pattern[str] = re.compile(r"https?://\S+")
 # in a URL's path or fragment, or alone in a code span, is kept. The rule may
 # remove too much, because removal is what happened to every span before #1874.
 #
-# In a code span: any `=`, a `?` inside a word (a query, with or without a
-# scheme), a `:` and then `@` (userinfo, under any scheme), "bearer", or a
+# In a code span: any `=`, a `?` with text right after it (a query, with or
+# without a scheme), a `:` and then `@` (userinfo, under any scheme), "bearer", or a
 # credential word followed by a colon or a value.
 _CREDENTIAL_CODE_RE: re.Pattern[str] = re.compile(
-    r"=|\S\?\S|:\S*@|bearer"
+    r"=|\?\S|:\S*@|bearer"
     r"|(?:key|token|secret|passw(?:or)?d|pwd|auth\w*|cookie|credential)s?[\"']?(?:\s*:|\s+\S)",
     re.IGNORECASE,
 )

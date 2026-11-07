@@ -501,6 +501,7 @@ def test_the_support_log_matches_on_the_holed_form(tmp_path: Path) -> None:
         ("Use `ssh://ZQASCHM0007@e.invalid/w` for the widget.", "ZQASCHM0007"),
         ("Use `bot:ZQASCHM0008@db.invalid/w` for the widget.", "ZQASCHM0008"),
         ("See `example.invalid/x?ZQASCHM0009` for the widget endpoint.", "ZQASCHM0009"),
+        ("See `?ZQASCHM0010` for the widget endpoint.", "ZQASCHM0010"),
         # An `=` in any company.
         ('Set `"api_key"="ZQAEQLS0001"` before the widget release.', "ZQAEQLS0001"),
         ("Set `API_KEY:=ZQAEQLS0002` before the widget release.", "ZQAEQLS0002"),
@@ -580,6 +581,12 @@ def test_the_rule_may_remove_more_than_a_secret(span: str) -> None:
     """Over-removal costs what every span cost before #1874, so it's accepted."""
     sentence = f"Check {span} in the widget config."
     assert [form.whole for form in sentence_forms(sentence)] == _frozen_extract_sentences(sentence)
+
+
+def test_a_span_that_opens_the_text_has_no_introducer() -> None:
+    """Position zero has nothing before it, so the text's last character doesn't count."""
+    sentence = "`zqtool` runs the widget release when a="
+    assert [form.whole for form in sentence_forms(sentence)] == [sentence]
 
 
 def test_a_span_right_after_a_question_mark_stays_removed() -> None:

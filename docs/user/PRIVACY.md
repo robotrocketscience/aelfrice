@@ -182,7 +182,7 @@ aelfrice has no general secret scanner. A secret you type in plain text is store
 When aelfrice stores a sentence from a prompt, it keeps inline code and URLs in the sentence. It removes fenced code blocks, and it removes each whole span in these shapes:
 
 - A URL with a query string or an `@` anywhere, such as `https://example.invalid/export?token=zqk-1234` or `https://bot:zqk-1234@example.invalid/widget.tar`.
-- Inline code that holds an `=`, a `?` inside a word, a `:` and later an `@`, or the word `bearer`, such as `` `ZQ_API_KEY=zqk-1234` ``, `` `example.invalid/x?zqk-1234` ``, `` `postgres://bot:zqk-1234@db.invalid/w` ``, or `` `Bearer zqk-1234` ``.
+- Inline code that holds an `=`, a `?` with text right after it, a `:` and later an `@`, or the word `bearer`, such as `` `ZQ_API_KEY=zqk-1234` ``, `` `example.invalid/x?zqk-1234` ``, `` `postgres://bot:zqk-1234@db.invalid/w` ``, or `` `Bearer zqk-1234` ``.
 - Inline code with `key`, `token`, `secret`, `password`, `passwd`, `pwd`, `cookie`, `credential`, or a word starting with `auth`, followed by a colon or a value, such as `` `X-Api-Key: zqk-1234` `` or `` `tool --token zqk-1234` ``.
 - Inline code right after `=`, `?`, or `&`, such as ``https://example.invalid/x?k=`zqk-1234` ``.
 - Any span longer than 256 characters.
