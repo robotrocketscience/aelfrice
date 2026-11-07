@@ -7,26 +7,27 @@
 [![License](https://img.shields.io/pypi/l/aelfrice.svg)](LICENSE)
 [![CI](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml/badge.svg)](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml)
 <!-- bench-canonical-badge:start -->
-reproducibility: ⚠️ 6/11 ok · last run 2026-11-06
+reproducibility: ⚠️ 6/11 ok · last run 2026-11-07
 <!-- bench-canonical-badge:end -->
 
-**aelfrice gives an AI coding agent a local memory: before the model reads each prompt, a hook adds your locked beliefs and the best-ranked matches to it.** An agent forgets your corrections between sessions, so you repeat them.
+**aelfrice gives an AI coding agent a local memory: before the model reads each prompt, a hook adds your locked beliefs and the best-ranked matches to it.** An agent forgets your corrections between sessions, so you repeat them. A belief is one statement that aelfrice has stored.
 
-- aelfrice stores your turns and commits as beliefs; a belief becomes ground truth only when you lock it with `/aelf:lock`.
+- aelfrice stores sentences from your prompts as beliefs. After each commit, it also stores the words on each side of a phrase such as "X supersedes Y" in the commit message. A message with no such phrase adds nothing. `/aelf:onboard` adds your docs, docstrings, and recent commit subjects.
+- By default, a belief becomes ground truth only when you lock it with `/aelf:lock`.
 - Retrieval uses an entity index and BM25 over local SQLite and needs no account, telemetry, embeddings, or LLM.
 
 By default, aelfrice checks PyPI for updates and runs your `claude` CLI in the background to label new core beliefs, and `/aelf:onboard` classifies with your agent's model. See the [privacy document](docs/user/PRIVACY.md).
 
 ## Beliefs
 
-A belief is one statement with its source, type, and Bayesian confidence score. Every 12 logged lines (about six prompts and replies), aelfrice stores each sentence of your prompts as a fact, correction, preference, or requirement. It skips noise, questions, and the model's replies.
+Each belief records its source, type, and Bayesian confidence score. Every 12 logged lines (about six prompts and replies), aelfrice stores each sentence of your prompts as a fact, correction, preference, or requirement, with inline code, code blocks, and URLs removed. It skips noise, hedged ideas such as "maybe we could", sentences that end in a question mark, and the model's replies.
 
 `/aelf:confirm` and `aelf feedback` change a belief's confidence, as does praise such as "perfect" for an answer it informed. Complaints such as "that's wrong" count only with [negative sentiment feedback](docs/user/CONFIG.md) on.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/how-it-works-dark.png">
-    <img src="docs/assets/how-it-works-light.png" width="100%" alt="How aelfrice works. At session start the context window holds the host's system prompt and tool definitions, CLAUDE.md, and an aelfrice-baseline block of your locked rules. On each turn, three paths run: the prompt hook, and a search hook that fires whenever the model searches, query the store (locks always, the entity index, and BM25), ranks locks first, then entity matches, then BM25 hits weighted by confidence, and adds an aelfrice-memory block to what the model reads; a typed /aelf:lock writes a locked belief that is injected at every session start and every prompt; and after each reply the Stop hook logs the turn, and every 12 turns your sentences are ingested as beliefs, each linked to the one before by a TEMPORAL_NEXT edge. The ranking follows each prompt: two example prompts return different orders. All three paths read or write one local SQLite belief graph.">
+    <img src="docs/assets/how-it-works-light.png" width="100%" alt="How aelfrice works. At session start the context window holds the host's system prompt and tool definitions, CLAUDE.md, and an aelfrice-baseline block of your locked rules. On each turn, three paths run: the prompt hook, and a search hook that fires whenever the model searches, query the store (locks always, the entity index, and BM25), ranks locks first, then entity matches, then BM25 hits weighted by confidence, and adds an aelfrice-memory block to what the model reads; a typed /aelf:lock writes a locked belief that is injected at every session start and every prompt; and after each reply the Stop hook logs the turn, and every 12 logged lines your sentences are ingested as beliefs, each linked to the one before by a TEMPORAL_NEXT edge. The ranking follows each prompt: two example prompts return different orders. All three paths read or write one local SQLite belief graph.">
   </picture>
 </p>
 
@@ -76,7 +77,7 @@ Install aelfrice from github.com/robotrocketscience/aelfrice for all my projects
    /aelf:onboard .
    ```
 
-   The command asks which model to use and shows what each costs, then shows the estimated time before it starts. Choose the low-cost model, which is the default and the one the command recommends. The scan uses your agent's existing plan and needs no API key. To scan without a model, add `--no-subagents`.
+   On Codex, run `$aelf-onboard .` instead. The command asks which model to use and shows what each costs, then shows the estimated time before it starts. Choose the low-cost model, which is the default and the one the command recommends. The scan uses your agent's existing plan and needs no API key. To scan without a model, add `--no-subagents`.
 
 3. Lock your first belief:
 
@@ -155,7 +156,7 @@ Every belief has one type. A rule-based classifier types transcript text; `/aelf
 | `preference` | How you like things done. | Contains "I prefer", "always use", or similar. |
 | `speculative` | A phantom: a guess that isn't trusted yet. | `/aelf:wonder` writes it. |
 
-Edges link a source belief to a target belief. Today, only `TEMPORAL_NEXT` and `DERIVED_FROM` are written for every conversation. The commit hook reads the agent's `git commit` messages and matches only unambiguous phrasings: "is supported by" counts, and "supports" doesn't.
+Edges link a source belief to a target belief. Today, only `TEMPORAL_NEXT` and `DERIVED_FROM` are written for every conversation. The commit hook reads the message of each new commit and matches a fixed list of phrasings: "is supported by" counts, and "supports" doesn't. A phrasing counts only in lowercase, so "supersedes" counts, and "SUPERSEDES" doesn't. It also needs a word on each side of it on the same line. A side made only of function words stores nothing for that match: determiners, pronouns, relative words, quantifiers, conjunctions, prepositions, auxiliaries and modals, negators, and adverbs such as "also" and "just". A word of two or more letters in all capitals, such as "IT" or "WHO", counts as a name, so it stores. A capitalized word that matches one of these, such as the code names "None" and "Any" or the name "Will", counts as a function word, so it doesn't store. A word with a hyphen or underscore inside it, such as "one-shot" or "all_of", counts as one word and stores. A side can't start after an apostrophe, so "it's" doesn't store "s". On a match, aelfrice stores up to six words from each side, from that line only, as a belief, with an edge between them. Those words might not form a complete phrase, such as "the old", and a phrase that wraps to the next line is cut at the line break. The edge also keeps about 80 characters of the message, which can include other lines. From a message with no match, aelfrice stores nothing.
 
 | Edge | Meaning | Written by | Default |
 |---|---|---|---|
