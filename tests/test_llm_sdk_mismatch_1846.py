@@ -872,7 +872,7 @@ class _Api(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format: str, *args: Any) -> None:
-        del format, args
+        """Keep request lines out of the test output."""
 
 
 @pytest.fixture
