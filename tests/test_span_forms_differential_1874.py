@@ -293,6 +293,27 @@ def test_a_url_that_emphasis_assembled_stores_and_classifies_as_before(
     assert (report.matched, report.mismatched) == (1, 0)
 
 
+@pytest.mark.parametrize(
+    ("padding", "kept"),
+    [(1024, True), (1025, False), (200_000, False)],
+)
+def test_a_long_sentence_stores_without_its_spans(tmp_path: Path, padding: int, kept: bool) -> None:
+    """The holed text must be exact for replay, so the bound is on what keeps a span."""
+    start, end = "Run `zqtool` ", " now."
+    prompt = start + "w" * (padding - len(start) - len(end)) + end
+    holed = prompt.replace("`zqtool`", " ")
+    store = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        _ingest_turn(store, prompt, "transcript", role="user")
+        [(raw, meta)] = store._conn.execute("SELECT raw_text, raw_meta FROM ingest_log").fetchall()  # noqa: SLF001
+        report = replay_full_equality(store)
+    finally:
+        store.close()
+    assert raw == (prompt if kept else holed)
+    assert json.loads(meta).get(META_HOLED) == (holed if kept else None)
+    assert (report.matched, report.mismatched) == (1, 0)
+
+
 def test_a_row_from_before_1874_replays_as_it_was_written() -> None:
     """A row with no holed text reads as stored, even with a URL in it."""
     raw = "Run https://example.invalid/a!"

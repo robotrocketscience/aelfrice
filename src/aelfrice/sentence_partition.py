@@ -76,6 +76,13 @@ def _looks_like_subfloor_noise(sentence: str) -> bool:
     return False
 
 
+# A sentence longer than this with its spans keeps them out, as it did before #1874.
+# The holed text on its log row has to be exact for replay, so it can't be cut.
+# Storing this sentence holed needs no such row. The longest in the #1874 corpus
+# is 655 characters.
+_KEPT_SENTENCE_MAX_CHARS: int = 1024
+
+
 def partition_sentences(
     text: str, *, keep_spans: bool = True,
 ) -> tuple[list[str], list[list[str]]]:
@@ -94,7 +101,8 @@ def partition_sentences(
     subfloor_between: list[list[str]] = []
     pending_subfloor: list[str] = []
     for form in sentence_forms(text):
-        sentence = form.whole if keep_spans else form.holed
+        keep = keep_spans and len(form.whole) <= _KEPT_SENTENCE_MAX_CHARS
+        sentence = form.whole if keep else form.holed
         if is_transcript_noise(form.holed):
             continue
         if _looks_like_subfloor_noise(form.holed):
