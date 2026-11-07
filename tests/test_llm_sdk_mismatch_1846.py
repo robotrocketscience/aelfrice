@@ -332,78 +332,112 @@ def test_parse_failure_prints_its_whole_reason() -> None:
     )
 
 
+class _BodyError(_StatusError):
+    def __init__(self, status_code: int, body: object) -> None:
+        super().__init__(status_code)
+        self.body = body
+        self.args = (f"Error code: {status_code} - {body} {_SECRET}",)
+
+
+_CHECK = "Check the model name, billing, and the base URL"
+
+
 @pytest.mark.parametrize("status", [400, 404, 413, 422])
 def test_rejected_status_names_itself_and_counts_the_request(status: int) -> None:
     result = _batch(_raising(_StatusError(status)))
     assert result.fallback_used
-    assert result.warning is not None
-    assert result.warning.startswith(
-        f"the API rejected the classifier request (status {status}: "
+    assert result.warning == (
+        f"the API rejected the classifier request (status {status}). {_CHECK}"
     )
     assert result.telemetry.requests == 1
 
 
-def test_rejection_text_is_one_bounded_line() -> None:
-    exc = _StatusError(413)
-    exc.args = ("<html>\n" + "<p>too large</p>\n" * 200,)
-    warning = _batch(_raising(exc)).warning
-    assert warning is not None
-    assert "\n" not in warning
-    detail = warning.removeprefix(
-        "the API rejected the classifier request (status 413: "
-    ).removesuffix(")")
-    assert detail.startswith("<html> <p>too large</p>")
-    assert len(detail) == 200
+@pytest.mark.parametrize(
+    "kind",
+    ["not_found_error", "invalid_request_error", "billing_error", "request_too_large", "api_error"],
+)
+def test_rejection_adds_a_short_error_type(kind: str) -> None:
+    body = {"type": "error", "error": {"type": kind, "message": _SECRET}}
+    warning = _batch(_raising(_BodyError(404, body))).warning
+    assert warning == (
+        f"the API rejected the classifier request (status 404, {kind}). {_CHECK}"
+    )
 
 
-def _batch_with_key(sdk: Any, key: str) -> llm.BatchResult:
-    return llm.classify_batch(_CANDIDATES, api_key=key, sdk_module=sdk)
+@pytest.mark.parametrize(
+    "body",
+    [
+        None,
+        f"Cannot POST /t/{_SECRET}/v1/messages",
+        ["not_found_error"],
+        {},
+        {"error": "not_found_error"},
+        {"error": {}},
+        {"error": {"message": _SECRET}},
+        {"error": {"type": _SECRET}},
+        {"error": {"type": "gwtoken9f3a7c"}},
+        {"error": {"type": "hunter"}},
+        {"error": {"type": "sk-ant-dummy"}},
+        {"error": {"type": "Not_Found_Error"}},
+        {"error": {"type": "not_found_error\n"}},
+        {"error": {"type": "not found_error"}},
+        {"error": {"type": "\x1b[31m_error"}},
+        {"error": {"type": "_error"}},
+        {"error": {"type": "error_"}},
+        {"error": {"type": "not_found_err\u00f6r"}},
+        {"error": {"type": "a_" + "b" * 39}},
+        {"error": {"type": 5}},
+        {"error": {"type": ["not_found_error"]}},
+    ],
+    ids=lambda b: repr(b)[:32],
+)
+def test_rejection_prints_nothing_else_from_the_body(body: object) -> None:
+    warning = _batch(_raising(_BodyError(400, body))).warning
+    assert warning == f"the API rejected the classifier request (status 400). {_CHECK}"
+
+
+def test_error_type_at_the_length_limit_prints() -> None:
+    kind = "a_" + "b" * 38
+    assert len(kind) == 40
+    warning = _batch(_raising(_BodyError(400, {"error": {"type": kind}}))).warning
+    assert warning is not None and f"(status 400, {kind})" in warning
+
+
+def _mismatch(text: str, key: str = "test-key-1846") -> str | None:
+    sdk = _ctor_raising(TypeError(text))
+    return llm.classify_batch(_CANDIDATES, api_key=key, sdk_module=sdk).sdk_mismatch_error
 
 
 @pytest.mark.parametrize(
     "key", ["sk-FAKE1234", " sk-FAKE1234\r"], ids=["plain", "with-whitespace"],
 )
-def test_rejection_warning_replaces_the_key(key: str) -> None:
-    exc = _StatusError(400)
-    exc.args = ("bad credential sk-FAKE1234 for this request",)
-    warning = _batch_with_key(_raising(exc), key).warning
-    assert warning is not None
-    assert "sk-FAKE1234" not in warning
-    assert "bad credential [key] for this request" in warning
+def test_mismatch_text_replaces_the_key(key: str) -> None:
+    assert _mismatch("bad sk-FAKE1234 here", key) == "TypeError: bad [key] here"
 
 
-def test_mismatch_text_replaces_the_key() -> None:
-    result = _batch_with_key(_ctor_raising(TypeError("bad sk-FAKE1234")), "sk-FAKE1234")
-    assert result.sdk_mismatch_error == "TypeError: bad [key]"
+def test_mismatch_text_replaces_a_key_across_the_cap() -> None:
+    text = "y" * 195 + "sk-FAKE1234"
+    assert _mismatch(text, "sk-FAKE1234") == "TypeError: " + "y" * 195 + "[key]"
 
 
-def test_empty_key_leaves_the_text_alone() -> None:
-    exc = _StatusError(400)
-    exc.args = ("no key here",)
-    warning = _batch_with_key(_raising(exc), "").warning
-    assert warning is not None
-    assert "status 400: no key here)" in warning
+def test_empty_key_leaves_the_mismatch_text_alone() -> None:
+    assert _mismatch("no key here", "") == "TypeError: no key here"
 
 
-def test_rejection_warning_collapses_whitespace_runs() -> None:
-    exc = _StatusError(400)
-    exc.args = ("first\n\n  \t second",)
-    warning = _batch(_raising(exc)).warning
-    assert warning is not None
-    assert "status 400: first second)" in warning
+def test_mismatch_text_collapses_whitespace_runs() -> None:
+    assert _mismatch("first\n\n  \t second") == "TypeError: first second"
+
+
+def test_mismatch_text_is_bounded() -> None:
+    assert _mismatch("x" * 500) == "TypeError: " + "x" * 200
 
 
 @pytest.mark.parametrize(
     "char", ["\x1b", "\x00", "\x07", "\x7f", "\x9b", "\r", "\n", "\t"],
     ids=["esc", "nul", "bel", "del", "csi", "cr", "lf", "tab"],
 )
-def test_rejection_warning_strips_control_characters(char: str) -> None:
-    exc = _StatusError(413)
-    exc.args = (f"{char}[31mred{char}text",)
-    warning = _batch(_raising(exc)).warning
-    assert warning is not None
-    assert char not in warning
-    assert "[31mred text" in warning
+def test_mismatch_text_strips_control_characters(char: str) -> None:
+    assert _mismatch(f"{char}[31mred{char}text") == "TypeError: [31mred text"
 
 
 # --- What falls back in silence -------------------------------------------
@@ -477,7 +511,7 @@ def test_router_keeps_the_first_warning_across_batches() -> None:
     candidate = SimpleNamespace(text="a sentence", source="doc:a.md:p1")
     router.classify([candidate])
     first = router.warning
-    assert first is not None and "status 400: " in first
+    assert first is not None and "(status 400)" in first
     router._sdk_module = _raising(_StatusError(404))  # pyright: ignore[reportPrivateUsage]
     router.classify([candidate])
     assert router.warning == first
@@ -628,10 +662,10 @@ def test_doctor_stops_and_names_the_exception(
 @pytest.mark.parametrize(
     ("sdk", "expected", "requests"),
     [
-        (_raising(_StatusError(400)), "status 400: ", 1),
-        (_raising(_StatusError(404)), "status 404: ", 1),
-        (_raising(_StatusError(413)), "status 413: ", 1),
-        (_raising(_StatusError(422)), "status 422: ", 1),
+        (_raising(_StatusError(400)), "(status 400)", 1),
+        (_raising(_StatusError(404)), "(status 404)", 1),
+        (_raising(_StatusError(413)), "(status 413)", 1),
+        (_raising(_StatusError(422)), "(status 422)", 1),
         (_responding(SimpleNamespace(content=5, usage=None)), "unusable", 1),
         (_ctor_raising(InvalidURL(_SECRET)), "didn't run (InvalidURL)", 0),
     ],
@@ -667,10 +701,10 @@ def test_onboard_warns_once_and_finishes_on_regex(
 @pytest.mark.parametrize(
     ("sdk", "expected", "requests"),
     [
-        (_raising(_StatusError(400)), "status 400: ", 1),
-        (_raising(_StatusError(404)), "status 404: ", 1),
-        (_raising(_StatusError(413)), "status 413: ", 1),
-        (_raising(_StatusError(422)), "status 422: ", 1),
+        (_raising(_StatusError(400)), "(status 400)", 1),
+        (_raising(_StatusError(404)), "(status 404)", 1),
+        (_raising(_StatusError(413)), "(status 413)", 1),
+        (_raising(_StatusError(422)), "(status 422)", 1),
         (_responding(SimpleNamespace(content=5, usage=None)), "unusable", 1),
         (_ctor_raising(InvalidURL(_SECRET)), "didn't run (InvalidURL)", 0),
     ],
@@ -1016,12 +1050,28 @@ def test_installed_sdk_key_ending_in_cr_counts_nothing(
     assert "requests=0 " in out.getvalue()
 
 
+def _error_reply(kind: str, message: str) -> bytes:
+    return json.dumps({"type": "error", "error": {"type": kind, "message": message}}).encode()
+
+
+@pytest.mark.parametrize(
+    ("reply", "label"),
+    [
+        ((404, _JSON, _error_reply("not_found_error", f"bad {_SECRET}")), "(status 404, not_found_error)"),
+        ((400, _JSON, _error_reply(_SECRET, "bad")), "(status 400)"),
+        ((400, _JSON, _error_reply("\x1b[31m_error", "bad")), "(status 400)"),
+        ((404, {"content-type": "text/plain"}, f"Cannot POST /t/{_SECRET}/".encode()), "(status 404)"),
+        ((413, {"content-type": "text/html"}, b"\x1b[31m<html>" + _SECRET.encode()), "(status 413)"),
+        ((422, _JSON, b"\x1b[31m not json " + _SECRET.encode()), "(status 422)"),
+    ],
+    ids=["type-and-echo", "type-is-secret", "type-has-esc", "text-404", "html-413", "broken-json-422"],
+)
 @pytest.mark.parametrize(
     "argv",
     [["onboard", "@P", "--llm-classify"], ["onboard", "@P"], ["doctor", "--classify-orphans"]],
     ids=["onboard-flag", "onboard-default", "doctor"],
 )
-def test_installed_sdk_warning_hides_an_echoed_key_and_escape_bytes(
+def test_installed_sdk_warning_prints_no_server_text(
     installed_sdk: None,
     local_api: None,
     project: Path,
@@ -1029,10 +1079,11 @@ def test_installed_sdk_warning_hides_an_echoed_key_and_escape_bytes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     argv: list[str],
+    reply: tuple[int, dict[str, str], bytes],
+    label: str,
 ) -> None:
     monkeypatch.setenv(llm.ENV_API_KEY, _SECRET)
-    body = {"type": "error", "error": {"type": "x", "message": f"bad {_SECRET}"}}
-    _Api.reply = (400, _JSON, json.dumps(body).encode() + b"\x1b[31m")
+    _Api.reply = reply
     if argv[0] == "doctor":
         _seed_orphan(tmp_path)
     args = [str(project) if a == "@P" else a for a in argv]
@@ -1043,7 +1094,9 @@ def test_installed_sdk_warning_hides_an_echoed_key_and_escape_bytes(
     err = capsys.readouterr().err
     assert _SECRET not in err
     assert "\x1b" not in err
-    assert "status 400: " in err
+    assert "Error code" not in err
+    assert label in err
+    assert len(err.splitlines()) == 1
 
 
 def test_installed_sdk_refused_connection_stays_silent_with_requests_0(
@@ -1096,6 +1149,6 @@ def test_installed_sdk_rejection_warns_with_requests_1(
     assert rc == 0
     lines = _aelf_lines(capsys.readouterr().err)
     assert len(lines) == 1
-    assert f"status {status}: " in lines[0]
+    assert f"(status {status})" in lines[0]
     assert _Api.hits == 1
     assert "requests=1 " in out.getvalue()

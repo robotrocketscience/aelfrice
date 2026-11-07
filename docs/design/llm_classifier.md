@@ -546,8 +546,11 @@ no list of content blocks, and model text that fails the parse.
 ### Rejected-request behavior
 
 A 400, 404, 413, or 422 response means the API rejected the request. The run
-falls back as listed above and exits 0, and stderr gets one warning per run
-with the status and the error. The request was sent, so `requests` counts it.
+falls back as listed above and exits 0, and stderr gets one warning per run.
+The warning names the status, adds the response's `error.type` if it's a short
+identifier such as `not_found_error`, and says to check the model name, billing,
+and the base URL. It prints nothing else from the response, because a server can
+echo the base URL or the key. The request was sent, so `requests` counts it.
 `aelf doctor --classify-orphans` has no regex path: it prints the same warning,
 skips every orphan, and exits 0.
 

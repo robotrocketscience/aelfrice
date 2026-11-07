@@ -44,7 +44,8 @@ Failure semantics (docs/design/llm_classifier.md § 7):
     no beliefs inserted, error message names the exception. Nothing has
     been sent at that point, so the call can't be the network's fault.
   - 400/404/413/422 → fall back as above, and print one stderr warning
-    per run naming the status. The request was sent, so it counts.
+    per run naming the status. The request was sent, so it counts. The
+    warning never prints the response's text, which can echo a URL or key.
   - Malformed or undecodable response → fall back as above, and print one
     stderr warning. The request was sent, so it counts.
   - Any other failure before a send, such as proxy, URL, or key config →
@@ -62,6 +63,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -137,8 +139,15 @@ _UNDECODABLE_CAUSES: Final[frozenset[str]] = frozenset({"DecodingError"})
 # run still falls back, and the user gets one warning naming the status.
 _REJECTED_STATUSES: Final[frozenset[int]] = frozenset({400, 404, 413, 422})
 
-# Bound on the error text in a warning. A proxy can answer 413 with a page.
-_WARNING_DETAIL_CHARS: Final[int] = 200
+# The only part of a rejection the warning prints beyond the status. Anything
+# else a server sends can echo the base URL or the key. Letters and underscores,
+# with at least one underscore, match every documented `error.type` and refuse
+# a token.
+_ERROR_TYPE: Final[re.Pattern[str]] = re.compile(r"[a-z]+(?:_[a-z]+)+")
+_ERROR_TYPE_MAX_CHARS: Final[int] = 40
+
+# Bound on the exception text in an SDK-mismatch error.
+_MISMATCH_DETAIL_CHARS: Final[int] = 200
 
 
 # --- Config dataclass ----------------------------------------------------
@@ -923,7 +932,7 @@ def _call_anthropic(
     except Exception as exc:  # noqa: BLE001 — SDK exception classes vary
         if _is_auth_error(exc):
             raise LLMAuthError(str(exc)) from exc
-        raise _fault_from_call(exc, api_key) from exc
+        raise _fault_from_call(exc) from exc
 
     text = _extract_text_from_response(resp)
     input_tokens, output_tokens = _extract_usage(resp)
@@ -952,15 +961,15 @@ def _is_auth_error(exc: BaseException) -> bool:
 
 
 def _safe_detail(text: str, api_key: str) -> str:
-    """Return error text fit for stderr: one bounded line with no key in it.
+    """Return local exception text fit for stderr: one bounded line, no key.
 
-    A server can echo the key, and a body can carry terminal escape bytes.
+    Only for text from before a send. Server text can't be made safe this way.
     """
     secret = api_key.strip()
     if secret:
         text = text.replace(secret, "[key]")
     printable = "".join(ch if ch.isprintable() else " " for ch in text)
-    return " ".join(printable.split())[:_WARNING_DETAIL_CHARS]
+    return " ".join(printable.split())[:_MISMATCH_DETAIL_CHARS]
 
 
 def _did_not_run(name: str) -> str:
@@ -994,7 +1003,31 @@ def _reached_response_handling(exc: BaseException) -> bool:
     return False
 
 
-def _fault_from_call(exc: BaseException, api_key: str) -> LLMTransientError:
+def _error_type(exc: BaseException) -> str | None:
+    """Return the decoded body's `error.type` if it's a short identifier."""
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        return None
+    error = cast(dict[str, Any], body).get("error")
+    if not isinstance(error, dict):
+        return None
+    kind = cast(dict[str, Any], error).get("type")
+    if not isinstance(kind, str) or len(kind) > _ERROR_TYPE_MAX_CHARS:
+        return None
+    return kind if _ERROR_TYPE.fullmatch(kind) else None
+
+
+def _rejection_warning(status: int, exc: BaseException) -> str:
+    """Warning text for a rejected request: the status and what to check."""
+    kind = _error_type(exc)
+    label = f"status {status}, {kind}" if kind else f"status {status}"
+    return (
+        f"the API rejected the classifier request ({label}). "
+        "Check the model name, billing, and the base URL"
+    )
+
+
+def _fault_from_call(exc: BaseException) -> LLMTransientError:
     """Sort an exception from `create` into a fallback, with or without a warning.
 
     Status errors and the `APIError` family are read by status and by cause,
@@ -1007,10 +1040,7 @@ def _fault_from_call(exc: BaseException, api_key: str) -> LLMTransientError:
         return LLMTransientError(
             str(exc),
             request_sent=True,
-            warning=(
-                "the API rejected the classifier request "
-                f"(status {status}: {_safe_detail(str(exc), api_key)})"
-            ),
+            warning=_rejection_warning(status, exc),
         )
     if status is not None:
         return LLMTransientError(str(exc), request_sent=True)
@@ -1173,9 +1203,7 @@ def classify_batch(
     except LLMTransientError as exc:
         result.fallback_used = True
         result.fallback_reason = "parse:" + str(exc)[:64]
-        result.warning = _unusable_response(
-            _safe_detail(str(exc), api_key),
-        ).warning
+        result.warning = _unusable_response(str(exc)).warning
         result.telemetry.fallbacks = len(candidates)
         return result
 
