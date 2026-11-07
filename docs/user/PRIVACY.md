@@ -179,16 +179,25 @@ If a fact must never leave your machine, don't store it.
 
 aelfrice has no general secret scanner. A secret you type in plain text is stored as you typed it, and later sessions can retrieve and inject it. For example, `The widget API key is zqk-1234.` becomes a belief.
 
-When aelfrice stores a sentence from a prompt, it keeps inline code and URLs in the sentence, and it removes fenced code blocks and these shapes:
+When aelfrice stores a sentence from a prompt, it keeps inline code and URLs in the sentence. It removes fenced code blocks, and it removes each whole span in these shapes:
 
-- A URL with a query string or with a username or password, such as `https://example.invalid/export?token=zqk-1234` or `https://bot:zqk-1234@example.invalid/widget.tar`. The whole URL is removed.
-- Inline code that holds a `KEY=value` assignment, a bearer token, or an `Authorization:` header, such as `` `ZQ_API_KEY=zqk-1234` `` or `` `Authorization: Bearer zqk-1234` ``. The whole span is removed.
+- A URL with a query string or an `@` anywhere, such as `https://example.invalid/export?token=zqk-1234` or `https://bot:zqk-1234@example.invalid/widget.tar`.
+- Inline code that holds an `=`, a `?` inside a word, a `:` and later an `@`, or the word `bearer`, such as `` `ZQ_API_KEY=zqk-1234` ``, `` `example.invalid/x?zqk-1234` ``, `` `postgres://bot:zqk-1234@db.invalid/w` ``, or `` `Bearer zqk-1234` ``.
+- Inline code with `key`, `token`, `secret`, `password`, `passwd`, `pwd`, `cookie`, `credential`, or a word starting with `auth`, followed by a colon or a value, such as `` `X-Api-Key: zqk-1234` `` or `` `tool --token zqk-1234` ``.
+- Inline code right after `=`, `?`, or `&`, such as ``https://example.invalid/x?k=`zqk-1234` ``.
+- Any span longer than 256 characters.
+
+This rule can remove text that isn't a secret, such as `` `a == b` `` or `` `monkey patch` ``. Earlier releases removed every span, so that text is stored as it was before.
 
 This rule is a fixed list of shapes, and it misses a secret in any other shape. aelfrice stores all of these:
 
-- A token in a URL's path: `https://hooks.example.invalid/services/T0/B0/zqk-1234`.
-- A token in a URL's fragment: `https://example.invalid/cb#access_token=zqk-1234`.
-- Inline code with another shape: `` `ZQ_API_KEY: zqk-1234` ``, a `curl -u` command with a user and a password, or `` `zqk-1234` ``.
+- A token in a URL's path, including one ahead of an encoded query or a closing question mark: `https://hooks.example.invalid/services/T0/B0/zqk-1234`, `https://example.invalid/a%3Fk=zqk-1234`, or `https://example.invalid/zqk-1234?`.
+- A token in a URL's fragment: `https://example.invalid/cb#access_token=zqk-1234`. Inside inline code, the `=` removes this one, but `` `https://example.invalid/cb#zqk-1234` `` stays.
+- A URL outside inline code with an uppercase or non-HTTP scheme, which earlier releases stored too: `HTTPS://bot:zqk-1234@example.invalid/a` or `postgres://bot:zqk-1234@db.invalid/w`.
+- Text between double backticks, which reads as two empty spans around plain text, as it did in earlier releases: ``` ``ZQ_KEY=zqk-1234`` ```.
+- Inline code with another shape: a `curl -u` command with a user and a password, `` `session zqk-1234` ``, `` `KEY＝zqk-1234` `` with a full-width equals sign, or `` `zqk-1234` `` alone.
+
+Only a prompt that the default transcript path ingests keeps its spans. A transcript that you ingest with `--source-label` stores each sentence without inline code or URLs, as earlier releases did.
 
 Inline code and URLs that aelfrice keeps are part of the belief. You can search for them, retrieval can inject them, and the outbound paths on this page send them with the rest of the belief's content.
 
