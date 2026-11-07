@@ -705,10 +705,16 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
     # error never breaks the logger.
     try:
         from aelfrice.noise_filter import (  # noqa: PLC0415
+            cut_relay,
             is_transcript_noise,
             is_transcript_scaffolding,
         )
 
+        # The rebuilder reads this log, so the row leaves out relay text that
+        # opens the prompt. See `cut_relay` for what counts as relay.
+        prompt = cut_relay(prompt)
+        if not prompt.strip():
+            return
         # #1371 §1. Two different questions, and conflating them dropped
         # real turns. A *structural* marker — a harness tag, a glyph, a
         # pasted command — describes the whole payload, so the prompt goes
