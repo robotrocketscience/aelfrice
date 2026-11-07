@@ -323,6 +323,58 @@ def test_response_with_no_text_block_says_so() -> None:
     )
 
 
+def _text_response(text: str) -> SimpleNamespace:
+    return SimpleNamespace(content=[SimpleNamespace(text=text)], usage=None)
+
+
+@pytest.mark.parametrize(
+    ("resp", "reason"),
+    [
+        (_text_response("[" * 200_000), "malformed JSON response: RecursionError"),
+        (_text_response("1" * 5_001), "malformed JSON response: ValueError"),
+        (
+            SimpleNamespace(
+                content=[SimpleNamespace(text="[]")],
+                usage=SimpleNamespace(input_tokens=float("inf"), output_tokens=1),
+            ),
+            "OverflowError",
+        ),
+    ],
+    ids=["deep-brackets", "huge-int", "usage-inf"],
+)
+def test_response_that_crashes_a_parser_warns_and_counts(
+    resp: SimpleNamespace, reason: str,
+) -> None:
+    result = _batch(_responding(resp))
+    assert result.fallback_used
+    assert result.telemetry.requests == 1
+    assert result.warning == f"the classifier response was unusable ({reason})"
+
+
+def test_usage_that_isn_t_a_number_still_counts_as_zero() -> None:
+    usage = SimpleNamespace(input_tokens=float("nan"), output_tokens="many")
+    resp = SimpleNamespace(content=[SimpleNamespace(text="[]")], usage=usage)
+    result = _batch(_responding(resp))
+    assert result.telemetry.input_tokens == 0
+    assert result.telemetry.output_tokens == 0
+    assert result.warning is not None
+    assert "OverflowError" not in result.warning
+
+
+@pytest.mark.parametrize(
+    "status", [[400], {"code": 400}, "400", 400.0, None],
+    ids=["list", "dict", "str", "float", "none"],
+)
+def test_non_integer_status_falls_back_without_crashing(status: object) -> None:
+    class _OddStatus(Exception):
+        status_code = status
+
+    result = _batch(_raising(_OddStatus("odd")))
+    assert result.fallback_used
+    assert result.telemetry.requests == 0
+    assert result.warning == "the classifier didn't run (_OddStatus)"
+
+
 def test_parse_failure_prints_its_whole_reason() -> None:
     resp = SimpleNamespace(content=[SimpleNamespace(text="not json")], usage=None)
     warning = _batch(_responding(resp)).warning
@@ -852,6 +904,17 @@ def _closed_port_url() -> str:
 
 
 _JSON = {"content-type": "application/json"}
+
+
+def _message_body(text: str, input_tokens: str = "1") -> bytes:
+    usage = f'{{"input_tokens":{input_tokens},"output_tokens":1}}'
+    content = json.dumps([{"type": "text", "text": text}])
+    return (
+        '{"id":"m","type":"message","role":"assistant","model":"m",'
+        f'"stop_reason":"end_turn","content":{content},"usage":{usage}}}'
+    ).encode()
+
+
 _MALFORMED = pytest.mark.parametrize(
     ("reply", "name"),
     [
@@ -863,10 +926,13 @@ _MALFORMED = pytest.mark.parametrize(
         ((200, _JSON, b"null"), "no content list"),
         ((200, {"content-type": "text/html"}, b"<html>login</html>"), "no content list"),
         ((200, {**_JSON, "content-encoding": "gzip"}, b"not gzip"), "DecodingError"),
+        ((200, _JSON, _message_body("[]", "1e999")), "OverflowError"),
+        ((200, _JSON, _message_body("[" * 200_000)), "RecursionError"),
+        ((200, _JSON, _message_body("1" * 5_001)), "ValueError"),
     ],
     ids=[
         "not-json", "truncated", "non-utf8", "204-empty", "content-int", "null",
-        "html", "bad-gzip",
+        "html", "bad-gzip", "usage-inf", "deep-brackets", "huge-int",
     ],
 )
 

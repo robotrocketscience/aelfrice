@@ -828,6 +828,11 @@ def parse_response(
         parsed_any: Any = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise LLMTransientError(f"malformed JSON response: {exc}") from exc
+    except (ValueError, RecursionError) as exc:
+        # An integer past Python's digit limit, or nesting past its stack limit.
+        raise LLMTransientError(
+            f"malformed JSON response: {type(exc).__name__}"
+        ) from exc
 
     if not isinstance(parsed_any, list):
         raise LLMTransientError(
@@ -1038,6 +1043,8 @@ def _fault_from_call(exc: BaseException) -> LLMTransientError:
     importing the SDK at module load.
     """
     status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        status = None
     if status in _REJECTED_STATUSES:
         return LLMTransientError(
             str(exc),
@@ -1084,6 +1091,9 @@ def _extract_usage(resp: Any) -> tuple[int, int]:
     """Pull `(input_tokens, output_tokens)` off the response usage.
 
     Returns `(0, 0)` if the SDK omits usage (older versions).
+
+    Raises:
+      LLMTransientError on a count too large to convert, such as `1e999`.
     """
     usage = getattr(resp, "usage", None)
     if usage is None:
@@ -1094,6 +1104,8 @@ def _extract_usage(resp: Any) -> tuple[int, int]:
         return (int(inp), int(out))
     except (ValueError, TypeError):
         return (0, 0)
+    except OverflowError as exc:
+        raise _unusable_response(type(exc).__name__) from exc
 
 
 # --- Batch driver --------------------------------------------------------
