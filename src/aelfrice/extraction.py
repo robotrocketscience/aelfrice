@@ -96,7 +96,10 @@ def holed_form(sentence: str) -> str:
     """The form of a stored transcript sentence that decisions read (#1874).
 
     For a caller that holds only the stored text. It equals the `holed` half of
-    `sentence_forms` for every sentence that function returns.
+    `sentence_forms`, with one known exception: markdown emphasis inside a URL
+    scheme, as in `*http*://example.invalid/a`. The emphasis pass assembles that
+    URL after the URL pass has run, so `holed` keeps it, and once stored it can't
+    be told apart from a URL that was held. This function removes it.
     """
     return _URL_RE.sub(" ", _CODE_SPAN_RE.sub(" ", sentence)).strip()
 
@@ -130,6 +133,8 @@ def sentence_forms(text: str) -> list[SentenceForms]:
     4. Split on newlines first
     5. Within each line, split on sentence-ending punctuation followed by space
     6. Discard fragments under 10 characters once the held spans are removed
+
+    A U+001F in the input reads as a space, because that's the stand-in.
     """
     # Step 1: strip code blocks (triple-backtick regions, including language tag)
     cleaned: str = CODE_FENCE_RE.sub(" ", text).replace(_HOLD, " ")
@@ -221,6 +226,8 @@ def sentence_forms(text: str) -> list[SentenceForms]:
 def extract_sentences(text: str) -> list[str]:
     """The sentences of `text` as decisions read them: inline code and URLs removed.
 
-    `sentence_forms` also gives the form with them kept.
+    `sentence_forms` also gives the form with them kept. The result is what this
+    function returned before #1874, except that a U+001F in the input reads as a
+    space.
     """
     return [form.holed for form in sentence_forms(text)]

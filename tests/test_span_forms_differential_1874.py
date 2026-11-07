@@ -173,6 +173,30 @@ def test_holed_form_recovers_the_holed_half_from_the_stored_text() -> None:
     assert mismatches == []
 
 
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Run *http*://example.invalid/a before the widget release.",
+        "Run **https**://example.invalid/a before the widget release.",
+        "Run http*s*://example.invalid/a before the widget release.",
+        "Run __https__://example.invalid/a before the widget release.",
+    ],
+)
+def test_holed_form_can_not_recover_a_url_that_emphasis_assembled(sentence: str) -> None:
+    """The known limit in `holed_form`'s docstring: the URL is removed, where `holed` keeps it."""
+    forms = sentence_forms(sentence)
+    assert [form.holed for form in forms] == _frozen_extract_sentences(sentence)
+    assert [form.holed for form in forms] == [form.whole for form in forms]
+    assert holed_form(forms[0].whole) == "Run   before the widget release."
+    assert holed_form(forms[0].whole) != forms[0].holed
+
+
+def test_a_unit_separator_in_the_input_reads_as_a_space() -> None:
+    """The one text change in `extract_sentences`, because it's the stand-in."""
+    assert extract_sentences("The widget\x1frelease needs a look.") == ["The widget release needs a look."]
+    assert _frozen_extract_sentences("The widget\x1frelease needs a look.") == ["The widget\x1frelease needs a look."]
+
+
 def test_the_admitted_sentences_and_the_sub_floor_clauses_equal_the_frozen_ones() -> None:
     def holed(partition: tuple[list[str], list[list[str]]]) -> tuple[list[str], list[list[str]]]:
         full, between = partition
