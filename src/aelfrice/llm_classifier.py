@@ -1017,7 +1017,7 @@ def _reached_response_handling(exc: BaseException) -> bool:
     """Return True if the traceback runs through the SDK's response handling.
 
     A raw exception from inside `create` has no status code or cause to read,
-    and the same frame name holds on SDK 0.40.0, 0.97.0, and 2.3.0.
+    and the same frame name holds on SDK 2.0.0 and 2.6.0.
     """
     tb = exc.__traceback__
     while tb is not None:
