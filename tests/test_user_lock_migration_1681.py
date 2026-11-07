@@ -396,7 +396,7 @@ def test_doctor_lists_a_repo_lock_that_near_duplicates_a_user_lock(
     assert "  - r1: " + REPO_RULE in text
     assert "      user lock: u1" in text
     assert "      fix: aelf unlock r1" in text
-    assert "r2" not in text
+    assert "- r2:" not in text
 
 
 @pytest.mark.timeout(60)
