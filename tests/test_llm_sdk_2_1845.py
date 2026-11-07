@@ -81,6 +81,9 @@ class _Gateway(BaseHTTPRequestHandler):
     with one row per candidate."""
 
     server: ThreadingHTTPServer | None = None
+    # Logger names whose level the handler records while a request is open.
+    watched: tuple[str, ...] = ()
+    levels_seen: list[list[int]] = []
     requests: list[tuple[str, dict[str, str], dict[str, Any]]] = []
     queue: list[tuple[int, dict[str, str], bytes]] = []
     reply: tuple[int, dict[str, str], bytes] | None = None
@@ -93,6 +96,7 @@ class _Gateway(BaseHTTPRequestHandler):
         body = json.loads(raw)
         headers = {name.lower(): value for name, value in self.headers.items()}
         cls.requests.append((self.path, headers, body))
+        cls.levels_seen.append([logging.getLogger(name).level for name in cls.watched])
         if cls.hang:
             cls.release.wait(timeout=300)
             return
@@ -152,6 +156,8 @@ def gateway(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     _Gateway.requests = []
     _Gateway.queue = []
     _Gateway.reply = None
+    _Gateway.watched = ()
+    _Gateway.levels_seen = []
     _Gateway.hang = False
     _Gateway.release = threading.Event()
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Gateway)
@@ -773,9 +779,11 @@ def test_logger_levels_come_back_exactly_on_every_exit(
     reply: tuple[int, dict[str, str], bytes] | None,
 ) -> None:
     _Gateway.reply = reply
+    _Gateway.watched = _HELD
 
     _main(["onboard", "@P"], project, tmp_path)
 
+    assert _Gateway.levels_seen[0] == [max(level, logging.WARNING) for level in host_levels]
     assert [logging.getLogger(name).level for name in _HELD] == host_levels
 
 
@@ -904,3 +912,39 @@ def test_the_consent_prompt_says_labels_vary_and_cites_no_figure() -> None:
     text = " ".join(llm._PROMPT_TEXT.split())  # pyright: ignore[reportPrivateUsage]
     assert "two runs can label a sentence differently" in text
     assert "macro-F1" not in text
+
+
+class _ClosingSdk:
+    """A fake SDK whose HTTP client counts its closes."""
+
+    def __init__(self, create: Any) -> None:
+        self.closed = 0
+        self._create = create
+
+    def DefaultHttpxClient(self, **_kwargs: Any) -> Any:  # noqa: N802
+        def _close() -> None:
+            self.closed += 1
+
+        return SimpleNamespace(close=_close)
+
+    def __getattr__(self, _name: str) -> Any:
+        return lambda **_kwargs: SimpleNamespace(messages=SimpleNamespace(create=self._create))
+
+
+def _row_reply(**_kwargs: Any) -> Any:
+    text = json.dumps([_ROW])
+    return SimpleNamespace(content=[SimpleNamespace(text=text)], usage=None)
+
+
+def _raise_value_error(**_kwargs: Any) -> Any:
+    raise ValueError("not sent")
+
+
+@pytest.mark.parametrize("create", [_row_reply, _raise_value_error], ids=["success", "failure"])
+def test_the_http_client_the_classifier_builds_is_closed(create: Any) -> None:
+    sdk = _ClosingSdk(create)
+    candidates = [llm.CandidateInput(index=0, text="a sentence", source="doc:a.md:p1")]
+
+    llm.classify_batch(candidates, api_key=_KEY, sdk_module=sdk)
+
+    assert sdk.closed == 1
