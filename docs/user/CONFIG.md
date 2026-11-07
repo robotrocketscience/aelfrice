@@ -568,6 +568,10 @@ max_tokens = 500_000
 
 Auth, model selection, and provider choice are NOT configurable here. aelfrice reads `ANTHROPIC_API_KEY` only from the environment, never from this file. There is no provider abstraction layer, and v1.3.0 supports only Anthropic's Haiku.
 
+The classifier sends no temperature, so two onboard runs can label a sentence differently, including whether to keep it. A belief already in the store keeps its label when you onboard again.
+
+If you set `ANTHROPIC_BASE_URL` to send the request through a gateway, the gateway must accept the key as `Authorization: Bearer <key>`, because the SDK sends no `X-Api-Key` header. If the gateway reads only `X-Api-Key`, change it, or set `ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: <key>"` to send the key in both headers. For everything else a gateway must accept, see [Gateway requirements](../design/llm_classifier.md#gateway-requirements).
+
 ## Worked examples
 
 ```toml

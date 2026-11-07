@@ -201,12 +201,39 @@ The boundary policy is therefore non-negotiable.
   `--llm-classify` is on, `aelf onboard` exits 1 with the message
   "ANTHROPIC_API_KEY not set; --llm-classify requires it. Either
   unset --llm-classify or export the key."
+- **The key goes out as `Authorization: Bearer <key>`.** SDK 2.x sends no
+  `X-Api-Key` header. The classifier passes the key to the SDK explicitly, so
+  the SDK ignores `ANTHROPIC_AUTH_TOKEN` and its profile settings.
+- **The key stays out of what aelfrice prints.** A 401 or 403 prints the status
+  and the response's `error.type`, never the response's text, because a server
+  can echo the key. The classifier also holds the SDK's and the HTTP library's
+  loggers at `WARNING`, so `ANTHROPIC_LOG=debug` has no effect on an aelfrice
+  run. At debug level those loggers print response headers and the exception
+  for a key that can't go in a header.
+
+### Gateway requirements
+
+The SDK reads `ANTHROPIC_BASE_URL`, so the classifier's request can go through
+a gateway. A gateway set this way must do the following:
+
+- Accept the key in `Authorization: Bearer <key>`. If it reads only `X-Api-Key`,
+  change it, or set `ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: <key>"`. With that
+  setting, the request carries the key in both headers.
+- Accept `POST <base URL>/v1/messages`. A path in the base URL is kept, so
+  `https://gateway.example/llm` becomes `https://gateway.example/llm/v1/messages`.
+- Accept the `anthropic-version` header that the SDK sends. SDK 2.0.0 and 2.6.0
+  send `2026-10-21`. SDK 0.97.0 sent `2023-06-01`.
+- Accept a body with `model`, `max_tokens`, `system`, and `messages`, and no
+  `temperature`.
+
+If a gateway answers 401 or 403, the run stops as § 7 describes, and the error
+names the header when `ANTHROPIC_BASE_URL` is set.
 
 ### Dependency
 
 - **New optional extra `[onboard-llm]`** in `pyproject.toml`:
   ```toml
-  onboard-llm = ["anthropic>=0.40,<1"]
+  onboard-llm = ["anthropic>=2,<3"]
   ```
 - The default `pip install aelfrice` install does **not** pull
   `anthropic`. Only `pip install aelfrice[onboard-llm]` does.
@@ -378,7 +405,13 @@ parser depends on.
   of ≤K candidates each. Sharding boundary is implementation choice;
   acceptance only requires that total tokens-consumed telemetry is
   exact.
-- Temperature 0. Stop sequences default. `max_tokens` on the response
+- No `temperature`. SDK 2.x doesn't take the keyword, and the classifier pins no
+  older API version to get it back. The API's default sampling applies, so
+  classification isn't pinned at 0, and two onboard runs can label a sentence
+  differently, including whether to keep it. A belief already in the store keeps
+  its label when you onboard again, so a difference shows up in a new store and in
+  sentences the store doesn't hold yet.
+- Stop sequences default. `max_tokens` on the response
   side capped at the input candidate count × ~30 tokens (every output
   object is small).
 
@@ -487,11 +520,13 @@ clear marker that LLM classification didn't run.
   requests, and then the run falls back. `aelf onboard` adds no retries of its
   own. The SDK honors a `Retry-After` of up to 60 seconds per retry, so the
   total wait can pass 30 seconds.
-- Request timeout (default 30s per request).
+- Request timeout: 30 seconds for each connect, read, write, and pool wait of an
+  attempt. The SDK retries a timeout up to twice, so a hung server sees 3
+  requests, and the run takes more than 90 seconds before it falls back.
 - 401/403 (auth) — **do not** fall back. The user explicitly opted in
   with a key that is broken or revoked; surfacing that is more
-  important than papering over it. Exit 1 with the auth error from
-  Anthropic, no candidates classified, no beliefs inserted.
+  important than papering over it. Exit 1 with the status and the
+  response's `error.type`, no candidates classified, no beliefs inserted.
 - Malformed response that fails the strict JSON parse or fails
   array-length validation.
 
@@ -515,6 +550,11 @@ When the trigger fires:
 user took the explicit step of setting `ANTHROPIC_API_KEY` and turning
 on `--llm-classify`; if the key is bad we want them to see that, not
 silently degrade to a regex run that they didn't ask for.
+
+The error prints the status and a short `error.type`, and nothing else from the
+response, because a server can echo the key it refused. When
+`ANTHROPIC_BASE_URL` is set, the error also says that a gateway must accept
+`Authorization: Bearer`, without printing the URL. See § 4, Gateway requirements.
 
 ### SDK-mismatch behavior
 
@@ -655,9 +695,8 @@ The implementation PR may not merge unless:
   call the new classifier inline, in the same loop where it currently
   calls `classify_sentence`. The polymorphic handshake remains for
   the host-LLM-in-context use case.
-- External: `anthropic>=0.40,<1` (in the `[onboard-llm]` extra only).
-  SDK 1.0 removed the `temperature` parameter this classifier sends, so
-  the extra stays below 1.0 until the move to SDK 2.x
+- External: `anthropic>=2,<3` (in the `[onboard-llm]` extra only). Moving to
+  SDK 2.x dropped `temperature` and changed the key's header
   ([#1845](https://github.com/robotrocketscience/aelfrice/issues/1845)).
 - Activates: `benchmarks/mab_llm_entity_adapter.py` (port from lab).
 
