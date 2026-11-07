@@ -126,12 +126,13 @@ def _build_pattern(
     inputs still match.
 
     `exact_verb_case` ignores case in the noun phrases only, so the verb
-    has to appear as the template spells it.
+    has to appear as the template spells it. Its left boundary also refuses
+    an apostrophe, so `it's` can't start a phrase at `s`.
     """
     verb_pattern = r"\s+".join(re.escape(t) for t in template.split())
     if exact_verb_case:
         full = (
-            rf"(?<![\w-])(?i:{_np('subject')})\s+{verb_pattern}"
+            rf"(?<![\w'\u2019-])(?i:{_np('subject')})\s+{verb_pattern}"
             rf"\s+(?i:{_np('object')})"
         )
         regex = re.compile(full)
@@ -234,9 +235,10 @@ _INGEST_PATTERNS: Final[tuple[_RelationPattern, ...]] = tuple(
 
 # #1874: a phrase made only of these words names nothing, and it has one belief
 # id across every commit, so it would collect edges. The ingest path stores
-# nothing for a match with such a phrase on either side. A determiner plus a
-# content word, such as "the old", stays: telling it from "the parser" takes a
-# grammar check, which this module doesn't do.
+# nothing for a match with such a phrase on either side. The list holds closed
+# classes only. A determiner plus a content word, such as "the old", stays:
+# telling it from "the parser" takes a grammar check, which this module doesn't
+# do. `_is_function_word` decides how a word in a phrase is looked up.
 _INGEST_FUNCTION_WORDS: Final[frozenset[str]] = frozenset({
     # The determiners in `np_pattern._DET`, which the noun phrase admits.
     "the", "a", "an", "our", "their", "its", "this", "that", "these", "those",
@@ -251,10 +253,35 @@ _INGEST_FUNCTION_WORDS: Final[frozenset[str]] = frozenset({
     # Quantifiers, which count something the phrase doesn't name.
     "all", "both", "each", "every", "either", "neither", "some", "any", "none",
     "many", "most", "few", "several", "another", "such", "other", "others",
-    "one",
+    "one", "more", "less", "much",
     # Indefinite pronouns, which name no particular thing.
     "something", "anything", "everything", "nothing", "someone", "anyone",
     "everyone",
+    # Conjunctions, which join phrases the match cut apart.
+    "and", "or", "but", "nor", "yet", "so", "for", "if", "unless", "because",
+    "although", "though", "while", "whereas", "whether", "than", "as", "since",
+    "until", "till", "once",
+    # Prepositions, which need an object the match cut off.
+    "of", "to", "in", "on", "at", "by", "with", "from", "about", "into", "onto",
+    "over", "under", "after", "before", "between", "among", "through", "during",
+    "without", "within", "against", "above", "below", "across", "along",
+    "around", "behind", "beside", "besides", "beyond", "despite", "except",
+    "inside", "outside", "near", "off", "out", "up", "down", "per", "via",
+    "toward", "towards", "upon", "unlike", "versus",
+    # Auxiliaries and modals, which need a main verb the match cut off. The
+    # stems are what's left of a contraction when a phrase ends at its
+    # apostrophe, as in "doesn't".
+    "am", "is", "are", "was", "were", "be", "been", "being", "do", "does",
+    "did", "has", "have", "had", "having", "can", "could", "will", "would",
+    "shall", "should", "may", "might", "must", "ought", "isn", "aren", "wasn",
+    "weren", "don", "doesn", "didn", "hasn", "haven", "hadn", "won", "wouldn",
+    "shouldn", "couldn", "mustn", "shan", "ain",
+    # Negators, which need something to negate.
+    "not", "no", "never", "cannot",
+    # Closed-class adverbs, which qualify something the phrase doesn't name.
+    "also", "then", "just", "only", "even", "still", "too", "very", "now",
+    "here", "there", "thus", "hence", "however", "therefore", "instead",
+    "already", "again", "ever", "rather", "quite", "perhaps", "maybe",
 })
 
 
@@ -306,10 +333,25 @@ def _line_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+def _is_function_word(word: str) -> bool:
+    """True when `word` counts as a listed function word (#1874).
+
+    A trailing `-` or `_` is a fragment of the same word, so `it-` counts as
+    `it`. A hyphen or underscore inside a word leaves one word, so `one-shot`
+    and `all_of` don't count. A word of two or more letters in all capitals
+    is a name, such as `IT` or `WHO`. `A` and `I` still count, because they
+    read the same at the start of a sentence.
+    """
+    bare = word.rstrip("-_")
+    if len(bare) > 1 and bare.isupper():
+        return False
+    return bare.lower() in _INGEST_FUNCTION_WORDS
+
+
 def _has_function_word_endpoint(subject: str, obj: str) -> bool:
     """True when a phrase on either side is only function words (#1874)."""
     return any(
-        all(word.lower() in _INGEST_FUNCTION_WORDS for word in phrase.split())
+        all(_is_function_word(word) for word in phrase.split())
         for phrase in (subject, obj)
     )
 

@@ -100,7 +100,7 @@ from typing import Any, Final, cast
 # Bump when any pinned value below changes, and append the new content
 # digest to DIGEST_HISTORY at the bottom of this module. The guard in
 # tests/test_detector_thresholds_manifest_1355.py fails until you do.
-DETECTOR_THRESHOLDS_VERSION: Final[int] = 7
+DETECTOR_THRESHOLDS_VERSION: Final[int] = 8
 
 # --- Kinds -------------------------------------------------------------
 
@@ -468,7 +468,7 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         module="aelfrice.triple_extractor",
         name="_INGEST_PATTERNS",
         kind=KIND_PATTERN_TABLE,
-        value="sha256:b2ec30a1ca895f1402c4b7a18d3df4bde5f59801ef30759ffec85e45e972e556",
+        value="sha256:d3982eb2c0aee6fb09f2b43600ff5a71a413d2202dae0c38d9c8f5425bc60891",
         size=21,
         edge_types=(
             "SUPPORTS", "CITES", "CONTRADICTS", "SUPERSEDES",
@@ -485,8 +485,9 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
             "also plural nouns (`tests`, `covers`, `follows`, `extends`, "
             "`supports`, `replaces`) plus TESTS' two passive forms "
             "(`is tested by`, `is covered by`). Its verbs match in their "
-            "exact case (#1874), and `extract_triples` runs it one line at "
-            "a time, which this digest doesn't cover. Same nine edge types, "
+            "exact case, and a phrase can't start after an apostrophe "
+            "(#1874). `extract_triples` runs it one line at a time, which "
+            "this digest doesn't cover. Same nine edge types, "
             "so no relation was made unreachable. Pinned separately because "
             "the two banks can now drift apart, and a change to either "
             "alone changes what one path writes or reads."
@@ -496,8 +497,8 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         module="aelfrice.triple_extractor",
         name="_INGEST_FUNCTION_WORDS",
         kind=KIND_TOKEN_SET,
-        value="sha256:7eeed56939765677b63fcdcc3d4439045eeba8ed5f459ebd586e33829b173ec8",
-        size=72,
+        value="sha256:f3150d1520462bfd13de35e58525a36414c2681abf69b6cc9a877a115623d573",
+        size=212,
         edge_types=(
             "SUPPORTS", "CITES", "CONTRADICTS", "SUPERSEDES",
             "RELATES_TO", "DERIVED_FROM", "IMPLEMENTS", "TESTS",
@@ -509,7 +510,9 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
             "either side made only of these words (#1874), because that "
             "phrase has one belief id across every commit and would collect "
             "edges. Adding a word removes edges of all nine types. The read "
-            "path doesn't use this set."
+            "path doesn't use this set. This digest covers the words only: "
+            "`_is_function_word` and `_has_function_word_endpoint` decide how "
+            "they apply, and no entry pins those functions."
         ),
     ),
     PinnedThreshold(
@@ -863,6 +866,11 @@ DIGEST_HISTORY: Final[dict[int, str]] = {
     # read path doesn't use it. `_INGEST_PATTERNS`' note now names `rebuild_log`
     # as the read path's caller, and that bank's digest didn't move.
     7: "335c888cbe0fde557a597865e97f69bb4d79a6af2b7197896b05f0eb4d4a03f8",
+    # 8 (#1874): the word list grew to the closed classes the rule's wording
+    # covers, and the ingest bank's left boundary now refuses an apostrophe.
+    # `_PATTERNS` kept its digest. The per-line logic and the function-word
+    # logic live in `extract_triples` and its helpers, outside this digest.
+    8: "bb47ad6ed93ce3f9fe358d9a1f421dfa2a527ed05cad426137ea4b957eeccce0",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.
