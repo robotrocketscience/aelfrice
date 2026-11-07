@@ -336,3 +336,64 @@ def test_the_support_log_matches_on_the_holed_form(tmp_path: Path) -> None:
     finally:
         store.close()
     assert [c.target_id for c in candidates if c.match is not None] == ["p1"]
+
+
+# --- spans that stay removed (operator ruling) ------------------------------
+
+
+@pytest.mark.parametrize(
+    ("prompt", "token"),
+    [
+        ("Fetch the widget export from https://example.invalid/export?token=ZQAURLQ1111 now.", "ZQAURLQ1111"),
+        ("Fetch the widget export from https://example.invalid/?ZQAURLQ1112 now.", "ZQAURLQ1112"),
+        ("Fetch the widget export from https://example.invalid/a?k=ZQAURLQ1113. Then go on.", "ZQAURLQ1113"),
+        ("Mirror the widget from https://bot:ZQAURLA2222@example.invalid/widget.tar now.", "ZQAURLA2222"),
+        ("Mirror the widget from https://ZQAURLA2223@example.invalid/widget.tar now.", "ZQAURLA2223"),
+        ("Run `export ZQ_API_KEY=ZQATICK3333` before the widget release.", "ZQATICK3333"),
+        ("Run `ZQ_API_KEY = ZQATICK3334` before the widget release.", "ZQATICK3334"),
+        ("Use `Authorization: Bearer ZQATICH4444` for the widget endpoint.", "ZQATICH4444"),
+        ("Use `authorization: ZQATICH4445` for the widget endpoint.", "ZQATICH4445"),
+        ("Use `bearer ZQATICH4446` for the widget endpoint.", "ZQATICH4446"),
+        ("Run `curl https://example.invalid/a?k=ZQATICK3335` for the widget.", "ZQATICK3335"),
+        ("Run `git clone https://bot:ZQATICK3336@example.invalid/r` for the widget.", "ZQATICK3336"),
+        ("thanks https://example.invalid/hook?key=ZQALONE5555", "ZQALONE5555"),
+        ("curl -sS https://example.invalid/api?apikey=ZQACURL6666", "ZQACURL6666"),
+        ("Never paste `ZQ_API_KEY=ZQALOCK1212` into the widget channel.", "ZQALOCK1212"),
+    ],
+)
+def test_a_credential_shape_stays_removed_as_before(
+    tmp_path: Path, prompt: str, token: str,
+) -> None:
+    assert [form.whole for form in sentence_forms(prompt)] == _frozen_extract_sentences(prompt)
+    store = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        ingest_turn(store, prompt, source="user")
+        stored = store._conn.execute(  # noqa: SLF001
+            "SELECT content FROM beliefs UNION ALL SELECT raw_text FROM ingest_log "
+            "UNION ALL SELECT entity_lower FROM belief_entities"
+        ).fetchall()
+    finally:
+        store.close()
+    assert not [row for row in stored if token.lower() in str(row[0]).lower()]
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        # What the rule keeps on purpose.
+        "Is it https://example.invalid/a? Then read the second part.",
+        "See https://example.invalid/@zq/page for the widget docs.",
+        "Check `a == b` and `a != b` and `a <= b` and `a >= b` in the widget.",
+        "See `https://example.invalid/a?` for the widget docs.",
+        # What the rule misses. It's a list of shapes and not a scanner, and
+        # these invented credentials reach the store.
+        "Post to https://hooks.example.invalid/services/T0/B0/ZQMISS1 for the widget.",
+        "Use https://example.invalid/cb#access_token=ZQMISS2 for the widget.",
+        "Use `ZQ_API_KEY: ZQMISS3` for the widget endpoint.",
+        "Use `zqk-ZQMISS4` as the widget credential.",
+        "Run `curl -u " + "bot:ZQMISS5 https://example.invalid/a` for the widget.",
+        "The widget API key is ZQMISS6 for the release.",
+    ],
+)
+def test_the_rule_is_a_list_of_shapes_and_not_a_scanner(sentence: str) -> None:
+    assert [form.whole for form in sentence_forms(sentence)] == [sentence]

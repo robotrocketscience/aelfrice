@@ -41,6 +41,27 @@ _MIN_LEN: int = 10
 _CODE_SPAN_RE: re.Pattern[str] = re.compile(r"`[^`]*`")
 _URL_RE: re.Pattern[str] = re.compile(r"https?://\S+")
 
+# Spans that stay removed, because they commonly hold a credential (operator
+# ruling, #1874). This is a fixed list of shapes, not a secret scanner: a token
+# in a URL's path or fragment, or in a code span with no `=`, is kept.
+_URL_USERINFO_RE: re.Pattern[str] = re.compile(r"https?://[^/?#\s]*@")
+# In a code span: a KEY=value assignment, a bearer token, or an Authorization
+# header. `==`, `<=`, and `!=` aren't assignments.
+_CREDENTIAL_CODE_RE: re.Pattern[str] = re.compile(
+    r"[\w.-]\s*=(?!=)\s*[^\s=`]|\bbearer\s+\S|\bauthorization\s*:",
+    re.IGNORECASE,
+)
+
+
+def _is_credential_url(url: str) -> bool:
+    """True for a URL with userinfo or a query string.
+
+    The whole URL goes, because a partial one needs a second rule about which
+    part is safe. A `?` that only ends a sentence isn't a query string.
+    """
+    return "?" in url.rstrip(".,;:!?)]'\"`*_") or bool(_URL_USERINFO_RE.match(url))
+
+
 # Stands in for each kept span while the markdown and sentence passes run. Every
 # pattern and `.strip()` reads it as whitespace, and `splitlines` doesn't break on
 # it, so a pass sees what it would see if the span were a space. Only `[ \t]` can
@@ -100,6 +121,10 @@ def sentence_forms(text: str) -> list[SentenceForms]:
         # enclose is often a pasted diff or log, so that text stays removed.
         if len(span.splitlines()) > 1:
             return " "
+        if _CREDENTIAL_CODE_RE.search(span) or any(
+            _is_credential_url(url.group(0)) for url in _URL_RE.finditer(span)
+        ):
+            return " "
         code.append(span)
         return _HOLD
 
@@ -107,7 +132,10 @@ def sentence_forms(text: str) -> list[SentenceForms]:
     codes = iter(code)
 
     def hold_in_order(match: re.Match[str]) -> str:
-        held.append(next(codes) if match.group(0) == _HOLD else match.group(0))
+        span = match.group(0)
+        if span != _HOLD and _is_credential_url(span):
+            return " "
+        held.append(next(codes) if span == _HOLD else span)
         return _HOLD
 
     cleaned = re.sub(f"{_HOLD}|{_URL_RE.pattern}", hold_in_order, cleaned)
