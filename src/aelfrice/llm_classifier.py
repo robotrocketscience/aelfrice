@@ -73,6 +73,8 @@ import os
 import re
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -170,8 +172,9 @@ _ERROR_TYPE_MAX_CHARS: Final[int] = 40
 # Bound on the exception text in an SDK-mismatch error.
 _MISMATCH_DETAIL_CHARS: Final[int] = 200
 
-# The loggers of the HTTP library under the SDK. Below WARNING, these and the
-# SDK's own print exception text and response headers, which can hold the key.
+# The loggers of the HTTP library under the SDK. Below WARNING, these, the
+# SDK's own, and their children print exception text and response headers,
+# which can hold the key.
 _HTTP_LOGGERS: Final[tuple[str, ...]] = ("httpx2", "httpcore2")
 
 # `time.sleep`, behind a name tests can replace.
@@ -941,6 +944,7 @@ def _call_anthropic(
       LLMTransientError on everything else: connect / timeout / 429 / 5xx /
         parse / proxy, URL, and key config.
     """
+    sdk_logger: str | None = None
     if sdk_module is None:
         try:
             import anthropic as sdk_module  # type: ignore[import-not-found,no-redef]
@@ -948,7 +952,7 @@ def _call_anthropic(
             raise LLMTransientError(
                 "anthropic SDK not importable at request time"
             ) from exc
-        _quiet_sdk_loggers(sdk_module.__name__)
+        sdk_logger = sdk_module.__name__
 
     call_args = _request_args(
         model=model,
@@ -956,7 +960,8 @@ def _call_anthropic(
         system_prompt=system_prompt,
         user_message=user_message,
     )
-    return _call_with_retries(sdk_module, api_key, call_args)
+    with _sdk_logs_held_at_warning(sdk_logger):
+        return _call_with_retries(sdk_module, api_key, call_args)
 
 
 def _call_with_retries(
@@ -1115,14 +1120,30 @@ def _request_args(
     }
 
 
-def _quiet_sdk_loggers(sdk_logger: str) -> None:
-    """Hold the SDK's and HTTP library's loggers at WARNING, whatever set them lower.
+@contextmanager
+def _sdk_logs_held_at_warning(sdk_logger: str | None) -> Iterator[None]:
+    """Hold the SDK's and HTTP library's loggers at WARNING or above for the call.
 
     `ANTHROPIC_LOG=debug` prints the HTTP library's exception, which quotes a
-    header it refuses, and the response headers, where a gateway can echo the key.
+    header it refuses, and the response headers, where a gateway can echo the
+    key. Each logger under those names that exists now, a child with its own
+    level included, is raised for the call and set back to its exact level on
+    every exit. `None` holds nothing, for a test's fake SDK.
     """
-    for name in (sdk_logger, *_HTTP_LOGGERS):
-        logging.getLogger(name).setLevel(logging.WARNING)
+    roots = (sdk_logger, *_HTTP_LOGGERS) if sdk_logger is not None else ()
+    prefixes = tuple(f"{root}." for root in roots)
+    held = [logging.getLogger(root) for root in roots]
+    for name, logger in sorted(logging.Logger.manager.loggerDict.items()):
+        if isinstance(logger, logging.Logger) and name.startswith(prefixes):
+            held.append(logger)
+    saved = [(logger, logger.level) for logger in held]
+    for logger, level in saved:
+        logger.setLevel(max(level, logging.WARNING))
+    try:
+        yield
+    finally:
+        for logger, level in saved:
+            logger.setLevel(level)
 
 
 def _is_auth_error(exc: BaseException) -> bool:

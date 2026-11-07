@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import io
 import json
+import logging
 import os
 import re
 import subprocess
@@ -717,6 +718,77 @@ def _sdk_raising(exc: Exception) -> Any:
 def _auth_text(exc: Exception) -> str | None:
     candidates = [llm.CandidateInput(index=0, text="a sentence", source="doc:a.md:p1")]
     return llm.classify_batch(candidates, api_key=_KEY, sdk_module=_sdk_raising(exc)).auth_error
+
+
+_HELD = (_SDK, f"{_SDK}._base_client", "httpx2", "httpcore2", "httpcore2.http11")
+
+
+@pytest.fixture
+def host_levels() -> Iterator[list[int]]:
+    """Levels a host process set on the SDK's loggers, put back after the test."""
+    loggers = [logging.getLogger(name) for name in _HELD]
+    saved = [logger.level for logger in loggers]
+    levels = [logging.ERROR, logging.DEBUG, logging.DEBUG, logging.INFO, logging.NOTSET]
+    for logger, level in zip(loggers, levels):
+        logger.setLevel(level)
+    try:
+        yield levels
+    finally:
+        for logger, level in zip(loggers, saved):
+            logger.setLevel(level)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [None, (401, _JSON, b"{}"), (400, _JSON, b"{}")],
+    ids=["success", "auth-stop", "rejected"],
+)
+def test_logger_levels_come_back_exactly_on_every_exit(
+    project: Path,
+    gateway: str,
+    tmp_path: Path,
+    host_levels: list[int],
+    reply: tuple[int, dict[str, str], bytes] | None,
+) -> None:
+    _Gateway.reply = reply
+
+    _main(["onboard", "@P"], project, tmp_path)
+
+    assert [logging.getLogger(name).level for name in _HELD] == host_levels
+
+
+@pytest.mark.parametrize(
+    ("key", "reply"),
+    [
+        (f"{_KEY}\r", None),
+        (_KEY, (200, {**_JSON, "x-echo": f"Bearer {_KEY}"}, b"{}")),
+    ],
+    ids=["key-the-http-library-refuses", "echo-in-a-reply-header"],
+)
+def test_a_child_logger_set_to_debug_never_prints_the_key(
+    project: Path,
+    gateway: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    host_levels: list[int],
+    key: str,
+    reply: tuple[int, dict[str, str], bytes] | None,
+) -> None:
+    monkeypatch.setenv(llm.ENV_API_KEY, key)
+    _Gateway.reply = reply
+    captured = io.StringIO()
+    handler = logging.StreamHandler(captured)
+    root = logging.getLogger()
+    saved_level = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+    try:
+        _main(["onboard", "@P"], project, tmp_path)
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(saved_level)
+
+    assert _KEY not in captured.getvalue()
 
 
 def test_auth_text_names_the_class_when_there_is_no_status(
