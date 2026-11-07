@@ -62,8 +62,8 @@ def _ctor_raising(exc: BaseException) -> _FakeSdk:
     return _FakeSdk(_factory)
 
 
-def _create_without_temperature(
-    *, model: str, max_tokens: int, system: str, messages: list[dict[str, str]],
+def _create_without_system(
+    *, model: str, max_tokens: int, messages: list[dict[str, str]],
 ) -> Any:
     """The keyword-only shape of `create` on an SDK that dropped the keyword."""
     raise AssertionError("the bind check must refuse this call before the body")
@@ -168,10 +168,10 @@ def test_messages_without_create_is_a_mismatch() -> None:
 
 
 def test_keyword_create_does_not_take_is_a_mismatch() -> None:
-    result = _batch(_client_with(_create_without_temperature))
+    result = _batch(_client_with(_create_without_system))
     assert result.sdk_mismatch_error is not None
     assert "TypeError" in result.sdk_mismatch_error
-    assert "temperature" in result.sdk_mismatch_error
+    assert "system" in result.sdk_mismatch_error
     assert result.telemetry.requests == 0
 
 
@@ -676,14 +676,14 @@ def test_onboard_stops_and_names_the_exception(
     capsys: pytest.CaptureFixture[str],
     argv: list[str],
 ) -> None:
-    _use_sdk(monkeypatch, _client_with(_create_without_temperature))
+    _use_sdk(monkeypatch, _client_with(_create_without_system))
 
     out = io.StringIO()
     rc = cli_module.main(["onboard", str(project), *argv], out=out)
 
     err = capsys.readouterr().err
     assert rc == 1
-    assert "TypeError" in err and "temperature" in err
+    assert "TypeError" in err and "system" in err
     assert "--llm-classify=false" in err
     assert "onboard.llm:" not in out.getvalue()
     store = _open_db(tmp_path)
@@ -701,14 +701,14 @@ def test_doctor_stops_and_names_the_exception(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _seed_orphan(tmp_path)
-    _use_sdk(monkeypatch, _client_with(_create_without_temperature))
+    _use_sdk(monkeypatch, _client_with(_create_without_system))
 
     out = io.StringIO()
     rc = cli_module.main(["doctor", "--classify-orphans"], out=out)
 
     err = capsys.readouterr().err
     assert rc == 1
-    assert "TypeError" in err and "temperature" in err
+    assert "TypeError" in err and "system" in err
     assert "No beliefs updated" in err
     assert "requests=" not in out.getvalue()
     _assert_orphan_untouched(tmp_path)
@@ -1073,7 +1073,7 @@ def test_installed_sdk_non_ascii_key_falls_back(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """0.97.0 raises `UnicodeEncodeError`; 2.3.0 wraps it, so it reads as a network fault."""
+    """SDK 2.x sends the key as UTF-8, so this fails at the refused connection."""
     monkeypatch.setenv("ANTHROPIC_BASE_URL", _closed_port_url())
     monkeypatch.setenv(llm.ENV_API_KEY, f"{_SECRET}’x")
 

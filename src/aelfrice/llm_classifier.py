@@ -111,12 +111,10 @@ _PERMITTED_ORIGINS: Final[frozenset[str]] = frozenset({
     ORIGIN_DOCUMENT_RECENT,
 })
 
-# Per-request timeout, seconds. Caps the total wall-clock per
-# Anthropic call so a hung request does not freeze onboard.
+# Timeout in seconds for each connect, read, write, and pool wait of one
+# attempt, so a hung server doesn't freeze onboard. It doesn't cap the whole
+# call: the SDK makes up to 3 attempts and waits between them.
 _REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
-
-# Temperature for classification: deterministic.
-_REQUEST_TEMPERATURE: Final[float] = 0.0
 
 # The SDK raises its connection error `from` the HTTP library's exception.
 # These causes mean the failure came before any request was written.
@@ -915,13 +913,12 @@ def _call_anthropic(
             ) from exc
 
     sdk: Any = sdk_module
-    call_args: dict[str, Any] = {
-        "model": model,
-        "max_tokens": max_output_tokens,
-        "temperature": _REQUEST_TEMPERATURE,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": user_message}],
-    }
+    call_args = _request_args(
+        model=model,
+        max_output_tokens=max_output_tokens,
+        system_prompt=system_prompt,
+        user_message=user_message,
+    )
     try:
         client = sdk.Anthropic(api_key=api_key, timeout=_REQUEST_TIMEOUT_SECONDS)
         create = client.messages.create
@@ -948,6 +945,26 @@ def _call_anthropic(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )
+
+
+def _request_args(
+    *,
+    model: str,
+    max_output_tokens: int,
+    system_prompt: str,
+    user_message: str,
+) -> dict[str, Any]:
+    """The keywords for `messages.create`.
+
+    No sampling keyword: SDK 2.x takes none, so the API's default applies and
+    two runs can label a sentence differently (#1845).
+    """
+    return {
+        "model": model,
+        "max_tokens": max_output_tokens,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": user_message}],
+    }
 
 
 def _is_auth_error(exc: BaseException) -> bool:

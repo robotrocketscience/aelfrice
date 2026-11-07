@@ -11,11 +11,11 @@ that reason.
 Each test takes the keywords from the classifier's own call, not from a
 hand-copied list. The first records the call on a fake client and checks
 each keyword against the installed `Messages.create` signature. The second
-checks that the recorded call sends temperature 0. The third runs the real
-SDK client over a mock transport from the SDK's own HTTP
-package, so the installed SDK builds and serializes the request and nothing
-reaches the network. That package is `httpx` before 1.0 and `httpx2` from
-1.0 on, so the test reads it off `anthropic.DefaultHttpxClient`.
+checks that the recorded call sends no `temperature`, since SDK 2.x takes none
+(#1845). The third runs the real SDK client over a mock transport from the
+SDK's own HTTP package, so the installed SDK builds and serializes the request
+and nothing reaches the network. That package is `httpx2` on SDK 2.x, and the
+test reads it off the SDK's `DefaultHttpxClient`.
 
 The module skips when `anthropic` is not importable. CI's pytest job installs
 the `[onboard-llm]` extra and asserts `import anthropic` before it runs the
@@ -108,11 +108,11 @@ def test_installed_messages_create_takes_every_classifier_keyword() -> None:
     )
 
 
-def test_the_classifier_sends_temperature_zero() -> None:
-    """Classification stays deterministic; the operator ruled temperature 0 stays."""
+def test_the_classifier_sends_no_temperature() -> None:
+    """The operator ruled that classification is no longer pinned at 0 (#1845)."""
     sent = _recorded_create_kwargs()
-    assert sent.get("temperature") == 0, (
-        f"the classifier sends temperature={sent.get('temperature')!r}, not 0"
+    assert "temperature" not in sent, (
+        f"the classifier sends temperature={sent['temperature']!r}"
     )
 
 
