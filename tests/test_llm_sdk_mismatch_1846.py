@@ -351,14 +351,16 @@ def test_response_that_crashes_a_parser_warns_and_counts(
     assert result.warning == f"the classifier response was unusable ({reason})"
 
 
-def test_usage_that_isn_t_a_number_still_counts_as_zero() -> None:
-    usage = SimpleNamespace(input_tokens=float("nan"), output_tokens="many")
+@pytest.mark.parametrize(
+    "count", [float("nan"), "many", ["x"]], ids=["nan", "str", "list"],
+)
+def test_usage_that_isn_t_a_number_still_counts_as_zero(count: object) -> None:
+    usage = SimpleNamespace(input_tokens=count, output_tokens=1)
     resp = SimpleNamespace(content=[SimpleNamespace(text="[]")], usage=usage)
     result = _batch(_responding(resp))
     assert result.telemetry.input_tokens == 0
     assert result.telemetry.output_tokens == 0
-    assert result.warning is not None
-    assert "OverflowError" not in result.warning
+    assert result.warning is not None and "response length" in result.warning
 
 
 @pytest.mark.parametrize(
@@ -428,6 +430,7 @@ def test_rejection_adds_a_short_error_type(kind: str) -> None:
         {"error": {"message": _SECRET}},
         {"error": {"type": _SECRET}},
         {"error": {"type": "gwtoken9f3a7c"}},
+        {"error": {"type": "tok_9f3a7c"}},
         {"error": {"type": "hunter"}},
         {"error": {"type": "sk-ant-dummy"}},
         {"error": {"type": "Not_Found_Error"}},
