@@ -38,6 +38,8 @@ Failure semantics (docs/design/llm_classifier.md § 7):
     insertion tagged `onboard.llm.fallback:<reason>`.
   - 401/403 (auth) → DO NOT fall back. Exit 1, no beliefs inserted,
     error message names Anthropic auth.
+    It prints the status and error type only, since the response's text can
+    echo the key.
   - A `TypeError` or `AttributeError` building the client or resolving
     `client.messages.create`, a keyword that `create` doesn't take, or a
     failed import of the SDK at request time → DO NOT fall back. Exit 1,
@@ -62,6 +64,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import os
 import re
 import sys
@@ -103,6 +106,10 @@ SENTINEL_DIRNAME: Final[str] = ".aelfrice"
 SENTINEL_FILENAME: Final[str] = "llm-classify-consented"
 
 ENV_API_KEY: Final[str] = "ANTHROPIC_API_KEY"
+
+# The SDK reads this itself. The classifier only checks whether it's set, to
+# name the header a gateway has to accept, and never prints its value.
+ENV_BASE_URL: Final[str] = "ANTHROPIC_BASE_URL"
 
 # Permitted origin tiers from the LLM. `user_*` tiers are reserved
 # for explicit user actions; the classifier may not assign them.
@@ -146,6 +153,10 @@ _ERROR_TYPE_MAX_CHARS: Final[int] = 40
 
 # Bound on the exception text in an SDK-mismatch error.
 _MISMATCH_DETAIL_CHARS: Final[int] = 200
+
+# The loggers of the HTTP library under the SDK. Below WARNING, these and the
+# SDK's own print exception text and response headers, which can hold the key.
+_HTTP_LOGGERS: Final[tuple[str, ...]] = ("httpx2", "httpcore2")
 
 
 # --- Config dataclass ----------------------------------------------------
@@ -896,7 +907,7 @@ def _call_anthropic(
     and the real `anthropic` is imported here, locally.
 
     Raises:
-      LLMAuthError on 401/403.
+      LLMAuthError on 401/403. Its text is the status and error type only.
       LLMSDKMismatchError when the call doesn't fit the installed SDK:
         a `TypeError` or `AttributeError` building the client or resolving
         `create`, or a keyword `create` doesn't take. All of these sit before
@@ -911,6 +922,7 @@ def _call_anthropic(
             raise LLMTransientError(
                 "anthropic SDK not importable at request time"
             ) from exc
+        _quiet_sdk_loggers(sdk_module.__name__)
 
     sdk: Any = sdk_module
     call_args = _request_args(
@@ -935,7 +947,7 @@ def _call_anthropic(
         resp = create(**call_args)
     except Exception as exc:  # noqa: BLE001 — SDK exception classes vary
         if _is_auth_error(exc):
-            raise LLMAuthError(str(exc)) from exc
+            raise LLMAuthError(_auth_failure_text(exc)) from exc
         raise _fault_from_call(exc) from exc
 
     text = _extract_text_from_response(resp)
@@ -965,6 +977,16 @@ def _request_args(
         "system": system_prompt,
         "messages": [{"role": "user", "content": user_message}],
     }
+
+
+def _quiet_sdk_loggers(sdk_logger: str) -> None:
+    """Hold the SDK's and HTTP library's loggers at WARNING, whatever set them lower.
+
+    `ANTHROPIC_LOG=debug` prints the HTTP library's exception, which quotes a
+    header it refuses, and the response headers, where a gateway can echo the key.
+    """
+    for name in (sdk_logger, *_HTTP_LOGGERS):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def _is_auth_error(exc: BaseException) -> bool:
@@ -1041,14 +1063,30 @@ def _error_type(exc: BaseException) -> str | None:
     return kind if _ERROR_TYPE.fullmatch(kind) else None
 
 
+def _status_label(status: int, exc: BaseException) -> str:
+    """The status and short error type, the only response text fit to print."""
+    kind = _error_type(exc)
+    return f"status {status}, {kind}" if kind else f"status {status}"
+
+
 def _rejection_warning(status: int, exc: BaseException) -> str:
     """Warning text for a rejected request: the status and what to check."""
-    kind = _error_type(exc)
-    label = f"status {status}, {kind}" if kind else f"status {status}"
     return (
-        f"the API rejected the classifier request ({label}). "
+        f"the API rejected the classifier request ({_status_label(status, exc)}). "
         "Check the model name, billing, and the base URL"
     )
+
+
+def _auth_failure_text(exc: BaseException) -> str:
+    """Text for a 401/403. The response's own text can echo the key it refused."""
+    status = getattr(exc, "status_code", None)
+    label = _status_label(status, exc) if isinstance(status, int) else type(exc).__name__
+    if os.environ.get(ENV_BASE_URL):
+        label += (
+            f"; a gateway set through {ENV_BASE_URL} must accept "
+            "`Authorization: Bearer`"
+        )
+    return label
 
 
 def _fault_from_call(exc: BaseException) -> LLMTransientError:
