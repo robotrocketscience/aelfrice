@@ -36,8 +36,8 @@ Failure semantics (docs/design/llm_classifier.md § 7):
     response → fall back to regex `classify_sentence` for the whole
     batch, exit 0, write one `feedback_history` audit row per fallback
     insertion tagged `onboard.llm.fallback:<reason>`. A refused connection,
-    timeout, 408, 409, 429, or 5xx is tried up to 3 times first, waiting at
-    most 60 seconds between tries.
+    timeout, 408, 409, 429, or 5xx is tried up to 3 times first. The wait
+    between tries is a `Retry-After` of up to 60 seconds, or a backoff.
   - 401/403 (auth) → DO NOT fall back. Exit 1, no beliefs inserted,
     error message names Anthropic auth.
     It prints the status and error type only, since the response's text can
@@ -70,7 +70,6 @@ import email.utils
 import inspect
 import json
 import logging
-import math
 import os
 import sys
 import time
@@ -130,10 +129,12 @@ _PERMITTED_ORIGINS: Final[frozenset[str]] = frozenset({
 _REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
 
 # The classifier makes its own retries, so it can bound the wait. SDK 2.x
-# sleeps for whatever `Retry-After` asks, and 0.x capped it at 60 seconds.
+# sleeps for whatever `Retry-After` asks. SDK 0.97.0 obeyed a `Retry-After`
+# of up to 60 seconds and backed off for a longer one, and so does this.
 _MAX_ATTEMPTS: Final[int] = 3
-_MAX_RETRY_WAIT_SECONDS: Final[float] = 60.0
-# The wait before the second and third attempt when the server names none.
+_MAX_RETRY_AFTER_SECONDS: Final[float] = 60.0
+# The wait before the second and third attempt when the server names no wait
+# the classifier obeys. 0.97.0 waited these times less up to a quarter.
 _BACKOFF_SECONDS: Final[tuple[float, ...]] = (0.5, 1.0)
 # A wait longer than this prints a line, so a long pause doesn't look hung.
 _WAIT_NOTICE_SECONDS: Final[float] = 1.0
@@ -949,7 +950,8 @@ def _call_anthropic(
     and the real `anthropic` is imported here, locally.
 
     The SDK's own retries are off. The classifier makes up to
-    `_MAX_ATTEMPTS` and waits at most `_MAX_RETRY_WAIT_SECONDS` between them.
+    `_MAX_ATTEMPTS`, obeys a `Retry-After` of up to `_MAX_RETRY_AFTER_SECONDS`,
+    and backs off for a longer one.
 
     Raises:
       LLMAuthError on 401/403. Its text is the status and error type only.
@@ -1086,8 +1088,8 @@ def _retry_wait(
     elif fault.warning is not None:
         return None
     asked = _retry_after_seconds(headers)
-    if asked is not None:
-        return min(asked, _MAX_RETRY_WAIT_SECONDS)
+    if asked is not None and asked <= _MAX_RETRY_AFTER_SECONDS:
+        return asked
     return _BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)]
 
 
@@ -1105,7 +1107,8 @@ def _retry_after_seconds(headers: Any) -> float | None:
             value = float(raw) / scale
         except (TypeError, ValueError):
             continue
-        return value if value > 0 and not math.isnan(value) else None
+        # NaN fails this comparison too.
+        return value if value > 0 else None
     raw = headers.get("retry-after")
     parsed = email.utils.parsedate_tz(raw) if isinstance(raw, str) else None
     if parsed is None:
@@ -1121,11 +1124,9 @@ def _retry_after_seconds(headers: Any) -> float | None:
 def _wait_before_retry(wait: float) -> None:
     """Sleep before the next attempt, with a line on stderr for a long wait."""
     if wait > _WAIT_NOTICE_SECONDS:
-        capped = wait >= _MAX_RETRY_WAIT_SECONDS
         print(
-            f"aelf: the classifier is waiting {wait:.0f} s before it tries "
-            "the request again"
-            + (", the longest aelfrice waits" if capped else ""),
+            f"aelf: the classifier is waiting {wait:.1f} s before it tries "
+            "the request again",
             file=sys.stderr,
             flush=True,
         )

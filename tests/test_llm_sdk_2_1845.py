@@ -414,16 +414,28 @@ _RATE_LIMITED = b'{"type":"error","error":{"type":"rate_limit_error","message":"
 @pytest.mark.parametrize(
     ("headers", "expected", "line"),
     [
-        ({"retry-after": "86400"}, [60.0], "waiting 60 s before it tries the request again, the longest aelfrice waits"),
-        ({"retry-after": "Wed, 21 Oct 2099 07:28:00 GMT"}, [60.0], "waiting 60 s before it tries the request again, the longest aelfrice waits"),
-        ({"retry-after-ms": "2500"}, [2.5], "waiting 2 s before it tries the request again"),
-        ({"retry-after-ms": "1"}, [0.001], None),
-        ({"x-no-wait": "1"}, [0.5], None),
+        ({"retry-after": "60"}, [60.0], "waiting 60.0 s before it tries the request again"),
+        ({"retry-after": "61"}, [0.5], None),
+        ({"retry-after": "86400"}, [0.5], None),
+        ({"retry-after": "Wed, 21 Oct 2099 07:28:00 GMT"}, [0.5], None),
+        ({"retry-after": "Mon, 01 Jan 2001 00:00:00 GMT"}, [0.5], None),
         ({"retry-after": "Mon, 01 Jan 99999 00:00:00 GMT"}, [0.5], None),
+        ({"retry-after": "-5"}, [0.5], None),
+        ({"retry-after": "nan"}, [0.5], None),
+        ({"retry-after-ms": "2500"}, [2.5], "waiting 2.5 s before it tries the request again"),
+        ({"retry-after-ms": "1400"}, [1.4], "waiting 1.4 s before it tries the request again"),
+        ({"retry-after-ms": "1000"}, [1.0], None),
+        ({"retry-after-ms": "1"}, [0.001], None),
+        ({"retry-after-ms": "2000", "retry-after": "30"}, [2.0], "waiting 2.0 s before it tries the request again"),
+        ({"x-no-wait": "1"}, [0.5], None),
     ],
-    ids=["a-day", "a-date", "2.5-s", "1-ms", "none-named", "a-date-out-of-range"],
+    ids=[
+        "60-s", "61-s", "a-day", "a-future-date", "a-past-date", "a-date-out-of-range",
+        "negative", "nan", "2.5-s-in-ms", "1.4-s-in-ms", "1-s-in-ms", "1-ms",
+        "ms-before-seconds", "none-named",
+    ],
 )
-def test_a_429_waits_at_most_60_seconds_and_says_so_past_1(
+def test_a_429_obeys_a_wait_up_to_60_seconds_and_says_so_past_1(
     project: Path,
     gateway: str,
     tmp_path: Path,
@@ -447,6 +459,18 @@ def test_a_429_waits_at_most_60_seconds_and_says_so_past_1(
         assert err == ""
     else:
         assert err.splitlines() == [f"aelf: the classifier is {line}"]
+
+
+def test_the_backoff_is_half_a_second_then_one_second(
+    project: Path, gateway: str, tmp_path: Path, waits: list[float],
+) -> None:
+    _Gateway.reply = (500, {**_JSON, "x-no-wait": "1"}, b"{}")
+
+    rc, out = _main(["onboard", "@P"], project, tmp_path)
+
+    assert rc == 0
+    assert waits == [0.5, 1.0]
+    assert len(_Gateway.requests) == 3
 
 
 @pytest.mark.parametrize(
