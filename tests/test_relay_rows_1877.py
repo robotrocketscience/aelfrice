@@ -1122,3 +1122,14 @@ def test_format_names_no_belief_text(store: MemoryStore) -> None:
     text = format_relay_rows_report(report, "x.db")
     for content in (BODY_1, BODY_2, NOTICE, TEAM_TAG):
         assert content not in text
+
+
+def test_ulid_ms_reads_the_time_a_ulid_carries() -> None:
+    from aelfrice.ulid import ulid_ms
+
+    gen = make_generator(rand_source=lambda n: bytes([255] * n), time_source=lambda: _PRE_1649_CLOCK)
+    value = gen()
+    assert ulid_ms(value) == int(_PRE_1649_CLOCK * 1000)
+    assert ulid_ms(value.lower()) == int(_PRE_1649_CLOCK * 1000)
+    assert ulid_ms(value[:-1]) is None
+    assert ulid_ms("U" + value[1:]) is None
