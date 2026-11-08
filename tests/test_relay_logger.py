@@ -84,3 +84,34 @@ def test_the_logger_writes_the_users_prompt_verbatim(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prompt: str,
 ) -> None:
     assert _log(tmp_path, prompt, monkeypatch) == [prompt]
+
+
+@pytest.mark.parametrize("rest", [
+    f"<task-notification>\n<status>done</status>\n</task-notification>\n{MINE}",
+    f"<summary>Monitor done</summary>\n{MINE}",
+    "Yes.",
+    "<system-reminder>r</system-reminder>",
+    "<local-command-caveat>Caveat</local-command-caveat>",
+])
+def test_no_row_for_a_rest_the_gates_drop_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rest: str,
+) -> None:
+    # On its own, each rest is a prompt the gates drop, so the cut writes none.
+    assert _log(tmp_path / "alone", rest, monkeypatch) == []
+    assert _log(tmp_path / "cut", f"{RELAY_BLOCKS[3]}\n{rest}", monkeypatch) == []
+
+
+@pytest.mark.parametrize("rest", ["", "   \n"])
+def test_no_row_for_a_blank_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rest: str,
+) -> None:
+    # Main writes the relay as a row here; the cut leaves nothing to write.
+    assert _log(tmp_path, f"{RELAY_BLOCKS[3]}\n{rest}", monkeypatch) == []
+
+
+def test_a_rest_the_gates_keep_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rest = f"<status>done</status> {MINE}"
+    assert _log(tmp_path / "alone", rest, monkeypatch) == [rest]
+    assert _log(tmp_path / "cut", f"{RELAY_BLOCKS[3]}\n{rest}", monkeypatch) == [rest]

@@ -711,7 +711,10 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
         )
 
         # The rebuilder reads this log, so the row leaves out relay text that
-        # opens the prompt. See `cut_relay` for what counts as relay.
+        # opens the prompt. See `cut_relay` for what counts as relay. The
+        # gates below read what the cut leaves, so a rest main would drop if
+        # it arrived alone, such as a task notification or a bare "Yes.",
+        # writes no row.
         prompt = cut_relay(prompt)
         if not prompt.strip():
             return
