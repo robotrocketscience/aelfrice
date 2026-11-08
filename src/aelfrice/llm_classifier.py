@@ -43,11 +43,11 @@ Failure semantics (docs/design/llm_classifier.md § 7):
     It prints the status and error type only, since the response's text can
     echo the key.
   - A `TypeError` or `AttributeError` building the client or resolving
-    `client.messages.create`, or a keyword that `create` doesn't take → DO
+    `client.messages.create`, or a keyword that `create` doesn't take -> DO
     NOT fall back. Exit 1, no beliefs inserted, error message names the
     exception. Nothing has been sent at that point, so the call can't be
     the network's fault.
-  - A failed import of the SDK at request time → fall back as above, with no
+  - A failed import of the SDK at request time -> fall back as above, with no
     warning. Gate 1 catches a missing SDK before this point.
   - 400/404/413/422 → fall back as above, and print one stderr warning
     per run naming the status. The request was sent, so it counts. The
@@ -1022,7 +1022,7 @@ def _call_with_retries(
             arrived_before = len(arrivals)
             try:
                 resp = create(**call_args)
-            except Exception as exc:  # noqa: BLE001 — SDK exception classes vary
+            except Exception as exc:  # noqa: BLE001 - SDK exception classes vary
                 if _is_auth_error(exc):
                     raise LLMAuthError(_auth_failure_text(exc)) from exc
                 fault = _fault_from_call(exc, arrived=len(arrivals) > arrived_before)
