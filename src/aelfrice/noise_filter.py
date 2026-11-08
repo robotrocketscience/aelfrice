@@ -404,28 +404,36 @@ _PASTE_OPENER_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
-def _reminder_spans(text: str) -> list[tuple[int, int]]:
-    """Each closed reminder in `text`, in order, from opener to first closer.
+class _Reminders:
+    """The closed reminders in a record, read from its start as far as asked.
 
-    An opener inside a reminder gives a span that ends at the same closer, so
-    it changes no lookup.
+    Each runs from an opener to the first closer after it. An opener inside a
+    reminder gives a span that ends at the same closer, so it changes no
+    lookup. Spans are kept as two int arrays, and closers are read as needed.
     """
-    closers = list(_REMINDER_CLOSER_RE.finditer(text))
-    spans: list[tuple[int, int]] = []
-    at = 0
-    for m in _REMINDER_OPENER_RE.finditer(text):
-        while at < len(closers) and closers[at].start() < m.end():
-            at += 1
-        if at == len(closers):
-            break
-        spans.append((m.start(), closers[at].end()))
-    return spans
 
+    def __init__(self, text: str) -> None:
+        self._openers = _REMINDER_OPENER_RE.finditer(text)
+        self._closers = _REMINDER_CLOSER_RE.finditer(text)
+        self._opener = next(self._openers, None)
+        self._closer = next(self._closers, None)
+        self._starts: array[int] = array("q")
+        self._ends: array[int] = array("q")
 
-def _in_spans(spans: list[tuple[int, int]], starts: list[int], index: int) -> bool:
-    """True when `index` falls inside one of `spans`, whose starts are `starts`."""
-    at = bisect_right(starts, index) - 1
-    return at >= 0 and index < spans[at][1]
+    def hold(self, index: int) -> bool:
+        """True when `index` falls inside a closed reminder."""
+        while self._opener is not None and self._opener.start() <= index:
+            opener = self._opener
+            self._opener = next(self._openers, None)
+            while self._closer is not None and self._closer.start() < opener.end():
+                self._closer = next(self._closers, None)
+            if self._closer is None:
+                self._opener = None
+                break
+            self._starts.append(opener.start())
+            self._ends.append(self._closer.end())
+        at = bisect_right(self._starts, index) - 1
+        return at >= 0 and index < self._ends[at]
 
 
 def cut_relay(text: str) -> str:
@@ -466,11 +474,10 @@ def cut_relay(text: str) -> str:
     """
     if not _RELAY_HINT_RE.match(text):
         return text
-    reminders = _reminder_spans(text)
-    starts = [start for start, _ in reminders]
+    reminders = _Reminders(text)
     limit = len(text)
     for m in _PASTE_OPENER_RE.finditer(text):
-        if not _in_spans(reminders, starts, m.start()):
+        if not reminders.hold(m.start()):
             limit = m.start()
             break
     pos = 0
@@ -487,7 +494,7 @@ def cut_relay(text: str) -> str:
         tag = opener.group(1).lower()
         closer = next(
             (m for m in _RELAY_CLOSER_RE.finditer(text, opener.end(), limit)
-             if m.group(1).lower() == tag and not _in_spans(reminders, starts, m.start())),
+             if m.group(1).lower() == tag and not reminders.hold(m.start())),
             None,
         )
         if closer is None:
