@@ -750,7 +750,9 @@ def ingest_replies(
     """
     records: list[dict[str, object]] = []
     with pinned_store_env(db):
-        store = MemoryStore(str(db))
+        # A deliberate write: `db` is always the phantom arm's own copy,
+        # made by `run_store` in a new temporary folder, never a store given.
+        store = MemoryStore(str(db), read_only=False)
         try:
             for row in rows:
                 stdout, code = replies[str(row["request_id"])]
