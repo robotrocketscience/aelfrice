@@ -1770,11 +1770,23 @@ def test_replay_dry_run_runs_nothing_and_writes_nothing(
 def test_replay_refuses_a_budget_past_the_ceiling(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], fake_runner: Path, budget: str,
 ) -> None:
-    """Killed by: accepting more than the ruled $0.50, a budget of zero or
+    """Killed by: accepting more than the ruled $1.00, a budget of zero or
     less, or a NaN that every comparison lets through."""
     code, text = _replay(tmp_path, capsys, fake_runner, [_store(tmp_path)], "--budget-usd", budget)
     assert code == 1
     assert "--budget-usd" in text
+    assert _calls(fake_runner) == []
+
+
+@pytest.mark.parametrize("calls", ["0", "-1"])
+def test_replay_refuses_a_call_cap_below_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], fake_runner: Path, calls: str,
+) -> None:
+    """Killed by: dropping the guard, so a cap of 0 or less runs nothing and
+    reads as a finished replay."""
+    code, text = _replay(tmp_path, capsys, fake_runner, [_store(tmp_path)], "--max-calls", calls)
+    assert code == 1
+    assert "--max-calls must be at least 1" in text
     assert _calls(fake_runner) == []
 
 
