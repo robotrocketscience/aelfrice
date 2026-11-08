@@ -92,13 +92,16 @@ def test_the_logger_writes_the_users_prompt_verbatim(
     "Yes.",
     "<system-reminder>r</system-reminder>",
     "<local-command-caveat>Caveat</local-command-caveat>",
+    f"</result>\n{MINE}",
 ])
-def test_no_row_for_a_rest_the_gates_drop_alone(
+def test_a_rest_the_gates_drop_alone_logs_the_whole_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rest: str,
 ) -> None:
-    # On its own, each rest is a prompt the gates drop, so the cut writes none.
+    # On its own, each rest is a prompt the gates drop, so the row is the
+    # whole prompt, as main writes it.
     assert _log(tmp_path / "alone", rest, monkeypatch) == []
-    assert _log(tmp_path / "cut", f"{RELAY_BLOCKS[3]}\n{rest}", monkeypatch) == []
+    prompt = f"{RELAY_BLOCKS[3]}\n{rest}"
+    assert _log(tmp_path / "cut", prompt, monkeypatch) == [prompt]
 
 
 @pytest.mark.parametrize("rest", ["", "   \n"])

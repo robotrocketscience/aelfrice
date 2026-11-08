@@ -712,11 +712,13 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
 
         # The rebuilder reads this log, so the row leaves out relay text that
         # opens the prompt. See `cut_relay` for what counts as relay. The
-        # gates below read what the cut leaves, so a rest main would drop if
-        # it arrived alone, such as a task notification or a bare "Yes.",
-        # writes no row.
-        prompt = cut_relay(prompt)
-        if not prompt.strip():
+        # gates below read what the cut leaves first. When they would drop
+        # it, such as a task notification or a bare "Yes." after the relay,
+        # the row is the whole prompt, gated as main gates it, so a cut never
+        # costs the row a typed word. A relay with nothing after it writes no
+        # row.
+        cut = cut_relay(prompt)
+        if not cut.strip():
             return
         # #1371 §1. Two different questions, and conflating them dropped
         # real turns. A *structural* marker — a harness tag, a glyph, a
@@ -731,19 +733,23 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
         # `<task-notification>` blocks, because their prose lines are not
         # individually noise. That is precisely the flooding #747 added
         # this gate to stop.
-        if is_transcript_scaffolding(prompt):
-            return
-        if is_transcript_noise(prompt):
-            from aelfrice.extraction import extract_sentences  # noqa: PLC0415
+        for prompt in dict.fromkeys((cut, prompt)):
+            if is_transcript_scaffolding(prompt):
+                continue
+            if is_transcript_noise(prompt):
+                from aelfrice.extraction import extract_sentences  # noqa: PLC0415
 
-            # `all([])` is True, so a prompt whose sentences all fall below
-            # `extraction._MIN_LEN` — a bare "Yes." — is still dropped here.
-            # An explicit `not parts or` would be dead, and worse: it would
-            # short-circuit the quantifier on exactly the prompts a bare-ack
-            # test drives, so no test could tell `all` from `any`.
-            parts = [s for s in extract_sentences(prompt) if s.strip()]
-            if all(is_transcript_noise(s) for s in parts):
-                return
+                # `all([])` is True, so a prompt whose sentences all fall below
+                # `extraction._MIN_LEN`, such as a bare "Yes.", is still dropped.
+                # An explicit `not parts or` would be dead, and worse: it would
+                # short-circuit the quantifier on exactly the prompts a bare-ack
+                # test drives, so no test could tell `all` from `any`.
+                parts = [s for s in extract_sentences(prompt) if s.strip()]
+                if all(is_transcript_noise(s) for s in parts):
+                    continue
+            break
+        else:
+            return
     except Exception:
         # Fail-soft: any noise_filter regression falls through to the
         # plain-append path. Silent by design — this hook runs on every
