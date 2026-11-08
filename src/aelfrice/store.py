@@ -6136,9 +6136,12 @@ class MemoryStore:
     ) -> list[tuple[str, str | None, str, str | None, str]]:
         """`(id, session_id, ts, source_path, raw_text)` per transcript row, by id.
 
-        Row ids are monotonic ULIDs and ingest writes a turn's rows in one
-        transaction, so a turn's rows sit next to each other in this order.
-        #1877 reads it to find relay rows.
+        Row ids are ULIDs, monotonic within one process, and ingest writes a
+        turn's rows one after another in a deferred transaction, so a turn's
+        rows sit next to each other in this order unless another process's
+        row sorts between them. That can happen because each process draws
+        its first row's id before it takes the write lock. #1877 reads it to
+        find relay rows.
         """
         cur = self._conn.execute(
             "SELECT id, session_id, ts, source_path, raw_text FROM ingest_log "
