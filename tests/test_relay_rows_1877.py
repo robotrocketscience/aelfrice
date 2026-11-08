@@ -141,8 +141,9 @@ def _origin(store: MemoryStore, content: str) -> str:
 
 
 @pytest.mark.parametrize("row", [
-    TEAM_TAG, AGENT_TAG, CROSS_TAG, "<teammate-message>", "  <AGENT-MESSAGE>  ",
-    "﻿<cross-session-message>",
+    TEAM_TAG, AGENT_TAG, CROSS_TAG, '  <AGENT-MESSAGE FROM="w">  ',
+    "\ufeff" + CROSS_TAG,
+    '<teammate-message teammate_id="lead" summary="ruling">',
 ])
 def test_a_relay_tag_alone_is_an_opener_row(row: str) -> None:
     assert relay_row_shape(row) == RELAY_ROW_OPENER
@@ -152,6 +153,7 @@ def test_a_relay_tag_alone_is_an_opener_row(row: str) -> None:
     NOTICE,
     '[Cross-session idle notice] "peer", which you asked to be notified about, has exited.',
     "[Cross-session delivery notice] Your message to another session was held by that session.",
+    "[Cross-session delivery notice] Your message to another session was refused",
 ])
 def test_a_host_notice_is_a_notice_row(row: str) -> None:
     assert relay_row_shape(row) == RELAY_ROW_NOTICE
@@ -160,7 +162,14 @@ def test_a_host_notice_is_a_notice_row(row: str) -> None:
 @pytest.mark.parametrize("row", [
     "<teammate-message> blocks are cut by ingest before storage.",
     f"{TEAM_TAG} {BODY_1}",
-    "<agent-message>\nThe body sits on the next line.",
+    AGENT_TAG + "\nThe body sits on the next line.",
+    # A tag a person types bare, or without every attribute the host writes.
+    "<teammate-message>", "<agent-message>", "  <AGENT-MESSAGE>  ",
+    "<cross-session-message>", '<cross-session-message from="uds:/tmp/s.sock">',
+    '<teammate-message from="lead">', '<agent-message to="worker-7">',
+    # Words after the notice template's last fixed word may be the user's.
+    NOTICE[:-1] + " and the cache must be warmed first.",
+    "[Cross-session delivery notice] Your message to another session was refused twice today.",
     "</teammate-message>",
     "<agent-message/>",
     "<agent-messages>",
@@ -447,6 +456,179 @@ def test_an_agent_inferred_relay_belief_is_kept_as_it_is(
         report = retire_relay_rows(s, dry_run=False)
         assert _belief_id(s, BODY_1) in report.agent_inferred
         assert report.candidates == []
+    finally:
+        s.close()
+
+
+# --- review round: typed tags, notices, dropped first lines, spans ----------
+
+
+Q = "I want to understand why ingest cuts this tag at all."
+R = "My own note says the cache must be warmed before traffic."
+NEXT = "Ping me when the nightly job finishes tonight."
+
+
+def _dry(db: Path) -> tuple[dict[str, int], set[str]]:
+    s = MemoryStore(str(db))
+    try:
+        report = retire_relay_rows(s, dry_run=True)
+        contents: set[str] = set()
+        for bid in report.candidates:
+            belief = s.get_belief(bid)
+            assert belief is not None
+            contents.add(belief.content)
+        return dict(report.rows_by_shape), contents
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("tag", ["<agent-message>", "<teammate-message>"])
+def test_a_bare_typed_tag_with_typed_lines_after_it_is_not_taken(
+    tmp_path: Path, pre_1875: None, tag: str,
+) -> None:
+    # No closer, so the next turn's anchor runs to the end of the record.
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), f"{tag}\n{Q}\n{R}"),
+        (SESSION, _ts(2), NEXT),
+    ])
+    assert _dry(db) == ({}, set())
+
+
+def test_a_bare_typed_tag_before_many_typed_lines_is_not_taken(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    typed = [f"Typed sentence number {i} explains the plan in detail." for i in range(40)]
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), "<agent-message>\n" + " ".join(typed)),
+        (SESSION, _ts(2), NEXT),
+    ])
+    assert _dry(db) == ({}, set())
+
+
+@pytest.mark.parametrize("first", [
+    f"Context:\n{CROSS_TAG}\n{Q}\n{R}",
+    f"Context:\n{NOTICE}\n{R}",
+])
+def test_a_record_a_dropped_line_opens_is_not_taken(
+    tmp_path: Path, pre_1875: None, first: str,
+) -> None:
+    # `cut_relay` keeps a record whose relay text follows a line, even one
+    # the sentence splitter drops, and the next turn's anchor shows that line.
+    db = _ingest(tmp_path, [(SESSION, _ts(1), first), (SESSION, _ts(2), NEXT)])
+    assert _dry(db) == ({}, set())
+
+
+def test_typed_words_after_a_notice_on_its_line_are_not_taken(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    line = NOTICE[:-1] + " and my own note says the cache must be warmed."
+    db = _ingest(tmp_path, [(SESSION, _ts(1), line), (SESSION, _ts(2), NEXT)])
+    assert _dry(db) == ({}, set())
+
+
+def test_an_inline_span_across_the_closer_takes_no_typed_words(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # The span joins the relay line to the user's line, so the cut part's
+    # sentences aren't the record's first sentences.
+    typed = "The user typed this sentence after the block today."
+    record = (
+        f"{CROSS_TAG}\nRelay mentions `code that spans\n</cross-session-message>\n"
+        f"{typed}\nAnd a second typed sentence follows it` here."
+    )
+    db = _ingest(tmp_path, [(SESSION, _ts(1), record), (SESSION, _ts(2), NEXT)])
+    shapes, contents = _dry(db)
+    assert shapes == {RELAY_ROW_OPENER: 1}
+    assert not any("typed" in c for c in contents), contents
+
+
+def test_rows_stored_without_inline_spans_are_matched(
+    tmp_path: Path, pre_1875: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Before #1874 a stored sentence lost its inline code; the anchor kept it.
+    monkeypatch.setattr(ingest_module, "is_typed_by_user", lambda *_: False)
+    body = "Run `make check` before the release tag goes out."
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), _block(TEAM_TAG, body)),
+        (SESSION, _ts(2), NEXT),
+    ])
+    shapes, _ = _dry(db)
+    assert shapes == {RELAY_ROW_OPENER: 1, SHAPE_BLOCK: 1}
+
+
+def test_a_capped_anchor_skips_a_session_that_derived_only_its_source(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # Session B types the next turn's sentence, then opens a last record with
+    # the same visible relay lines and ends differently. B never derived the
+    # edge's target, and no later turn anchors its record.
+    body = [f"Step {n} of the migration copies table {n} to the new host."
+            for n in range(1, 30)]
+    record = _block(TEAM_TAG, *body) + "\n" + MINE
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), record),
+        (SESSION, _ts(2), TYPED),
+        (OTHER, _ts(3), TYPED),
+        (OTHER, _ts(4), "\n".join([TEAM_TAG, *body[:20]]) + "\nThe end differs here today."),
+    ])
+    shapes, _ = _dry(db)
+    visible = record[:ANCHOR_TEXT_MAX_LEN]
+    assert shapes[SHAPE_BLOCK] == sum(1 for b in body if b in visible)
+
+
+def test_a_second_label_ingest_of_one_record_starts_its_own_turn(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # The same record under `transcript` and then `session-end` shares its
+    # session and timestamp; the label keeps the two runs apart.
+    relay = _block(TEAM_TAG, BODY_1)
+    first = tmp_path / "a.jsonl"
+    second = tmp_path / "b.jsonl"
+    rec = {"schema_version": 1, "role": "user", "session_id": SESSION}
+    first.write_text(json.dumps({**rec, "ts": _ts(1), "text": relay}) + "\n",
+                     encoding="utf-8")
+    second.write_text("".join(json.dumps({**rec, "ts": ts, "text": text}) + "\n"
+                              for ts, text in ((_ts(1), relay), (_ts(2), NEXT))),
+                      encoding="utf-8")
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        ingest_jsonl(s, first)
+        ingest_jsonl(s, second, source_label="session-end")
+        report = retire_relay_rows(s, dry_run=True)
+        assert _belief_id(s, BODY_1) in report.candidates
+    finally:
+        s.close()
+
+
+def test_restore_reads_the_latest_retire_of_a_belief(store: MemoryStore) -> None:
+    # Restored without feedback, the belief is a candidate again, and its
+    # second retire is the one restore has to match.
+    target = _belief_id(store, BODY_1)
+    retire_relay_rows(store, dry_run=False)
+    assert store.restore_belief(target)
+    assert target in retire_relay_rows(store, dry_run=False).candidates
+    assert len([e for e in store.list_feedback_events(target)
+                if e.source == SOURCE_RELAY_RETIRE]) == 2
+    assert target in restore_relay_rows(store, dry_run=True).candidates
+
+
+def test_restore_leaves_a_belief_retired_again_another_way(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    s = MemoryStore(str(db))
+    try:
+        target = _belief_id(s, BODY_1)
+        retire_relay_rows(s, dry_run=False)
+        restore_relay_rows(s, dry_run=False)
+    finally:
+        s.close()
+    code, _ = _run_cli(monkeypatch, db, "retire", target)
+    assert code == 0
+    s = MemoryStore(str(db))
+    try:
+        assert target not in restore_relay_rows(s, dry_run=True).candidates
+        assert restore_relay_rows(s, dry_run=False).changed == 0
+        assert target not in _active_ids(s)
     finally:
         s.close()
 
