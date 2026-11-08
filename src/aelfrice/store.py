@@ -57,6 +57,7 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_COMMIT_INGEST,
     CORROBORATION_SOURCES_NON_ASSERTING,
     CORROBORATION_SOURCES_USER_EXPLICIT,
+    EDGE_DERIVED_FROM,
     EDGE_RELATES_TO,
     EDGE_SUPERSEDES,
     EDGE_VALENCE,
@@ -6111,6 +6112,79 @@ class MemoryStore:
                 sha if isinstance(sha, str) else None,
             ))
         return out
+
+    def list_ingest_derivation_rows(self) -> list[tuple[str, str]]:
+        """`(belief_id, log_id)` per derivation in ingest_log, in that order.
+
+        One pair for each belief id in each row's `derived_belief_ids`, so a
+        belief appears once per row that derived or corroborated it. #1877
+        reads it to find beliefs whose every deriving row is relay text.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT je.value AS belief_id, il.id AS log_id
+            FROM ingest_log il, json_each(il.derived_belief_ids) je
+            WHERE il.derived_belief_ids IS NOT NULL
+              AND json_valid(il.derived_belief_ids)
+            ORDER BY je.value, il.id
+            """
+        )
+        return [(str(r["belief_id"]), str(r["log_id"])) for r in cur.fetchall()]
+
+    def list_transcript_sentences(
+        self,
+    ) -> list[tuple[str, str | None, str, str | None, str]]:
+        """`(id, session_id, ts, source_path, raw_text)` per transcript row, by id.
+
+        Row ids are monotonic ULIDs and ingest writes a turn's rows in one
+        transaction, so a turn's rows sit next to each other in this order.
+        #1877 reads it to find relay rows.
+        """
+        cur = self._conn.execute(
+            "SELECT id, session_id, ts, source_path, raw_text FROM ingest_log "
+            "WHERE source_kind = ? ORDER BY id",
+            (INGEST_SOURCE_TRANSCRIPT,),
+        )
+        return [
+            (
+                str(r["id"]),
+                r["session_id"] if isinstance(r["session_id"], str) else None,
+                str(r["ts"]),
+                r["source_path"] if isinstance(r["source_path"], str) else None,
+                str(r["raw_text"]),
+            )
+            for r in cur.fetchall()
+        ]
+
+    def list_beliefs_with_feedback_source(self, source: str) -> list[str]:
+        """Ids of beliefs with a feedback_history row under `source`, sorted.
+
+        Matches the label exactly. #1877 reads it to find the beliefs its
+        pass retired.
+        """
+        cur = self._conn.execute(
+            "SELECT DISTINCT belief_id FROM feedback_history WHERE source = ? "
+            "ORDER BY belief_id",
+            (source,),
+        )
+        return [str(r[0]) for r in cur.fetchall()]
+
+    def list_derived_from_anchors(self) -> list[tuple[str, str, str]]:
+        """`(src, dst, anchor_text)` of each DERIVED_FROM edge with an anchor.
+
+        Between two user turns, `ingest_jsonl` anchors the edge on the
+        earlier turn's text, line breaks kept, so `src` is the later turn's
+        last belief and `dst` the earlier one's. Ordered by `(src, dst)`.
+        """
+        cur = self._conn.execute(
+            "SELECT src, dst, anchor_text FROM edges "
+            "WHERE type = ? AND anchor_text IS NOT NULL ORDER BY src, dst",
+            (EDGE_DERIVED_FROM,),
+        )
+        return [
+            (str(r["src"]), str(r["dst"]), str(r["anchor_text"]))
+            for r in cur.fetchall()
+        ]
 
     def list_beliefs_corroborated_outside(self, source_type: str) -> set[str]:
         """Ids of beliefs with a corroboration row of any other source type.
