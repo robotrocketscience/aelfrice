@@ -7,48 +7,56 @@ ones with the rule `noise_filter.cut_relay` applies to a record, read
 through what the store kept.
 
 An `ingest_log` row holds one sentence, so it can't show line breaks, a
-closer, or where its record began. Three shapes are read:
+closer, or where its record began. A row starts its turn when the row before
+it, in id order, has another `(session_id, ts, source_path)`: ingest writes a
+turn's rows together, and they share all three. Three shapes are read:
 
-- `opener`: a row that holds a relay opening tag and nothing else, with the
-  attributes the host writes (`noise_filter.relay_row_shape`), and that starts
-  its turn.
-- `notice`: a row that opens with a host cross-session notice, holds no word
-  after its template's last fixed word, and starts its turn.
-- `block`: a row inside a relay block that a later turn's DERIVED_FROM
-  anchor shows. Between two user turns, `ingest_jsonl` anchors the edge on
-  the earlier turn's text, line breaks kept, up to 1,000 characters.
-  `cut_relay` reads that text as it reads a record, and every relay tag and
-  notice line in the part it takes must be the host's
+- `opener`: a row that starts its turn and holds a relay opening tag and
+  nothing else, with the attributes the host writes
+  (`noise_filter.relay_row_shape`).
+- `notice` and `block`: the rows of a record that a later turn's
+  DERIVED_FROM anchor shows opening with relay text. Between two user turns,
+  `ingest_jsonl` anchors the edge on the earlier turn's text, line breaks kept,
+  up to 1,000 characters. `cut_relay` reads that text as it reads a record,
+  and every relay tag and notice line in the part it takes must be the host's
   (`noise_filter.relay_cut_is_host_shaped`). The anchor's sentences are
-  matched in order to the rows that follow a row that starts its turn, in one
-  group, in a session that derived both ends of the edge. The rows that fall
-  in the part `cut_relay` takes are relay rows. An anchor at the cap may end
-  inside a sentence, so its last sentence may go unmatched.
+  matched in order to a run of rows that opens at a row that starts its turn
+  and stays in that row's group, in a session that derived both ends of the
+  edge. The run's rows that fall in the part `cut_relay` takes are relay
+  rows: its first row is a `notice` when it holds a host notice, and the rest
+  are `block`. An anchor at the cap may end inside a sentence, so its last
+  sentence may go unmatched.
 
-When an anchor matches a run whose first row has the `opener` or `notice`
-shape but `cut_relay` doesn't take that record's opening, as when a line the
-sentence splitter dropped comes first, that row isn't taken.
+An anchor that `cut_relay` doesn't cut, or that fails the host check, vetoes
+every row of each run it matches when the run's first row has the `opener` or
+`notice` shape: `cut_relay` keeps that record whole, as when a line the
+sentence splitter dropped comes first. No other anchor can take a vetoed row,
+so a record whose rows match a vetoed run's rows loses them too.
 
-A row starts its turn when the row before it, in id order, has another
-`(session_id, ts, source_path)`. A turn's rows share all three and are
-written together, so a row whose group continues from the row before it
-can't be told from the next record of a bulk ingest that shares one
-timestamp. Such a row is never taken, and no row is taken because its group
+A relay record whose first row shares its group with the row before it, as in
+a bulk ingest that gives several records one timestamp, has no row that starts
+its turn, so none of its rows is taken. No row is taken because its group
 holds a relay row.
 
 What a row can't show leaves gaps. A record that opens with a tag carrying the
 host's attributes reads as relay text, even when a person typed or pasted it,
 and an unclosed one takes every sentence the anchor shows. With no later turn,
-no anchor shows a record, so a dropped first line can't stop its `opener` or
-`notice` row. Rows are matched by their sentences, so a record whose rows
-repeat a relay record's rows word for word, opener included, in a session
-that derived both ends of the edge, reads as that relay record.
+no anchor shows a record, so a dropped first line can't stop its `opener` row.
+A host relay whose cut part holds any other relay tag the host wouldn't write,
+such as `<agent-message/>` quoted in its body, is skipped whole, its opener
+row included. Rows are
+matched by their sentences, so a record whose rows repeat a relay record's
+rows word for word, opener included, in a session that derived both ends of
+the edge, reads as that relay record.
 
 A belief is retired only when every `ingest_log` row that derived or
 corroborated it is a relay row, and `scheduled_prompts.split_by_evidence`
 keeps it on any other evidence: a lock, a promotion, a confirm, a restore,
 a `keep` in `aelf review`, or another corroboration source. A belief whose
 relay rows already gave it `agent_inferred` is kept as it is.
+
+A belief a federation peer owns is never retired or restored here, as
+`aelf retire` and `aelf restore` refuse one.
 
 `aelf doctor --retire-relay-rows` runs the pass, and
 `aelf doctor --restore-relay-rows` undoes it for each belief whose retire
@@ -64,6 +72,8 @@ from typing import TYPE_CHECKING, Final
 
 from aelfrice.models import ANCHOR_TEXT_MAX_LEN, ORIGIN_AGENT_INFERRED
 from aelfrice.noise_filter import (
+    RELAY_ROW_NOTICE,
+    RELAY_ROW_OPENER,
     cut_relay,
     relay_cut_is_host_shaped,
     relay_row_shape,
@@ -97,6 +107,7 @@ class RelayRowsReport:
     locked: list[str] = field(default_factory=list[str])
     other_evidence: list[str] = field(default_factory=list[str])
     agent_inferred: list[str] = field(default_factory=list[str])
+    foreign: list[str] = field(default_factory=list[str])
     changed: int = 0
 
 
@@ -155,11 +166,12 @@ def _block_rows(
     sessions_of: dict[str, set[str]],
     report: RelayRowsReport,
 ) -> tuple[dict[int, str], set[int]]:
-    """Row positions inside a relay block that an anchor shows, and vetoes.
+    """Relay rows that an anchor shows, by position, and the vetoed positions.
 
-    A veto is the first row of a run whose anchor `cut_relay` doesn't cut, or
-    cuts with a tag or notice line that isn't the host's: that record doesn't
-    open with relay text, even when its first stored row looks like it does.
+    A veto covers every row of a run whose first row has a relay shape and
+    whose anchor `cut_relay` doesn't cut, or cuts with a tag or notice line
+    that isn't the host's: that record doesn't open with relay text, even when
+    its first stored row looks like it does. A vetoed row is never returned.
     """
     starts_by_text: dict[str, list[int]] = {}
     for i, text in enumerate(rows.texts):
@@ -187,9 +199,8 @@ def _block_rows(
             seen.append(whole)
             if not relay:
                 if relay_row_shape(whole[0]) is not None:
-                    vetoed.update(
-                        i for i, _ in _runs(rows, starts_by_text, sessions, whole, capped)
-                    )
+                    for i, n in _runs(rows, starts_by_text, sessions, whole, capped):
+                        vetoed.update(range(i, i + n))
                 continue
             head = partition_sentences(cut, keep_spans=keep_spans)[0]
             if not head or whole[: len(head)] != head:
@@ -197,10 +208,11 @@ def _block_rows(
             for i, n in _runs(rows, starts_by_text, sessions, whole, capped):
                 matched = True
                 for j in range(min(n, len(head))):
-                    found.setdefault(i + j, SHAPE_BLOCK)
+                    first = j == 0 and relay_row_shape(whole[0]) == RELAY_ROW_NOTICE
+                    found.setdefault(i + j, RELAY_ROW_NOTICE if first else SHAPE_BLOCK)
         if matched:
             report.anchors_matched += 1
-    return found, vetoed
+    return {i: shape for i, shape in found.items() if i not in vetoed}, vetoed
 
 
 def _select(store: "MemoryStore", report: RelayRowsReport) -> None:
@@ -218,11 +230,12 @@ def _select(store: "MemoryStore", report: RelayRowsReport) -> None:
         rows, store.list_derived_from_anchors(), sessions_of, report,
     )
     shape_at: dict[int, str] = {}
+    # A notice row is taken only through an anchor: a sentence after the notice
+    # on its line is a row of its own, and only the record shows the line.
     for i, text in enumerate(rows.texts):
         if rows.starts[i] and i not in vetoed:
-            shape = relay_row_shape(text)
-            if shape is not None:
-                shape_at[i] = shape
+            if relay_row_shape(text) == RELAY_ROW_OPENER:
+                shape_at[i] = RELAY_ROW_OPENER
     for i, shape in found.items():
         shape_at.setdefault(i, shape)
     report.rows_by_shape = Counter(shape_at.values())
@@ -234,8 +247,11 @@ def _select(store: "MemoryStore", report: RelayRowsReport) -> None:
         every_row_relay[bid] = every_row_relay.get(bid, True) and shape is not None
         if shape is not None:
             first_shape.setdefault(bid, shape)
+    relay_only = [b for b, ok in every_row_relay.items() if ok]
+    report.foreign = sorted(b for b in relay_only if store.find_foreign_owner(b))
+    foreign = set(report.foreign)
     candidates, report.locked, other = split_by_evidence(
-        store, (b for b, ok in every_row_relay.items() if ok),
+        store, (b for b in relay_only if b not in foreign),
     )
     for bid in other:
         belief = store.get_belief(bid)
@@ -281,7 +297,10 @@ def _retired_by_pass(store: "MemoryStore") -> list[str]:
     out: list[str] = []
     for bid, ts in store.latest_feedback_times(SOURCE_RELAY_RETIRE).items():
         belief = store.get_belief(bid, include_retired=True)
-        if belief is not None and belief.valid_to == ts:
+        if (
+            belief is not None and belief.valid_to == ts
+            and not store.find_foreign_owner(bid)
+        ):
             out.append(bid)
     return sorted(out)
 
@@ -291,9 +310,10 @@ def restore_relay_rows(
 ) -> RelayRowsReport:
     """List, and with `dry_run=False` restore, the beliefs this pass retired.
 
-    Each one `_retired_by_pass` finds is restored as `aelf restore` restores
-    one, with a `user_restored` row, so a later `retire_relay_rows` keeps it.
-    The dry run writes nothing.
+    Each one `_retired_by_pass` finds goes back to active and gets a
+    `user_restored` feedback row of valence 1, the row `aelf restore` writes,
+    so a later `retire_relay_rows` keeps it. A belief a federation peer owns is
+    skipped. The dry run writes nothing.
     """
     report = RelayRowsReport(dry_run=dry_run)
     if dry_run:
@@ -342,6 +362,8 @@ def format_relay_rows_report(report: RelayRowsReport, store_path: str) -> str:
         _ids(lines, report.other_evidence)
     if report.agent_inferred:
         lines.append(f"already agent_inferred, kept: {len(report.agent_inferred)}")
+    if report.foreign:
+        lines.append(f"owned by a federation peer, kept: {len(report.foreign)}")
     if not report.dry_run:
         lines.append(
             f"retired {report.changed} belief(s). "
