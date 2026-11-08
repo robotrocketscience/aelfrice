@@ -524,14 +524,18 @@ _RELAY_TAG_RE: Final[re.Pattern[str]] = re.compile(_RELAY_TAG, re.IGNORECASE)
 _RELAY_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"<(" + _RELAY_TAG_ALT + r")\b", re.IGNORECASE,
 )
-# The tag as the host writes it, a narrower form of `_RELAY_TAG`: one ASCII
-# space before each attribute, each value double-quoted and not empty, and `>`
-# right after the last one. All 232 stored relay openers have this form (#1877).
-_HOST_TAG_RE: Final[re.Pattern[str]] = re.compile(
-    r"<(" + _RELAY_TAG_ALT + r")((?: [A-Za-z0-9_-]+=\"[^\"\n\r]+\")+)>",
-    re.IGNORECASE,
+# The tag as the host writes it, a narrower form of `_RELAY_TAG`: tag and
+# attribute names in lower case, one ASCII space before each attribute, each
+# value double-quoted with a character other than whitespace and no line break
+# of any kind, and `>` right after the last one. All 232 stored relay openers
+# have this form (#1877).
+_HOST_VALUE: Final[str] = (
+    r'"(?=[^"]*[^"\s])[^"\n\r\v\f' + "\x85\u2028\u2029" + r']+"'
 )
-_HOST_ATTRIBUTE_RE: Final[re.Pattern[str]] = re.compile(r' ([A-Za-z0-9_-]+)="')
+_HOST_TAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"<(" + _RELAY_TAG_ALT + r")((?: [a-z0-9_-]+=" + _HOST_VALUE + r")+)>",
+)
+_HOST_ATTRIBUTE_RE: Final[re.Pattern[str]] = re.compile(r' ([a-z0-9_-]+)="')
 
 
 def _host_shaped(tag: str) -> bool:
@@ -543,8 +547,8 @@ def _host_shaped(tag: str) -> bool:
     host = _HOST_TAG_RE.fullmatch(tag)
     if host is None:
         return False
-    names = {n.lower() for n in _HOST_ATTRIBUTE_RE.findall(host.group(2))}
-    return HOST_RELAY_ATTRIBUTES[host.group(1).lower()] <= names
+    names = set(_HOST_ATTRIBUTE_RE.findall(host.group(2)))
+    return HOST_RELAY_ATTRIBUTES[host.group(1)] <= names
 
 
 def relay_row_shape(text: str) -> str | None:
