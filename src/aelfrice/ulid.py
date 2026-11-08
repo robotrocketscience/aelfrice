@@ -77,3 +77,16 @@ _default_gen: Callable[[], str] = make_generator()
 def ulid() -> str:
     """Return one ULID string. Process-monotone, sortable."""
     return _default_gen()
+
+
+def ulid_ms(value: str) -> int | None:
+    """The millisecond timestamp a ULID carries, or None when it isn't one."""
+    if len(value) != _ULID_LEN:
+        return None
+    ms = 0
+    for ch in value[:10].upper():
+        digit = _ALPHABET.find(ch)
+        if digit < 0:
+            return None
+        ms = ms * 32 + digit
+    return ms
