@@ -45,7 +45,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Final, cast
 
-from aelfrice.bm25 import tokenize_stemmed
+from aelfrice import bm25
 from aelfrice.models import (
     AUTO_WONDER_GENERATOR_FAMILY,
     BELIEF_SPECULATIVE,
@@ -84,7 +84,7 @@ DOCUMENT_ANCHOR_CAP: Final[int] = 9
 
 PHANTOM_SCORE: Final[float] = 1.0
 
-_SEED_STOPWORDS: Final[frozenset[str]] = frozenset(tokenize_stemmed(
+_SEED_STOPWORDS: Final[frozenset[str]] = frozenset(bm25.tokenize_stemmed(
     "a about above after again all also am an and any are as at be because been"
     " before being below between both but by can could did do does down during"
     " each even every few for from further get gets got had has have he her here"
@@ -212,7 +212,7 @@ def snippet(text: str, limit: int = SNIPPET_CHARS) -> str:
 def _content_words(text: str) -> frozenset[str]:
     """`text`'s stems, without stopwords, numbers, and single characters."""
     return frozenset(
-        t for t in tokenize_stemmed(text) if len(t) > 1 and not t.isdigit()
+        t for t in bm25.tokenize_stemmed(text) if len(t) > 1 and not t.isdigit()
     ) - _SEED_STOPWORDS
 
 

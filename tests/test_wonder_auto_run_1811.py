@@ -32,7 +32,7 @@ from aelfrice.models import (
     ORIGIN_USER_TRANSCRIPT,
     Belief,
 )
-from aelfrice.bm25 import tokenize_stemmed
+from aelfrice import bm25
 from aelfrice.store import MemoryStore
 from aelfrice.wonder.auto_prompt import (
     DOCUMENT_ANCHOR_CAP,
@@ -154,7 +154,7 @@ def test_a_word_any_sentence_shares_is_no_seed_match(word: str) -> None:
 def test_a_real_topic_word_still_counts() -> None:
     """Killed by: a stopword list that swallows the words a topic is made of."""
     assert auto_prompt._content_words("cache manifest registry about") == frozenset(  # pyright: ignore[reportPrivateUsage]
-        tokenize_stemmed("cache manifest registry"),
+        bm25.tokenize_stemmed("cache manifest registry"),
     )
 
 
