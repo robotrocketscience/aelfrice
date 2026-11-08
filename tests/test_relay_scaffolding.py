@@ -479,3 +479,13 @@ def test_a_harness_tag_right_after_a_reminder_opens_its_line() -> None:
     reminder = "<system-reminder>x</system-reminder>"
     text = f"{RELAY_BLOCKS[3]}\n{reminder}<result>x</result>\n{MINE}"
     assert cut_relay(text) == f"{reminder}<result>x</result>\n{MINE}"
+
+
+@pytest.mark.parametrize("before", ["end ", "\t", f"{BODY} "])
+def test_text_before_the_closer_goes_with_the_block(before: str) -> None:
+    assert cut_relay(f"<agent-message>\n{BODY}\n{before}</agent-message>\n{MINE}") == MINE
+
+
+def test_relay_text_after_a_paste_inside_a_block_stays() -> None:
+    text = f"<agent-message>\n{BODY}\n{_paste(MINE)}\n{LAST}\n</agent-message>\n"
+    assert cut_relay(text) == f"{_paste(MINE)}\n{LAST}\n</agent-message>\n"
