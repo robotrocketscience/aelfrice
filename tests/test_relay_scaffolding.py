@@ -535,3 +535,22 @@ def test_harness_blocks_are_read_in_the_stripped_record() -> None:
     # Stripped, the record opens with the harness block that holds `<result>`.
     text = f"\x0b<cross-session-message>\n<result>\n</cross-session-message>\n</result>\n{MINE}"
     assert cut_relay(text) == f"</result>\n{MINE}"
+
+
+def test_a_notice_line_with_a_paste_ends_the_cut_after_a_block() -> None:
+    notice = '[Cross-session idle notice] "s", which you asked to be notified about, is idle now'
+    rest = f"{notice} <pasted_content>x</pasted_content>\n{MINE}"
+    assert cut_relay(f"<agent-message>\nr\n</agent-message>\n{rest}") == rest
+
+
+def test_a_blank_rest_is_cut_whatever_the_block_holds() -> None:
+    text = "<agent-message>\n<ſystem-reminder>x</system-reminder>\n</agent-message>\n   \n"
+    assert cut_relay(text) == "   \n"
+
+
+def test_a_reminder_with_words_after_it_ends_the_leading_run() -> None:
+    # Read past its own closer, the run would reach the command wrapper and
+    # refuse the cut. Ingest drops only the first reminder.
+    rest = ("<system-reminder>x</system-reminder> words\n<system-reminder>y</system-reminder>\n"
+            f"<command-name>/x</command-name>\n{MINE}")
+    assert cut_relay(f"{RELAY_BLOCKS[3]}\n{rest}") == rest
