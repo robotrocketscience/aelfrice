@@ -670,7 +670,9 @@ def _user_speech(text: str) -> str | None:
 
     Relay text from other agents is cut first, and only where it opens the
     record, by the rule in `noise_filter.cut_relay`. The transcript logger
-    writes the same cut, so a record and the row logged for it read the same.
+    writes the same cut, or the whole prompt when its gates would drop what
+    the cut leaves, and ingest cuts that row the same way, so a record and the
+    row logged for it give the same speech.
     A relay after the user's first word, or behind a marker or a reminder,
     stays. No cut is made that would make this function keep less of the rest
     than it keeps from the whole record, though a cut can keep more: a harness
