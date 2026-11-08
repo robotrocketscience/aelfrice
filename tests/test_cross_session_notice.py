@@ -88,9 +88,16 @@ def test_a_notice_line_goes_whole() -> None:
     assert cut_relay(f"{IDLE_NOW} {MINE}\n{LAST}") == LAST
 
 
-def test_a_notice_stops_at_a_paste() -> None:
+@pytest.mark.parametrize("between", [" ", f" and {LAST} "])
+def test_a_notice_line_that_holds_a_paste_stays(between: str) -> None:
+    text = f"{IDLE_NOW}{between}{_paste(MINE)}"
+    assert cut_relay(text) == text
+    assert IDLE_NOW in (_user_speech(text) or "")
+
+
+def test_a_notice_before_a_paste_line_goes() -> None:
     paste = _paste(MINE)
-    assert cut_relay(f"{IDLE_NOW} {paste}") == paste
+    assert cut_relay(f"{IDLE_NOW}\n{paste}") == paste
 
 
 @pytest.mark.parametrize("line", LOOKALIKE_LINES)

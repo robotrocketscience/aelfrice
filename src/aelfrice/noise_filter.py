@@ -433,10 +433,10 @@ def cut_relay(text: str) -> str:
       paste, and a closer inside a closed `<system-reminder>` doesn't count.
       When the closer's line holds anything else, or ends in a lone CR, the
       block stays and the cut stops.
-    - A host notice counts the same way: a whole line, before the first paste,
-      that opens with the host's delivery or idle header and the fixed words of
-      one of its templates, and ends in LF, CRLF, or the record. The whole line
-      goes.
+    - A host notice counts the same way: a whole line, ending in LF, CRLF, or
+      the record before the first paste, that opens with the host's delivery
+      or idle header and the fixed words of one of its templates. The whole
+      line goes. A notice line that holds a paste isn't one.
     - The cut repeats while the next thing, after optional whitespace, is
       another such opener or notice.
     - An opener with no closer takes the record up to the first paste.
@@ -467,8 +467,9 @@ def cut_relay(text: str) -> str:
     pos = 0
     # Each round moves `pos` forward or ends the scan, so the bound is never hit.
     for _ in range(len(text) + 1):
-        notice = _CROSS_SESSION_NOTICE_RE.match(text, pos, limit)
-        if notice:
+        # Matched to the record's end, so the line can't end at a paste.
+        notice = _CROSS_SESSION_NOTICE_RE.match(text, pos)
+        if notice and notice.end() <= limit:
             pos = notice.end()
             continue
         opener = _RELAY_OPENER_RE.match(text, pos)
