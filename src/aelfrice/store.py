@@ -6156,18 +6156,18 @@ class MemoryStore:
             for r in cur.fetchall()
         ]
 
-    def list_beliefs_with_feedback_source(self, source: str) -> list[str]:
-        """Ids of beliefs with a feedback_history row under `source`, sorted.
+    def latest_feedback_times(self, source: str) -> dict[str, str]:
+        """Each belief's latest feedback_history `created_at` under `source`.
 
         Matches the label exactly. #1877 reads it to find the beliefs its
         pass retired.
         """
         cur = self._conn.execute(
-            "SELECT DISTINCT belief_id FROM feedback_history WHERE source = ? "
-            "ORDER BY belief_id",
+            "SELECT belief_id, MAX(created_at) FROM feedback_history "
+            "WHERE source = ? GROUP BY belief_id",
             (source,),
         )
-        return [str(r[0]) for r in cur.fetchall()]
+        return {str(r[0]): str(r[1]) for r in cur.fetchall()}
 
     def list_derived_from_anchors(self) -> list[tuple[str, str, str]]:
         """`(src, dst, anchor_text)` of each DERIVED_FROM edge with an anchor.

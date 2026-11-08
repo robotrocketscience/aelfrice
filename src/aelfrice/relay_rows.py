@@ -51,8 +51,8 @@ a `keep` in `aelf review`, or another corroboration source. A belief whose
 relay rows already gave it `agent_inferred` is kept as it is.
 
 `aelf doctor --retire-relay-rows` runs the pass, and
-`aelf doctor --restore-relay-rows` undoes it. Each is a dry run unless
-`--apply` is given.
+`aelf doctor --restore-relay-rows` undoes it for each belief whose retire
+time is still the pass's. Each is a dry run unless `--apply` is given.
 """
 from __future__ import annotations
 
@@ -271,13 +271,19 @@ def retire_relay_rows(
 
 
 def _retired_by_pass(store: "MemoryStore") -> list[str]:
-    """Retired beliefs that hold a `relay_rows:retire` audit row."""
+    """Beliefs this pass retired that nothing has retired again since.
+
+    The pass stamps `valid_to` with its audit row's time, so a belief counts
+    when its `valid_to` equals its latest `relay_rows:retire` row. One that was
+    restored and then retired another way, such as with `aelf retire`, holds a
+    later `valid_to` and is left alone.
+    """
     out: list[str] = []
-    for bid in store.list_beliefs_with_feedback_source(SOURCE_RELAY_RETIRE):
+    for bid, ts in store.latest_feedback_times(SOURCE_RELAY_RETIRE).items():
         belief = store.get_belief(bid, include_retired=True)
-        if belief is not None and belief.valid_to is not None:
+        if belief is not None and belief.valid_to == ts:
             out.append(bid)
-    return out
+    return sorted(out)
 
 
 def restore_relay_rows(
@@ -285,9 +291,9 @@ def restore_relay_rows(
 ) -> RelayRowsReport:
     """List, and with `dry_run=False` restore, the beliefs this pass retired.
 
-    Each one still retired that holds a `relay_rows:retire` audit row is
-    restored as `aelf restore` restores one, with a `user_restored` row, so a
-    later `retire_relay_rows` keeps it. The dry run writes nothing.
+    Each one `_retired_by_pass` finds is restored as `aelf restore` restores
+    one, with a `user_restored` row, so a later `retire_relay_rows` keeps it.
+    The dry run writes nothing.
     """
     report = RelayRowsReport(dry_run=dry_run)
     if dry_run:
@@ -357,7 +363,7 @@ def format_relay_restore_report(report: RelayRowsReport, store_path: str) -> str
     verb = "would restore" if report.dry_run else "restored"
     lines = [
         f"store: {store_path}",
-        f"beliefs --retire-relay-rows retired that are still retired, {verb}: "
+        f"beliefs --retire-relay-rows retired that nothing has retired again, {verb}: "
         f"{len(report.candidates)}",
     ]
     _ids(lines, report.candidates)
