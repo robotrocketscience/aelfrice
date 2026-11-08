@@ -693,6 +693,15 @@ class Phantom:
     score: float
 
 
+AUTO_WONDER_GENERATOR_FAMILY: Final[str] = "auto_wonder"
+"""Generator family of the phantoms the automatic wonder pass writes (#1811).
+
+A generator reads `auto_wonder:v1:<axis>:<claim sha8>`; `wonder_ingest`
+records it in the phantom's `wonder_ingest` corroboration row. The pass was
+measured on store copies by `benchmarks/wonder_auto_replay.py` and doesn't
+run on its own."""
+
+
 @dataclass(frozen=True)
 class PhantomLifecycleCounts:
     """Snapshot of the phantom (speculative) belief lifecycle (#980).

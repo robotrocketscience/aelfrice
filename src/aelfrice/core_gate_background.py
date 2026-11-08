@@ -295,10 +295,18 @@ def settings_file() -> Generator[str, None, None]:
             pass
 
 
-def runner_argv(claude: str, settings: str) -> list[str]:
+def runner_argv(
+    claude: str,
+    settings: str,
+    *,
+    system_prompt: str = RUNNER_SYSTEM_PROMPT,
+    budget_usd: str = RUNNER_BUDGET_USD,
+) -> list[str]:
     """The measured classifier invocation (see the module docstring).
 
-    `settings` is the path `settings_file` yields.
+    `settings` is the path `settings_file` yields. The wonder replay
+    (#1811) runs the same flags with its own system prompt and budget;
+    the defaults are the classifier's.
     """
     return [
         claude, "-p",
@@ -308,8 +316,8 @@ def runner_argv(claude: str, settings: str) -> list[str]:
         "--settings", settings,
         "--no-session-persistence",
         "--output-format", "json",
-        "--max-budget-usd", RUNNER_BUDGET_USD,
-        "--system-prompt", RUNNER_SYSTEM_PROMPT,
+        "--max-budget-usd", budget_usd,
+        "--system-prompt", system_prompt,
         "--strict-mcp-config",
         "--disable-slash-commands",
     ]

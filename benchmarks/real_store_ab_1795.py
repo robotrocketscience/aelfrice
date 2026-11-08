@@ -165,7 +165,7 @@ import statistics
 import sys
 import tempfile
 from collections import Counter
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Collection, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from fractions import Fraction
@@ -739,18 +739,21 @@ def gate_sends_to_locks_only(text: str) -> bool:
     return _should_skip_bm25(text)[0]
 
 
-def sample_prompts(turns: Sequence[Turn], seed: int, max_n: int) -> list[dict[str, Any]]:
+def sample_prompts(
+    turns: Sequence[Turn], seed: int, max_n: int, *, exclude: Collection[str] = (),
+) -> list[dict[str, Any]]:
     """Seeded sample of distinct user prompts the gate lets through, in turn order.
 
     Each row carries the prompt, where it sits in the log, and `context`:
     up to `DEFAULT_CONV_AWARE_WINDOW` earlier turns of the same session,
-    which `run` folds into the query the way the hook does.
+    which `run` folds into the query the way the hook does. A prompt whose
+    stripped text is in `exclude` is never sampled.
     """
     if max_n < 1:
         raise InputError("--max must be at least 1")
     if not turns:
         raise InputError("no transcript turns beside the store")
-    seen: set[str] = set()
+    seen: set[str] = set(exclude)
     candidates: list[Turn] = []
     for t in turns:
         if t.role != "user" or gate_sends_to_locks_only(t.text):
@@ -1058,13 +1061,15 @@ def shares_prompt_stem(prompt: str, belief: str) -> bool:
 
 def build_packet(
     runs: Mapping[str, Mapping[str, Any]], db: Path, seed: int, *, snapshot: str,
+    comparisons: Sequence[tuple[str, str]] = COMPARISONS,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """`(packet rows, key rows)`: the packet, and the key's store row and item rows.
 
     Packet and item rows are in item-id order.
 
     Per prompt, the union of every arm's top 10 and, for each pair in
-    `COMPARISONS`, the beliefs one arm packed and the other didn't. Each
+    `comparisons`, the beliefs one arm packed and the other didn't. The
+    #1811 replay harness passes its own pair of arms. Each
     judged belief's item row in the key holds its rank in every arm that
     packed it, past the top 10 included. A null arm of active non-locked
     beliefs no arm packed for the prompt is mixed in: as many per prompt
@@ -1096,7 +1101,7 @@ def build_packet(
     for pid in prompts:
         ranks = packed[pid]
         keep = {b for b, arms in ranks.items() if min(arms.values()) <= TOP_K}
-        for x, c in COMPARISONS:
+        for x, c in comparisons:
             if x in runs and c in runs:
                 keep |= {b for b, arms in ranks.items() if (x in arms) != (c in arms)}
         judged[pid] = {b: ranks[b] for b in keep}

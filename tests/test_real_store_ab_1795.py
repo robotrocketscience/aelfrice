@@ -205,6 +205,18 @@ def test_the_sample_is_seeded_and_in_turn_order(tmp_path: Path) -> None:
     assert len(picks) > 1
 
 
+def test_the_sample_leaves_out_excluded_prompts(tmp_path: Path) -> None:
+    path = _store(tmp_path)
+    archive, live = _session_turns()
+    _write_transcripts(path, archive, live)
+    turns = bench.read_turns(bench.transcript_files(path))
+    every = [r["text"] for r in bench.sample_prompts(turns, seed=1, max_n=40)]
+    dropped = "how does the deployment script handle the migration step"
+    assert dropped in every
+    rows = bench.sample_prompts(turns, seed=1, max_n=40, exclude={dropped})
+    assert [r["text"] for r in rows] == [t for t in every if t != dropped]
+
+
 def test_the_context_is_the_sessions_earlier_turns(tmp_path: Path) -> None:
     path = _store(tmp_path)
     archive, live = _session_turns()

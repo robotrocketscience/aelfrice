@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from aelfrice.category import Category
 
 from aelfrice.models import (
+    AUTO_WONDER_GENERATOR_FAMILY,
     BELIEF_SCOPE_PROJECT,
     CORE_GATE_ORIGIN_SESSION_END,
     CORROBORATION_EPISODE_GAP_SECONDS,
@@ -65,6 +66,7 @@ from aelfrice.models import (
     ORIGIN_USER_TRANSCRIPT,
     INGEST_SOURCE_KINDS,
     INGEST_SOURCE_LEGACY_UNKNOWN,
+    INGEST_SOURCE_TRANSCRIPT,
     ONBOARD_STATE_COMPLETED,
     ONBOARD_STATE_PENDING,
     ORIGIN_RETRIEVAL_PRIORITY,
@@ -7087,6 +7089,54 @@ class MemoryStore:
             retired=int(row["retired"]),
             latest=str(latest) if latest is not None else None,
         )
+
+    def auto_wonder_contents(self, texts: Sequence[str]) -> set[str]:
+        """Which of `texts` an automatic wonder phantom already holds (#1811).
+
+        Live or retired, under any axis or anchor set. The pass skips
+        these, so a claim GC retired stays retired when a later reply
+        cites it with other anchors: `wonder_ingest` keys on the anchors
+        and the generator, never on the text. A phantom belongs to the
+        pass when its `wonder_ingest` corroboration row records a generator
+        in `AUTO_WONDER_GENERATOR_FAMILY`, stored as `<generator>@<score>`.
+        Read-only.
+        """
+        wanted = sorted(set(texts))
+        if not wanted:
+            return set()
+        pattern = AUTO_WONDER_GENERATOR_FAMILY.replace("_", "\\_") + ":%"
+        marks = ",".join("?" * len(wanted))
+        rows = self._conn.execute(
+            f"""
+            SELECT DISTINCT b.content AS content
+            FROM beliefs b
+            WHERE b.type = 'speculative' AND b.content IN ({marks}) AND EXISTS (
+              SELECT 1 FROM belief_corroborations c
+              WHERE c.belief_id = b.id AND c.source_type = ?
+                AND c.source_path_hash LIKE ? ESCAPE '\\'
+            )
+            """,
+            (*wanted, CORROBORATION_SOURCE_WONDER_INGEST, pattern),
+        ).fetchall()
+        return {str(r["content"]) for r in rows}
+
+    def session_has_transcript_ingest(self, session_id: str) -> bool:
+        """Whether a transcript ingest has recorded `session_id` (#1811).
+
+        The wonder replay replays only such sessions, as a Stop hook trigger
+        would wait for one: the transcript logger ingests a session's turns
+        in the background every few turns, so a Stop before the first flush
+        lands finds nothing. A flush of
+        sentences the store already holds creates no belief but still
+        writes an `ingest_log` row per sentence, so this reads the log
+        rather than `beliefs.session_id`. A commit ingest that names the
+        session doesn't count. `idx_ingest_log_session` serves the lookup.
+        """
+        row = self._conn.execute(
+            "SELECT 1 FROM ingest_log WHERE session_id = ? AND source_kind = ? LIMIT 1",
+            (session_id, INGEST_SOURCE_TRANSCRIPT),
+        ).fetchone()
+        return row is not None
 
     def count_beliefs_by_scope(self) -> dict[str, int]:
         """Return a mapping of scope value → count across all beliefs.
