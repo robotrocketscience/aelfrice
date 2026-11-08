@@ -489,3 +489,20 @@ def test_text_before_the_closer_goes_with_the_block(before: str) -> None:
 def test_relay_text_after_a_paste_inside_a_block_stays() -> None:
     text = f"<agent-message>\n{BODY}\n{_paste(MINE)}\n{LAST}\n</agent-message>\n"
     assert cut_relay(text) == f"{_paste(MINE)}\n{LAST}\n</agent-message>\n"
+
+
+def test_nothing_is_cut_when_a_reminder_tag_name_is_not_ascii() -> None:
+    text = f"<agent-message>\n<ſystem-reminder>x</system-reminder>\n</agent-message>\n{MINE}"
+    assert cut_relay(text) == text
+
+
+def test_nothing_is_cut_when_ingest_sees_a_paste_before_the_cut() -> None:
+    # Past the 2,000-character bound, `cut_relay` doesn't see the first
+    # reminder, so it reads the second opener's reminder through the paste.
+    # Ingest ends the first reminder at the closer that holds the second
+    # opener's `>`, and reads the paste as one.
+    first = "<system-reminder " + "a" * 2100 + ">"
+    text = (f"<agent-message>\n{first}\n<system-reminder\n</system-reminder>\n"
+            f"{_paste(MINE)}\n</system-reminder>\n</agent-message>\n{LAST}")
+    assert cut_relay(text) == text
+    assert MINE in (_user_speech(text) or "")
