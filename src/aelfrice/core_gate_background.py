@@ -96,22 +96,25 @@ LOG_FILENAME: Final[str] = "core_gate_background.jsonl"
 RUNNER_SETTINGS_JSON: Final[str] = '{"disableAllHooks": true}'
 RUNNER_SETTINGS_PREFIX: Final[str] = "aelfrice-core-gate-"
 
-#: Removed from the child's environment (see `runner_env`).
-RUNNER_DROPPED_ENV: Final[tuple[str, ...]] = (
-    "MAX_THINKING_TOKENS", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-)
+#: All the child's environment keeps of the parent's (see `runner_env`),
+#: in upper case. `CLAUDE_CONFIG_DIR` says which `claude` login to read.
+RUNNER_ENV_ALLOWED: Final[frozenset[str]] = frozenset({
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TZ",
+    "LANG", "LANGUAGE", "TMPDIR", "TEMP", "TMP",
+    "TERM", "COLORTERM", "NO_COLOR", "CLAUDE_CONFIG_DIR",
+    "LC_ALL", "LC_ADDRESS", "LC_COLLATE", "LC_CTYPE", "LC_IDENTIFICATION",
+    "LC_MEASUREMENT", "LC_MESSAGES", "LC_MONETARY", "LC_NAME", "LC_NUMERIC",
+    "LC_PAPER", "LC_RESPONSE", "LC_TELEPHONE", "LC_TIME",
+})
 
-#: The parent host session's identity, also removed (see `runner_env`):
-#: the variables the host sets per session, and those it removes itself
-#: before it starts a background session.
-RUNNER_SESSION_ENV: Final[tuple[str, ...]] = (
-    "CLAUDECODE", "CLAUDE_PID", "CLAUDE_CODE_SESSION_ID",
-    "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ATTENDED",
-    "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET",
-    "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_HOST_WORKTREE",
-    "CLAUDE_CODE_HOST_WORKTREE_FENCE", "CLAUDE_EFFORT", "AI_AGENT",
-    "TRACEPARENT",
-)
+#: The same on Windows, where a process needs these to start or to find
+#: its home folder.
+RUNNER_ENV_ALLOWED_WINDOWS: Final[frozenset[str]] = frozenset({
+    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT",
+    "USERPROFILE", "USERNAME", "HOMEDRIVE", "HOMEPATH", "APPDATA",
+    "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+})
 
 #: The headless entrypoint the child runs under (see `runner_env`).
 RUNNER_ENTRYPOINT: Final[str] = "sdk-cli"
@@ -312,28 +315,35 @@ def runner_argv(claude: str, settings: str) -> list[str]:
 
 
 def runner_env(base: dict[str, str]) -> dict[str, str]:
-    """`base` for the child run.
+    """The environment for the child run: an allowlist of `base`.
 
-    Drops a thinking cap, turns CLAUDE.md and auto memory off, and drops
-    the API credentials. In `-p` mode an exported `ANTHROPIC_API_KEY` is
+    Only what a CLI needs to start passes: the path, home folder, user,
+    shell, locale, temp folder, and terminal. So no credential, provider
+    switch, endpoint, proxy, custom certificate authority, model override,
+    thinking cap, or identity of the host session reaches the child,
+    whatever it is called. In `-p` mode an exported `ANTHROPIC_API_KEY` is
     always used when present (https://code.claude.com/docs/en/authentication),
-    so leaving it would bill that key's account instead of the login
-    the user chose (operator ruling on #1741, 2026-10-08). A user with
-    key-only auth then gets no background labels: the run fails and the
-    batch stays open.
+    so passing one would bill that key's account instead of the login the
+    user chose (operator ruling on #1741, 2026-10-08). A user whose only
+    login is an environment variable then gets no background labels: the
+    run fails with nothing spent, and the batch stays open.
 
-    It also drops the identity of the host session the hook ran in (its
-    session ID, effort, trace, and messaging socket and token), so the
-    child is its own session, as in the measured runs. A missing or `cli`
-    entrypoint becomes the headless `sdk-cli`, so if a hook fired in the
-    child anyway, aelfrice's headless check would skip it. Any other
-    entrypoint is kept: the host also uses a desktop label to choose how
-    it authenticates, so replacing it could break the run. For those, the
-    disabled hooks and settings are the only guard.
+    A missing or `cli` entrypoint becomes the headless `sdk-cli`, so if a
+    hook fired in the child anyway, aelfrice's headless check would skip
+    it. Any other entrypoint is kept: the host also uses a desktop label to
+    choose how it authenticates, so replacing it could break the run. For
+    those, the disabled hooks and settings are the only guard. CLAUDE.md
+    and auto memory are off.
     """
-    env = dict(base)
-    for name in (*RUNNER_DROPPED_ENV, *RUNNER_SESSION_ENV):
-        env.pop(name, None)
+    # Windows names variables without regard to case, and `os.environ`
+    # there reports them in upper case.
+    win32 = _is_win32()
+    allowed = RUNNER_ENV_ALLOWED | RUNNER_ENV_ALLOWED_WINDOWS if win32 else RUNNER_ENV_ALLOWED
+    env = {
+        name: value for name, value in base.items()
+        if (name.upper() if win32 else name) in allowed
+        or name == ENV_HOST_ENTRYPOINT
+    }
     if env.get(ENV_HOST_ENTRYPOINT) in RUNNER_REPLACED_ENTRYPOINTS:
         env[ENV_HOST_ENTRYPOINT] = RUNNER_ENTRYPOINT
     env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"

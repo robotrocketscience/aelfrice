@@ -347,11 +347,7 @@ def test_runner_env_is_its_own_session(entrypoint: str | None, expected: str) ->
     messaging channel to the child; leaving a missing or `cli` entrypoint
     for the headless check to miss; or replacing a desktop or IDE label,
     which also selects how the host authenticates."""
-    base = {name: "widget" for name in bg.RUNNER_SESSION_ENV} | {"PATH": "/x"}
-    if entrypoint is not None:
-        base["CLAUDE_CODE_ENTRYPOINT"] = entrypoint
-    env = bg.runner_env(base)
-    assert set(bg.RUNNER_SESSION_ENV) == {
+    session = {
         "CLAUDECODE", "CLAUDE_PID", "CLAUDE_CODE_SESSION_ID",
         "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ATTENDED",
         "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET",
@@ -359,10 +355,70 @@ def test_runner_env_is_its_own_session(entrypoint: str | None, expected: str) ->
         "CLAUDE_CODE_HOST_WORKTREE_FENCE", "CLAUDE_EFFORT", "AI_AGENT",
         "TRACEPARENT",
     }
-    assert not set(bg.RUNNER_SESSION_ENV) & set(env)
+    base = {name: "widget" for name in session} | {"PATH": "/x"}
+    if entrypoint is not None:
+        base["CLAUDE_CODE_ENTRYPOINT"] = entrypoint
+    env = bg.runner_env(base)
+    assert not session & set(env)
     assert env["CLAUDE_CODE_ENTRYPOINT"] == expected
     assert is_headless_hook_env(env) is (expected == "sdk-cli")
     assert env["PATH"] == "/x"
+
+
+PLANTED_ENV = (
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
+    "AWS_BEARER_TOKEN_BEDROCK", "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL", "GH_TOKEN", "GITHUB_TOKEN", "OPENAI_API_KEY",
+    "HTTPS_PROXY", "NODE_OPTIONS", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "LD_PRELOAD",
+    "DYLD_INSERT_LIBRARIES", "LC_SECRET_TOKEN", "LC_", "LC_ALL_TOKEN",
+    "PYTHONPATH", "AELFRICE_DB", "WIDGET_ANYTHING_ELSE",
+)
+
+
+@pytest.mark.parametrize("name", PLANTED_ENV)
+def test_runner_env_passes_no_planted_variable(name: str) -> None:
+    """Killed by: a denylist, which only stops the names it knows, or any
+    of these on the allowlist: a credential, a provider switch, an endpoint,
+    a model override, a proxy, a code injection, or a store path."""
+    assert name not in bg.runner_env({name: "widget", "PATH": "/x"})
+
+
+@pytest.mark.parametrize("name", [
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TZ", "LANG", "LANGUAGE",
+    "LC_ALL", "LC_ADDRESS", "LC_COLLATE", "LC_CTYPE", "LC_IDENTIFICATION", "LC_MEASUREMENT",
+    "LC_MESSAGES", "LC_MONETARY", "LC_NAME", "LC_NUMERIC", "LC_PAPER", "LC_RESPONSE",
+    "LC_TELEPHONE", "LC_TIME",
+    "TMPDIR", "TEMP", "TMP", "TERM", "COLORTERM", "NO_COLOR", "CLAUDE_CONFIG_DIR",
+])
+def test_runner_env_keeps_what_a_cli_needs_to_start(name: str) -> None:
+    """Killed by: dropping any one, which would stop the CLI starting, finding
+    its login, or decoding its own output."""
+    assert bg.runner_env({name: "/widget"})[name] == "/widget"
+
+
+def test_runner_env_holds_nothing_else() -> None:
+    """Killed by: adding a key the run didn't ask for. The two disables and
+    the entrypoint are all it sets."""
+    assert bg.runner_env({"PATH": "/x", "WIDGET": "y"}) == {
+        "PATH": "/x", "CLAUDE_CODE_ENTRYPOINT": "sdk-cli",
+        "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+    }
+
+
+@pytest.mark.parametrize("name", ["SYSTEMROOT", "SystemRoot", "PATHEXT", "COMSPEC", "USERPROFILE", "APPDATA", "Path"])
+def test_runner_env_on_windows_keeps_its_start_variables(
+    name: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: dropping what a Windows process needs to start (#1761), or
+    comparing names by case there. These stay out of a POSIX child."""
+    monkeypatch.setattr(bg, "_is_win32", lambda: True)
+    assert bg.runner_env({name: "C:\\widget"})[name] == "C:\\widget"
+    assert "OPENAI_API_KEY" not in bg.runner_env({"OPENAI_API_KEY": "widget"})
+    monkeypatch.setattr(bg, "_is_win32", lambda: False)
+    assert name not in bg.runner_env({name: "C:\\widget"})
 
 
 def test_a_spawn_failure_is_logged_even_when_stderr_is_closed(tmp_path: Path) -> None:
@@ -865,10 +921,10 @@ def test_label_batch_passes_the_given_env(db: Path) -> None:
     store, batch_id = _open_batch(db, ["w1"])
     run = FakeRun(stdout=_reply([(0, "A")]))
     try:
-        bg.label_batch(store, batch_id, claude=CLAUDE, run=run, env={"WIDGET_SENTINEL": "1"})
+        bg.label_batch(store, batch_id, claude=CLAUDE, run=run, env={"TERM": "widget"})
     finally:
         store.close()
-    assert run.calls[0]["env"]["WIDGET_SENTINEL"] == "1"
+    assert run.calls[0]["env"]["TERM"] == "widget"
 
 
 def test_label_batch_records_the_label_count_and_ignores_a_bool_cost(db: Path) -> None:
