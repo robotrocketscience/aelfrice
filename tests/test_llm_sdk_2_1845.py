@@ -973,3 +973,41 @@ def test_the_http_client_the_classifier_builds_is_closed(create: Any) -> None:
     llm.classify_batch(candidates, api_key=_KEY, sdk_module=sdk)
 
     assert sdk.closed == 1
+
+
+class _FailingBuildSdk(_ClosingSdk):
+    """A fake SDK whose HTTP client is built and whose client class then fails."""
+
+    def __init__(self, failure: BaseException | None, create: Any = None) -> None:
+        super().__init__(create)
+        self._failure = failure
+
+    def __getattr__(self, _name: str) -> Any:
+        def _client(**_kwargs: Any) -> Any:
+            if self._failure is not None:
+                raise self._failure
+            return SimpleNamespace(messages=SimpleNamespace(create=self._create))
+
+        return _client
+
+
+def _create_without_system(*, model: str, max_tokens: int, messages: Any) -> Any:
+    raise AssertionError("the bind check refuses the call first")
+
+
+@pytest.mark.parametrize(
+    ("sdk", "field"),
+    [
+        (_FailingBuildSdk(TypeError("no such keyword")), "sdk_mismatch_error"),
+        (_FailingBuildSdk(ValueError("bad proxy")), "warning"),
+        (_FailingBuildSdk(None, _create_without_system), "sdk_mismatch_error"),
+    ],
+    ids=["constructor-type-error", "constructor-config-error", "bind-mismatch"],
+)
+def test_the_http_client_is_closed_when_the_build_fails(sdk: _FailingBuildSdk, field: str) -> None:
+    candidates = [llm.CandidateInput(index=0, text="a sentence", source="doc:a.md:p1")]
+
+    result = llm.classify_batch(candidates, api_key=_KEY, sdk_module=sdk)
+
+    assert getattr(result, field) is not None
+    assert sdk.closed == 1

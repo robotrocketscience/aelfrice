@@ -986,71 +986,80 @@ def _call_anthropic(
 def _call_with_retries(
     sdk: Any, api_key: str, call_args: dict[str, Any],
 ) -> ClientResponse:
-    """Build the client, then make up to `_MAX_ATTEMPTS` attempts."""
+    """Build the client, then make up to `_MAX_ATTEMPTS` attempts.
+
+    The HTTP client built here is closed on every exit, a failed build included.
+    """
     # Each response's status, from a hook on the SDK's public HTTP client. A
     # response arriving is what proves a raw exception came after a send.
     arrivals: list[int] = []
     http_client: Any = None
     try:
-        http_factory = getattr(sdk, "DefaultHttpxClient", None)
-        client_args: dict[str, Any] = {
-            "api_key": api_key,
-            "timeout": _REQUEST_TIMEOUT_SECONDS,
-            "max_retries": 0,
-        }
-        if http_factory is not None:
+        try:
+            http_factory = getattr(sdk, "DefaultHttpxClient", None)
+            client_args: dict[str, Any] = {
+                "api_key": api_key,
+                "timeout": _REQUEST_TIMEOUT_SECONDS,
+                "max_retries": 0,
+            }
+            if http_factory is not None:
 
-            def _record_arrival(response: Any) -> None:
-                arrivals.append(int(response.status_code))
+                def _record_arrival(response: Any) -> None:
+                    arrivals.append(int(response.status_code))
 
-            http_client = http_factory(event_hooks={"response": [_record_arrival]})
-            client_args["http_client"] = http_client
-        client = sdk.Anthropic(**client_args)
-        create = client.messages.create
-        inspect.signature(create).bind(**call_args)
-    except (TypeError, AttributeError) as exc:
-        detail = _safe_detail(str(exc), api_key)
-        raise LLMSDKMismatchError(f"{type(exc).__name__}: {detail}") from exc
-    except Exception as exc:  # noqa: BLE001 - proxy, URL, and cert config vary
-        raise LLMTransientError(
-            str(exc), warning=_did_not_run(type(exc).__name__),
-        ) from exc
-
-    sent = 0
-    try:
-        for attempt in range(_MAX_ATTEMPTS):
-            arrived_before = len(arrivals)
-            try:
-                resp = create(**call_args)
-            except Exception as exc:  # noqa: BLE001 - SDK exception classes vary
-                if _is_auth_error(exc):
-                    raise LLMAuthError(_auth_failure_text(exc)) from exc
-                fault = _fault_from_call(exc, arrived=len(arrivals) > arrived_before)
-                sent += int(fault.request_sent)
-                wait = _retry_wait(exc, fault, attempt)
-                if wait is None:
-                    fault.requests = sent
-                    raise fault from exc
-                _wait_before_retry(wait)
-                continue
-            sent += 1
-            try:
-                text = _extract_text_from_response(resp)
-                input_tokens, output_tokens = _extract_usage(resp)
-            except LLMTransientError as fault:
-                fault.requests = sent
-                raise
-            return ClientResponse(
-                text=text,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                requests=sent,
-            )
-        raise AssertionError("unreachable: the last attempt returns or raises")
+                http_client = http_factory(event_hooks={"response": [_record_arrival]})
+                client_args["http_client"] = http_client
+            client = sdk.Anthropic(**client_args)
+            create = client.messages.create
+            inspect.signature(create).bind(**call_args)
+        except (TypeError, AttributeError) as exc:
+            detail = _safe_detail(str(exc), api_key)
+            raise LLMSDKMismatchError(f"{type(exc).__name__}: {detail}") from exc
+        except Exception as exc:  # noqa: BLE001 - proxy, URL, and cert config vary
+            raise LLMTransientError(
+                str(exc), warning=_did_not_run(type(exc).__name__),
+            ) from exc
+        return _attempts(create, call_args, arrivals)
     finally:
         close = getattr(http_client, "close", None)
         if callable(close):
             close()
+
+
+def _attempts(
+    create: Any, call_args: dict[str, Any], arrivals: list[int],
+) -> ClientResponse:
+    """Make up to `_MAX_ATTEMPTS` attempts, counting each one that sent."""
+    sent = 0
+    for attempt in range(_MAX_ATTEMPTS):
+        arrived_before = len(arrivals)
+        try:
+            resp = create(**call_args)
+        except Exception as exc:  # noqa: BLE001 - SDK exception classes vary
+            if _is_auth_error(exc):
+                raise LLMAuthError(_auth_failure_text(exc)) from exc
+            fault = _fault_from_call(exc, arrived=len(arrivals) > arrived_before)
+            sent += int(fault.request_sent)
+            wait = _retry_wait(exc, fault, attempt)
+            if wait is None:
+                fault.requests = sent
+                raise fault from exc
+            _wait_before_retry(wait)
+            continue
+        sent += 1
+        try:
+            text = _extract_text_from_response(resp)
+            input_tokens, output_tokens = _extract_usage(resp)
+        except LLMTransientError as fault:
+            fault.requests = sent
+            raise
+        return ClientResponse(
+            text=text,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            requests=sent,
+        )
+    raise AssertionError("unreachable: the last attempt returns or raises")
 
 
 def _retry_wait(
