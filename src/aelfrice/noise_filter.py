@@ -524,33 +524,27 @@ _RELAY_TAG_RE: Final[re.Pattern[str]] = re.compile(_RELAY_TAG, re.IGNORECASE)
 _RELAY_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"<(" + _RELAY_TAG_ALT + r")\b", re.IGNORECASE,
 )
-# One attribute as `_RELAY_TAG` reads it: a name, then an optional value that
-# is double-quoted, single-quoted, or bare. Read in order from the tag name, so
-# a name inside a quoted value is never taken for an attribute.
-_TAG_ATTRIBUTE_RE: Final[re.Pattern[str]] = re.compile(
-    r"[^\S\n\r]+([^\s=>/\"'<]+)(=(?:\"[^\"\n\r]*\"|'[^'\n\r]*'|[^\s>/\"'<]*))?"
+# The tag as the host writes it, a narrower form of `_RELAY_TAG`: one ASCII
+# space before each attribute, each value double-quoted and not empty, and `>`
+# right after the last one. All 232 stored relay openers have this form (#1877).
+_HOST_TAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"<(" + _RELAY_TAG_ALT + r")((?: [A-Za-z0-9_-]+=\"[^\"\n\r]+\")+)>",
+    re.IGNORECASE,
 )
+_HOST_ATTRIBUTE_RE: Final[re.Pattern[str]] = re.compile(r' ([A-Za-z0-9_-]+)="')
 
 
 def _host_shaped(tag: str) -> bool:
-    """True when the relay tag `tag` carries every attribute the host writes.
+    """True when `tag` is a relay tag in the host's form with its attributes.
 
-    Attributes are read one after another from the end of the tag name, the
-    way `_RELAY_TAG` reads them, and only a name with a value counts.
+    `tag` is the tag alone. A value can't hold `"`, so every name the
+    attribute pattern finds is an attribute's own.
     """
-    name = _RELAY_NAME_RE.search(tag)
-    if name is None:
+    host = _HOST_TAG_RE.fullmatch(tag)
+    if host is None:
         return False
-    names: set[str] = set()
-    pos = name.end()
-    for _ in range(len(tag)):
-        attr = _TAG_ATTRIBUTE_RE.match(tag, pos)
-        if attr is None:
-            break
-        if attr.group(2):
-            names.add(attr.group(1).lower())
-        pos = attr.end()
-    return HOST_RELAY_ATTRIBUTES[name.group(1).lower()] <= names
+    names = {n.lower() for n in _HOST_ATTRIBUTE_RE.findall(host.group(2))}
+    return HOST_RELAY_ATTRIBUTES[host.group(1).lower()] <= names
 
 
 def relay_row_shape(text: str) -> str | None:
@@ -558,7 +552,8 @@ def relay_row_shape(text: str) -> str | None:
 
     A stored row is one sentence and keeps no line breaks. `opener` is a row
     that holds a relay opening tag as `cut_relay` reads one and nothing else,
-    with the attributes in `HOST_RELAY_ATTRIBUTES`: the sentence splitter gives
+    in the host's form with the attributes in `HOST_RELAY_ATTRIBUTES`
+    (`_HOST_TAG_RE`): the sentence splitter gives
     a tag on its own line a sentence of its own. `notice` is a row that opens
     with one of the host's cross-session notices, by the fixed words
     `cut_relay` reads, and holds no word after its template's last fixed word.
@@ -567,9 +562,10 @@ def relay_row_shape(text: str) -> str | None:
     record, so the caller has to.
     """
     opener = _RELAY_OPENER_RE.match(text)
+    tag = _RELAY_TAG_RE.search(opener.group(0)) if opener is not None else None
     if (
-        opener is not None and not text[opener.end():].strip()
-        and _host_shaped(opener.group(0))
+        opener is not None and tag is not None
+        and not text[opener.end():].strip() and _host_shaped(tag.group(0))
     ):
         return RELAY_ROW_OPENER
     if _NOTICE_TEMPLATE_LINE_RE.match(text):
@@ -577,12 +573,17 @@ def relay_row_shape(text: str) -> str | None:
     return None
 
 
+# Where the notice patterns end a line: LF, CRLF, or a lone CR.
+_LINE_BREAK_RE: Final[re.Pattern[str]] = re.compile(r"\r\n|\n|\r")
+
+
 def relay_cut_is_host_shaped(cut: str) -> bool:
     """True when every relay tag and notice line in `cut` is the host's (#1877).
 
     `cut` is the part `cut_relay` takes from a record. Every relay tag in it,
-    opener or not, has to carry the attributes in `HOST_RELAY_ATTRIBUTES`, and
-    every notice line has to end at its template's last fixed word.
+    opener or not, has to be in the host's form with the attributes in
+    `HOST_RELAY_ATTRIBUTES`, and every notice line, ended by LF, CRLF, or CR,
+    has to end at its template's last fixed word.
     """
     for m in _RELAY_NAME_RE.finditer(cut):
         tag = _RELAY_TAG_RE.match(cut, m.start())
@@ -590,7 +591,7 @@ def relay_cut_is_host_shaped(cut: str) -> bool:
             return False
     return not any(
         _CROSS_SESSION_NOTICE_RE.match(line) and not _NOTICE_TEMPLATE_LINE_RE.match(line)
-        for line in cut.split("\n")
+        for line in _LINE_BREAK_RE.split(cut)
     )
 
 
