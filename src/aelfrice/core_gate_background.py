@@ -56,6 +56,7 @@ import json
 import ntpath
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -366,15 +367,23 @@ def _taskkill_path() -> str:
 
 
 def _kill_tree(proc: "subprocess.Popen[str]") -> None:
-    """End `proc` and, on Windows, every process it started. Never raises.
+    """End `proc` and every process it started. Never raises.
 
     An npm `claude.cmd` runs as cmd.exe, which starts node.exe and waits
     on it, and node.exe holds the run's pipes. `Popen.kill` ends cmd.exe
     only, so on Windows `taskkill /F /T` ends the tree first, while
-    cmd.exe is alive to link it. `Popen.kill` follows either way, so a
-    `taskkill` that fails or is missing still ends the direct child.
+    cmd.exe is alive to link it. On POSIX a wrapper script's children are
+    in the group `run_bounded` started `proc` in, so a kill of the group
+    ends them. `Popen.kill` follows either way, so a `taskkill` that fails
+    or is missing still ends the direct child.
     """
-    if _is_win32():
+    if not _is_win32():
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            # The group is gone.
+            pass
+    else:
         try:
             subprocess.run(  # noqa: S603 - a fixed System32 path and a pid
                 [_taskkill_path(), "/F", "/T", "/PID", str(proc.pid)],
@@ -390,6 +399,100 @@ def _kill_tree(proc: "subprocess.Popen[str]") -> None:
     except OSError:
         # Already exited.
         pass
+
+
+def _end_group(proc: "subprocess.Popen[str]") -> None:
+    """On POSIX, kill what is left of the group `run_bounded` started `proc` in. Never raises.
+
+    A wrapper that starts the CLI in the background and exits leaves it
+    running with no timeout. Windows has no group here, and `taskkill /T`
+    can't link a child to a parent that has exited, so nothing ends it there.
+    """
+    if _is_win32():
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        # The group is empty, the usual case.
+        pass
+
+
+#: Signals whose default ends a process and that aren't faults, by name. On
+#: Linux SIGIO and the others below end a process; on macOS SIGIO is ignored.
+_ENDING_SIGNAL_NAMES: Final[tuple[str, ...]] = (
+    "SIGTERM", "SIGHUP", "SIGINT", "SIGQUIT", "SIGUSR1", "SIGUSR2", "SIGALRM",
+    "SIGXCPU", "SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGEMT",
+)
+_ENDING_SIGNAL_NAMES_LINUX: Final[tuple[str, ...]] = (
+    "SIGIO", "SIGPOLL", "SIGPWR", "SIGSTKFLT", "SIGLOST",
+)
+
+
+def ending_signals() -> frozenset[int]:
+    """The signals `run_bounded` turns into an exit that ends the run first.
+
+    Every signal whose default ends a process on this platform, Linux's
+    real-time signals included, except SIGKILL and SIGSTOP, which can't be
+    caught, and the fault signals (SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV,
+    SIGSYS, SIGTRAP), which keep their default and leave the run going.
+    """
+    names = _ENDING_SIGNAL_NAMES + (_ENDING_SIGNAL_NAMES_LINUX if sys.platform.startswith("linux") else ())
+    found = {int(getattr(signal, name)) for name in names if hasattr(signal, name)}
+    rt_min, rt_max = getattr(signal, "SIGRTMIN", None), getattr(signal, "SIGRTMAX", None)
+    if rt_min is not None and rt_max is not None:
+        found |= set(range(int(rt_min), int(rt_max) + 1))
+    return frozenset(found)
+
+
+def _stops_the_caller(signum: int) -> BaseException:
+    """What a held or armed signal raises: Ctrl-C keeps its own exception."""
+    if signum == signal.SIGINT:
+        return KeyboardInterrupt()
+    return SystemExit(128 + signum)
+
+
+@contextmanager
+def _signals_end_the_run() -> Generator[Callable[[], None]]:
+    """For the block, an `ending_signals` signal raises once armed.
+
+    SIGINT raises `KeyboardInterrupt`, the rest `SystemExit(128 + signum)`.
+    Before the caller calls the yielded `arm`, a signal is held, so one that
+    lands inside `Popen`, before there is a process to kill, isn't lost:
+    `arm` raises it. A held signal the block never armed for, because `Popen`
+    failed, is sent again once the old handlers are back. Only on the main
+    thread, the one Python delivers signals to, and only for a signal whose
+    handler is still Python's own default, so a handler the program set,
+    such as pytest-timeout's SIGALRM, stays, and so does one Python ignores.
+    """
+    held: list[int] = []
+    armed = [False]
+
+    def handle(signum: int, _frame: object) -> None:
+        if armed[0]:
+            raise _stops_the_caller(signum)
+        held.append(signum)
+
+    def arm() -> None:
+        armed[0] = True
+        if held:
+            raise _stops_the_caller(held[0])
+
+    saved: dict[int, Any] = {}
+    if threading.current_thread() is threading.main_thread():
+        for num in sorted(ending_signals()):
+            try:
+                current = signal.getsignal(num)
+            except (OSError, ValueError):
+                continue
+            if current is signal.SIG_DFL or current is signal.default_int_handler:
+                saved[num] = signal.signal(num, handle)
+    try:
+        yield arm
+    finally:
+        for num, handler in saved.items():
+            signal.signal(num, handler)
+        if held and not armed[0]:
+            os.kill(os.getpid(), held[0])
 
 
 def _feed_stdin(stdin: IO[str] | None, data: str) -> None:
@@ -424,7 +527,8 @@ def run_bounded(
     then `communicate()` with no timeout, in CPython 3.12-3.14). Through
     an npm `claude.cmd` the direct child is cmd.exe and node.exe holds the
     pipes, so that wait lasts as long as the hung run. Here a timeout ends
-    the process tree (`_kill_tree`), waits at most
+    the process tree (`_kill_tree`, which needs the run in a process group
+    of its own on POSIX), waits at most
     `RUNNER_KILL_WAIT_SECONDS` for the pipes, and raises `TimeoutExpired`
     whether or not they closed. The call returns or raises within
     `timeout` plus twice `RUNNER_KILL_WAIT_SECONDS`.
@@ -435,29 +539,38 @@ def run_bounded(
     that never reads a prompt larger than the pipe's buffer would block
     that write, and the call, with no limit. The kill on a timeout breaks
     the pipe, which ends the thread's write.
+
+    On POSIX the run's group is killed when the call returns too, and a
+    signal in `ending_signals` to this process, even one that lands inside
+    `Popen`, raises after the group is killed.
     """
     if capture_output:
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
-    proc: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603
-        argv, stdin=subprocess.PIPE, **kwargs,
-    )
-    try:
-        stdin, proc.stdin = proc.stdin, None
-        threading.Thread(target=_feed_stdin, args=(stdin, input), daemon=True).start()
-        out, err = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_tree(proc)
+    if not _is_win32():
+        kwargs["start_new_session"] = True
+    with _signals_end_the_run() as arm:
+        proc: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603
+            argv, stdin=subprocess.PIPE, **kwargs,
+        )
         try:
-            proc.communicate(timeout=RUNNER_KILL_WAIT_SECONDS)
+            arm()
+            stdin, proc.stdin = proc.stdin, None
+            threading.Thread(target=_feed_stdin, args=(stdin, input), daemon=True).start()
+            out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            # A process the kill didn't reach still holds the pipes. The
-            # bound matters more than the output of a run that failed.
-            pass
-        raise
-    except BaseException:
-        _kill_tree(proc)
-        raise
+            _kill_tree(proc)
+            try:
+                proc.communicate(timeout=RUNNER_KILL_WAIT_SECONDS)
+            except subprocess.TimeoutExpired:
+                # A process the kill didn't reach still holds the pipes. The
+                # bound matters more than the output of a run that failed.
+                pass
+            raise
+        except BaseException:
+            _kill_tree(proc)
+            raise
+        _end_group(proc)
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 

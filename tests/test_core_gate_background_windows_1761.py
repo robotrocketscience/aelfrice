@@ -489,6 +489,8 @@ def test_a_run_that_never_reads_its_prompt_still_times_out(
     reads blocks the call past `timeout` until the pipe breaks."""
     monkeypatch.setattr(bg, "_is_win32", lambda: False)
     monkeypatch.setattr(subprocess, "Popen", UnreadStdinPopen)
+    # The fake's pid is made up, and a real group may hold that number.
+    monkeypatch.setattr(bg.os, "killpg", lambda _pid, _sig: None, raising=False)
     started = time.monotonic()
     with pytest.raises(subprocess.TimeoutExpired):
         bg.run_bounded(["widget-cli"], input="w" * 65536, timeout=0.2)

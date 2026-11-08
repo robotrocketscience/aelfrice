@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import signal
 import sqlite3
 import stat
 import time
@@ -419,6 +420,160 @@ def test_runner_env_on_windows_keeps_its_start_variables(
     assert "OPENAI_API_KEY" not in bg.runner_env({"OPENAI_API_KEY": "widget"})
     monkeypatch.setattr(bg, "_is_win32", lambda: False)
     assert name not in bg.runner_env({name: "C:\\widget"})
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups; #1761 covers taskkill")
+def test_a_timeout_ends_a_wrapper_scripts_children(tmp_path: Path) -> None:
+    """Killed by: killing only the direct child, which leaves the real CLI
+    behind a wrapper script alive, spending, and holding the pipes."""
+    pidfile = tmp_path / "pid"
+    wrapper = tmp_path / "wrapper"
+    wrapper.write_text(f'#!/bin/sh\nsleep 60 &\necho $! > "{pidfile}"\nwait\n', encoding="utf-8")
+    wrapper.chmod(0o700)
+    # Long enough for the wrapper to start its child under load; at 1 s it
+    # sometimes hadn't written the pid when the kill came.
+    with pytest.raises(subprocess.TimeoutExpired):
+        bg.run_bounded([str(wrapper)], input="", timeout=8.0, text=True, encoding="utf-8")
+    grandchild = int(pidfile.read_text(encoding="utf-8"))
+    for _ in range(200):
+        try:
+            os.kill(grandchild, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    raise AssertionError("the wrapper's child outlived the timeout")
+
+
+def _gone(pid: int) -> bool:
+    for _ in range(200):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_a_wrapper_that_backgrounds_the_cli_and_exits_leaves_nothing_running(tmp_path: Path) -> None:
+    """rc 0 left the backgrounded CLI alive with no timeout in the review.
+    Killed by: killing the group only on a timeout or an exception."""
+    pidfile = tmp_path / "pid"
+    wrapper = tmp_path / "wrapper"
+    wrapper.write_text(f'#!/bin/sh\nsleep 60 > /dev/null 2>&1 &\necho $! > "{pidfile}"\nexit 0\n',
+                       encoding="utf-8")
+    wrapper.chmod(0o700)
+    done = bg.run_bounded([str(wrapper)], input="", timeout=30.0, text=True, encoding="utf-8")
+    assert done.returncode == 0
+    assert _gone(int(pidfile.read_text(encoding="utf-8"))), "the backgrounded child outlived the run"
+
+
+SIGNAL_INSIDE_POPEN = '''
+import os, signal, subprocess, sys
+import aelfrice.core_gate_background as bg
+real = subprocess.Popen
+def popen(*a, **kw):
+    proc = real(*a, **kw)
+    print("pid", proc.pid, flush=True)
+    os.kill(os.getpid(), getattr(signal, sys.argv[2]))  # lands before run_bounded has the process
+    return proc
+subprocess.Popen = popen
+try:
+    bg.run_bounded([sys.argv[1]], input="", timeout=30.0, text=True, encoding="utf-8")
+except SystemExit as exc:
+    print("exit", exc.code)
+except KeyboardInterrupt:
+    print("exit interrupted")
+'''
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+@pytest.mark.parametrize("name", [
+    name for name in (*bg._ENDING_SIGNAL_NAMES, *bg._ENDING_SIGNAL_NAMES_LINUX)  # pyright: ignore[reportPrivateUsage]
+    if hasattr(signal, name) and getattr(signal, name) in bg.ending_signals() and name != "SIGXFSZ"
+])
+def test_an_ending_signal_even_inside_popen_ends_the_run_first(tmp_path: Path, name: str) -> None:
+    """In its own process, since the signal goes to the caller. Killed by: a
+    handler installed after `Popen` returns, a signal left at its default, or
+    no kill of the group before the exit."""
+    wrapper = tmp_path / "wrapper"
+    wrapper.write_text("#!/bin/sh\nexec sleep 60\n", encoding="utf-8")
+    wrapper.chmod(0o700)
+    done = subprocess.run(  # noqa: S603 - this interpreter on a script above
+        [sys.executable, "-c", SIGNAL_INSIDE_POPEN, str(wrapper), name],
+        capture_output=True, text=True, encoding="utf-8", timeout=50, check=False,
+    )
+    pid_line, exit_line = done.stdout.strip().splitlines()
+    want = "exit interrupted" if name == "SIGINT" else f"exit {128 + getattr(signal, name)}"
+    assert exit_line == want, done.stderr[-400:]
+    assert _gone(int(pid_line.split()[1]))
+
+
+SIGNAL_THEN_POPEN_FAILS = '''
+import os, signal, subprocess, sys
+import aelfrice.core_gate_background as bg
+def popen(*a, **kw):
+    os.kill(os.getpid(), signal.SIGTERM)
+    raise OSError("widget")
+subprocess.Popen = popen
+try:
+    bg.run_bounded(["widget"], input="", timeout=5.0, text=True, encoding="utf-8")
+except OSError:
+    print("the signal was lost", flush=True)
+'''
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_a_signal_held_while_popen_failed_still_ends_the_process() -> None:
+    """Killed by: dropping a held signal when there was never a run to kill."""
+    done = subprocess.run(  # noqa: S603 - this interpreter on the script above
+        [sys.executable, "-c", SIGNAL_THEN_POPEN_FAILS],
+        capture_output=True, text=True, encoding="utf-8", timeout=50, check=False,
+    )
+    assert done.returncode == -signal.SIGTERM, (done.returncode, done.stdout, done.stderr[-300:])
+    assert "lost" not in done.stdout
+
+
+def test_a_handler_the_program_set_stays(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pytest-timeout sets SIGALRM. Killed by: replacing a handler that isn't the default."""
+    seen: list[int] = []
+    previous = signal.signal(signal.SIGUSR2, lambda signum, _frame: seen.append(signum))
+    try:
+        with bg._signals_end_the_run() as arm:  # pyright: ignore[reportPrivateUsage]
+            arm()
+            os.kill(os.getpid(), signal.SIGUSR2)
+            for _ in range(100):
+                if seen:
+                    break
+                time.sleep(0.01)
+        assert seen == [signal.SIGUSR2]
+    finally:
+        signal.signal(signal.SIGUSR2, previous)
+
+
+#: Default actions that don't end a process, signals Python ignores or
+#: handles itself, and the ones `ending_signals` leaves out on purpose.
+NOT_ENDING = {
+    "SIGCHLD", "SIGCLD", "SIGCONT", "SIGURG", "SIGWINCH", "SIGINFO", "SIGTSTP", "SIGTTIN",
+    "SIGTTOU", "SIGSTOP", "SIGKILL", "SIGPIPE", "SIGABRT", "SIGIOT", "SIGBUS", "SIGFPE",
+    "SIGILL", "SIGSEGV", "SIGSYS", "SIGTRAP",
+    *(() if sys.platform.startswith("linux") else ("SIGIO", "SIGPOLL")),
+}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_every_signal_that_ends_a_process_is_covered() -> None:
+    """SIGEMT ended the harness and left the runner alive in the review.
+    Killed by: any signal of this platform that ends a process by default
+    and is neither in `ending_signals` nor named above."""
+    named = {int(getattr(signal, n)) for n in NOT_ENDING if hasattr(signal, n)}
+    missing = set(signal.valid_signals()) - named - set(bg.ending_signals())
+    assert not missing, sorted(signal.Signals(n).name if n in signal.Signals._value2member_map_ else n for n in missing)
+    assert not named & bg.ending_signals()
 
 
 def test_a_spawn_failure_is_logged_even_when_stderr_is_closed(tmp_path: Path) -> None:
