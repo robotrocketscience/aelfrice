@@ -37,7 +37,10 @@ and `--seed`, apart from what the runner replies.
   the ledger holds fewer than `--max-calls` calls. Its `started` row reserves its
   cap before the runner starts. A cost that isn't a finite number of at least
   0 charges the cap. Repeating the command with the same `--out` resumes: a
-  request already run isn't run again. A run the harness died inside counts
+  request already run isn't run again, so raising `--max-calls` continues a
+  replay that stopped on it. When the resume runs anything, it moves the
+  earlier `run/` to `run-1` (then `run-2`, and so on) before it builds the new
+  one, and when it runs nothing it leaves `run/` as it was. A run the harness died inside counts
   at `RUN_RESERVE_USD`, the most the ceiling allows a run, since nothing shows
   what it spent, and isn't run again either.
 
@@ -1496,8 +1499,6 @@ def _replay(args: argparse.Namespace) -> None:
     runner = shutil.which(args.runner)
     if runner is None:
         raise InputError(f"no runner at {args.runner}")
-    if (args.out / RUN_DIR).exists():
-        raise InputError(f"{args.out / RUN_DIR} exists; use a new --out, or `run` on the saved replies")
     for src in args.store:
         if not src.is_file():
             raise InputError(f"no store at {src}")
@@ -1530,6 +1531,16 @@ def _replay(args: argparse.Namespace) -> None:
     if not answered:
         _print({**summary, "note": "no request ran, so there is nothing to grade"})
         return
+    run_dir = args.out / RUN_DIR
+    if run_dir.exists():
+        if ran == 0:
+            _print({**summary, "note": f"nothing new ran, so {run_dir} stays as it was"})
+            return
+        # A grader may already hold the earlier packets, so they keep their folder.
+        moved = next(args.out / f"{RUN_DIR}-{k}" for k in range(1, 10_000)
+                     if not (args.out / f"{RUN_DIR}-{k}").exists())
+        run_dir.rename(moved)
+        summary["earlier_run_moved_to"] = str(moved)
     admitted = args.out / ADMITTED_FILE
     if admitted.exists():
         admitted.unlink()

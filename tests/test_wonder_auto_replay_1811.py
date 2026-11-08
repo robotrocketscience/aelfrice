@@ -2187,6 +2187,37 @@ def test_a_dead_run_is_closed_at_the_reserve_and_an_open_one_counts_at_it(tmp_pa
     assert rp.total_spend() == pytest.approx(rp.RUN_RESERVE_USD)
 
 
+@pytest.mark.timeout(120)
+def test_a_replay_stopped_on_the_call_cap_resumes_with_the_same_out(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], fake_runner: Path,
+) -> None:
+    """The operator's run: after a stop on `--max-calls`, the next replay with
+    the same `--out` refused because `run/` existed. Killed by: refusing an
+    existing `run/`, rebuilding it when nothing new ran, or overwriting the
+    run a grader may already hold."""
+    store = _many_sessions(tmp_path, 3)
+    _configure(fake_runner, cost=0.01)
+    code, text = _replay(tmp_path, capsys, fake_runner, [store], "--sessions", "3", "--max-calls", "1")
+    assert code == 0, text
+    assert json.loads(text)["ran_now"] == 1
+    out = tmp_path / "scratch" / "replay" / "one"
+    first = (out / rp.RUN_DIR / rp.KEY_FILE).read_bytes()
+    code, text = _replay(tmp_path, capsys, fake_runner, [store], "--sessions", "3", "--max-calls", "3")
+    assert code == 0, text
+    summary = json.loads(text)
+    assert summary["ran_now"] == 2
+    assert summary["earlier_run_moved_to"] == str(out / f"{rp.RUN_DIR}-1")
+    assert (out / f"{rp.RUN_DIR}-1" / rp.KEY_FILE).read_bytes() == first
+    assert (out / rp.RUN_DIR / rp.KEY_FILE).read_bytes() != first
+    now = (out / rp.RUN_DIR / rp.KEY_FILE).read_bytes()
+    code, text = _replay(tmp_path, capsys, fake_runner, [store], "--sessions", "3", "--max-calls", "3")
+    assert code == 0, text
+    assert json.loads(text)["ran_now"] == 0
+    assert (out / rp.RUN_DIR / rp.KEY_FILE).read_bytes() == now
+    assert not (out / f"{rp.RUN_DIR}-2").exists()
+    assert len(_calls(fake_runner)) == 3
+
+
 def test_a_late_row_for_a_call_can_only_raise_its_charge() -> None:
     """A resume closes a dead call at the cap, and a reply the dead harness
     wrote can close it again. Killed by: the last row winning."""
