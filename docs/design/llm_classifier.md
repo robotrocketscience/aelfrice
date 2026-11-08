@@ -524,12 +524,16 @@ clear marker that LLM classification didn't run.
   classifier tries up to 3 times, so the server sees up to 3 requests, and then
   the run falls back. The SDK's own retries are off, because SDK 2.x waits as
   long as `Retry-After` asks, a day included. The classifier reads
-  `retry-after-ms`, then `Retry-After` as seconds or as a date, and waits at
-  most 60 seconds before each retry. With neither header, it waits 0.5 seconds,
-  then 1 second. A wait longer than 1 second prints one line on stderr, such as
-  `aelf: the classifier is waiting 60 s before it tries the request again, the
-  longest aelfrice waits`. A response with `x-should-retry: false` isn't
-  retried, and one with `x-should-retry: true` is.
+  `retry-after-ms`, then `Retry-After` as seconds or as a date. It obeys a wait
+  of up to 60 seconds. For no header, a longer wait, or one that isn't positive,
+  it waits 0.5 seconds, then 1 second, as SDK 0.97.0 did before jitter. So a
+  `Retry-After: 120` gets a retry after 0.5 seconds. A wait longer than 1 second
+  prints one line on stderr, such as `aelf: the classifier is waiting 60.0 s
+  before it tries the request again`.
+- `x-should-retry`, as SDK 2.6.0 reads it: `false` stops the retries for any
+  status, and `true` retries any status, a 400, 404, 413, or 422 included. A
+  401 or 403 stops the run before the header is read. The header has no effect
+  on a fault without a status, such as a config error or an unusable response.
 - Request timeout: 30 seconds for each connect, read, write, and pool wait of an
   attempt. A hung server sees 3 requests, and the run takes more than 90
   seconds before it falls back. Nothing bounds a whole attempt: the read
