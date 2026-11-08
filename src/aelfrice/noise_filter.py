@@ -524,16 +524,33 @@ _RELAY_TAG_RE: Final[re.Pattern[str]] = re.compile(_RELAY_TAG, re.IGNORECASE)
 _RELAY_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"<(" + _RELAY_TAG_ALT + r")\b", re.IGNORECASE,
 )
-_TAG_ATTRIBUTE_RE: Final[re.Pattern[str]] = re.compile(r"[^\S\n\r]+([^\s=>/\"'<]+)=")
+# One attribute as `_RELAY_TAG` reads it: a name, then an optional value that
+# is double-quoted, single-quoted, or bare. Read in order from the tag name, so
+# a name inside a quoted value is never taken for an attribute.
+_TAG_ATTRIBUTE_RE: Final[re.Pattern[str]] = re.compile(
+    r"[^\S\n\r]+([^\s=>/\"'<]+)(=(?:\"[^\"\n\r]*\"|'[^'\n\r]*'|[^\s>/\"'<]*))?"
+)
 
 
 def _host_shaped(tag: str) -> bool:
-    """True when the relay tag `tag` carries every attribute the host writes."""
+    """True when the relay tag `tag` carries every attribute the host writes.
+
+    Attributes are read one after another from the end of the tag name, the
+    way `_RELAY_TAG` reads them, and only a name with a value counts.
+    """
     name = _RELAY_NAME_RE.search(tag)
     if name is None:
         return False
-    need = HOST_RELAY_ATTRIBUTES[name.group(1).lower()]
-    return need <= {n.lower() for n in _TAG_ATTRIBUTE_RE.findall(tag)}
+    names: set[str] = set()
+    pos = name.end()
+    for _ in range(len(tag)):
+        attr = _TAG_ATTRIBUTE_RE.match(tag, pos)
+        if attr is None:
+            break
+        if attr.group(2):
+            names.add(attr.group(1).lower())
+        pos = attr.end()
+    return HOST_RELAY_ATTRIBUTES[name.group(1).lower()] <= names
 
 
 def relay_row_shape(text: str) -> str | None:
