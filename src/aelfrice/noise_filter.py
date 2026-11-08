@@ -313,8 +313,10 @@ HOST_MARKER_LINE_RE: Final[re.Pattern[str]] = re.compile(
 
 # Relay text from other agents: a teammate's brief, a background agent's report,
 # and another session's message. The host writes each as a user record. See
-# `cut_relay` for when one counts.
-_RELAY_TAG_ALT: Final[str] = "teammate-message|agent-message|cross-session-message"
+# `cut_relay` for when one counts. Names match by ASCII case only: a case-blind
+# match also takes the long s (U+017F) for `s`, and a name spelled that way
+# doesn't compare equal to its closer's.
+_RELAY_TAG_ALT: Final[str] = "(?a:teammate-message|agent-message|cross-session-message)"
 # The tag name ends at whitespace or `>`. Attributes stay on the tag's line, and
 # a `>` inside a quoted value doesn't end the tag. The repeat is possessive, so
 # it can't back up: a long run of attributes with no `>` costs one pass.
@@ -422,8 +424,8 @@ def cut_relay(text: str) -> str:
 
     The host writes relay text from other agents, and its own cross-session
     notices, as a user record. A tag named `teammate-message`, `agent-message`,
-    or `cross-session-message`, in any case, counts only at the start of the
-    record, after optional whitespace or a byte order mark, and only as an
+    or `cross-session-message`, in any ASCII case, counts only at the start of
+    the record, after optional whitespace or a byte order mark, and only as an
     opening tag with nothing else on its line.
 
     - A closed block runs from that opener through the first closer of its tag

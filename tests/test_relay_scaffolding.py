@@ -106,6 +106,13 @@ def test_every_relay_tag_counts_in_any_case(tag: str, case: object) -> None:
     assert cut_relay(f"<{name}>\n{BODY}\n</{name}>\n{MINE}") == MINE
 
 
+@pytest.mark.parametrize("name", ["agent-me\u017f\u017fage", "agent-messa\u212ae"])
+def test_a_tag_name_with_a_non_ascii_letter_is_not_an_opener(name: str) -> None:
+    text = f"<{name}>\n{BODY}\n</agent-message>\n{MINE}"
+    assert cut_relay(text) == text
+    assert MINE in (_user_speech(text) or "")
+
+
 def test_a_block_with_crlf_line_endings_is_cut() -> None:
     text = "\r\n".join(["<agent-message>", BODY, "</agent-message>", MINE])
     assert cut_relay(text) == MINE
