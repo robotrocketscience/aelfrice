@@ -569,6 +569,8 @@ _FEEDBACK_WRITERS: dict[tuple[str, str], tuple[str, ...]] = {
         "audit: promotion:revert_evidence, 0",
     ),
     ("promotion.py", "unlock"): ("audit: lock:unlock, 0",),
+    ("relay_rows.py", "restore_relay_rows"): ("person: user_restored",),
+    ("relay_rows.py", "retire_relay_rows"): ("audit: relay_rows:retire, 0",),
     ("review.py", "apply_decisions"): (
         "audit: review:remove, 0", "audit: review:lock, 0",
     ),

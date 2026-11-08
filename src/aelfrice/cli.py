@@ -8217,6 +8217,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
             ("--gc-filesystem-corroboration", "gc_filesystem_corroboration"),
             ("--repair-utc-created-at", "repair_utc_created_at"),
             ("--retire-scheduled-prompts", "retire_scheduled_prompts"),
+            ("--retire-relay-rows", "retire_relay_rows"),
+            ("--restore-relay-rows", "restore_relay_rows"),
         )
         if getattr(args, dest, False)
     ]
@@ -8231,6 +8233,10 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_repair_utc_created_at(args, out)
     if getattr(args, "retire_scheduled_prompts", None):
         return _cmd_doctor_retire_scheduled_prompts(args, out)
+    if getattr(args, "retire_relay_rows", False):
+        return _cmd_doctor_relay_rows(args, out, restore=False)
+    if getattr(args, "restore_relay_rows", False):
+        return _cmd_doctor_relay_rows(args, out, restore=True)
     if getattr(args, "gc_orphan_feedback", False):
         return _cmd_doctor_gc_orphan_feedback(args, out)
     if getattr(args, "gc_filesystem_corroboration", False):
@@ -9008,6 +9014,39 @@ def _cmd_doctor_retire_scheduled_prompts(
     finally:
         store.close()
     print(format_scheduled_prompt_report(report), file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_doctor_relay_rows(
+    args: argparse.Namespace, out: object, *, restore: bool,
+) -> int:
+    """Retire, or restore, beliefs stored from relay text as typed (#1877).
+
+    Default is dry-run: it counts the relay rows by shape and lists the
+    belief ids. With `--apply`, `--retire-relay-rows` retires them and
+    `--restore-relay-rows` restores the ones it retired. Locked beliefs are
+    never retired. Prints no belief text. Bypasses the hooks/graph checks.
+    """
+    from aelfrice.relay_rows import (  # noqa: PLC0415
+        format_relay_restore_report,
+        format_relay_rows_report,
+        restore_relay_rows,
+        retire_relay_rows,
+    )
+
+    apply = bool(getattr(args, "apply", False))
+    store = _open_store()
+    try:
+        path = str(store.db_path)
+        if restore:
+            report = restore_relay_rows(store, dry_run=not apply)
+            text = format_relay_restore_report(report, path)
+        else:
+            report = retire_relay_rows(store, dry_run=not apply)
+            text = format_relay_rows_report(report, path)
+    finally:
+        store.close()
+    print(text, file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -11614,6 +11653,34 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_doctor.add_argument(
+        "--retire-relay-rows",
+        dest="retire_relay_rows",
+        action="store_true",
+        default=False,
+        help=(
+            "list the beliefs stored from relay text, such as another "
+            "session's message, as the user's typed words before #1875 "
+            "(issue #1877), with counts by shape and no belief text. A belief "
+            "that a row outside relay text also produced is kept, as is a "
+            "locked, promoted, confirmed or restored belief, one kept in aelf "
+            "review, and one another source corroborated. Bypasses the "
+            "hooks/graph checks. Combine with --apply to retire them; "
+            "--restore-relay-rows undoes the pass. Default is dry-run."
+        ),
+    )
+    p_doctor.add_argument(
+        "--restore-relay-rows",
+        dest="restore_relay_rows",
+        action="store_true",
+        default=False,
+        help=(
+            "list the beliefs --retire-relay-rows retired that are still "
+            "retired (issue #1877). Bypasses the hooks/graph checks. Combine "
+            "with --apply to restore them, as aelf restore does. Default is "
+            "dry-run."
+        ),
+    )
+    p_doctor.add_argument(
         "--apply",
         dest="apply",
         action="store_true",
@@ -11621,6 +11688,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "with --gc-orphan-feedback, --gc-filesystem-corroboration, "
             "--repair-utc-created-at, --retire-scheduled-prompts, "
+            "--retire-relay-rows, --restore-relay-rows, "
             "--prune-noise, or --prune-dormant: "
             "actually make the change "
             "(default: dry-run)."
