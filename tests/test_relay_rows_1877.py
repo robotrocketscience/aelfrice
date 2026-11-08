@@ -5,8 +5,9 @@ The fixture stores are built by the real ingest path, `ingest_jsonl` over a
 synthetic `turns.jsonl`. `pre_1875` turns ingest back to how it ran before
 #1649, which split and anchored the raw record, and dates the rows it writes
 before the pass's cutoff, so the rows look as the stored relay rows do.
-`between_1649_and_1875` keeps today's speech filter and clock and turns off
-only the two relay cuts, the way ingest ran from #1649 until #1875. Nothing
+`between_1649_and_1875` keeps today's speech filter, harness cut included,
+and clock, and turns off `cut_relay`, the way ingest ran from #1649 until
+#1875. Nothing
 here reads a real transcript or store.
 """
 from __future__ import annotations
@@ -15,7 +16,8 @@ import io
 import json
 import re
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -33,6 +35,7 @@ from aelfrice.models import (
 from aelfrice.noise_filter import (
     RELAY_ROW_NOTICE,
     RELAY_ROW_OPENER,
+    cut_relay,
     relay_cut_is_host_shaped,
     relay_row_shape,
 )
@@ -46,7 +49,7 @@ from aelfrice.relay_rows import (
 )
 from aelfrice.replay import replay_full_equality
 from aelfrice.store import MemoryStore
-from aelfrice.ulid import make_generator
+from aelfrice.ulid import make_generator, ulid_ms
 
 SESSION = "sess-1877"
 OTHER = "sess-1877-b"
@@ -84,11 +87,12 @@ def pre_1875(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def between_1649_and_1875(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ingest from #1649 until #1875: speech filtered, relay cuts off, today's clock."""
-    never = re.compile(r"(?!)")
+    """Ingest from #1649 until #1875: speech filtered, no `cut_relay`, today's clock.
+
+    #1875 added only the `cut_relay` call to `_user_speech`; the harness
+    block cut, which takes a `cross-session-message` block, ran from #1649 on.
+    """
     monkeypatch.setattr(ingest_module, "cut_relay", lambda text: text)
-    monkeypatch.setattr(ingest_module, "_HARNESS_BLOCK_RE", never)
-    monkeypatch.setattr(ingest_module, "_UNCLOSED_BLOCK_RE", never)
 
 
 def _ingest(
@@ -162,7 +166,7 @@ def _origin(store: MemoryStore, content: str) -> str:
 
 
 @pytest.mark.parametrize("row", [
-    TEAM_TAG, AGENT_TAG, CROSS_TAG, '  <AGENT-MESSAGE FROM="w">  ',
+    TEAM_TAG, AGENT_TAG, CROSS_TAG, '  <agent-message from="w">  ',
     "\ufeff" + CROSS_TAG,
     '<teammate-message teammate_id="lead" summary="ruling">',
 ])
@@ -186,6 +190,8 @@ def test_a_host_notice_is_a_notice_row(row: str) -> None:
     AGENT_TAG + "\nThe body sits on the next line.",
     # A tag a person types bare, or without every attribute the host writes.
     "<teammate-message>", "<agent-message>", "  <AGENT-MESSAGE>  ",
+    # The host writes tag and attribute names in lower case.
+    '<AGENT-MESSAGE from="w">', '<agent-message FROM="w">', '<Agent-Message from="w">',
     "<cross-session-message>", '<cross-session-message from="uds:/tmp/s.sock">',
     '<teammate-message from="lead">', '<agent-message to="worker-7">',
     # Words after the notice template's last fixed word may be the user's.
@@ -403,11 +409,12 @@ def test_a_run_that_differs_from_its_anchor_at_the_end_is_not_taken(
 
 
 def test_rows_from_other_source_kinds_are_not_read(tmp_path: Path) -> None:
+    pre = make_generator(rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK)
     s = MemoryStore(str(tmp_path / "memory.db"))
     try:
         s.record_ingest(
             source_kind="filesystem", source_path="docs/relay.md",
-            raw_text=TEAM_TAG, session_id=SESSION, ts=_ts(1),
+            raw_text=TEAM_TAG, session_id=SESSION, ts=_ts(1), log_id=pre(),
         )
         report = retire_relay_rows(s, dry_run=True)
     finally:
@@ -988,6 +995,11 @@ def test_a_later_ingest_of_the_record_stops_the_anchor(
     '<agent-message\u0085from="worker-7">',
     '<agent-message\x0cfrom="worker-7">',
     '<cross-session-message from="a" from-name="b">',
+    # A value has to hold a character other than whitespace, and no line break.
+    '<agent-message from=" ">', '<agent-message from="\t">',
+    '<agent-message from="a\u0085b">', '<agent-message from="a\u2028b">',
+    '<agent-message from="a\u2029b">', '<agent-message from="a\x0bb">',
+    '<agent-message from="a\x0cb">', '<agent-message from="a\rb">',
 ])
 def test_a_tag_outside_the_host_form_is_not_an_opener(tag: str) -> None:
     assert relay_row_shape(tag) is None
@@ -1125,7 +1137,6 @@ def test_format_names_no_belief_text(store: MemoryStore) -> None:
 
 
 def test_ulid_ms_reads_the_time_a_ulid_carries() -> None:
-    from aelfrice.ulid import ulid_ms
 
     gen = make_generator(rand_source=lambda n: bytes([255] * n), time_source=lambda: _PRE_1649_CLOCK)
     value = gen()
@@ -1133,3 +1144,361 @@ def test_ulid_ms_reads_the_time_a_ulid_carries() -> None:
     assert ulid_ms(value.lower()) == int(_PRE_1649_CLOCK * 1000)
     assert ulid_ms(value[:-1]) is None
     assert ulid_ms("U" + value[1:]) is None
+
+
+# --- fourth review round: later rows, the cutoff, one record per anchor -------
+
+
+# 2026-11-01T00:00:00Z, after the pass's cutoff.
+_LATE_MS = 1_793_491_200_000
+_PRE_MS = int(_PRE_1649_CLOCK * 1000)
+AFTER_CLOSER = "I typed this sentence myself after the relay closed."
+
+
+def _write_log(path: Path, turns: list[tuple[str, str, str]]) -> Path:
+    path.write_text("".join(
+        json.dumps({"schema_version": 1, "role": "user", "session_id": s,
+                    "ts": ts, "text": text}) + "\n"
+        for s, ts, text in turns
+    ), encoding="utf-8")
+    return path
+
+
+def _ingest_at(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch, log: Path, ms: int, *,
+    raw: bool, label: str = "transcript",
+) -> None:
+    """Ingest `log` with row ids that carry `ms`; `raw` turns ingest back before #1649."""
+    with monkeypatch.context() as m:
+        if raw:
+            m.setattr(ingest_module, "_user_speech", lambda t: t if t.strip() else None)
+        else:
+            m.setattr(ingest_module, "cut_relay", lambda t: t)
+        m.setattr(store_module, "ulid", make_generator(
+            rand_source=lambda n: bytes(n), time_source=lambda: (ms + 0.5) / 1000,
+        ))
+        ingest_jsonl(store, log, source_label=label)
+
+
+def _contents(store: MemoryStore) -> tuple[dict[str, int], set[str]]:
+    report = retire_relay_rows(store, dry_run=True)
+    out: set[str] = set()
+    for bid in report.candidates:
+        belief = store.get_belief(bid)
+        assert belief is not None
+        out.add(belief.content)
+    return dict(report.rows_by_shape), out
+
+
+def _lines(*parts: str) -> str:
+    return "\n".join(parts)
+
+
+def test_a_row_written_after_the_cutoff_adds_no_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        _ingest_at(s, monkeypatch, _write_log(tmp_path / "a.jsonl", [
+            (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2)), (SESSION, _ts(2), NEXT),
+            (OTHER, _ts(3), _lines("Context:", AGENT_TAG, T1, T2)),
+        ]), _PRE_MS, raw=True)
+        before = _contents(s)
+        _ingest_at(s, monkeypatch, _write_log(tmp_path / "b.jsonl", [
+            (OTHER, "2026-11-01T10:00:00Z", NEXT),
+        ]), _LATE_MS, raw=False)
+        assert _contents(s) == before
+    finally:
+        s.close()
+
+
+def test_a_row_written_after_the_cutoff_cannot_take_words_after_a_closer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The closer line makes no row, so the closed record's rows equal the
+    # unclosed one's.
+    closed = _block(AGENT_TAG, T1, T2) + "\n" + AFTER_CLOSER
+    assert AFTER_CLOSER in cut_relay(closed)
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        _ingest_at(s, monkeypatch, _write_log(tmp_path / "a.jsonl", [
+            (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2, AFTER_CLOSER)),
+            (SESSION, _ts(2), NEXT), (OTHER, _ts(3), closed),
+        ]), _PRE_MS, raw=True)
+        _ingest_at(s, monkeypatch, _write_log(tmp_path / "b.jsonl", [
+            (OTHER, "2026-11-01T10:00:00Z", NEXT),
+        ]), _LATE_MS, raw=False)
+        _, contents = _contents(s)
+        assert AFTER_CLOSER not in contents
+    finally:
+        s.close()
+
+
+def test_rows_that_cannot_show_a_closer_keep_the_words_after_it(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # Both records chain to the same next sentence, so one edge, written from
+    # the unclosed record, fits both turns.
+    closed = _block(AGENT_TAG, T1, T2) + "\n" + AFTER_CLOSER
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2, AFTER_CLOSER)), (SESSION, _ts(2), NEXT),
+        (OTHER, _ts(3), closed), (OTHER, _ts(4), NEXT),
+    ])
+    s = MemoryStore(str(db))
+    try:
+        report = retire_relay_rows(s, dry_run=True)
+        assert report.anchors_ambiguous == 1
+        assert dict(report.rows_by_shape) == {RELAY_ROW_OPENER: 2}
+        assert _belief_id(s, AFTER_CLOSER) not in report.candidates
+    finally:
+        s.close()
+
+
+def test_each_record_takes_only_what_its_own_anchor_shows(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    closed = _block(AGENT_TAG, T1, T2) + "\n" + AFTER_CLOSER
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2, AFTER_CLOSER)), (SESSION, _ts(2), NEXT),
+        (OTHER, _ts(3), closed), (OTHER, _ts(4), "A different next turn the user typed."),
+    ])
+    shapes, contents = _dry(db)
+    assert shapes == {RELAY_ROW_OPENER: 2, SHAPE_BLOCK: 5}
+    assert T1 in contents and T2 in contents
+    assert AFTER_CLOSER not in contents
+
+
+def test_the_cutoff_is_the_first_commit_of_1649() -> None:
+    first_commit = datetime(2026, 9, 30, 21, 52, 33, tzinfo=timezone.utc)
+    assert RAW_RECORD_CUTOFF_MS == int(first_commit.timestamp() * 1000)
+
+
+@pytest.mark.parametrize(("offset", "taken"), [(-1, True), (0, False), (1, False)])
+def test_the_cutoff_holds_to_the_millisecond(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offset: int, taken: bool,
+) -> None:
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        _ingest_at(s, monkeypatch, _write_log(tmp_path / "a.jsonl", [
+            (SESSION, _ts(1), _block(AGENT_TAG, T1, T2)), (SESSION, _ts(2), NEXT),
+        ]), RAW_RECORD_CUTOFF_MS + offset, raw=True)
+        stamped = {ulid_ms(r[0]) for r in s.list_transcript_sentences()}
+        assert stamped == {RAW_RECORD_CUTOFF_MS + offset}
+        _, contents = _contents(s)
+        assert (T1 in contents) is taken
+        assert (T2 in contents) is taken
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("make_id", [
+    lambda k: f"{k:08d}" + "0" * 32,  # not 26 characters
+    lambda k: "U" + f"{k:025d}",  # U isn't a Crockford digit
+])
+def test_rows_whose_ids_carry_no_time_are_not_taken(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_id: Callable[[int], str],
+) -> None:
+    counter = iter(range(10 ** 6))
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(ingest_module, "_user_speech", lambda t: t if t.strip() else None)
+            m.setattr(store_module, "ulid", lambda: make_id(next(counter)))
+            ingest_jsonl(s, _write_log(tmp_path / "a.jsonl", [
+                (SESSION, _ts(1), _block(AGENT_TAG, T1, T2)), (SESSION, _ts(2), NEXT),
+            ]))
+        assert all(ulid_ms(r[0]) is None for r in s.list_transcript_sentences())
+        report = retire_relay_rows(s, dry_run=True)
+        assert report.rows_read == 0
+        assert report.candidates == []
+    finally:
+        s.close()
+
+
+def test_a_later_row_in_another_session_does_not_stop_the_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        _ingest_at(s, monkeypatch, _write_log(tmp_path / "a.jsonl", [
+            (SESSION, _ts(1), _block(TEAM_TAG, BODY_1, BODY_2)), (SESSION, _ts(2), NEXT),
+        ]), _PRE_MS, raw=True)
+        assert _contents(s)[0] == {RELAY_ROW_OPENER: 1, SHAPE_BLOCK: 2}
+        _ingest_at(s, monkeypatch, _write_log(tmp_path / "b.jsonl", [
+            (OTHER, "2026-11-01T10:00:00Z", _lines(TEAM_TAG, BODY_1, BODY_2)),
+        ]), _LATE_MS, raw=False)
+        assert _contents(s)[0] == {RELAY_ROW_OPENER: 1, SHAPE_BLOCK: 2}
+    finally:
+        s.close()
+
+
+def test_a_later_row_holding_only_the_first_sentence_stops_the_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        _ingest_at(s, monkeypatch, _write_log(tmp_path / "a.jsonl", [
+            (SESSION, _ts(1), _block(TEAM_TAG, BODY_1, BODY_2)), (SESSION, _ts(2), NEXT),
+        ]), _PRE_MS, raw=True)
+        _ingest_at(s, monkeypatch, _write_log(tmp_path / "b.jsonl", [
+            (SESSION, "2026-11-01T10:00:00Z", TEAM_TAG),
+        ]), _LATE_MS, raw=False)
+        assert _contents(s)[0] == {RELAY_ROW_OPENER: 1}
+    finally:
+        s.close()
+
+
+def test_an_upper_case_relay_record_is_not_taken(tmp_path: Path, pre_1875: None) -> None:
+    upper = AGENT_TAG.replace("agent-message", "AGENT-MESSAGE")
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), _block(upper, T1, T2)), (SESSION, _ts(2), NEXT),
+    ])
+    assert _dry(db) == ({}, set())
+
+
+def test_records_with_the_same_rows_each_take_what_their_own_edge_shows(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # One session, two records with the same rows: the first never closes,
+    # the second closes before the user's words. Their next turns differ, so
+    # each record wrote its own edge.
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2, AFTER_CLOSER)), (SESSION, _ts(2), NEXT),
+        (SESSION, _ts(3), _block(AGENT_TAG, T1, T2) + "\n" + AFTER_CLOSER),
+        (SESSION, _ts(4), "A different next turn the user typed."),
+    ])
+    s = MemoryStore(str(db))
+    try:
+        report = retire_relay_rows(s, dry_run=True)
+        assert report.anchors_ambiguous == 0
+        assert dict(report.rows_by_shape) == {RELAY_ROW_OPENER: 2, SHAPE_BLOCK: 5}
+        assert _belief_id(s, T1) in report.candidates
+        assert _belief_id(s, AFTER_CLOSER) not in report.candidates
+    finally:
+        s.close()
+
+
+def test_capped_records_that_end_differently_each_take_their_own_rows(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # Past the cap the records differ, so each edge's earlier end is a
+    # belief only its own record derived.
+    body = [f"Step {n} of the migration copies table {n} to the new host."
+            for n in range(1, 30)]
+    first = _lines(TEAM_TAG, *body, "The first copy ends at the archive.")
+    second = _lines(TEAM_TAG, *body, "The second copy ends at the mirror.")
+    assert len(first) > ANCHOR_TEXT_MAX_LEN
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), first), (SESSION, _ts(2), NEXT),
+        (SESSION, _ts(3), second), (SESSION, _ts(4), NEXT),
+    ])
+    s = MemoryStore(str(db))
+    try:
+        report = retire_relay_rows(s, dry_run=True)
+        assert report.anchors_ambiguous == 0
+        shown = [b for b in body if b in first[:ANCHOR_TEXT_MAX_LEN]]
+        assert report.rows_by_shape[SHAPE_BLOCK] == 2 * len(shown)
+    finally:
+        s.close()
+
+
+def test_a_turn_chains_only_to_the_next_turn_of_its_own_transcript(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # The first file's record has no next turn under its label. The second
+    # file, under another label, holds the same rows, with a turn of NEXT
+    # both before and after them.
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        ingest_jsonl(s, _write_log(tmp_path / "a.jsonl", [
+            (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2)),
+        ]))
+        ingest_jsonl(s, _write_log(tmp_path / "b.jsonl", [
+            (SESSION, _ts(5), NEXT), (SESSION, _ts(6), _lines(AGENT_TAG, T1, T2)),
+            (SESSION, _ts(7), NEXT),
+        ]), source_label="session-end")
+        report = retire_relay_rows(s, dry_run=True)
+        assert report.anchors_ambiguous == 0
+        assert dict(report.rows_by_shape) == {RELAY_ROW_OPENER: 2, SHAPE_BLOCK: 2}
+    finally:
+        s.close()
+
+
+def test_a_turn_with_no_session_writes_no_edge(tmp_path: Path, pre_1875: None) -> None:
+    from aelfrice.derivation_worker import run_worker
+    from aelfrice.models import EDGE_DERIVED_FROM, Edge
+
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        meta = {"role": "user", "call_site": "transcript_ingest"}
+        for ts, text in ((_ts(1), AGENT_TAG), (_ts(1), BODY_1), (_ts(2), NEXT)):
+            s.record_ingest(
+                source_kind="transcript", source_path="transcript", raw_text=text,
+                session_id=None, ts=ts, raw_meta=meta,
+            )
+        run_worker(s)
+        s.insert_edge(Edge(
+            src=_belief_id(s, NEXT), dst=_belief_id(s, BODY_1),
+            type=EDGE_DERIVED_FROM, weight=1.0, anchor_text=f"{AGENT_TAG}\n{BODY_1}",
+        ))
+        report = retire_relay_rows(s, dry_run=True)
+        assert report.rows_by_shape[SHAPE_BLOCK] == 0
+    finally:
+        s.close()
+
+
+def test_a_run_that_crosses_into_the_next_turn_fits_no_edge(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # The second relay record's rows, then the first rows of the turn after
+    # it, repeat the first record's rows.
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2)), (SESSION, _ts(2), NEXT),
+        (SESSION, _ts(3), _lines(AGENT_TAG, T1)), (SESSION, _ts(4), _lines(T2, NEXT)),
+    ])
+    s = MemoryStore(str(db))
+    try:
+        report = retire_relay_rows(s, dry_run=True)
+        assert report.anchors_ambiguous == 0
+        assert dict(report.rows_by_shape) == {RELAY_ROW_OPENER: 2, SHAPE_BLOCK: 3}
+    finally:
+        s.close()
+
+
+def test_a_longer_record_with_the_same_last_sentence_fits_no_shorter_edge(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # The second record ends with the first one's last sentence twice, so
+    # both chain to NEXT through one edge, written from the first record.
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2)), (SESSION, _ts(2), NEXT),
+        (SESSION, _ts(3), _lines(AGENT_TAG, T1, T2, T2)), (SESSION, _ts(4), NEXT),
+    ])
+    s = MemoryStore(str(db))
+    try:
+        rows = [r[4] for r in s.list_transcript_sentences()]
+        assert rows.count(T2) == 3
+        report = retire_relay_rows(s, dry_run=True)
+        assert report.anchors_ambiguous == 0
+        assert report.rows_by_shape[SHAPE_BLOCK] == 2
+    finally:
+        s.close()
+
+
+def test_a_shorter_record_with_the_same_last_belief_fits_no_longer_edge(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # The first record repeats its last sentence; the second stops after one.
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), _lines(AGENT_TAG, T1, T1)), (SESSION, _ts(2), NEXT),
+        (SESSION, _ts(3), _lines(AGENT_TAG, T1)), (SESSION, _ts(4), NEXT),
+    ])
+    s = MemoryStore(str(db))
+    try:
+        rows = [r[4] for r in s.list_transcript_sentences()]
+        assert rows.count(T1) == 3
+        report = retire_relay_rows(s, dry_run=True)
+        assert report.anchors_ambiguous == 0
+        assert report.rows_by_shape[SHAPE_BLOCK] == 2
+    finally:
+        s.close()
