@@ -9,20 +9,31 @@ through what the store kept.
 An `ingest_log` row holds one sentence, so it can't show line breaks, a
 closer, or where its record began. A row starts its turn when the row before
 it, in id order, has another `(session_id, ts, source_path)`: ingest writes a
-turn's rows together, and they share all three. Three shapes are read:
+turn's rows together, and they share all three.
+
+`cut_relay` reads the raw record, and the store doesn't keep one. Before #1649
+ingest split the raw record into rows and anchored the next turn's
+DERIVED_FROM edge on it. From #1649 on it does both with the speech that
+`ingest._user_speech` leaves, after reminders, host marker lines, harness
+blocks and pasted output are gone, so a relay behind a reminder, which
+`cut_relay` keeps, looks like one that opens the record. A row's id is a ULID
+that carries the time ingest wrote it, so the pass takes only rows written
+before `RAW_RECORD_CUTOFF_MS`, the time of #1649's first commit, and an
+anchor only when no row written after it holds the anchor's first sentence in
+a session the anchor reaches. Three shapes are read:
 
 - `opener`: a row that starts its turn and holds a relay opening tag and
-  nothing else, with the attributes the host writes
+  nothing else, in the form the host writes it, with its attributes
   (`noise_filter.relay_row_shape`).
 - `notice` and `block`: the rows of a record that a later turn's
   DERIVED_FROM anchor shows opening with relay text. Between two user turns,
   `ingest_jsonl` anchors the edge on the earlier turn's text, line breaks kept,
-  up to 1,000 characters. `cut_relay` reads that text as it reads a record,
+  up to 1,000 characters, and before #1649 that text was the raw record. `cut_relay` reads that text as it reads a record,
   and every relay tag and notice line in the part it takes must be the host's
   (`noise_filter.relay_cut_is_host_shaped`). The anchor's sentences are
-  matched in order to a run of rows that opens at a row that starts its turn
-  and stays in that row's group, in a session that derived both ends of the
-  edge. The run's rows that fall in the part `cut_relay` takes are relay
+  matched in order to a run of rows that opens at a row that starts its turn,
+  takes that row, and stays in that row's group, in a session that derived
+  both ends of the edge. The run's rows that fall in the part `cut_relay` takes are relay
   rows: its first row is a `notice` when it holds a host notice, and the rest
   are `block`. An anchor at the cap may end inside a sentence, so its last
   sentence may go unmatched.
@@ -38,10 +49,11 @@ a bulk ingest that gives several records one timestamp, has no row that starts
 its turn, so none of its rows is taken. No row is taken because its group
 holds a relay row.
 
-What a row can't show leaves gaps. A record that opens with a tag carrying the
-host's attributes reads as relay text, even when a person typed or pasted it,
-and an unclosed one takes every sentence the anchor shows. With no later turn,
-no anchor shows a record, so a dropped first line can't stop its `opener` row.
+What a row can't show leaves gaps. A record that opens with a tag in the
+host's form reads as relay text, even when a person typed or pasted it, and an
+unclosed one takes every sentence the anchor shows. When no later turn in the
+session produced a belief, no anchor shows a record, so a line the sentence
+splitter dropped before the tag can't stop its `opener` row.
 A host relay whose cut part holds any other relay tag the host wouldn't write,
 such as `<agent-message/>` quoted in its body, is skipped whole, its opener
 row included. Rows are
@@ -80,11 +92,15 @@ from aelfrice.noise_filter import (
 )
 from aelfrice.scheduled_prompts import split_by_evidence
 from aelfrice.sentence_partition import partition_sentences
+from aelfrice.ulid import ulid_ms
 
 if TYPE_CHECKING:
     from aelfrice.store import MemoryStore
 
 SHAPE_BLOCK: Final[str] = "block"
+# 2026-09-30T21:52:33Z, the author time of #1649's first commit (41f5d85df).
+# Rows written before it come from ingest that split and anchored the raw record.
+RAW_RECORD_CUTOFF_MS: Final[int] = 1_790_805_153_000
 # The audit row each retired belief gets. Valence 0 moves no posterior.
 SOURCE_RELAY_RETIRE: Final[str] = "relay_rows:retire"
 # What `aelf restore` writes, so a restored belief stays on a later run.
@@ -117,6 +133,7 @@ class _Rows:
     keys: list[_Key]
     texts: list[str]
     starts: list[bool]
+    raw: list[bool]
 
 
 def _read_rows(store: "MemoryStore") -> _Rows:
@@ -124,13 +141,16 @@ def _read_rows(store: "MemoryStore") -> _Rows:
     keys: list[_Key] = []
     texts: list[str] = []
     starts: list[bool] = []
+    raw: list[bool] = []
     for log_id, sid, ts, path, text in store.list_transcript_sentences():
         key = (sid, ts, path)
         starts.append(not keys or keys[-1] != key)
         ids.append(log_id)
         keys.append(key)
         texts.append(text)
-    return _Rows(ids=ids, keys=keys, texts=texts, starts=starts)
+        ms = ulid_ms(log_id)
+        raw.append(ms is not None and ms < RAW_RECORD_CUTOFF_MS)
+    return _Rows(ids=ids, keys=keys, texts=texts, starts=starts, raw=raw)
 
 
 def _runs(
@@ -179,6 +199,11 @@ def _block_rows(
             starts_by_text.setdefault(text, []).append(i)
     found: dict[int, str] = {}
     vetoed: set[int] = set()
+    # A later ingest that saw a record stored its speech, and may have written
+    # the anchor from it.
+    late = {
+        (rows.keys[i][0], text) for i, text in enumerate(rows.texts) if not rows.raw[i]
+    }
     for src, dst, anchor in anchors:
         rest = cut_relay(anchor)
         cut = anchor[: len(anchor) - len(rest)]
@@ -204,6 +229,8 @@ def _block_rows(
                 continue
             head = partition_sentences(cut, keep_spans=keep_spans)[0]
             if not head or whole[: len(head)] != head:
+                continue
+            if any((sid, whole[0]) in late for sid in sessions):
                 continue
             for i, n in _runs(rows, starts_by_text, sessions, whole, capped):
                 matched = True
@@ -233,7 +260,7 @@ def _select(store: "MemoryStore", report: RelayRowsReport) -> None:
     # A notice row is taken only through an anchor: a sentence after the notice
     # on its line is a row of its own, and only the record shows the line.
     for i, text in enumerate(rows.texts):
-        if rows.starts[i] and i not in vetoed:
+        if rows.starts[i] and rows.raw[i] and i not in vetoed:
             if relay_row_shape(text) == RELAY_ROW_OPENER:
                 shape_at[i] = RELAY_ROW_OPENER
     for i, shape in found.items():
