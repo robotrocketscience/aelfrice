@@ -261,23 +261,17 @@ def test_unrelated_locks_take_no_snippet_slot(db: Path) -> None:
 
 def test_no_match_starts_no_paid_run(db: Path, tmp_path: Path) -> None:
     """The review's locks-only store still spent money. Killed by: building a
-    prompt with nothing that shares a word with the topic."""
+    prompt with nothing that shares a word with the topic. With no topic,
+    the replay builds no request for the session, so no run starts."""
     _seed(db, _locks(60))
     _flush(db)
     _turns(tmp_path, ["how does the widgetwonder cache work"])
     assert build_auto_prompt(_payload(db, "how does the widgetwonder cache work")) is None
-    calls: list[object] = []
-
-    def run(*a: object, **kw: object) -> subprocess.CompletedProcess[str]:
-        calls.append(a)
-        return subprocess.CompletedProcess[str]([], 0, "", "")
-
     store = MemoryStore(str(db))
     try:
         assert wb.pick_topic(store, wb.session_prompts(tmp_path / "transcripts" / "turns.jsonl", SESSION)) is None
     finally:
         store.close()
-    assert calls == []
 
 
 def _prompt_over(query: str, *beliefs: Belief) -> AutoPrompt | None:
