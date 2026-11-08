@@ -500,6 +500,29 @@ def cut_relay(text: str) -> str:
     return text[pos:]
 
 
+RELAY_ROW_OPENER: Final[str] = "opener"
+RELAY_ROW_NOTICE: Final[str] = "notice"
+
+
+def relay_row_shape(text: str) -> str | None:
+    """The relay shape one stored sentence holds by itself, or None (#1877).
+
+    A stored row is one sentence and keeps no line breaks. `opener` is a row
+    that holds a relay opening tag as `cut_relay` reads one and nothing else:
+    the sentence splitter gives a tag on its own line a sentence of its own.
+    `notice` is a row that opens with one of the host's cross-session notices,
+    by the fixed words `cut_relay` reads. A tag with words after it in the row,
+    a closer, and a line that only resembles a notice give None. The row
+    can't show whether it opened its record, so the caller has to.
+    """
+    opener = _RELAY_OPENER_RE.match(text)
+    if opener is not None and not text[opener.end():].strip():
+        return RELAY_ROW_OPENER
+    if _CROSS_SESSION_NOTICE_RE.match(text):
+        return RELAY_ROW_NOTICE
+    return None
+
+
 def _block_spans(
     text: str, opener_re: re.Pattern[str], closer_re: re.Pattern[str],
 ) -> tuple[array[int], array[int], set[str]] | None:
