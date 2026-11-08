@@ -38,7 +38,8 @@ and `--seed`, apart from what the runner replies.
   cap before the runner starts. A cost that isn't a finite number of at least
   0 charges the cap. Repeating the command with the same `--out` resumes: a
   request already run isn't run again. A run the harness died inside counts
-  at its cap and isn't run again either.
+  at `RUN_RESERVE_USD`, the most the ceiling allows a run, since nothing shows
+  what it spent, and isn't run again either.
 
   What is bounded: the total stays at or under `--budget-usd` while each run
   costs at most `RUN_RESERVE_USD`, which is the $0.10 cap and 30% over it. The
@@ -1274,9 +1275,8 @@ def ledger_state(rows: Sequence[Mapping[str, Any]]) -> tuple[dict[str, float], d
 
 
 def total_spend() -> float:
-    """Dollars the spend ledger records, per real call, an unfinished one at its cap."""
-    cap = float(wb.RUNNER_BUDGET_USD)
-    return sum(cap if c.charge is None else c.charge
+    """Dollars the spend ledger records, per real call, an unfinished one at `RUN_RESERVE_USD`."""
+    return sum(RUN_RESERVE_USD if c.charge is None else c.charge
                for c in ledger_calls(read_ledger(spend_ledger_path())).values())
 
 
@@ -1400,9 +1400,10 @@ def run_requests(
     """Run the runner on each request the budget admits. `(runs now, stopped)`.
 
     Each run's `started` row reaches the ledger before the run, so a harness
-    killed mid-run still counts it. On a resume that run is closed at its cap
-    with an empty reply, never run again. Other `--out` folders' open rows
-    stay at their cap, for that folder's resume to close.
+    killed mid-run still counts it. On a resume that run is closed at
+    `RUN_RESERVE_USD` with an empty reply, never run again. Other `--out`
+    folders' open rows count at the reserve too, for that folder's resume
+    to close.
     """
     out_key = str(out.resolve())
     replies = out / REPLIES_FILE
@@ -1414,8 +1415,8 @@ def run_requests(
             if rid not in answered:
                 _append_line(replies, {"request_id": rid, "stdout": "",
                                        "returncode": FAILED_RETURNCODE})
-            close_run(out_key, rid, call, float(wb.RUNNER_BUDGET_USD), returncode=FAILED_RETURNCODE)
-            done[rid] = float(wb.RUNNER_BUDGET_USD)
+            close_run(out_key, rid, call, RUN_RESERVE_USD, returncode=FAILED_RETURNCODE)
+            done[rid] = RUN_RESERVE_USD
         # The runner runs from the output folder, so no project's files are near it.
         run = partial(background.run_bounded, cwd=str(out),
                       pass_fds=(lock_fd,) if os.name == "posix" else ())

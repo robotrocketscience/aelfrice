@@ -2073,7 +2073,7 @@ def test_the_plan_reads_what_the_ledger_already_spent() -> None:
     assert rp.admit_run("other", "x", 0.5, 40) == 1
     assert rp.admit_run("other", "y", 0.5, 40) == 2
     plan = rp.run_plan([_plan_row(i, 2) for i in range(8)], Path("widget"), budget=0.5, max_calls=4, seed=1)
-    assert plan["spent_usd"] == pytest.approx(0.20)
+    assert plan["spent_usd"] == pytest.approx(2 * rp.RUN_RESERVE_USD)
     assert plan["runs_at_the_cap"] == 2
     assert plan["runs_at_most"] == 2
 
@@ -2172,6 +2172,21 @@ def test_the_ledger_charges_every_call_of_one_request() -> None:
     assert open_calls == {}
 
 
+def test_a_dead_run_is_closed_at_the_reserve_and_an_open_one_counts_at_it(tmp_path: Path) -> None:
+    """The review: a resumed run was charged its $0.10 cap, below the $0.13
+    the ceiling allows a run. Killed by: charging the cap for a run nobody
+    saw finish, open or closed on a resume."""
+    out = tmp_path / "out"
+    out.mkdir()
+    rp.spend_ledger_path().parent.mkdir(parents=True, exist_ok=True)
+    assert rp.admit_run(str(out.resolve()), "dead", 1.0, 40) == 1
+    assert rp.total_spend() == pytest.approx(rp.RUN_RESERVE_USD)
+    assert rp.run_requests([], runner="widget", out=out, budget=1.0, seed=1, max_calls=40) == (0, 0)
+    (row,) = [r for r in rp.read_ledger(rp.spend_ledger_path()) if r.get("state") == rp.STATE_DONE]
+    assert row["cost_usd"] == pytest.approx(rp.RUN_RESERVE_USD)
+    assert rp.total_spend() == pytest.approx(rp.RUN_RESERVE_USD)
+
+
 def test_a_late_row_for_a_call_can_only_raise_its_charge() -> None:
     """A resume closes a dead call at the cap, and a reply the dead harness
     wrote can close it again. Killed by: the last row winning."""
@@ -2195,7 +2210,7 @@ def test_the_ledger_total_counts_every_call(tmp_path: Path) -> None:
         {"out": "a", "request_id": "no-number", "state": rp.STATE_STARTED},
     ]
     rp.spend_ledger_path().write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
-    assert rp.total_spend() == pytest.approx(0.10 + 0.10 + 0.05 + 0.10 + 0.20)
+    assert rp.total_spend() == pytest.approx(0.10 + 0.10 + 0.05 + 3 * rp.RUN_RESERVE_USD)
 
 
 def test_call_numbers_rise_and_a_closed_call_keeps_its_number() -> None:
@@ -2241,8 +2256,8 @@ def test_the_lock_spans_the_check_and_the_claim(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.timeout(120)
 def test_parallel_replays_share_the_ceiling(tmp_path: Path) -> None:
-    """Real processes on one ledger: open runs reserve their caps, so $0.50
-    admits 4. Killed by: a check-then-claim that can interleave."""
+    """Real processes on one ledger: open runs count at the $0.13 reserve, so
+    $0.50 admits 3. Killed by: a check-then-claim that can interleave."""
     code = (
         "import sys\n"
         "from benchmarks import wonder_auto_replay as rp\n"
@@ -2257,8 +2272,8 @@ def test_parallel_replays_share_the_ceiling(tmp_path: Path) -> None:
 
     with ThreadPoolExecutor(8) as pool:
         answers = list(pool.map(one, range(8)))
-    assert answers.count("True") == 4
-    assert rp.total_spend() == pytest.approx(0.40)
+    assert answers.count("True") == 3
+    assert rp.total_spend() == pytest.approx(3 * rp.RUN_RESERVE_USD)
 
 
 def test_one_replay_runs_at_a_time_whatever_its_output_folder(tmp_path: Path) -> None:
@@ -2359,7 +2374,7 @@ def test_a_signal_to_the_replay_ends_the_runner(tmp_path: Path, sig: signal.Sign
     assert done.returncode != 0
     assert done.returncode in (128 + sig, 1, -sig)
     _wait_for(lambda: not _alive(pid), "the runner to end")
-    assert rp.total_spend() == pytest.approx(float(wb.RUNNER_BUDGET_USD))
+    assert rp.total_spend() == pytest.approx(rp.RUN_RESERVE_USD)
 
 
 @pytest.mark.timeout(120)
@@ -2412,7 +2427,7 @@ def test_a_resume_closes_only_its_own_open_runs_and_repeats_no_reply(tmp_path: P
     assert sorted(r["request_id"] for r in rows) == ["mine-answered", "mine-silent"]
     ledger = rp.read_ledger(rp.spend_ledger_path())
     assert not [r for r in ledger if r["out"] == "another-folder" and r["state"] == rp.STATE_DONE]
-    assert rp.total_spend() == pytest.approx(0.30)
+    assert rp.total_spend() == pytest.approx(3 * rp.RUN_RESERVE_USD)
 
 
 @pytest.mark.parametrize("cost", [float("nan"), float("-inf"), -1.0, True, None, "0.01"])
@@ -2468,12 +2483,12 @@ def test_a_killed_harness_resumes_without_paying_twice(
         _replay(tmp_path, capsys, fake_runner, [store], "--sessions", "2", "--max-calls", "5")
     monkeypatch.setattr(rp.wb, "execute_run", real)
     assert len(_calls(fake_runner)) == 1
-    assert rp.total_spend() == pytest.approx(0.03 + 0.10)
+    assert rp.total_spend() == pytest.approx(0.03 + rp.RUN_RESERVE_USD)
     code, text = _replay(tmp_path, capsys, fake_runner, [store], "--sessions", "2", "--max-calls", "5")
     assert code == 0, text
     assert json.loads(text)["ran_now"] == 0
     assert len(_calls(fake_runner)) == 1
-    assert rp.total_spend() == pytest.approx(0.03 + 0.10)
+    assert rp.total_spend() == pytest.approx(0.03 + rp.RUN_RESERVE_USD)
     records = json.loads((out / rp.RUN_DIR / rp.REPORT_FILE).read_text(encoding="utf-8"))
     assert sum(records["stores"][0]["run_outcomes"].values()) == 2
     assert records["stores"][0]["run_outcomes"][wb.OUTCOME_RUN_FAILED] == 1
