@@ -196,6 +196,21 @@ def _select(
     for bid, sid, sha in store.list_ingest_turn_derivations():
         hit = sid is not None and sha is not None and (sid, sha) in flagged
         every_row_flagged[bid] = every_row_flagged.get(bid, True) and hit
+    return split_by_evidence(
+        store, (b for b, ok in every_row_flagged.items() if ok),
+    )
+
+
+def split_by_evidence(
+    store: "MemoryStore", ids: Iterable[str],
+) -> tuple[list[tuple[str, str]], list[str], list[str]]:
+    """Split active beliefs among `ids` by the evidence outside `ingest_log`.
+
+    Returns `(id, content)` for each one a retire pass may take, then the
+    ids kept because they are locked, then the ids kept because evidence
+    outside `ingest_log` backs them, each in id order. An id with no active
+    belief is in none of them. #1877 shares the rule.
+    """
     corroborated_elsewhere = store.list_beliefs_corroborated_outside(
         CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     )
@@ -206,7 +221,7 @@ def _select(
     candidates: list[tuple[str, str]] = []
     locked: list[str] = []
     other_evidence: list[str] = []
-    for bid in sorted(b for b, ok in every_row_flagged.items() if ok):
+    for bid in sorted(set(ids)):
         belief = store.get_belief(bid)
         if belief is None:
             continue
