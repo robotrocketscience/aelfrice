@@ -745,7 +745,7 @@ def ingest_replies(
 ) -> list[dict[str, object]]:
     """Each reply through the writer's `apply_reply` on the copy at `db`; the records.
 
-    As `run_pass` does, a record starts at the run's cap and takes the
+    As `execute_run` does, a record starts at the run's cap and takes the
     CLI's reported cost when there is one.
     """
     records: list[dict[str, object]] = []

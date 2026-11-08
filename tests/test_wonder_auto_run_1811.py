@@ -744,8 +744,8 @@ def test_parse_limits_sit_at_the_ruled_values() -> None:
 
 
 def test_refusal_messages_hold_no_text() -> None:
-    """Killed by: putting the refused text into the message, which the
-    audit log records."""
+    """Killed by: putting the refused text into the message, which
+    `apply_reply` keeps as the record's `reason`."""
     for _, _, reply in REFUSED:
         try:
             parse_claims(reply, PROMPT)
@@ -900,7 +900,7 @@ def _speculative(db: Path) -> list[tuple[str, str]]:
         conn.close()
 
 
-def test_run_pass_writes_phantoms(db: Path, tmp_path: Path) -> None:
+def test_a_run_writes_phantoms(db: Path, tmp_path: Path) -> None:
     """Killed by: another model, budget, or system prompt; dropping the
     #1741 environment; or not writing a phantom per claim and document."""
     _seed_facts(db)
@@ -1034,7 +1034,7 @@ def test_a_retired_claim_stays_retired(db: Path, tmp_path: Path) -> None:
     ("timeout", FakeRun(exc=subprocess.TimeoutExpired("hostcli", 300)), wb.OUTCOME_RUN_FAILED),
     ("no cli", FakeRun(exc=FileNotFoundError()), wb.OUTCOME_RUN_FAILED),
 ])
-def test_run_pass_writes_nothing_on_failure(
+def test_a_run_writes_nothing_on_failure(
     db: Path, tmp_path: Path, name: str, run: FakeRun, outcome: str,
 ) -> None:
     """Killed by: writing phantoms from a failed run or a refused reply."""

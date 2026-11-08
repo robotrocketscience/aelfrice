@@ -2240,7 +2240,7 @@ def test_a_replay_stopped_on_the_call_cap_resumes_with_the_same_out(
 
 
 def test_a_late_row_for_a_call_can_only_raise_its_charge() -> None:
-    """A resume closes a dead call at the cap, and a reply the dead harness
+    """A resume closes a dead call at the reserve, and a reply the dead harness
     wrote can close it again. Killed by: the last row winning."""
     rows = [
         {"out": "a", "call": 1, "request_id": "r", "state": rp.STATE_STARTED},
