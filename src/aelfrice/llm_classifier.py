@@ -74,8 +74,6 @@ import math
 import os
 import sys
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -978,8 +976,11 @@ def _call_anthropic(
         system_prompt=system_prompt,
         user_message=user_message,
     )
-    with _sdk_logs_held_at_warning(sdk_logger):
+    held = _hold_sdk_logs_at_warning(sdk_logger)
+    try:
         return _call_with_retries(sdk_module, api_key, call_args)
+    finally:
+        _restore_log_levels(held)
 
 
 def _call_with_retries(
@@ -998,9 +999,11 @@ def _call_with_retries(
             "max_retries": 0,
         }
         if http_factory is not None:
-            http_client = http_factory(
-                event_hooks={"response": [lambda r: arrivals.append(r.status_code)]},
-            )
+
+            def _record_arrival(response: Any) -> None:
+                arrivals.append(int(response.status_code))
+
+            http_client = http_factory(event_hooks={"response": [_record_arrival]})
             client_args["http_client"] = http_client
         client = sdk.Anthropic(**client_args)
         create = client.messages.create
@@ -1137,15 +1140,15 @@ def _request_args(
     }
 
 
-@contextmanager
-def _sdk_logs_held_at_warning(sdk_logger: str | None) -> Iterator[None]:
-    """Hold the SDK's and HTTP library's loggers at WARNING or above for the call.
+def _hold_sdk_logs_at_warning(sdk_logger: str | None) -> list[tuple[logging.Logger, int]]:
+    """Raise the SDK's and HTTP library's loggers to WARNING or above for the call.
 
     `ANTHROPIC_LOG=debug` prints the HTTP library's exception, which quotes a
     header it refuses, and the response headers, where a gateway can echo the
     key. Each logger under those names that exists now, a child with its own
-    level included, is raised for the call and set back to its exact level on
-    every exit. `None` holds nothing, for a test's fake SDK.
+    level included, is raised. Returns each logger with the level it had, for
+    `_restore_log_levels` on every exit. `None` holds nothing, for a test's
+    fake SDK.
     """
     roots = (sdk_logger, *_HTTP_LOGGERS) if sdk_logger is not None else ()
     prefixes = tuple(f"{root}." for root in roots)
@@ -1156,11 +1159,13 @@ def _sdk_logs_held_at_warning(sdk_logger: str | None) -> Iterator[None]:
     saved = [(logger, logger.level) for logger in held]
     for logger, level in saved:
         logger.setLevel(max(level, logging.WARNING))
-    try:
-        yield
-    finally:
-        for logger, level in saved:
-            logger.setLevel(level)
+    return saved
+
+
+def _restore_log_levels(saved: list[tuple[logging.Logger, int]]) -> None:
+    """Set each logger back to the exact level `_hold_sdk_logs_at_warning` saw."""
+    for logger, level in saved:
+        logger.setLevel(level)
 
 
 def _is_auth_error(exc: BaseException) -> bool:
