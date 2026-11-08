@@ -20,7 +20,6 @@ from typing import Any
 import pytest
 
 import aelfrice.core_gate_background as bg
-import aelfrice.wonder.auto_prompt as auto_prompt
 import aelfrice.wonder.auto_run as wb
 from aelfrice.models import (
     BELIEF_FACTUAL,
@@ -48,6 +47,7 @@ from aelfrice.wonder.auto_prompt import (
     document_generator,
     parse_claims,
     to_phantoms,
+    _content_words,  # pyright: ignore[reportPrivateUsage]
 )
 from aelfrice.wonder.dispatch import (
     DispatchPayload,
@@ -148,12 +148,12 @@ def test_a_word_any_sentence_shares_is_no_seed_match(word: str) -> None:
     """`about`, `also`, `some`, and `more` counted as topic words in the review,
     so a seed matched sentences it had nothing to do with. Killed by: dropping
     the word from the stopwords."""
-    assert auto_prompt._content_words(word) == frozenset()  # pyright: ignore[reportPrivateUsage]
+    assert _content_words(word) == frozenset()
 
 
 def test_a_real_topic_word_still_counts() -> None:
     """Killed by: a stopword list that swallows the words a topic is made of."""
-    assert auto_prompt._content_words("cache manifest registry about") == frozenset(  # pyright: ignore[reportPrivateUsage]
+    assert _content_words("cache manifest registry about") == frozenset(
         bm25.tokenize_stemmed("cache manifest registry"),
     )
 
