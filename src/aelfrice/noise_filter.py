@@ -84,6 +84,7 @@ from __future__ import annotations
 
 import re
 import sys
+from array import array
 from bisect import bisect_right
 import tomllib
 import traceback
@@ -369,7 +370,22 @@ _REMINDER_OPENER_RE: Final[re.Pattern[str]] = re.compile(
     r"^[ \t]*<system-reminder\b[^>]{0,2000}>", re.IGNORECASE | re.MULTILINE,
 )
 _REMINDER_CLOSER_RE: Final[re.Pattern[str]] = re.compile(
-    r"</system-reminder\s*>", re.IGNORECASE,
+    r"</(system-reminder)\s*>", re.IGNORECASE,
+)
+# The opening part of ingest's reminder and harness block patterns, and the
+# harness closer. `_block_spans` reads the rest of each block the way the
+# regex engine does.
+_REMINDER_TAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<(system-reminder)\b", re.IGNORECASE | re.MULTILINE,
+)
+_HARNESS_OPENER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<(" + HARNESS_TAG_ALT + r")\b", re.IGNORECASE | re.MULTILINE,
+)
+_HARNESS_CLOSER_RE: Final[re.Pattern[str]] = re.compile(
+    r"</(" + HARNESS_TAG_ALT + r")\s*>", re.IGNORECASE,
+)
+_HARNESS_TAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"<(?:" + HARNESS_TAG_ALT + r")\b", re.IGNORECASE,
 )
 # A paste's opening tag, as ingest reads one.
 _PASTE_OPENER_RE: Final[re.Pattern[str]] = re.compile(
@@ -429,10 +445,13 @@ def cut_relay(text: str) -> str:
     attributes don't end on its line aren't openers. A bracketed line that only
     resembles a notice isn't one. A paste is never cut.
 
-    What's left comes back as it was, from the start of the line after the cut,
-    so every pattern that reads line starts sees the same lines it did before.
-    When the first word after the cut, past any closed reminders, sits behind
-    whitespace a line start doesn't skip, such as a lone CR, nothing is cut.
+    What's left comes back as it was, from the start of the line after the cut.
+    Nothing is cut unless ingest reads what's left the way it reads that part
+    of the whole record: no reminder or harness block may run across the cut,
+    and what's left may not open with a slash command's wrapper. When its first
+    word, once marker lines and reminders are gone, is a harness tag, that tag
+    must already open its line, since a tag a cut moved to a line start would
+    take the words after it.
     """
     if not _RELAY_HINT_RE.match(text):
         return text
@@ -466,32 +485,120 @@ def cut_relay(text: str) -> str:
         if not line_end:
             break
         pos = line_end.end()
-    if pos == 0 or not _opens_a_line(text, pos, reminders, starts):
+    if pos == 0 or not _reads_the_same(text, pos):
         return text
     return text[pos:]
 
 
-def _opens_a_line(
-    text: str, pos: int, reminders: list[tuple[int, int]], starts: list[int],
-) -> bool:
-    """True when the first word at or after line start `pos` opens its line.
+def _block_spans(
+    text: str, opener_re: re.Pattern[str], closer_re: re.Pattern[str], stop: int,
+) -> tuple[array[int], array[int]] | None:
+    """Starts and ends of the blocks that open before `stop`, in order.
 
-    Ingest drops closed reminders and strips the record, then reads tags at line
-    starts. If the first word sits behind whitespace a line start doesn't skip,
-    such as a lone CR, stripping would move it to a line start, and a harness
-    tag there could take the words after it. A reminder opens its own line, so
-    only the whitespace after the last reminder matters.
+    A block is what ingest's lazy pattern matches: an `opener_re` match, the
+    next `>`, and the first `closer_re` match of the same tag after it, with
+    no overlap. One forward scan finds them, where the pattern rescans the rest
+    of the record for every opener that never closes. None when a tag name
+    isn't ASCII, since ingest's case-blind match of one can't be repeated here.
     """
-    end = pos
-    for _ in range(len(reminders) + 1):
-        space = _SPACE_RUN_RE.match(text, pos)
-        end = space.end() if space else pos
-        at = bisect_right(starts, end) - 1
-        if at < 0 or end >= reminders[at][1]:
+    closers: dict[str, tuple[array[int], array[int]]] = {}
+    for m in closer_re.finditer(text):
+        name = m.group(1)
+        if not name.isascii():
+            return None
+        found = closers.setdefault(name.lower(), (array("q"), array("q")))
+        found[0].append(m.start())
+        found[1].append(m.end())
+    at = dict.fromkeys(closers, 0)
+    starts: array[int] = array("q")
+    ends: array[int] = array("q")
+    gt = -1
+    done = 0
+    for m in opener_re.finditer(text):
+        if m.start() >= stop:
             break
-        pos = reminders[at][1]
-    line = text.rfind("\n", pos, end) + 1 or pos
-    return bool(_BLANKS_RE.fullmatch(text, line, end))
+        if m.start() < done:
+            continue
+        name = m.group(1)
+        if not name.isascii():
+            return None
+        if gt < m.end():
+            gt = text.find(">", m.end())
+            if gt < 0:
+                break
+        key = name.lower()
+        if key not in closers:
+            continue
+        closer_starts, closer_ends = closers[key]
+        k = at[key]
+        while k < len(closer_starts) and closer_starts[k] <= gt:
+            k += 1
+        at[key] = k
+        if k < len(closer_starts):
+            starts.append(m.start())
+            ends.append(closer_ends[k])
+            done = closer_ends[k]
+    return starts, ends
+
+
+def _reads_the_same(text: str, pos: int) -> bool:
+    """True when ingest reads `text[pos:]` alone as it reads that part of `text`.
+
+    Ingest drops host marker lines and closed reminders, strips the record,
+    drops a record that opens with a slash command's wrapper, and cuts harness
+    blocks that open at a line start. The cut at `pos` changes none of that
+    when no reminder or harness block runs across it, the rest doesn't open
+    with a command wrapper, and the part before it holds no paste opener. A
+    first word that is a harness tag must also still open its line once
+    markers and reminders are gone, or the cut would hand that tag the words
+    after it.
+    """
+    # A marker is a whole line and `pos` starts a line, so dropping the markers
+    # from each part gives the record without its markers.
+    cut = HOST_MARKER_LINE_RE.sub("", text[:pos])
+    whole = cut + HOST_MARKER_LINE_RE.sub("", text[pos:])
+    reminders = _block_spans(whole, _REMINDER_TAG_RE, _REMINDER_CLOSER_RE, len(whole))
+    if reminders is None:
+        return False
+    at = len(cut)
+    kept: list[str] = []
+    prev = dropped = 0
+    for start, end in zip(*reminders):
+        if start < at < end:
+            return False
+        kept.append(whole[prev:start])
+        if end <= at:
+            dropped += end - start
+        prev = end
+    kept.append(whole[prev:])
+    reduced = "".join(kept)
+    at -= dropped
+    lead = _space_end(reduced, 0)
+    first = _space_end(reduced, at)
+    if first == len(reduced):
+        return True
+    # Where the rest starts in the stripped record: its first word's line when
+    # only spaces or tabs come before the word there, or else the word itself.
+    stop = reduced.rfind("\n", lead, first) + 1 or lead
+    if not _BLANKS_RE.fullmatch(reduced, stop, first):
+        if _HARNESS_TAG_RE.match(reduced, first):
+            return False
+        stop = first
+    if (
+        COMMAND_WRAPPER_RE.match(reduced[first:first + 32])
+        or _PASTE_OPENER_RE.search(reduced, lead, stop)
+    ):
+        return False
+    # Ingest reads harness blocks in the stripped record, where `lead` is 0.
+    record = reduced[lead:]
+    harness = _block_spans(record, _HARNESS_OPENER_RE, _HARNESS_CLOSER_RE, stop - lead)
+    return harness is not None and all(end <= stop - lead for end in harness[1])
+
+
+def _space_end(text: str, pos: int) -> int:
+    """Where the whitespace run that starts at `pos` ends."""
+    space = _SPACE_RUN_RE.match(text, pos)
+    return space.end() if space else pos
 
 
 # #1025: a sentence that begins with a CLOSING tag ("</…") is a stray

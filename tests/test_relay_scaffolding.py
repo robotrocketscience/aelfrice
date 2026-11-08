@@ -1,5 +1,5 @@
-"""Relay text that opens a user record is not the user's words, and every word
-from the user's first one on stays.
+"""Relay text that opens a user record is not the user's words, and what follows
+a cut reads as it does in the whole record.
 
 A teammate's brief (`<teammate-message>`), a background agent's report
 (`<agent-message>`) and another session's message reach the transcript as user
@@ -10,13 +10,24 @@ closing tag each on their own line.
 from __future__ import annotations
 
 import json
+import random
+import re
 import tracemalloc
 from pathlib import Path
 
 import pytest
 
 from aelfrice.ingest import _user_speech, ingest_jsonl
-from aelfrice.noise_filter import cut_relay
+from aelfrice.noise_filter import (
+    HARNESS_BLOCK_RE,
+    SYSTEM_REMINDER_RE,
+    _block_spans,  # pyright: ignore[reportPrivateUsage]
+    _HARNESS_CLOSER_RE,  # pyright: ignore[reportPrivateUsage]
+    _HARNESS_OPENER_RE,  # pyright: ignore[reportPrivateUsage]
+    _REMINDER_CLOSER_RE,  # pyright: ignore[reportPrivateUsage]
+    _REMINDER_TAG_RE,  # pyright: ignore[reportPrivateUsage]
+    cut_relay,
+)
 from aelfrice.store import MemoryStore
 
 BODY = "Ruling: option 1. Keep the retry wrapper and leave the runner untouched."
@@ -264,9 +275,11 @@ def test_a_relay_behind_a_reminder_or_a_marker_stays(lead: str) -> None:
     assert BODY in (_user_speech(text) or "")
 
 
-def test_a_slash_command_behind_a_relay_drops_the_record() -> None:
+def test_a_slash_command_behind_a_relay_cuts_nothing() -> None:
+    # Cut, the record would open with the wrapper and go whole.
     text = f"{RELAY_BLOCKS[3]}\n<command-name>/foo</command-name>\n{MINE}"
-    assert _user_speech(text) is None
+    assert cut_relay(text) == text
+    assert MINE in (_user_speech(text) or "")
 
 
 @pytest.mark.parametrize("text", [
@@ -359,3 +372,71 @@ def test_the_strip_guard_looks_past_a_reminder(between: str) -> None:
 def test_a_reminder_after_the_cut_is_fine_when_a_line_follows() -> None:
     reminder = "<system-reminder>x</system-reminder>"
     assert cut_relay(f"{RELAY_BLOCKS[3]}\n{reminder}\n{MINE}") == f"{reminder}\n{MINE}"
+
+
+@pytest.mark.parametrize("space", ["\r", "\x85", "\x0b", "\x0c", " "])
+def test_the_strip_guard_looks_past_a_marker_line(space: str) -> None:
+    text = f"{RELAY_BLOCKS[3]}\n[Request interrupted by user]\n{space}<result>\n{MINE}"
+    assert cut_relay(text) == text
+    assert MINE in (_user_speech(text) or "")
+
+
+@pytest.mark.parametrize("inner, after", [
+    ("<result>", "<status>\n</result>"),
+    ("<task-notification>", "<summary>\n</task-notification>"),
+    ("<tasK-id>", "</task-id>"),
+])
+def test_nothing_is_cut_when_a_harness_block_runs_across_the_cut(inner: str, after: str) -> None:
+    text = f"<agent-message>\n{inner}\n</agent-message>\n{after}\n{MINE}"
+    assert cut_relay(text) == text
+    assert MINE in (_user_speech(text) or "")
+
+
+def test_a_harness_block_that_closes_inside_the_relay_is_fine() -> None:
+    text = f"<agent-message>\n<result>\n{BODY}\n</result>\n</agent-message>\n{MINE}"
+    assert cut_relay(text) == MINE
+
+
+def test_nothing_is_cut_when_a_reminder_runs_across_the_cut() -> None:
+    # The opener's attributes run past the bound `cut_relay` reads reminders
+    # with, so it counts the closer inside, and ingest doesn't.
+    opener = "<system-reminder " + "a" * 2100 + ">"
+    text = f"<agent-message>\n{opener}\n</agent-message>\n</system-reminder>\n{MINE}"
+    assert cut_relay(text) == text
+    assert _user_speech(text) == f"<agent-message>\n\n{MINE}"
+
+
+def test_nothing_is_cut_when_a_harness_tag_name_is_not_ascii() -> None:
+    text = f"<agent-message>\n<ſtatus>x</status>\n</agent-message>\n{MINE}"
+    assert cut_relay(text) == text
+
+
+def _spans(pattern: re.Pattern[str], text: str) -> list[tuple[int, int]]:
+    return [m.span() for m in pattern.finditer(text)]
+
+
+_PIECES = [
+    "<system-reminder>", "<system-reminder a='>'>", "<system-reminder", "</system-reminder>",
+    "</system-reminder\n>", "<result>", "</result>", "<RESULT x>", "</Result >", "<status>",
+    "</status>", "<result-x>", "<task-id>", "</task-id>", ">", "\n", "\n", " ", "\t", "words",
+]
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_block_spans_find_what_ingest_patterns_match(seed: int) -> None:
+    rng = random.Random(seed)
+    for _ in range(500):
+        text = "".join(rng.choice(_PIECES) for _ in range(rng.randrange(1, 14)))
+        found = _block_spans(text, _REMINDER_TAG_RE, _REMINDER_CLOSER_RE, len(text))
+        assert found is not None
+        assert list(zip(*found)) == _spans(SYSTEM_REMINDER_RE, text), text
+        found = _block_spans(text, _HARNESS_OPENER_RE, _HARNESS_CLOSER_RE, len(text))
+        assert found is not None
+        assert list(zip(*found)) == _spans(HARNESS_BLOCK_RE, text), text
+
+
+def test_block_spans_stop_at_the_bound() -> None:
+    text = "<result>\na\n</result>\n<result>\nb\n</result>"
+    found = _block_spans(text, _HARNESS_OPENER_RE, _HARNESS_CLOSER_RE, 1)
+    assert found is not None
+    assert (list(found[0]), list(found[1])) == ([0], [20])
