@@ -544,8 +544,13 @@ class _Redirect(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         self.rfile.read(int(self.headers.get("content-length", "0")))
+        if self.path != "/v1/messages":
+            self.send_response(404)
+            self.send_header("content-length", "0")
+            self.end_headers()
+            return
         self.send_response(307)
-        self.send_header("location", type(self).target + self.path)
+        self.send_header("location", type(self).target + "/v1/messages")
         self.send_header("content-length", "0")
         self.end_headers()
 
