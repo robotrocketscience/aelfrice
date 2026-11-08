@@ -259,7 +259,7 @@ def test_the_chain_anchor_is_the_cleaned_text(tmp_path: Path) -> None:
 
 from aelfrice.ingest import _user_speech  # noqa: E402
 
-# Spelled out here, not read from `ingest._HARNESS_BLOCK_TAGS`: a test
+# Spelled out here, not read from `noise_filter.HARNESS_BLOCK_TAGS`: a test
 # parametrized over the module's own list loses the case for any tag the
 # list loses, so it could never catch the removal it exists to catch.
 AUDITED_TAGS = (

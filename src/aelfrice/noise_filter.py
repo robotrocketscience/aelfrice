@@ -255,6 +255,61 @@ _TRANSCRIPT_XML_PREFIXES: Final[tuple[str, ...]] = (
     "<local-command-caveat",
 )
 
+# How ingest reads a user record. These live here so `cut_relay` can check a
+# cut against them; ingest imports them.
+
+# Opens on its own line, like every harness block: a reminder a user quotes
+# mid-sentence is their text (review, PR #1671).
+SYSTEM_REMINDER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<system-reminder\b[^>]*>.*?</system-reminder\s*>",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+
+# #1649: harness blocks that reach a transcript inside a *user* record. A
+# background task's completion notice carries the task agent's report in its
+# `<result>`; another session's message arrives in `<cross-session-message>`;
+# `<bash-stdout>`, `<tool-result>` and the rest carry machine output. None
+# of it is user speech. A harness block opens on its own line, so only a
+# tag at the start of a line is cut: a tag a user mentions mid-sentence is
+# their text. The list is checked against real session files, not guessed.
+HARNESS_BLOCK_TAGS: Final[tuple[str, ...]] = (
+    "task-notification", "system-reminder", "tool-result",
+    "cross-session-message", "aelfrice-worker-context",
+    # A notice's own parts, cut even when its wrapper is missing.
+    "task-id", "tool-use-id", "output-file", "status", "summary", "result",
+    "usage",
+    "bash-input", "bash-stdout", "bash-stderr",
+    "local-command-stdout", "local-command-stderr", "local-command-caveat",
+    "user-prompt-submit-hook", "command-name", "command-message",
+    "command-args",
+)
+HARNESS_TAG_ALT: Final[str] = "|".join(re.escape(t) for t in HARNESS_BLOCK_TAGS)
+# A closed block, from its opening line to its closer. Words after the
+# closer on the same line are the user's and stay.
+HARNESS_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<(" + HARNESS_TAG_ALT + r")\b[^>]*>.*?</\1\s*>",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+# A slash command: its wrapper is followed by the command's expanded body,
+# which is the command's text and not the user's, so the record goes whole.
+COMMAND_WRAPPER_RE: Final[re.Pattern[str]] = re.compile(
+    r"\A\s*<command-(?:name|message|args)\b", re.IGNORECASE,
+)
+# The host's own marker lines, cut wherever they sit and nothing more: the
+# background-task banner is four fixed lines, and an interrupted request
+# leaves one. Matching the lines themselves, not "the paragraph after the
+# banner", means a user paragraph next to one is never taken with it.
+HOST_MARKER_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*(?:"
+    r"\[SYSTEM NOTIFICATION[^\]\n]*\]"
+    r"|This is an automated background-task event\b[^\n]*"
+    r"|Do NOT interpret this as user acknowledgement\b[^\n]*"
+    r"|No human input has been received since\b[^\n]*"
+    r"|\[Request interrupted by user[^\]\n]*\]"
+    r")[ \t]*$\n?",
+    re.MULTILINE,
+)
+
 # Relay text from other agents: a teammate's brief, a background agent's report,
 # and another session's message. The host writes each as a user record. See
 # `cut_relay` for when one counts.
