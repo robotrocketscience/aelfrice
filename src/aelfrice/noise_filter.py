@@ -256,15 +256,7 @@ _TRANSCRIPT_XML_PREFIXES: Final[tuple[str, ...]] = (
     "<local-command-caveat",
 )
 
-# How ingest reads a user record. These live here so `cut_relay` can check a
-# cut against them; ingest imports them.
-
-# Opens on its own line, like every harness block: a reminder a user quotes
-# mid-sentence is their text (review, PR #1671).
-SYSTEM_REMINDER_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[ \t]*<system-reminder\b[^>]*>.*?</system-reminder\s*>",
-    re.DOTALL | re.IGNORECASE | re.MULTILINE,
-)
+# Patterns that ingest and `cut_relay` both read. Ingest imports them.
 
 # #1649: harness blocks that reach a transcript inside a *user* record. A
 # background task's completion notice carries the task agent's report in its
@@ -285,12 +277,6 @@ HARNESS_BLOCK_TAGS: Final[tuple[str, ...]] = (
     "command-args",
 )
 HARNESS_TAG_ALT: Final[str] = "|".join(re.escape(t) for t in HARNESS_BLOCK_TAGS)
-# A closed block, from its opening line to its closer. Words after the
-# closer on the same line are the user's and stay.
-HARNESS_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[ \t]*<(" + HARNESS_TAG_ALT + r")\b[^>]*>.*?</\1\s*>",
-    re.DOTALL | re.IGNORECASE | re.MULTILINE,
-)
 # A slash command: its wrapper is followed by the command's expanded body,
 # which is the command's text and not the user's, so the record goes whole.
 COMMAND_WRAPPER_RE: Final[re.Pattern[str]] = re.compile(

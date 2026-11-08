@@ -17,10 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice.ingest import _user_speech, ingest_jsonl
+from aelfrice.ingest import (
+    _HARNESS_BLOCK_RE,  # pyright: ignore[reportPrivateUsage]
+    _SYSTEM_REMINDER_RE,  # pyright: ignore[reportPrivateUsage]
+    _user_speech,
+    ingest_jsonl,
+)
 from aelfrice.noise_filter import (
-    HARNESS_BLOCK_RE,
-    SYSTEM_REMINDER_RE,
     _block_spans,  # pyright: ignore[reportPrivateUsage]
     _HARNESS_CLOSER_RE,  # pyright: ignore[reportPrivateUsage]
     _HARNESS_OPENER_RE,  # pyright: ignore[reportPrivateUsage]
@@ -437,10 +440,10 @@ def test_block_spans_find_what_ingest_patterns_match(seed: int) -> None:
         text = "".join(rng.choice(_PIECES) for _ in range(rng.randrange(1, 14)))
         found = _block_spans(text, _REMINDER_TAG_RE, _REMINDER_CLOSER_RE)
         assert found is not None
-        assert list(zip(found[0], found[1])) == _spans(SYSTEM_REMINDER_RE, text), text
+        assert list(zip(found[0], found[1])) == _spans(_SYSTEM_REMINDER_RE, text), text
         found = _block_spans(text, _HARNESS_OPENER_RE, _HARNESS_CLOSER_RE)
         assert found is not None
-        assert list(zip(found[0], found[1])) == _spans(HARNESS_BLOCK_RE, text), text
+        assert list(zip(found[0], found[1])) == _spans(_HARNESS_BLOCK_RE, text), text
 
 
 @pytest.mark.parametrize("text, pending", [

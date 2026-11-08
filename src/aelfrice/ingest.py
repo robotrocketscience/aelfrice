@@ -29,10 +29,8 @@ from aelfrice.derivation import META_DERIVED_FROM, META_HOLED, META_TURN_SHA, TU
 from aelfrice.derivation_worker import run_worker
 from aelfrice.noise_filter import (
     COMMAND_WRAPPER_RE as _COMMAND_WRAPPER_RE,
-    HARNESS_BLOCK_RE as _HARNESS_BLOCK_RE,
     HARNESS_TAG_ALT as _TAG_ALT,
     HOST_MARKER_LINE_RE as _HOST_MARKER_LINE_RE,
-    SYSTEM_REMINDER_RE as _SYSTEM_REMINDER_RE,
     cut_relay,
 )
 from aelfrice.session_resolution import resolve_session_id
@@ -488,8 +486,21 @@ def _normalize_jsonl_turn(obj: dict[str, object]) -> dict[str, str | None] | Non
     }
 
 
-# A harness opening line (`noise_filter.HARNESS_BLOCK_TAGS`) whose block never
-# closes: cut from it to the end.
+# Opens on its own line, like every harness block: a reminder a user quotes
+# mid-sentence is their text (review, PR #1671).
+_SYSTEM_REMINDER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<system-reminder\b[^>]*>.*?</system-reminder\s*>",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+
+# A closed block of a harness tag (`noise_filter.HARNESS_BLOCK_TAGS`), from
+# its opening line to its closer. Words after the closer on the same line are
+# the user's and stay.
+_HARNESS_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<(" + _TAG_ALT + r")\b[^>]*>.*?</\1\s*>",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+# A harness opening line whose block never closes: cut from it to the end.
 _UNCLOSED_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
     r"^[ \t]*<(?:" + _TAG_ALT + r")\b[^>]*>.*\Z",
     re.DOTALL | re.IGNORECASE | re.MULTILINE,
