@@ -633,6 +633,205 @@ def test_restore_leaves_a_belief_retired_again_another_way(
         s.close()
 
 
+# --- second review round: spoofed attributes, vetoes, last-turn notices ------
+
+
+T1 = "My staging database password rotates every Tuesday morning."
+T2 = "I keep the backup keys in the hardware safe downstairs."
+
+
+@pytest.mark.parametrize("tag", [
+    '<agent-message title="notes from=me">',
+    "<agent-message title='notes from=me'>",
+    '<agent-message title="notes  from=me  ">',
+    '<agent-message title="from=">',
+    '<agent-message from>',
+    '<cross-session-message from="uds:/tmp/s.sock" title="from-name=x">',
+    '<cross-session-message from-name="from=uds:/tmp/s.sock">',
+    '<teammate-message summary="teammate_id=lead">',
+])
+def test_an_attribute_name_inside_a_value_is_not_an_attribute(tag: str) -> None:
+    assert relay_row_shape(tag) is None
+
+
+@pytest.mark.parametrize("tag", [
+    '<agent-message title="notes from=me">',
+    "<agent-message title='notes from=me'>",
+    '<cross-session-message from-name="from=uds:/tmp/s.sock">',
+])
+def test_a_spoofed_tag_with_typed_lines_after_it_is_not_taken(
+    tmp_path: Path, pre_1875: None, tag: str,
+) -> None:
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), f"{tag}\n{T1}\n{T2}"),
+        (SESSION, _ts(2), NEXT),
+    ])
+    assert _dry(db) == ({}, set())
+
+
+@pytest.mark.parametrize("rec", [
+    f"<agent-message>\n{T1}\n{T2}",
+    f"<agent-message>\n{T1}\n</agent-message>\n{T2}",
+    f"<Teammate-Message>\n{T1}\n{T2}",
+    f"<cross-session-message>\n{T1}\n{T2}",
+    f"{CROSS_TAG}\nhi there friend.\n</cross-session-message>\n<agent-message>\n{T1}",
+    "<agent-message>\n" + " ".join(f"Typed line {i} of my own plan here." for i in range(60)),
+])
+@pytest.mark.parametrize("next_turn", [True, False])
+def test_a_bare_tag_never_takes_typed_words(
+    tmp_path: Path, pre_1875: None, rec: str, next_turn: bool,
+) -> None:
+    turns = [(SESSION, _ts(1), rec)]
+    if next_turn:
+        turns.append((SESSION, _ts(2), NEXT))
+    _, contents = _dry(_ingest(tmp_path, turns))
+    assert not any("Typed" in c or c in (T1, T2) for c in contents), contents
+
+
+@pytest.mark.parametrize("next_turn", [True, False])
+def test_a_notice_row_needs_the_record_to_show_its_line(
+    tmp_path: Path, pre_1875: None, next_turn: bool,
+) -> None:
+    # Typed words follow the template on the same line, in a sentence of
+    # their own. With no next turn, nothing shows the line.
+    line = ("[Cross-session delivery notice] Your message to another session was "
+            "refused. I think the peer session crashed overnight again.")
+    turns = [(SESSION, _ts(1), line)]
+    if next_turn:
+        turns.append((SESSION, _ts(2), NEXT))
+    assert _dry(_ingest(tmp_path, turns)) == ({}, set())
+
+
+def test_a_notice_record_with_no_next_turn_is_not_taken(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    assert _dry(_ingest(tmp_path, [(SESSION, _ts(1), NOTICE)])) == ({}, set())
+
+
+def test_a_veto_holds_against_another_anchor(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # The first record opens with a line the splitter drops, so `cut_relay`
+    # keeps it whole. The second has the same rows and opens with the tag.
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), f"Context:\n{CROSS_TAG}\n{T1}\n{T2}"),
+        (SESSION, _ts(2), NEXT),
+        (SESSION, _ts(3), f"{CROSS_TAG}\n{T1}\n{T2}"),
+        (SESSION, _ts(4), "A last sentence the user typed today."),
+    ])
+    # The first anchor matches both records' rows, since they're the same,
+    # and vetoes both, so the second anchor takes none of them.
+    assert _dry(db) == ({}, set())
+
+
+def test_a_capped_record_a_dropped_line_opens_is_not_taken(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    typed = " ".join(f"Typed sentence {i} lays out my own migration plan." for i in range(40))
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), f"Context:\n{CROSS_TAG}\n{typed}"),
+        (SESSION, _ts(2), NEXT),
+    ])
+    assert _dry(db) == ({}, set())
+
+
+def test_a_host_relay_quoting_a_malformed_tag_is_skipped_whole(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # A known miss: the self-closed tag in the body fails the host check, so
+    # the anchor vetoes the record's rows, the opener's included.
+    rec = (f"{CROSS_TAG}\nThe docs show <agent-message/> as an example here.\n"
+           f"{BODY_1}\n</cross-session-message>\n{T1}")
+    db = _ingest(tmp_path, [(SESSION, _ts(1), rec), (SESSION, _ts(2), NEXT)])
+    assert _dry(db) == ({}, set())
+
+
+def test_a_run_stays_inside_its_group(tmp_path: Path) -> None:
+    # Rows split across two timestamps, as a different writer could store
+    # them. The anchor's sentences continue past the first group.
+    from aelfrice.derivation_worker import run_worker
+    from aelfrice.models import EDGE_DERIVED_FROM, Edge
+
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        meta = {"role": "user", "call_site": "transcript_ingest"}
+        for ts, text in ((_ts(1), CROSS_TAG), (_ts(1), BODY_1),
+                         (_ts(2), BODY_2), (_ts(2), T1)):
+            s.record_ingest(
+                source_kind="transcript", source_path="transcript", raw_text=text,
+                session_id=SESSION, ts=ts, raw_meta=meta,
+            )
+        run_worker(s)
+        s.insert_edge(Edge(
+            src=_belief_id(s, T1), dst=_belief_id(s, BODY_1),
+            type=EDGE_DERIVED_FROM, weight=1.0,
+            anchor_text=f"{CROSS_TAG}\n{BODY_1}\n{BODY_2}",
+        ))
+        report = retire_relay_rows(s, dry_run=True)
+        assert _belief_id(s, BODY_2) not in report.candidates
+    finally:
+        s.close()
+
+
+def test_a_belief_a_peer_owns_is_neither_retired_nor_restored(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _belief_id(store, BODY_1)
+    peer = {target: "peer-scope"}
+    monkeypatch.setattr(store, "find_foreign_owner", lambda bid: peer.get(bid))
+    report = retire_relay_rows(store, dry_run=False)
+    assert report.foreign == [target]
+    assert "owned by a federation peer, kept: 1" in format_relay_rows_report(report, "x.db")
+    assert target not in report.candidates
+    assert target in _active_ids(store)
+    peer.clear()
+    retire_relay_rows(store, dry_run=False)
+    assert target not in _active_ids(store)
+    peer[target] = "peer-scope"
+    assert target not in restore_relay_rows(store, dry_run=True).candidates
+
+
+def test_undo_leaves_only_the_audit_trail_behind(db: Path) -> None:
+    # What undo can't take back: each belief's two feedback rows, its version
+    # counter, its rewritten search row, and the store generation.
+    def dump() -> dict[str, list[str]]:
+        conn = sqlite3.connect(str(db))
+        try:
+            names = [str(r[0]) for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name NOT LIKE 'sqlite_%'")]
+            out: dict[str, list[str]] = {}
+            for name in names:
+                try:
+                    rows = conn.execute(f'SELECT rowid, * FROM "{name}"').fetchall()
+                except sqlite3.DatabaseError:
+                    rows = conn.execute(f'SELECT * FROM "{name}"').fetchall()
+                out[name] = sorted(map(repr, rows))
+            return out
+        finally:
+            conn.close()
+
+    before = dump()
+    s = MemoryStore(str(db))
+    try:
+        retired = retire_relay_rows(s, dry_run=False).candidates
+        assert restore_relay_rows(s, dry_run=False).changed == len(retired)
+        sources = sorted(
+            (e.source, e.valence) for b in retired for e in s.list_feedback_events(b)
+        )
+    finally:
+        s.close()
+    after = dump()
+    changed = {t for t in set(before) | set(after) if before.get(t) != after.get(t)}
+    assert {t for t in changed if not t.startswith("beliefs_fts")} == {
+        "belief_versions", "feedback_history", "schema_meta",
+    }
+    assert sources == sorted(
+        [(SOURCE_RELAY_RETIRE, 0.0)] * len(retired)
+        + [("user_restored", 1.0)] * len(retired)
+    )
+
+
 # --- apply, undo, replay, doctor ----------------------------------------------
 
 
