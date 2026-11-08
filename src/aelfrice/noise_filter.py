@@ -331,8 +331,8 @@ _RELAY_HINT_RE: Final[re.Pattern[str]] = re.compile(
 # whitespace. A notice is one line ending in LF, CRLF, or the record, and the
 # whole line goes. A line that only resembles one stays, even one that quotes
 # the header.
-_CROSS_SESSION_NOTICE_RE: Final[re.Pattern[str]] = re.compile(
-    _RELAY_LEAD + r"(?:"
+_CROSS_SESSION_NOTICE: Final[str] = (
+    r"(?:"
     r"\[Cross-session delivery notice\] (?:"
     r"(?:Your message to another session was"
     r"|\d+ of your messages to another session were) (?:"
@@ -348,7 +348,16 @@ _CROSS_SESSION_NOTICE_RE: Final[re.Pattern[str]] = re.compile(
     r"\"[^\"\n\r]*\"(?:, which you asked to be notified about, (?:is idle now|has exited)"
     r"| is not holding your idle subscription \()"
     r"|No idle signal arrived from \"[^\"\n\r]*\" within"
-    r"))[^\n\r]*(?:\r?\n|\Z)",
+    r"))"
+)
+_CROSS_SESSION_NOTICE_RE: Final[re.Pattern[str]] = re.compile(
+    _RELAY_LEAD + _CROSS_SESSION_NOTICE + r"[^\n\r]*(?:\r?\n|\Z)",
+)
+# A notice line that ends at its template's last fixed word, with only
+# punctuation and spaces after it. #1877 reads stored rows with it, since a
+# word after the template may be the user's.
+_NOTICE_TEMPLATE_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    _RELAY_LEAD + _CROSS_SESSION_NOTICE + r"[^\w\n\r]*(?:\r?\n|\Z)",
 )
 _SPACE_RUN_RE: Final[re.Pattern[str]] = re.compile(r"\s*")
 _BLANKS_RE: Final[re.Pattern[str]] = re.compile(r"[ \t]*")
@@ -503,24 +512,69 @@ def cut_relay(text: str) -> str:
 RELAY_ROW_OPENER: Final[str] = "opener"
 RELAY_ROW_NOTICE: Final[str] = "notice"
 
+# The attributes the host writes on each relay tag, which a tag a person types
+# seldom carries. All 232 relay openers stored in 24 local stores carry `from`
+# and `from-name` (#1877). The other two follow #1875's fixtures.
+HOST_RELAY_ATTRIBUTES: Final[dict[str, frozenset[str]]] = {
+    "cross-session-message": frozenset({"from", "from-name"}),
+    "agent-message": frozenset({"from"}),
+    "teammate-message": frozenset({"teammate_id"}),
+}
+_RELAY_TAG_RE: Final[re.Pattern[str]] = re.compile(_RELAY_TAG, re.IGNORECASE)
+_RELAY_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"<(" + _RELAY_TAG_ALT + r")\b", re.IGNORECASE,
+)
+_TAG_ATTRIBUTE_RE: Final[re.Pattern[str]] = re.compile(r"[^\S\n\r]+([^\s=>/\"'<]+)=")
+
+
+def _host_shaped(tag: str) -> bool:
+    """True when the relay tag `tag` carries every attribute the host writes."""
+    name = _RELAY_NAME_RE.search(tag)
+    if name is None:
+        return False
+    need = HOST_RELAY_ATTRIBUTES[name.group(1).lower()]
+    return need <= {n.lower() for n in _TAG_ATTRIBUTE_RE.findall(tag)}
+
 
 def relay_row_shape(text: str) -> str | None:
     """The relay shape one stored sentence holds by itself, or None (#1877).
 
     A stored row is one sentence and keeps no line breaks. `opener` is a row
-    that holds a relay opening tag as `cut_relay` reads one and nothing else:
-    the sentence splitter gives a tag on its own line a sentence of its own.
-    `notice` is a row that opens with one of the host's cross-session notices,
-    by the fixed words `cut_relay` reads. A tag with words after it in the row,
-    a closer, and a line that only resembles a notice give None. The row
-    can't show whether it opened its record, so the caller has to.
+    that holds a relay opening tag as `cut_relay` reads one and nothing else,
+    with the attributes in `HOST_RELAY_ATTRIBUTES`: the sentence splitter gives
+    a tag on its own line a sentence of its own. `notice` is a row that opens
+    with one of the host's cross-session notices, by the fixed words
+    `cut_relay` reads, and holds no word after its template's last fixed word.
+    A bare tag, a tag with words after it in the row, a closer, and a line that
+    only resembles a notice give None. The row can't show whether it opened its
+    record, so the caller has to.
     """
     opener = _RELAY_OPENER_RE.match(text)
-    if opener is not None and not text[opener.end():].strip():
+    if (
+        opener is not None and not text[opener.end():].strip()
+        and _host_shaped(opener.group(0))
+    ):
         return RELAY_ROW_OPENER
-    if _CROSS_SESSION_NOTICE_RE.match(text):
+    if _NOTICE_TEMPLATE_LINE_RE.match(text):
         return RELAY_ROW_NOTICE
     return None
+
+
+def relay_cut_is_host_shaped(cut: str) -> bool:
+    """True when every relay tag and notice line in `cut` is the host's (#1877).
+
+    `cut` is the part `cut_relay` takes from a record. Every relay tag in it,
+    opener or not, has to carry the attributes in `HOST_RELAY_ATTRIBUTES`, and
+    every notice line has to end at its template's last fixed word.
+    """
+    for m in _RELAY_NAME_RE.finditer(cut):
+        tag = _RELAY_TAG_RE.match(cut, m.start())
+        if tag is None or not _host_shaped(tag.group(0)):
+            return False
+    return not any(
+        _CROSS_SESSION_NOTICE_RE.match(line) and not _NOTICE_TEMPLATE_LINE_RE.match(line)
+        for line in cut.split("\n")
+    )
 
 
 def _block_spans(
