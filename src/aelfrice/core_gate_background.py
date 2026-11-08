@@ -374,6 +374,20 @@ def _taskkill_path() -> str:
     return ntpath.join(root, "System32", "taskkill.exe")
 
 
+def _kill_group(pid: int) -> None:
+    """SIGKILL the process group `pid` leads. POSIX only. Never raises.
+
+    `os.killpg` and `signal.SIGKILL` don't exist on Windows, so only a
+    branch that `_is_win32` sent to POSIX calls this, and a test that sends
+    it there on Windows replaces this function.
+    """
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        # The group is gone, or empty.
+        pass
+
+
 def _kill_tree(proc: "subprocess.Popen[str]") -> None:
     """End `proc` and every process it started. Never raises.
 
@@ -386,11 +400,7 @@ def _kill_tree(proc: "subprocess.Popen[str]") -> None:
     or is missing still ends the direct child.
     """
     if not _is_win32():
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            # The group is gone.
-            pass
+        _kill_group(proc.pid)
     else:
         try:
             subprocess.run(  # noqa: S603 - a fixed System32 path and a pid
@@ -418,11 +428,7 @@ def _end_group(proc: "subprocess.Popen[str]") -> None:
     """
     if _is_win32():
         return
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except OSError:
-        # The group is empty, the usual case.
-        pass
+    _kill_group(proc.pid)
 
 
 #: Signals whose default ends a process and that aren't faults, by name. On

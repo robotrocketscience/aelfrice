@@ -16,6 +16,7 @@ import io
 import json
 import ntpath
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -490,7 +491,10 @@ def test_a_run_that_never_reads_its_prompt_still_times_out(
     monkeypatch.setattr(bg, "_is_win32", lambda: False)
     monkeypatch.setattr(subprocess, "Popen", UnreadStdinPopen)
     # The fake's pid is made up, and a real group may hold that number.
-    monkeypatch.setattr(bg.os, "killpg", lambda _pid, _sig: None, raising=False)
+    monkeypatch.setattr(bg, "_kill_group", lambda _pid: None)
+    # As on Windows, where the POSIX branch this test takes has neither.
+    monkeypatch.delattr(signal, "SIGKILL", raising=False)
+    monkeypatch.delattr(bg.os, "killpg", raising=False)
     started = time.monotonic()
     with pytest.raises(subprocess.TimeoutExpired):
         bg.run_bounded(["widget-cli"], input="w" * 65536, timeout=0.2)
@@ -498,6 +502,56 @@ def test_a_run_that_never_reads_its_prompt_still_times_out(
     proc = UnreadStdinPopen.last
     assert proc is not None and proc.stdin is None
     assert proc.pipe.closed.wait(_FULL_PIPE_BLOCK_SECONDS), "the stdin thread never closed the pipe"
+
+
+@pytest.mark.parametrize("tree_dies", [True, False])
+def test_a_windows_timeout_reads_no_posix_signal_name(
+    monkeypatch: pytest.MonkeyPatch, tree_dies: bool,
+) -> None:
+    """Windows' `signal` has no SIGKILL and its `os` no `killpg`, so they
+    are removed here on every host. Killed by: ending a Windows run, or
+    its group after it exits, through a POSIX signal."""
+    HungShimPopen.events = []
+    HungShimPopen.tree_dies = tree_dies
+    monkeypatch.setattr(bg, "_is_win32", lambda: True)
+    monkeypatch.setattr(subprocess, "Popen", HungShimPopen)
+    monkeypatch.setattr(subprocess, "_mswindows", True)
+    monkeypatch.delattr(signal, "SIGKILL", raising=False)
+    monkeypatch.delattr(bg.os, "killpg", raising=False)
+    with pytest.raises(subprocess.TimeoutExpired):
+        bg.run_bounded(["C:\\widget\\claude.cmd"], input="widget", timeout=0.2)
+    killed = [arg for name, arg in HungShimPopen.events
+              if name == "popen" and arg[0].lower().endswith("taskkill.exe")]
+    assert [argv[-3:] for argv in killed] == [["/T", "/PID", "4242"]]
+
+
+class ExitingPopen:
+    """A `Popen` for a run that reads its prompt and exits 0."""
+
+    def __init__(self, argv: list[str], **kw: Any) -> None:
+        self.args = argv
+        self.pid = 4545
+        self.returncode: int | None = None
+        self.stdin = io.StringIO()
+
+    def communicate(
+        self, input: str | None = None, timeout: float | None = None,
+    ) -> tuple[str, str]:
+        self.returncode = 0
+        return "{}", ""
+
+
+def test_a_windows_run_that_exits_reads_no_posix_signal_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: ending a Windows run's group after it exits through a
+    POSIX signal, which Windows' `signal` and `os` don't have."""
+    monkeypatch.setattr(bg, "_is_win32", lambda: True)
+    monkeypatch.setattr(subprocess, "Popen", ExitingPopen)
+    monkeypatch.delattr(signal, "SIGKILL", raising=False)
+    monkeypatch.delattr(bg.os, "killpg", raising=False)
+    done = bg.run_bounded(["C:\\widget\\claude.cmd"], input="widget", timeout=5)
+    assert (done.returncode, done.stdout) == (0, "{}")
 
 
 # --- the stub CLI: argv, settings file, and the real spawn path ----------------
