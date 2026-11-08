@@ -434,16 +434,48 @@ def test_block_spans_find_what_ingest_patterns_match(seed: int) -> None:
     rng = random.Random(seed)
     for _ in range(500):
         text = "".join(rng.choice(_PIECES) for _ in range(rng.randrange(1, 14)))
-        found = _block_spans(text, _REMINDER_TAG_RE, _REMINDER_CLOSER_RE, len(text))
+        found = _block_spans(text, _REMINDER_TAG_RE, _REMINDER_CLOSER_RE)
         assert found is not None
-        assert list(zip(*found)) == _spans(SYSTEM_REMINDER_RE, text), text
-        found = _block_spans(text, _HARNESS_OPENER_RE, _HARNESS_CLOSER_RE, len(text))
+        assert list(zip(found[0], found[1])) == _spans(SYSTEM_REMINDER_RE, text), text
+        found = _block_spans(text, _HARNESS_OPENER_RE, _HARNESS_CLOSER_RE)
         assert found is not None
-        assert list(zip(*found)) == _spans(HARNESS_BLOCK_RE, text), text
+        assert list(zip(found[0], found[1])) == _spans(HARNESS_BLOCK_RE, text), text
 
 
-def test_block_spans_stop_at_the_bound() -> None:
-    text = "<result>\na\n</result>\n<result>\nb\n</result>"
-    found = _block_spans(text, _HARNESS_OPENER_RE, _HARNESS_CLOSER_RE, 1)
+@pytest.mark.parametrize("text, pending", [
+    ("<result>\na\n</result>\n<status>\nb", {"status"}),
+    ("<result>\n</status>\n</result>\n<task-id>\n", {"task-id"}),
+    ("<result x\n<status\n", {"result", "status"}),
+    ("<result>\n<status>\n</result>", set()),
+])
+def test_block_spans_name_the_tags_left_open(text: str, pending: set[str]) -> None:
+    found = _block_spans(text, _HARNESS_OPENER_RE, _HARNESS_CLOSER_RE)
     assert found is not None
-    assert (list(found[0]), list(found[1])) == ([0], [20])
+    assert found[2] == pending
+
+
+@pytest.mark.parametrize("rest", [
+    "</task-id>",
+    "x\n</TASK-ID >",
+    "</tas\u212a-id>",
+])
+def test_nothing_is_cut_when_an_open_harness_tag_closes_after_the_cut(rest: str) -> None:
+    text = f"<agent-message>\n<task-id>\n</agent-message>\n{MINE}\n{rest}"
+    assert cut_relay(text) == text
+
+
+def test_an_open_harness_tag_with_no_closer_after_the_cut_is_fine() -> None:
+    text = f"<agent-message>\n<result>\n</agent-message>\n{MINE}\n</status>"
+    assert cut_relay(text) == f"{MINE}\n</status>"
+
+
+@pytest.mark.parametrize("between", ["", "  \n", "\x0b\n", "<system-reminder>x</system-reminder>\n"])
+def test_a_harness_tag_after_blank_lines_and_reminders_opens_its_line(between: str) -> None:
+    text = f"{RELAY_BLOCKS[3]}\n{between}<result>x</result>\n{MINE}"
+    assert cut_relay(text) == f"{between}<result>x</result>\n{MINE}"
+
+
+def test_a_harness_tag_right_after_a_reminder_opens_its_line() -> None:
+    reminder = "<system-reminder>x</system-reminder>"
+    text = f"{RELAY_BLOCKS[3]}\n{reminder}<result>x</result>\n{MINE}"
+    assert cut_relay(text) == f"{reminder}<result>x</result>\n{MINE}"

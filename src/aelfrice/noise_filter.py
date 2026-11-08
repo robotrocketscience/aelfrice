@@ -389,6 +389,15 @@ _HARNESS_CLOSER_RE: Final[re.Pattern[str]] = re.compile(
 _HARNESS_TAG_RE: Final[re.Pattern[str]] = re.compile(
     r"<(?:" + HARNESS_TAG_ALT + r")\b", re.IGNORECASE,
 )
+# Blank lines and the closed reminders that open lines, from a line start up
+# to the first word, read as ingest's reminder pattern reads each one. The
+# group is atomic, so a reminder with words after it on its line can't stretch
+# to a later closer.
+_REMINDER_BLOCK: Final[str] = r"(?>[ \t]*<system-reminder\b[^>]*>.*?</system-reminder\s*>)"
+_LEADING_REMINDERS_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:[^\S\n]*\n|" + _REMINDER_BLOCK + r"[^\S\n]*\n)*+" + _REMINDER_BLOCK + "?",
+    re.DOTALL | re.IGNORECASE,
+)
 # A paste's opening tag, as ingest reads one.
 _PASTE_OPENER_RE: Final[re.Pattern[str]] = re.compile(
     r"<pasted_content\b[^>\n]{0,200}>", re.IGNORECASE,
@@ -494,9 +503,9 @@ def cut_relay(text: str) -> str:
 
 
 def _block_spans(
-    text: str, opener_re: re.Pattern[str], closer_re: re.Pattern[str], stop: int,
-) -> tuple[array[int], array[int]] | None:
-    """Starts and ends of the blocks that open before `stop`, in order.
+    text: str, opener_re: re.Pattern[str], closer_re: re.Pattern[str],
+) -> tuple[array[int], array[int], set[str]] | None:
+    """The blocks in `text`, in order, and the tags of openers that never close.
 
     A block is what ingest's lazy pattern matches: an `opener_re` match, the
     next `>`, and the first `closer_re` match of the same tag after it, with
@@ -515,33 +524,36 @@ def _block_spans(
     at = dict.fromkeys(closers, 0)
     starts: array[int] = array("q")
     ends: array[int] = array("q")
+    pending: set[str] = set()
     gt = -1
+    no_gt = False
     done = 0
     for m in opener_re.finditer(text):
-        if m.start() >= stop:
-            break
         if m.start() < done:
             continue
         name = m.group(1)
         if not name.isascii():
             return None
-        if gt < m.end():
-            gt = text.find(">", m.end())
-            if gt < 0:
-                break
         key = name.lower()
-        if key not in closers:
+        if not no_gt and gt < m.end():
+            gt = text.find(">", m.end())
+            no_gt = gt < 0
+        pair = closers.get(key)
+        if no_gt or pair is None:
+            pending.add(key)
             continue
-        closer_starts, closer_ends = closers[key]
+        closer_starts, closer_ends = pair
         k = at[key]
         while k < len(closer_starts) and closer_starts[k] <= gt:
             k += 1
         at[key] = k
-        if k < len(closer_starts):
-            starts.append(m.start())
-            ends.append(closer_ends[k])
-            done = closer_ends[k]
-    return starts, ends
+        if k == len(closer_starts):
+            pending.add(key)
+            continue
+        starts.append(m.start())
+        ends.append(closer_ends[k])
+        done = closer_ends[k]
+    return starts, ends, pending
 
 
 def _reads_the_same(text: str, pos: int) -> bool:
@@ -550,52 +562,52 @@ def _reads_the_same(text: str, pos: int) -> bool:
     Ingest drops host marker lines and closed reminders, strips the record,
     drops a record that opens with a slash command's wrapper, and cuts harness
     blocks that open at a line start. The cut at `pos` changes none of that
-    when no reminder or harness block runs across it, the rest doesn't open
-    with a command wrapper, and the part before it holds no paste opener. A
-    first word that is a harness tag must also still open its line once
-    markers and reminders are gone, or the cut would hand that tag the words
-    after it.
+    when no reminder or harness block that opens before it closes after it,
+    the rest doesn't open with a command wrapper, and the part before it holds
+    no paste opener. A first word that is a harness tag must also still open
+    its line once markers and reminders are gone, or the cut would hand that
+    tag the words after it.
     """
+    if _space_end(text, pos) == len(text):
+        return True
     # A marker is a whole line and `pos` starts a line, so dropping the markers
     # from each part gives the record without its markers.
     cut = HOST_MARKER_LINE_RE.sub("", text[:pos])
-    whole = cut + HOST_MARKER_LINE_RE.sub("", text[pos:])
-    reminders = _block_spans(whole, _REMINDER_TAG_RE, _REMINDER_CLOSER_RE, len(whole))
-    if reminders is None:
+    rest = HOST_MARKER_LINE_RE.sub("", text[pos:])
+    found = _block_spans(cut, _REMINDER_TAG_RE, _REMINDER_CLOSER_RE)
+    # An opener left open before the cut may close after it.
+    if found is None or (found[2] and _REMINDER_CLOSER_RE.search(rest)):
         return False
-    at = len(cut)
     kept: list[str] = []
-    prev = dropped = 0
-    for start, end in zip(*reminders):
-        if start < at < end:
-            return False
-        kept.append(whole[prev:start])
-        if end <= at:
-            dropped += end - start
+    prev = 0
+    for start, end in zip(found[0], found[1]):
+        kept.append(cut[prev:start])
         prev = end
-    kept.append(whole[prev:])
-    reduced = "".join(kept)
-    at -= dropped
-    lead = _space_end(reduced, 0)
-    first = _space_end(reduced, at)
-    if first == len(reduced):
+    kept.append(cut[prev:])
+    cut = "".join(kept)
+    lead = _space_end(cut, 0)
+    # The rest opens a line, and so does what follows its leading blank lines
+    # and reminders, since a reminder goes with the spaces before it.
+    run = _LEADING_REMINDERS_RE.match(rest)
+    first = run.end() if run else 0
+    blanks = _BLANKS_RE.match(rest, first)
+    first = blanks.end() if blanks else first
+    opens_line = first == len(rest) or not rest[first].isspace()
+    first = _space_end(rest, first)
+    if first == len(rest):
         return True
-    # Where the rest starts in the stripped record: its first word's line when
-    # only spaces or tabs come before the word there, or else the word itself.
-    stop = reduced.rfind("\n", lead, first) + 1 or lead
-    if not _BLANKS_RE.fullmatch(reduced, stop, first):
-        if _HARNESS_TAG_RE.match(reduced, first):
-            return False
-        stop = first
     if (
-        COMMAND_WRAPPER_RE.match(reduced[first:first + 32])
-        or _PASTE_OPENER_RE.search(reduced, lead, stop)
+        COMMAND_WRAPPER_RE.match(rest[first:first + 32])
+        or (not opens_line and _HARNESS_TAG_RE.match(rest, first))
+        or _PASTE_OPENER_RE.search(cut, lead)
     ):
         return False
     # Ingest reads harness blocks in the stripped record, where `lead` is 0.
-    record = reduced[lead:]
-    harness = _block_spans(record, _HARNESS_OPENER_RE, _HARNESS_CLOSER_RE, stop - lead)
-    return harness is not None and all(end <= stop - lead for end in harness[1])
+    found = _block_spans(cut[lead:], _HARNESS_OPENER_RE, _HARNESS_CLOSER_RE)
+    return found is not None and not any(
+        re.compile(r"</" + re.escape(tag) + r"\s*>", re.IGNORECASE).search(rest)
+        for tag in found[2]
+    )
 
 
 def _space_end(text: str, pos: int) -> int:
