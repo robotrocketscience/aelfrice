@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/pypi/l/aelfrice.svg)](LICENSE)
 [![CI](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml/badge.svg)](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml)
 <!-- bench-canonical-badge:start -->
-reproducibility: ⚠️ 6/11 ok · last run 2026-11-07
+reproducibility: ⚠️ 6/11 ok · last run 2026-11-08
 <!-- bench-canonical-badge:end -->
 
 **aelfrice gives an AI coding agent a local memory: before the model reads each prompt, a hook adds your locked beliefs and the best-ranked matches to it.** An agent forgets your corrections between sessions, so you repeat them. A belief is one statement that aelfrice has stored.
@@ -20,7 +20,7 @@ By default, aelfrice checks PyPI for updates and runs your `claude` CLI in the b
 
 ## Beliefs
 
-Each belief records its source, type, and Bayesian confidence score. Every 12 logged lines (about six prompts and replies), aelfrice stores each sentence of your prompts as a fact, correction, preference, or requirement, with inline code, code blocks, and URLs removed. It skips noise, hedged ideas such as "maybe we could", sentences that end in a question mark, and the model's replies.
+Each belief records its source, type, and Bayesian confidence score. Every 12 logged lines (about six prompts and replies), aelfrice stores each sentence of your prompts as a fact, correction, preference, or requirement, with code blocks removed. A sentence keeps its inline code and URLs, so you can search for a command or a link, but they don't affect whether aelfrice stores the sentence or which type it gets. It skips noise, hedged ideas such as "maybe we could", sentences that end in a question mark, sentences under 10 characters once their inline code and URLs are removed, and the model's replies. So a search can't find ``Use `widget.py`!``. A URL with a query string or an `@`, inline code with an `=` or a credential word such as `token:` or `bearer`, and either one with a known key shape or a long random string, stay removed. That isn't a general secret scanner: see the [privacy document](docs/user/PRIVACY.md#secrets-in-your-prompts).
 
 `/aelf:confirm` and `aelf feedback` change a belief's confidence, as does praise such as "perfect" for an answer it informed. Complaints such as "that's wrong" count only with [negative sentiment feedback](docs/user/CONFIG.md) on.
 
