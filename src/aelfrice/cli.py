@@ -11660,7 +11660,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "list the beliefs stored from relay text, such as another "
             "session's message, as the user's typed words before #1875 "
-            "(issue #1877), with counts by shape and no belief text. A belief "
+            "(issue #1877), with counts by shape and no belief text. A relay "
+            "tag counts only with the attributes the host writes. A belief "
             "that a row outside relay text also produced is kept, as is a "
             "locked, promoted, confirmed or restored belief, one kept in aelf "
             "review, and one another source corroborated. Bypasses the "
@@ -11674,8 +11675,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "list the beliefs --retire-relay-rows retired that are still "
-            "retired (issue #1877). Bypasses the hooks/graph checks. Combine "
+            "list the beliefs --retire-relay-rows retired that nothing has "
+            "retired again since (issue #1877). Bypasses the hooks/graph checks. Combine "
             "with --apply to restore them, as aelf restore does. Default is "
             "dry-run."
         ),
