@@ -468,12 +468,14 @@ def cut_relay(text: str) -> str:
     notice isn't one. A paste is never cut.
 
     What's left comes back as it was, from the start of the line after the cut.
-    Nothing is cut when the cut could change how ingest reads what's left:
-    when a reminder or harness tag left open before the cut has a closer after
-    it, when what's left opens with a slash command's wrapper, or when its
-    first word, once marker lines and reminders are gone, is a harness tag that
-    a cut would move to a line start. A tag name that isn't ASCII also stops
-    the cut.
+    Nothing is cut when the cut could make ingest keep less of what's left than
+    it keeps of that part in the whole record: when a reminder or harness tag
+    left open before the cut has a closer after it, when what's left opens with
+    a slash command's wrapper, or when its first word, once marker lines and
+    reminders are gone, is a harness tag that a cut would move to a line start.
+    A tag name that isn't ASCII also stops the cut. A cut can keep more than
+    the whole record does: a harness tag that opens inside the relay and never
+    closes takes the rest of the whole record, and it goes with the cut.
     """
     if not _RELAY_HINT_RE.match(text):
         return text
@@ -567,7 +569,7 @@ def _block_spans(
 
 
 def _reads_the_same(text: str, pos: int) -> bool:
-    """True when ingest reads `text[pos:]` alone as it reads that part of `text`.
+    """True when ingest keeps no less of `text[pos:]` alone than of that part of `text`.
 
     Ingest drops host marker lines and closed reminders, strips the record,
     drops a record that opens with a slash command's wrapper, and cuts harness
@@ -577,8 +579,9 @@ def _reads_the_same(text: str, pos: int) -> bool:
     no paste opener. A first word that is a harness tag must also still open
     its line once markers and reminders are gone, or the cut would hand that
     tag the words after it. A closer after the cut stops it even when ingest
-    wouldn't pair the two, so this can refuse a cut that was safe, never the
-    reverse.
+    wouldn't pair the two, so this can refuse a cut that was safe. A harness
+    tag that never closes inside the part before `pos` takes the rest of
+    `text` in ingest, so the part after `pos` alone can keep more.
     """
     if _space_end(text, pos) == len(text):
         return True
