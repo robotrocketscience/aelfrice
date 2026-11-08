@@ -35,8 +35,10 @@ and `--seed`, apart from what the runner replies.
   check and the claim, a run starts only when everything the ledger records
   plus `RUN_RESERVE_USD` fits `--budget-usd`, at most `TOTAL_CEILING_USD`, and
   the ledger holds fewer than `--max-calls` calls. Its `started` row reserves its
-  cap before the runner starts. A cost that isn't a finite number of at least
-  0 charges the cap. Repeating the command with the same `--out` resumes: a
+  cap before the runner starts. A run that started and reported no cost that
+  is a finite number of at least 0, such as one that timed out, failed, or
+  reported NaN, charges `RUN_RESERVE_USD`, and a runner that never started
+  charges nothing. Repeating the command with the same `--out` resumes: a
   request already run isn't run again, so raising `--max-calls` continues a
   replay that stopped on it. When the resume runs anything, it moves the
   earlier `run/` to `run-1` (then `run-2`, and so on) before it builds the new
@@ -1250,9 +1252,8 @@ def ledger_calls(rows: Sequence[Mapping[str, Any]]) -> dict[object, LedgerCall]:
     The number, not the request id, keys the charge, so no later row can
     overwrite what an earlier call cost. A row with no number counts as a
     call of its own, and a `done` row whose cost isn't a finite number of at
-    least 0 charges the cap.
+    least 0 charges `RUN_RESERVE_USD`.
     """
-    cap = float(wb.RUNNER_BUDGET_USD)
     calls: dict[object, LedgerCall] = {}
     for i, row in enumerate(rows):
         number = row.get("call")
@@ -1260,7 +1261,7 @@ def ledger_calls(rows: Sequence[Mapping[str, Any]]) -> dict[object, LedgerCall]:
         call = calls.setdefault(key, LedgerCall(str(row.get("out")), str(row.get("request_id"))))
         if row.get("state") == STATE_DONE:
             cost = wb.checked_cost(row.get("cost_usd"))
-            charge = cap if cost is None else cost
+            charge = RUN_RESERVE_USD if cost is None else cost
             call.charge = charge if call.charge is None else max(call.charge, charge)
     return calls
 
@@ -1437,7 +1438,9 @@ def run_requests(
             stdout = proc.stdout if proc is not None else ""
             code = proc.returncode if proc is not None else FAILED_RETURNCODE
             reported = wb.reported_cost(stdout)
-            cost = reported if reported is not None else record.get("cost_usd", 0.0)
+            # `execute_run` drops `cost_usd` only when the runner never started.
+            unknown = RUN_RESERVE_USD if "cost_usd" in record else 0.0
+            cost = reported if reported is not None else unknown
             _append_line(replies, {"request_id": rid, "stdout": stdout or "", "returncode": code})
             close_run(out_key, rid, call, cost, seconds=record.get("seconds"), returncode=code)
             done[rid] = float(cast(float, cost))

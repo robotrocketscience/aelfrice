@@ -1790,6 +1790,11 @@ def test_replay_refuses_a_call_cap_below_one(
     assert _calls(fake_runner) == []
 
 
+def _done_charges() -> list[object]:
+    """The cost on each `done` row of the spend ledger, in order."""
+    return [r.get("cost_usd") for r in rp.read_ledger(rp.spend_ledger_path()) if r.get("state") == rp.STATE_DONE]
+
+
 def _many_sessions(tmp_path: Path, n: int) -> Path:
     """One store with `n` eligible sessions."""
     path = tmp_path / "many" / "aelfrice" / "memory.db"
@@ -1869,20 +1874,24 @@ def test_no_output_folder_gets_a_budget_of_its_own(
 
 @pytest.mark.timeout(120)
 @pytest.mark.parametrize("cost", [float("nan"), float("inf"), float("-inf"), -1.0, True, "0.01", 10 ** 400])
-def test_a_cost_that_is_no_usable_number_charges_the_cap(
+def test_a_cost_that_is_no_usable_number_charges_the_reserve(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], fake_runner: Path, cost: object,
 ) -> None:
-    """NaN, negative, and -Infinity ran 16 of 16 in the review. Killed by:
-    accepting any of them, in the ledger or in what the kill rule reads."""
-    store = _many_sessions(tmp_path, 6)
+    """With `--max-calls 50` at $1.00, the review ran 9 and the ledger read
+    $0.90, when each run could have cost $0.13. Killed by: accepting any of
+    these costs, or charging one less than the reserve, in the ledger or the
+    kill rule."""
+    store = _many_sessions(tmp_path, 10)
     _configure(fake_runner, cost=cost)
-    code, text = _replay(tmp_path, capsys, fake_runner, [store], "--sessions", "6", "--max-calls", "5")
+    code, text = _replay(tmp_path, capsys, fake_runner, [store], "--sessions", "10",
+                         "--max-calls", "50", "--budget-usd", "1.00")
     assert code == 0, text
     summary = json.loads(text)
-    assert (summary["ran_now"], summary["budget_stopped"]) == (4, 2)
-    assert rp.total_spend() == pytest.approx(0.40)
-    assert summary["H7"]["over_cap"] == 4
-    assert summary["H7"]["cost_unusable"] == 4
+    assert (summary["ran_now"], summary["budget_stopped"]) == (7, 3)
+    assert rp.total_spend() == pytest.approx(7 * rp.RUN_RESERVE_USD)
+    assert _done_charges() == [rp.RUN_RESERVE_USD] * 7
+    assert summary["H7"]["over_cap"] == 7
+    assert summary["H7"]["cost_unusable"] == 7
     assert rp.decide(ab.V_PASS, ab.V_PASS, ab.V_PASS, summary["H7"]["over_cap"]) == rp.DECISION_KILL
 
 
@@ -2342,7 +2351,7 @@ def test_one_replay_runs_at_a_time_whatever_its_output_folder(tmp_path: Path) ->
     b"\xff\xfe not text",
     b"[" * 100000,
 ], ids=["5001 digits", "undecodable", "deep nesting"])
-def test_output_nothing_can_read_charges_the_cap_and_the_replay_goes_on(
+def test_output_nothing_can_read_charges_the_reserve_and_the_replay_goes_on(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], output: bytes,
 ) -> None:
     """Both ended the replay with rc 1 in the review, after spending. Killed
@@ -2357,7 +2366,49 @@ def test_output_nothing_can_read_charges_the_cap_and_the_replay_goes_on(
     code, text = _replay(tmp_path, capsys, runner, [store], "--sessions", "2")
     assert code == 0, text
     assert json.loads(text)["ran_now"] == 2
-    assert rp.total_spend() == pytest.approx(2 * float(wb.RUNNER_BUDGET_USD))
+    assert rp.total_spend() == pytest.approx(2 * rp.RUN_RESERVE_USD)
+
+
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize("script", [
+    "cat > /dev/null\nexec sleep 30\n",
+    "cat > /dev/null\necho '{\"type\": \"result\", \"result\": \"{}\"}'\n",
+    "cat > /dev/null\nexit 3\n",
+], ids=["timeout", "no cost reported", "failed with no output"])
+def test_a_started_run_with_no_cost_charges_the_reserve(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, script: str,
+) -> None:
+    """A timeout or an unusable cost charged the $0.10 cap, so the stated
+    bound didn't hold. Killed by: charging such a run less than the reserve."""
+    from aelfrice import core_gate_background as background
+    monkeypatch.setattr(background, "RUNNER_TIMEOUT_SECONDS", 1)
+    store = _many_sessions(tmp_path, 2)
+    runner = tmp_path / "bin" / "hostcli"
+    runner.parent.mkdir()
+    runner.write_text("#!/bin/sh\n" + script, encoding="utf-8")
+    runner.chmod(0o700)
+    code, text = _replay(tmp_path, capsys, runner, [store], "--sessions", "2")
+    assert code == 0, text
+    assert json.loads(text)["ran_now"] == 2
+    assert _done_charges() == [rp.RUN_RESERVE_USD] * 2
+
+
+@pytest.mark.timeout(120)
+def test_a_runner_that_never_starts_charges_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Its interpreter is missing, so starting it raises before anything
+    could spend. Killed by: charging a call that never started."""
+    store = _many_sessions(tmp_path, 2)
+    runner = tmp_path / "bin" / "hostcli"
+    runner.parent.mkdir()
+    runner.write_text(f"#!{tmp_path / 'no-such-interpreter'}\n", encoding="utf-8")
+    runner.chmod(0o700)
+    code, text = _replay(tmp_path, capsys, runner, [store], "--sessions", "2")
+    assert code == 0, text
+    assert json.loads(text)["ran_now"] == 2
+    assert _done_charges() == [0.0, 0.0]
+    assert rp.total_spend() == 0.0
 
 
 SLOW_RUNNER = """#!/bin/sh
@@ -2474,10 +2525,11 @@ def test_a_resume_closes_only_its_own_open_runs_and_repeats_no_reply(tmp_path: P
 
 
 @pytest.mark.parametrize("cost", [float("nan"), float("-inf"), -1.0, True, None, "0.01"])
-def test_the_ledger_charges_a_bad_row_at_the_cap(cost: object) -> None:
-    """Killed by: reading a bad cost in the ledger as free, or as a refund."""
+def test_the_ledger_charges_a_bad_row_at_the_reserve(cost: object) -> None:
+    """Killed by: reading a bad cost in the ledger as free, as a refund, or
+    as less than the reserve."""
     done, open_calls = rp.ledger_state([{"request_id": "r", "state": rp.STATE_DONE, "cost_usd": cost}])
-    assert done == {"r": float(wb.RUNNER_BUDGET_USD)}
+    assert done == {"r": rp.RUN_RESERVE_USD}
     assert open_calls == {}
 
 
@@ -2498,10 +2550,10 @@ def test_a_smaller_budget_stops_sooner(
     with no reported cost counted as free."""
     store = _many_sessions(tmp_path, 4)
     _configure(fake_runner)
-    code, text = _replay(tmp_path, capsys, fake_runner, [store], "--sessions", "4", "--max-calls", "5", "--budget-usd", "0.25")
+    code, text = _replay(tmp_path, capsys, fake_runner, [store], "--sessions", "4", "--max-calls", "5", "--budget-usd", "0.30")
     assert code == 0, text
     assert json.loads(text)["ran_now"] == 2
-    assert rp.total_spend() == pytest.approx(0.20)
+    assert rp.total_spend() == pytest.approx(2 * rp.RUN_RESERVE_USD)
 
 
 @pytest.mark.timeout(120)
@@ -2548,7 +2600,7 @@ def test_a_failing_runner_is_a_recorded_failure(
     assert code == 0, text
     summary = json.loads(text)
     assert summary["H1"]["run_outcomes"][wb.OUTCOME_RUN_FAILED] == 1
-    assert summary["spent_usd"] == pytest.approx(0.10 + 0.03)
+    assert summary["spent_usd"] == pytest.approx(rp.RUN_RESERVE_USD + 0.03)
 
 
 @pytest.mark.timeout(120)
