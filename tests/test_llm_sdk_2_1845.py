@@ -449,6 +449,31 @@ def test_a_429_waits_at_most_60_seconds_and_says_so_past_1(
         assert err.splitlines() == [f"aelf: the classifier is {line}"]
 
 
+@pytest.mark.parametrize(
+    ("status", "hits", "rc"),
+    [(400, 3, 0), (404, 3, 0), (401, 1, 1), (403, 1, 1)],
+)
+def test_x_should_retry_true_retries_any_status_but_401_and_403(
+    project: Path,
+    gateway: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    waits: list[float],
+    status: int,
+    hits: int,
+    rc: int,
+) -> None:
+    _Gateway.reply = (status, {**_JSON, "x-should-retry": "true"}, b"{}")
+
+    code, out = _main(["onboard", "@P"], project, tmp_path)
+
+    assert code == rc
+    assert len(_Gateway.requests) == hits
+    if rc == 0:
+        assert f"requests={hits} " in out
+        assert capsys.readouterr().err.count(f"(status {status})") == 1
+
+
 def test_a_server_that_says_not_to_retry_gets_one_request(
     project: Path, gateway: str, tmp_path: Path, waits: list[float],
 ) -> None:

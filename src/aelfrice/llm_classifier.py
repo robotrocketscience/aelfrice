@@ -1058,12 +1058,13 @@ def _retry_wait(
 ) -> float | None:
     """Seconds to wait before the next attempt, or None to stop here.
 
-    A fault with a warning is a rejection, a config error, or an unusable
-    response, and trying again gets the same answer. Every raw exception from
-    inside `create` carries one of those warnings, so only status errors and
-    the SDK's connection errors get this far.
+    A status error follows SDK 2.6.0's `_should_retry`: `x-should-retry: false`
+    stops, `x-should-retry: true` retries any status, a 400 included, and
+    otherwise 408, 409, 429, and 5xx retry. A 401 or 403 raises before this.
+    Any other fault with a warning is a config error or an unusable response,
+    and trying again gets the same answer.
     """
-    if attempt + 1 >= _MAX_ATTEMPTS or fault.warning is not None:
+    if attempt + 1 >= _MAX_ATTEMPTS:
         return None
     headers = getattr(getattr(exc, "response", None), "headers", None)
     status = getattr(exc, "status_code", None)
@@ -1073,6 +1074,8 @@ def _retry_wait(
             return None
         if should_retry != "true" and status not in _RETRY_STATUSES and status < 500:
             return None
+    elif fault.warning is not None:
+        return None
     asked = _retry_after_seconds(headers)
     if asked is not None:
         return min(asked, _MAX_RETRY_WAIT_SECONDS)
