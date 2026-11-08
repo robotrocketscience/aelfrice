@@ -7,6 +7,7 @@ or debug log that repeats the key. No test here reaches a real API.
 """
 from __future__ import annotations
 
+import email.utils
 import importlib
 import io
 import json
@@ -1052,3 +1053,22 @@ def test_overlapping_holds_restore_the_level_once_the_last_one_ends(
 
     assert during == logging.WARNING
     assert child.level == logging.DEBUG
+
+
+def test_a_retry_after_date_inside_60_seconds_is_obeyed(
+    project: Path,
+    gateway: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    waits: list[float],
+) -> None:
+    """The clock is pinned, so the date is exactly 30 seconds away."""
+    now = 1_900_000_000.0
+    monkeypatch.setattr(llm.time, "time", lambda: now)
+    date = email.utils.formatdate(now + 30, usegmt=True)
+    _Gateway.queue = [(429, {**_JSON, "retry-after": date}, _RATE_LIMITED)]
+
+    rc, _ = _main(["onboard", "@P"], project, tmp_path)
+
+    assert rc == 0
+    assert waits == [30.0]
