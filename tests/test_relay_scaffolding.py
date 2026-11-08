@@ -369,6 +369,7 @@ def test_blank_lines_and_spaces_after_the_cut_are_fine(space: str) -> None:
 @pytest.mark.parametrize("between", [
     "<system-reminder>x</system-reminder>\r",
     "<system-reminder>x</system-reminder>\n<system-reminder>y</system-reminder>\r",
+    "<system-reminder>x</system-reminder >\x0b",
 ])
 def test_the_strip_guard_looks_past_a_reminder(between: str) -> None:
     text = f"{RELAY_BLOCKS[3]}\n{between}<result>\n{MINE}"
@@ -506,3 +507,31 @@ def test_nothing_is_cut_when_ingest_sees_a_paste_before_the_cut() -> None:
             f"{_paste(MINE)}\n</system-reminder>\n</agent-message>\n{LAST}")
     assert cut_relay(text) == text
     assert MINE in (_user_speech(text) or "")
+
+
+@pytest.mark.parametrize("inner", [
+    # Ingest drops the marker line first, so the reminder runs on past the
+    # closer the marker names, and past the cut.
+    "<system-reminder>\n[SYSTEM NOTIFICATION </system-reminder>]",
+    # The same, inside a harness block that closes inside the relay.
+    "<result>\n<system-reminder>\n[SYSTEM NOTIFICATION </system-reminder>]\n</result>",
+])
+def test_nothing_is_cut_when_a_reminder_left_open_closes_after_the_cut(inner: str) -> None:
+    text = f"<agent-message>\n{inner}\n</agent-message>\n</system-reminder>\n{MINE}"
+    assert cut_relay(text) == text
+
+
+def test_nothing_is_cut_when_a_harness_closer_name_is_not_ascii() -> None:
+    text = f"<agent-message>\n<status>\n</ſtatus>\n</agent-message>\n{MINE}"
+    assert cut_relay(text) == text
+
+
+def test_a_harness_tag_left_open_counts_after_an_earlier_closer() -> None:
+    text = f"<agent-message>\n</task-id>\n<task-id>\n</agent-message>\n</task-id>\n{MINE}"
+    assert cut_relay(text) == text
+
+
+def test_harness_blocks_are_read_in_the_stripped_record() -> None:
+    # Stripped, the record opens with the harness block that holds `<result>`.
+    text = f"\x0b<cross-session-message>\n<result>\n</cross-session-message>\n</result>\n{MINE}"
+    assert cut_relay(text) == f"</result>\n{MINE}"
