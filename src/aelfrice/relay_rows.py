@@ -9,18 +9,25 @@ through what the store kept.
 An `ingest_log` row holds one sentence, so it can't show line breaks, a
 closer, or where its record began. Three shapes are read:
 
-- `opener`: a row that holds a relay opening tag and nothing else
-  (`noise_filter.relay_row_shape`), and that starts its turn.
-- `notice`: a row that opens with a host cross-session notice and starts
+- `opener`: a row that holds a relay opening tag and nothing else, with the
+  attributes the host writes (`noise_filter.relay_row_shape`), and that starts
   its turn.
+- `notice`: a row that opens with a host cross-session notice, holds no word
+  after its template's last fixed word, and starts its turn.
 - `block`: a row inside a relay block that a later turn's DERIVED_FROM
   anchor shows. Between two user turns, `ingest_jsonl` anchors the edge on
   the earlier turn's text, line breaks kept, up to 1,000 characters.
-  `cut_relay` reads that text as it reads a record. Its sentences are
-  matched in order to the rows that follow a row that starts its turn, in a
-  session that derived both ends of the edge. The rows that fall in the part
-  `cut_relay` takes are relay rows. An anchor at the cap may end inside a
-  sentence, so its last sentence may go unmatched.
+  `cut_relay` reads that text as it reads a record, and every relay tag and
+  notice line in the part it takes must be the host's
+  (`noise_filter.relay_cut_is_host_shaped`). The anchor's sentences are
+  matched in order to the rows that follow a row that starts its turn, in one
+  group, in a session that derived both ends of the edge. The rows that fall
+  in the part `cut_relay` takes are relay rows. An anchor at the cap may end
+  inside a sentence, so its last sentence may go unmatched.
+
+When an anchor matches a run whose first row has the `opener` or `notice`
+shape but `cut_relay` doesn't take that record's opening, as when a line the
+sentence splitter dropped comes first, that row isn't taken.
 
 A row starts its turn when the row before it, in id order, has another
 `(session_id, ts, source_path)`. A turn's rows share all three and are
@@ -29,9 +36,13 @@ can't be told from the next record of a bulk ingest that shares one
 timestamp. Such a row is never taken, and no row is taken because its group
 holds a relay row.
 
-Rows are matched by their sentences, so a record whose rows repeat a relay
-record's rows word for word, opener included, in a session that derived
-both ends of the edge, reads as that relay record.
+What a row can't show leaves gaps. A record that opens with a tag carrying the
+host's attributes reads as relay text, even when a person typed or pasted it,
+and an unclosed one takes every sentence the anchor shows. With no later turn,
+no anchor shows a record, so a dropped first line can't stop its `opener` or
+`notice` row. Rows are matched by their sentences, so a record whose rows
+repeat a relay record's rows word for word, opener included, in a session
+that derived both ends of the edge, reads as that relay record.
 
 A belief is retired only when every `ingest_log` row that derived or
 corroborated it is a relay row, and `scheduled_prompts.split_by_evidence`
@@ -52,7 +63,11 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Final
 
 from aelfrice.models import ANCHOR_TEXT_MAX_LEN, ORIGIN_AGENT_INFERRED
-from aelfrice.noise_filter import cut_relay, relay_row_shape
+from aelfrice.noise_filter import (
+    cut_relay,
+    relay_cut_is_host_shaped,
+    relay_row_shape,
+)
 from aelfrice.scheduled_prompts import split_by_evidence
 from aelfrice.sentence_partition import partition_sentences
 
@@ -107,24 +122,57 @@ def _read_rows(store: "MemoryStore") -> _Rows:
     return _Rows(ids=ids, keys=keys, texts=texts, starts=starts)
 
 
+def _runs(
+    rows: _Rows, starts_by_text: dict[str, list[int]], sessions: set[str],
+    whole: list[str], capped: bool,
+) -> list[tuple[int, int]]:
+    """`(start, length)` of each run of rows that `whole` matches in order.
+
+    A run opens at a row that starts its turn, stays in that row's group, and
+    must match every sentence, or all but the last when the anchor is capped.
+    """
+    need = len(whole) - 1 if capped else len(whole)
+    out: list[tuple[int, int]] = []
+    for i in starts_by_text.get(whole[0], []):
+        sid = rows.keys[i][0]
+        if sid is None or sid not in sessions:
+            continue
+        n = 0
+        while (
+            n < len(whole) and i + n < len(rows.texts)
+            and rows.keys[i + n] == rows.keys[i]
+            and rows.texts[i + n] == whole[n]
+        ):
+            n += 1
+        if n >= need:
+            out.append((i, n))
+    return out
+
+
 def _block_rows(
     rows: _Rows,
     anchors: list[tuple[str, str, str]],
     sessions_of: dict[str, set[str]],
     report: RelayRowsReport,
-) -> dict[int, str]:
-    """Row positions inside a relay block that an anchor shows."""
+) -> tuple[dict[int, str], set[int]]:
+    """Row positions inside a relay block that an anchor shows, and vetoes.
+
+    A veto is the first row of a run whose anchor `cut_relay` doesn't cut, or
+    cuts with a tag or notice line that isn't the host's: that record doesn't
+    open with relay text, even when its first stored row looks like it does.
+    """
     starts_by_text: dict[str, list[int]] = {}
     for i, text in enumerate(rows.texts):
         if rows.starts[i]:
             starts_by_text.setdefault(text, []).append(i)
     found: dict[int, str] = {}
+    vetoed: set[int] = set()
     for src, dst, anchor in anchors:
         rest = cut_relay(anchor)
-        if rest == anchor:
-            continue
-        report.anchors_read += 1
         cut = anchor[: len(anchor) - len(rest)]
+        relay = rest != anchor and relay_cut_is_host_shaped(cut)
+        if rest != anchor:
+            report.anchors_read += 1
         # At the cap the anchor may end inside a sentence.
         capped = len(anchor) >= ANCHOR_TEXT_MAX_LEN
         # A session holds the turn only if it derived both ends of the edge.
@@ -134,30 +182,25 @@ def _block_rows(
         # Rows stored before #1874 dropped inline code and URLs.
         for keep_spans in (True, False):
             whole = partition_sentences(anchor, keep_spans=keep_spans)[0]
-            head = partition_sentences(cut, keep_spans=keep_spans)[0]
-            if not head or whole[: len(head)] != head or whole in seen:
+            if not whole or whole in seen:
                 continue
             seen.append(whole)
-            need = len(whole) - 1 if capped else len(whole)
-            for i in starts_by_text.get(whole[0], []):
-                sid = rows.keys[i][0]
-                if sid is None or sid not in sessions:
-                    continue
-                n = 0
-                while (
-                    n < len(whole) and i + n < len(rows.texts)
-                    and rows.keys[i + n] == rows.keys[i]
-                    and rows.texts[i + n] == whole[n]
-                ):
-                    n += 1
-                if n < need:
-                    continue
+            if not relay:
+                if relay_row_shape(whole[0]) is not None:
+                    vetoed.update(
+                        i for i, _ in _runs(rows, starts_by_text, sessions, whole, capped)
+                    )
+                continue
+            head = partition_sentences(cut, keep_spans=keep_spans)[0]
+            if not head or whole[: len(head)] != head:
+                continue
+            for i, n in _runs(rows, starts_by_text, sessions, whole, capped):
                 matched = True
                 for j in range(min(n, len(head))):
                     found.setdefault(i + j, SHAPE_BLOCK)
         if matched:
             report.anchors_matched += 1
-    return found
+    return found, vetoed
 
 
 def _select(store: "MemoryStore", report: RelayRowsReport) -> None:
@@ -171,15 +214,16 @@ def _select(store: "MemoryStore", report: RelayRowsReport) -> None:
         sid = rows.keys[i][0] if i is not None else None
         if sid is not None:
             sessions_of.setdefault(bid, set()).add(sid)
+    found, vetoed = _block_rows(
+        rows, store.list_derived_from_anchors(), sessions_of, report,
+    )
     shape_at: dict[int, str] = {}
     for i, text in enumerate(rows.texts):
-        if rows.starts[i]:
+        if rows.starts[i] and i not in vetoed:
             shape = relay_row_shape(text)
             if shape is not None:
                 shape_at[i] = shape
-    for i, shape in _block_rows(
-        rows, store.list_derived_from_anchors(), sessions_of, report,
-    ).items():
+    for i, shape in found.items():
         shape_at.setdefault(i, shape)
     report.rows_by_shape = Counter(shape_at.values())
     every_row_relay: dict[str, bool] = {}
