@@ -2,11 +2,12 @@
 text as the user's typed words, and `--restore-relay-rows` undoes it.
 
 The fixture stores are built by the real ingest path, `ingest_jsonl` over a
-synthetic `turns.jsonl`, with the two cuts that now keep relay text out
-turned off, so the rows look as ingest wrote them before #1875: the relay cut
-(`noise_filter.cut_relay`) and the #1649 harness block cut, which takes
-`<cross-session-message>` blocks. Nothing here reads a real transcript or
-store.
+synthetic `turns.jsonl`. `pre_1875` turns ingest back to how it ran before
+#1649, which split and anchored the raw record, and dates the rows it writes
+before the pass's cutoff, so the rows look as the stored relay rows do.
+`between_1649_and_1875` keeps today's speech filter and clock and turns off
+only the two relay cuts, the way ingest ran from #1649 until #1875. Nothing
+here reads a real transcript or store.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ import pytest
 
 import aelfrice.cli as cli_module
 import aelfrice.ingest as ingest_module
+import aelfrice.store as store_module
 from aelfrice.ingest import ingest_jsonl
 from aelfrice.models import (
     ANCHOR_TEXT_MAX_LEN,
@@ -31,9 +33,11 @@ from aelfrice.models import (
 from aelfrice.noise_filter import (
     RELAY_ROW_NOTICE,
     RELAY_ROW_OPENER,
+    relay_cut_is_host_shaped,
     relay_row_shape,
 )
 from aelfrice.relay_rows import (
+    RAW_RECORD_CUTOFF_MS,
     SHAPE_BLOCK,
     SOURCE_RELAY_RETIRE,
     format_relay_rows_report,
@@ -42,6 +46,7 @@ from aelfrice.relay_rows import (
 )
 from aelfrice.replay import replay_full_equality
 from aelfrice.store import MemoryStore
+from aelfrice.ulid import make_generator
 
 SESSION = "sess-1877"
 OTHER = "sess-1877-b"
@@ -61,9 +66,25 @@ def _block(tag: str, *lines: str) -> str:
     return "\n".join([tag, *lines, f"</{name}>"])
 
 
+# 2026-09-14T10:00:00Z, two weeks before the pass's cutoff.
+_PRE_1649_CLOCK = 1_789_380_000.0
+
+
 @pytest.fixture
 def pre_1875(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ingest as it ran before #1875 and #1649 cut relay blocks."""
+    """Ingest as it ran before #1649: the raw record split and anchored."""
+    assert _PRE_1649_CLOCK * 1000 < RAW_RECORD_CUTOFF_MS
+    monkeypatch.setattr(
+        ingest_module, "_user_speech", lambda text: text if text.strip() else None,
+    )
+    monkeypatch.setattr(store_module, "ulid", make_generator(
+        rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK,
+    ))
+
+
+@pytest.fixture
+def between_1649_and_1875(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ingest from #1649 until #1875: speech filtered, relay cuts off, today's clock."""
     never = re.compile(r"(?!)")
     monkeypatch.setattr(ingest_module, "cut_relay", lambda text: text)
     monkeypatch.setattr(ingest_module, "_HARNESS_BLOCK_RE", never)
@@ -746,7 +767,7 @@ def test_a_host_relay_quoting_a_malformed_tag_is_skipped_whole(
     assert _dry(db) == ({}, set())
 
 
-def test_a_run_stays_inside_its_group(tmp_path: Path) -> None:
+def test_a_run_stays_inside_its_group(tmp_path: Path, pre_1875: None) -> None:
     # Rows split across two timestamps, as a different writer could store
     # them. The anchor's sentences continue past the first group.
     from aelfrice.derivation_worker import run_worker
@@ -830,6 +851,152 @@ def test_undo_leaves_only_the_audit_trail_behind(db: Path) -> None:
         [(SOURCE_RELAY_RETIRE, 0.0)] * len(retired)
         + [("user_restored", 1.0)] * len(retired)
     )
+
+
+# --- third review round: line ends, raw records, host tag form ----------------
+
+
+REFUSED = "[Cross-session delivery notice] Your message to another session was refused."
+CRASHED = "I think the peer session crashed overnight again."
+EOLS = ["\n", "\r\n"]
+LEADS = [
+    "<system-reminder>host note here</system-reminder>\n",
+    "[Request interrupted by user]\n",
+]
+
+
+@pytest.mark.parametrize("eol", EOLS)
+def test_typed_words_after_a_notice_on_its_line_stay_with_any_line_end(
+    tmp_path: Path, pre_1875: None, eol: str,
+) -> None:
+    rec = f"{REFUSED} {CRASHED}{eol}Ping me later about it today."
+    db = _ingest(tmp_path, [(SESSION, _ts(1), rec), (SESSION, _ts(2), NEXT)])
+    _, contents = _dry(db)
+    assert not any(CRASHED in c for c in contents), contents
+
+
+@pytest.mark.parametrize("eol", EOLS)
+def test_a_notice_record_gives_its_notice_row_with_any_line_end(
+    tmp_path: Path, pre_1875: None, eol: str,
+) -> None:
+    db = _ingest(tmp_path, [(SESSION, _ts(1), f"{REFUSED}{eol}{T1}"), (SESSION, _ts(2), NEXT)])
+    shapes, contents = _dry(db)
+    assert shapes == {RELAY_ROW_NOTICE: 1}
+    assert T1 not in contents
+
+
+@pytest.mark.parametrize("eol", EOLS)
+def test_a_typed_template_notice_takes_only_its_own_row(
+    tmp_path: Path, pre_1875: None, eol: str,
+) -> None:
+    # A known gap: a person who types a notice's fixed words exactly loses
+    # that row, and only that row.
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), f"{REFUSED}{eol}{T1}{eol}{T2}"), (SESSION, _ts(2), NEXT),
+    ])
+    shapes, contents = _dry(db)
+    assert shapes == {RELAY_ROW_NOTICE: 1}
+    assert T1 not in contents and T2 not in contents
+
+
+@pytest.mark.parametrize("eol", EOLS)
+def test_a_notice_first_veto_holds_against_another_anchor(
+    tmp_path: Path, pre_1875: None, eol: str,
+) -> None:
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), f"Context:{eol}{REFUSED}{eol}{T1}"),
+        (SESSION, _ts(2), NEXT),
+        (SESSION, _ts(3), f"{REFUSED}{eol}{T1}"),
+        (SESSION, _ts(4), "A last sentence the user typed today."),
+    ])
+    assert _dry(db) == ({}, set())
+
+
+@pytest.mark.parametrize("eol", EOLS)
+def test_a_notice_on_the_last_turn_is_not_taken_with_any_line_end(
+    tmp_path: Path, pre_1875: None, eol: str,
+) -> None:
+    db = _ingest(tmp_path, [(SESSION, _ts(1), f"{REFUSED}{eol}{T1}")])
+    assert _dry(db) == ({}, set())
+
+
+@pytest.mark.parametrize("tag", [AGENT_TAG, TEAM_TAG, CROSS_TAG])
+@pytest.mark.parametrize("lead", LEADS)
+def test_a_relay_behind_a_lead_line_is_not_taken(
+    tmp_path: Path, pre_1875: None, lead: str, tag: str,
+) -> None:
+    # `cut_relay` keeps a relay behind a reminder or a marker line.
+    rec = f"{lead}{tag}\n{T1}\n{T2}"
+    db = _ingest(tmp_path, [(SESSION, _ts(1), rec), (SESSION, _ts(2), NEXT)])
+    _, contents = _dry(db)
+    assert T1 not in contents and T2 not in contents
+
+
+@pytest.mark.parametrize("tag", [AGENT_TAG, TEAM_TAG])
+@pytest.mark.parametrize("lead", ["", *LEADS])
+def test_rows_written_after_the_cutoff_are_not_taken(
+    tmp_path: Path, between_1649_and_1875: None, lead: str, tag: str,
+) -> None:
+    # From #1649 on the anchor is the filtered speech, so a relay behind a
+    # reminder looks like one that opens the record. The row times say so.
+    rec = f"{lead}{tag}\n{T1}\n{T2}"
+    db = _ingest(tmp_path, [(SESSION, _ts(1), rec), (SESSION, _ts(2), NEXT)])
+    assert _dry(db) == ({}, set())
+
+
+def test_a_later_ingest_of_the_record_stops_the_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The pre-#1649 rows match the anchor, but an ingest after the cutoff
+    # stored the same first sentence, so the anchor may be its speech.
+    log = tmp_path / "turns.jsonl"
+    rec = {"schema_version": 1, "role": "user", "session_id": SESSION}
+    log.write_text("".join(json.dumps({**rec, "ts": ts, "text": text}) + "\n" for ts, text in (
+        (_ts(1), _block(TEAM_TAG, BODY_1, BODY_2)), (_ts(2), NEXT),
+    )), encoding="utf-8")
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(ingest_module, "_user_speech", lambda t: t if t.strip() else None)
+            m.setattr(store_module, "ulid", make_generator(
+                rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK,
+            ))
+            ingest_jsonl(s, log)
+        before = retire_relay_rows(s, dry_run=True)
+        assert before.rows_by_shape[SHAPE_BLOCK] == 2
+        with monkeypatch.context() as m:
+            m.setattr(ingest_module, "cut_relay", lambda text: text)
+            ingest_jsonl(s, log, source_label="session-end")
+        after = retire_relay_rows(s, dry_run=True)
+        assert after.rows_by_shape[SHAPE_BLOCK] == 0
+        assert after.rows_by_shape[RELAY_ROW_OPENER] == 1
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("tag", [
+    "<agent-message from=worker-7>",
+    '<agent-message title=a from="x">',
+    '<agent-message from="">',
+    "<agent-message from='worker-7'>",
+    '<agent-message  from="worker-7">',
+    '<agent-message from="worker-7" >',
+    '<agent-message\tfrom="worker-7">',
+    '<agent-message from="worker-7">',
+    '<agent-message from="worker-7">',
+    '<agent-message　from="worker-7">',
+    '<agent-message\u0085from="worker-7">',
+    '<agent-message\x0cfrom="worker-7">',
+    '<cross-session-message from="a" from-name="b">',
+])
+def test_a_tag_outside_the_host_form_is_not_an_opener(tag: str) -> None:
+    assert relay_row_shape(tag) is None
+    assert not relay_cut_is_host_shaped(f"{tag}\n{T1}\n")
+
+
+def test_the_host_form_takes_attributes_in_any_order() -> None:
+    tag = '<cross-session-message from-name="peer" via="uds" from="uds:/tmp/s.sock">'
+    assert relay_row_shape(tag) == RELAY_ROW_OPENER
 
 
 # --- apply, undo, replay, doctor ----------------------------------------------
