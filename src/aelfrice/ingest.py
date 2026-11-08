@@ -672,7 +672,9 @@ def _user_speech(text: str) -> str | None:
     record, by the rule in `noise_filter.cut_relay`. The transcript logger
     writes the same cut, so a record and the row logged for it read the same.
     A relay after the user's first word, or behind a marker or a reminder,
-    stays, so a relay cut never takes their words.
+    stays, and no cut is made that would change how this function reads the
+    rest. A relay opener with no closer still takes the record up to the first
+    paste, the user's words in it included.
     """
     rest = _HOST_MARKER_LINE_RE.sub("", cut_relay(text))
     rest = _SYSTEM_REMINDER_RE.sub("", rest).strip()

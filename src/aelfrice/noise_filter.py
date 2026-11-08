@@ -448,29 +448,32 @@ def cut_relay(text: str) -> str:
     - A closed block runs from that opener through the first closer of its tag
       and the end of the closer's line. The closer must come before the first
       paste, and a closer inside a closed `<system-reminder>` doesn't count.
-      When the closer's line holds anything else, or ends in a lone CR, the
-      block stays and the cut stops.
+      Text before the closer on its line goes with the block. When anything
+      but whitespace follows the closer on its line, or the line ends in a
+      lone CR, that block stays and the cut ends before it.
     - A host notice counts the same way: a whole line, ending in LF, CRLF, or
       the record before the first paste, that opens with the host's delivery
       or idle header and the fixed words of one of its templates. The whole
       line goes. A notice line that holds a paste isn't one.
     - The cut repeats while the next thing, after optional whitespace, is
       another such opener or notice.
-    - An opener with no closer takes the record up to the first paste.
+    - An opener with no closer takes the record up to the first paste, the
+      user's own words in it included. A block with a paste inside it reads as
+      unclosed, so its relay text after the paste stays.
 
-    Everything from the user's first word on stays, including any later relay
-    block. A one-line block, a tag with prose on its line, a self-closed tag, a
-    name that only starts like a tag (`<agent-messages>`), and a tag whose
-    attributes don't end on its line aren't openers. A bracketed line that only
-    resembles a notice isn't one. A paste is never cut.
+    Past the cut, the record stays, including any later relay block. A one-line
+    block, a tag with prose on its line, a self-closed tag, a name that only
+    starts like a tag (`<agent-messages>`), and a tag whose attributes don't
+    end on its line aren't openers. A bracketed line that only resembles a
+    notice isn't one. A paste is never cut.
 
     What's left comes back as it was, from the start of the line after the cut.
-    Nothing is cut unless ingest reads what's left the way it reads that part
-    of the whole record: no reminder or harness block may run across the cut,
-    and what's left may not open with a slash command's wrapper. When its first
-    word, once marker lines and reminders are gone, is a harness tag, that tag
-    must already open its line, since a tag a cut moved to a line start would
-    take the words after it.
+    Nothing is cut when the cut could change how ingest reads what's left:
+    when a reminder or harness tag left open before the cut has a closer after
+    it, when what's left opens with a slash command's wrapper, or when its
+    first word, once marker lines and reminders are gone, is a harness tag that
+    a cut would move to a line start. A tag name that isn't ASCII also stops
+    the cut.
     """
     if not _RELAY_HINT_RE.match(text):
         return text
@@ -569,11 +572,13 @@ def _reads_the_same(text: str, pos: int) -> bool:
     Ingest drops host marker lines and closed reminders, strips the record,
     drops a record that opens with a slash command's wrapper, and cuts harness
     blocks that open at a line start. The cut at `pos` changes none of that
-    when no reminder or harness block that opens before it closes after it,
+    when no reminder or harness tag left open before it has a closer after it,
     the rest doesn't open with a command wrapper, and the part before it holds
     no paste opener. A first word that is a harness tag must also still open
     its line once markers and reminders are gone, or the cut would hand that
-    tag the words after it.
+    tag the words after it. A closer after the cut stops it even when ingest
+    wouldn't pair the two, so this can refuse a cut that was safe, never the
+    reverse.
     """
     if _space_end(text, pos) == len(text):
         return True
