@@ -131,7 +131,10 @@ def test_the_installed_sdk_sends_the_classifier_request(
     def _client(**kwargs: Any) -> Any:
         http_client = _http.Client(transport=_http.MockTransport(_handler))
         clients.append(http_client)
-        return anthropic.Anthropic(**{**kwargs, "http_client": http_client})
+        # The classifier's own HTTP client and retry count give way to the mock's.
+        kwargs.pop("http_client", None)
+        kwargs.pop("max_retries", None)
+        return anthropic.Anthropic(**kwargs, http_client=http_client, max_retries=0)
 
     try:
         resp = _call(SimpleNamespace(Anthropic=_client))
