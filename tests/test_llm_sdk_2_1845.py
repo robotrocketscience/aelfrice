@@ -1035,3 +1035,20 @@ def test_the_http_client_is_closed_when_the_build_fails(sdk: _FailingBuildSdk, f
 
     assert getattr(result, field) is not None
     assert sdk.closed == 1
+
+
+def test_overlapping_holds_restore_the_level_once_the_last_one_ends(
+    host_levels: list[int],
+) -> None:
+    hold = llm._hold_sdk_logs_at_warning  # pyright: ignore[reportPrivateUsage]
+    restore = llm._restore_log_levels  # pyright: ignore[reportPrivateUsage]
+    child = logging.getLogger(f"{_SDK}._base_client")
+
+    first = hold(_SDK)
+    second = hold(_SDK)
+    restore(first)
+    during = child.level
+    restore(second)
+
+    assert during == logging.WARNING
+    assert child.level == logging.DEBUG

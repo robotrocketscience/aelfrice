@@ -72,6 +72,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -192,6 +193,11 @@ _HTTP_LOGGERS: Final[tuple[str, ...]] = ("httpx2", "httpcore2")
 
 # `time.sleep`, behind a name tests can replace.
 _sleep = time.sleep
+
+# The open holds on the SDK's loggers and the levels the first one saved.
+_log_hold_lock = threading.Lock()
+_log_hold_count = 0
+_log_hold_saved: list[tuple[logging.Logger, int]] = []
 
 
 # --- Config dataclass ----------------------------------------------------
@@ -1153,32 +1159,46 @@ def _request_args(
     }
 
 
-def _hold_sdk_logs_at_warning(sdk_logger: str | None) -> list[tuple[logging.Logger, int]]:
+def _hold_sdk_logs_at_warning(sdk_logger: str | None) -> bool:
     """Raise the SDK's and HTTP library's loggers to WARNING or above for the call.
 
     `ANTHROPIC_LOG=debug` prints the HTTP library's exception, which quotes a
     header it refuses, and the response headers, where a gateway can echo the
     key. Each logger under those names that exists now, a child with its own
-    level included, is raised. Returns each logger with the level it had, for
-    `_restore_log_levels` on every exit. `None` holds nothing, for a test's
-    fake SDK.
+    level included, is raised. Calls that overlap in threads share one hold:
+    the first saves and raises the levels, and the last `_restore_log_levels`
+    sets each back to its exact level. Returns whether this call holds.
+    `None` holds nothing, for a test's fake SDK.
     """
-    roots = (sdk_logger, *_HTTP_LOGGERS) if sdk_logger is not None else ()
-    prefixes = tuple(f"{root}." for root in roots)
-    held = [logging.getLogger(root) for root in roots]
-    for name, logger in sorted(logging.Logger.manager.loggerDict.items()):
-        if isinstance(logger, logging.Logger) and name.startswith(prefixes):
-            held.append(logger)
-    saved = [(logger, logger.level) for logger in held]
-    for logger, level in saved:
-        logger.setLevel(max(level, logging.WARNING))
-    return saved
+    global _log_hold_count, _log_hold_saved
+    if sdk_logger is None:
+        return False
+    with _log_hold_lock:
+        if _log_hold_count == 0:
+            roots = (sdk_logger, *_HTTP_LOGGERS)
+            prefixes = tuple(f"{root}." for root in roots)
+            held = [logging.getLogger(root) for root in roots]
+            for name, logger in sorted(logging.Logger.manager.loggerDict.items()):
+                if isinstance(logger, logging.Logger) and name.startswith(prefixes):
+                    held.append(logger)
+            _log_hold_saved = [(logger, logger.level) for logger in held]
+            for logger, level in _log_hold_saved:
+                logger.setLevel(max(level, logging.WARNING))
+        _log_hold_count += 1
+    return True
 
 
-def _restore_log_levels(saved: list[tuple[logging.Logger, int]]) -> None:
-    """Set each logger back to the exact level `_hold_sdk_logs_at_warning` saw."""
-    for logger, level in saved:
-        logger.setLevel(level)
+def _restore_log_levels(held: bool) -> None:
+    """End one hold. The last one sets each logger back to the level it had."""
+    global _log_hold_count, _log_hold_saved
+    if not held:
+        return
+    with _log_hold_lock:
+        _log_hold_count -= 1
+        if _log_hold_count == 0:
+            for logger, level in _log_hold_saved:
+                logger.setLevel(level)
+            _log_hold_saved = []
 
 
 def _is_auth_error(exc: BaseException) -> bool:
