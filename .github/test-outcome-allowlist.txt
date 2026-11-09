@@ -30,3 +30,9 @@ tests.test_core_gate_background_windows_1761::test_the_detached_child_runs_the_s
 # Linux legs skip them. The nightly canary's macOS leg runs them.
 tests.test_nightly_bisect_1786::test_a_temporary_location_in_another_case_is_still_the_clone
 tests.test_nightly_bisect_1786::test_a_temporary_location_inside_the_repository_in_another_case_exits_2
+
+# macOS-only (#1887): needs a macOS firmlink under /System/Volumes/Data, so both Linux legs skip it.
+tests.test_real_store_fire_census_runner::test_guard_sees_through_a_firmlink
+
+# macOS-only (#1887): needs the macOS /dev/fd reopen behavior verified for sqlite, so both Linux legs skip it.
+tests.test_real_store_fire_census_runner::test_open_ro_reads_the_file_it_checked_even_if_the_path_is_swapped
