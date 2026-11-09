@@ -1155,13 +1155,14 @@ def _recap_gaps(ss: list[str], feed: list[str]) -> dict[str, int]:
 
 
 def a120(ctx: cc.Ctx) -> cc.Result:
-    """SessionStart belief-write recap line, replayed from durable inputs.
+    """SessionStart belief-write recap line: untraceable.
 
-    The line goes to stdout only, but its decision counts feed rows of the
-    recap events after the previous SessionStart fire and fires at 3. Gaps
-    between audited SessionStart rows are replayed; the first gap is reported
-    apart because its real start is unknown. Upper bound: unaudited
-    SessionStart fires also reset the window.
+    The line goes to stdout only. `sessionstart_last.txt` is rewritten on
+    every SessionStart while the recap is enabled, printed or not, and the
+    recap can be off (AELFRICE_SESSIONSTART_RECAP=0) while feed rows still
+    accrue, so no durable row shows that a line printed. The detail replays
+    the decision as an upper bound: feed rows of the recap events between
+    audited SessionStart fires, and the gaps that reached the threshold.
     """
     ss = sorted(_str(r.get("ts")) for r in _audit_rows(ctx, (HOOK_SS,))
                 if isinstance(r.get("ts"), str))
@@ -1173,15 +1174,12 @@ def a120(ctx: cc.Ctx) -> cc.Result:
     feed.sort()
     detail = {"ss_audit_rows": len(ss), "recap_events": len(feed),
               "last_ts_file": int(ctx.sidecar(RECAP_LAST_TS_FILENAME).is_file())}
-    if not ss:
+    if ss:
+        detail.update(_recap_gaps(ss, feed))
+    else:
         detail["events_no_ss"] = len(feed)
-        return cc.Result("untraceable", None, detail,
-                         "no session_start audit rows to replay windows against")
-    detail.update(_recap_gaps(ss, feed))
-    if detail["inner_gaps_ge3"]:
-        return cc.fired(detail["inner_gaps_ge3"], detail,
-                        "inferred: SS audit gaps with >=3 recap events (upper bound)")
-    return cc.silent(0, detail, "inferred: no SS audit gap reached 3 recap events")
+    return cc.Result("untraceable", None, detail,
+                     "prints only; detail replays an upper bound from audit and feed rows")
 
 
 def _phantom_ids(ctx: cc.Ctx, detail: dict[str, int]) -> set[str]:
