@@ -553,8 +553,10 @@ def p_a244(ctx: cc.Ctx) -> Result:
             d["anchored_dst_active"] = ctx.count(
                 "SELECT COUNT(DISTINCT e.dst) FROM edges e JOIN beliefs b ON b.id=e.dst "
                 "WHERE b.valid_to IS NULL AND e.anchor_text IS NOT NULL AND e.anchor_text<>''")
-    if d["lane_keyed"] > 0 or d["sidecar"] == 1:
-        return cc.fired(d["lane_keyed"], d, "lane_keyed rows or BM25F sidecar present")
+    if d["lane_keyed"] > 0:
+        return cc.fired(d["lane_keyed"], d, "lane_keyed rows")
+    if d["sidecar"] == 1:
+        return cc.fired(1, d, "the BM25F sidecar is present; no lane_keyed row")
     unrecorded = (d["ran_unkeyed"] - d["ran_unkeyed_pre_1_7"]
                   - d["ran_unkeyed_after_field_ship"])
     if unrecorded > 0:

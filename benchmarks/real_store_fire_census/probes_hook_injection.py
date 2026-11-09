@@ -981,12 +981,11 @@ def a107(ctx: cc.Ctx) -> cc.Result:
     if not orphans:
         return cc.Result("untraceable", None, detail, "no orphan ring ids")
     if bash_inj > 0:
-        return cc.ambiguous(max(orphan_fires, 1), detail,
-                            "the Bash lane also injected for this session")
+        return cc.ambiguous(len(orphans), detail, "orphan ring ids; the Bash lane also injected")
     if not history_ok:
-        return cc.ambiguous(max(orphan_fires, 1), detail,
-                            "UPS rows for this session rotated out of the audit log")
-    return cc.fired(max(orphan_fires, 1), detail, "orphan ring ids lower bound")
+        return cc.ambiguous(len(orphans), detail,
+                            "orphan ring ids; UPS rows for this session rotated out of the audit log")
+    return cc.fired(len(orphans), detail, "orphan ring ids")
 
 
 def _gate_label(r: dict[str, Any]) -> str | None:

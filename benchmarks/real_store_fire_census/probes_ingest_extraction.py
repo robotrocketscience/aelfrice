@@ -244,15 +244,15 @@ def a134(c: Ctx) -> Result:
     """aelf ingest-transcript: the transcript logger's PreCompact rotation and
     Stop flush spawn this command, so their rows are its rows. doctor
     --backfill-ingest calls ingest_jsonl with the same default label, and no
-    column tells its rows apart, so they are counted too and the note says so."""
+    column tells its rows apart, so a row is ambiguous."""
     if (r := _missing(c, "ingest_log")) is not None:
         return r
     n, n_default, n_sess = c.counts(
         "SELECT COUNT(*), SUM(source_path='transcript'), COUNT(DISTINCT session_id) "
         "FROM ingest_log WHERE source_kind='transcript'")
-    return cc.from_count(n, {"transcript_rows": n, "default_label": n_default,
-                             "sessions": n_sess},
-                         "includes doctor --backfill-ingest rows, which carry the same label")
+    return cc.from_shared_count(n, {"transcript_rows": n, "default_label": n_default,
+                                    "sessions": n_sess},
+                                "doctor --backfill-ingest writes the same rows")
 
 
 def a138(c: Ctx) -> Result:
@@ -907,9 +907,11 @@ def a175(c: Ctx) -> Result:
     """Temporal-spine TEMPORAL_NEXT writer at ingest.
 
     Count: spine-shaped edges (weight 0.8, no anchor) out of transcript
-    beliefs. silent splits into no eligible belief and eligible beliefs with
-    no edge; a schema with no typed edges or ingest_log predates the writer
-    and is untraceable.
+    beliefs. `aelf spine backfill` writes the same edge, and it leaves the
+    sentinel only on some paths, so a count above 0 is ambiguous. silent
+    splits into no eligible belief and eligible beliefs with no edge; a
+    schema with no typed edges or ingest_log predates the writer and is
+    untraceable.
     """
     if c.db is None:
         return cc.untraceable("no db")
@@ -929,10 +931,8 @@ def a175(c: Ctx) -> Result:
     d["spine_non_transcript"] = c.count(
         _TRANSCRIPT_IDS_CTE + "SELECT COUNT(*) FROM edges x WHERE " + _SPINE_EDGE
         + " AND x.src NOT IN (SELECT id FROM t)")
-    if n > 0 and d["backfill_sentinel"]:
-        return cc.ambiguous(n, d, "ambiguous: the spine backfill ran and writes the same edge")
     if n > 0:
-        return cc.fired(n, d, "no backfill sentinel in the global dir")
+        return cc.ambiguous(n, d, "aelf spine backfill writes the same edge, sentinel or not")
     if d["eligible"] == 0:
         return cc.silent(0, d, "no writer-eligible belief")
     return cc.silent(0, d, "eligible beliefs carry no spine edge")

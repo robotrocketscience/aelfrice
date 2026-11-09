@@ -438,8 +438,10 @@ def _a298(ctx: cc.Ctx) -> cc.Result:
     if not ctx.table_exists("beliefs"):
         return cc.untraceable("no beliefs table")
     d = _a298_detail(ctx, datetime.now(timezone.utc).isoformat())
-    if d["expire_rows"] > 0 or d["sweep_marker"] > 0:
-        return cc.fired(d["expire_rows"], d)
+    if d["expire_rows"] > 0:
+        return cc.fired(d["expire_rows"], d, "lock:expire feedback rows")
+    if d["sweep_marker"] > 0:
+        return cc.fired(1, d, "the sweep marker is present; no lock:expire row")
     if d["due_user"] > 0:
         return cc.Result("error", d["due_user"], d, "due windowed locks not swept")
     if d["windowed"] == 0:
