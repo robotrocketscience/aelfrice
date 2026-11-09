@@ -469,18 +469,17 @@ def test_a161_scan_rows_make_the_filter_untraceable(ps: PlantedStore) -> None:
     assert r.detail["scan_rows"] == 4 and r.detail["scan_rows_noise"] == 0, r
 
 
-def test_a148_llm_router_fallback(ps: PlantedStore) -> None:
+def test_a148_llm_router_fallback(ps: PlantedStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    from aelfrice import llm_classifier as llm
     from aelfrice.llm_classifier import ScannerRouter
     from aelfrice.scanner import scan_repo
 
-    fake = types.ModuleType("fake_anthropic")
+    def offline(*_: object, **__: object) -> object:
+        # _call_with_retries builds the SDK client; a failed build raises this.
+        raise llm.LLMTransientError("offline")
 
-    class Anthropic:  # the SDK client fails to build, as with no network
-        def __init__(self, **_: object) -> None:
-            raise RuntimeError("offline")
-
-    setattr(fake, "Anthropic", Anthropic)
-    router = ScannerRouter(api_key="census-no-key", sdk_module=fake)
+    monkeypatch.setattr(llm, "_call_with_retries", offline)
+    router = ScannerRouter(api_key="census-no-key", sdk_module=types.ModuleType("fake_sdk"))
     scan_repo(ps.open(), make_project(ps.root), llm_router=router)
     r = probe(ps, "A148")
     assert_fired(r, 4)
