@@ -28,6 +28,8 @@ from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any, Literal
 
+from .copy_token import GatedPath, ManifestMismatch
+
 Kind = Literal["store", "sidecar", "global-log", "untraceable"]
 Status = Literal["fired", "ambiguous", "silent", "untraceable", "error"]
 Layout = Literal["repo", "named", "legacy", "global", "user", "none"]
@@ -144,7 +146,7 @@ def has_unfolded_wal(db_file: Path) -> bool:
     return wal.is_file() and wal.stat().st_size > 0
 
 
-class IdentityMismatchError(Exception):
+class IdentityMismatchError(ManifestMismatch):
     """The db file is not the file its copy token recorded."""
 
 
@@ -158,7 +160,9 @@ def open_ro(db_file: Path, expect: tuple[int, int] | None = None) -> sqlite3.Con
 
     The file is opened with `O_NOFOLLOW`, so a symlink is refused, and
     `fstat` on that descriptor must show a regular file and, when
-    `expect` is given, the `(st_dev, st_ino)` its copy token recorded.
+    `expect` is given, that `(st_dev, st_ino)`. For a `GatedPath`, the
+    expected identity comes from the copy's manifest, which must list the
+    db and list or lack its `-wal` and `-shm`.
     sqlite then opens `/dev/fd/<n>`, the same open file, so a path swapped
     after the check can't change what is read. Where `/dev/fd` doesn't
     exist (Windows), sqlite opens the path and the identity is checked
@@ -170,6 +174,8 @@ def open_ro(db_file: Path, expect: tuple[int, int] | None = None) -> sqlite3.Con
     read changes no byte in the folder. It also ignores the `-wal` file,
     so a db whose `-wal` still holds frames raises `UnfoldedWalError`.
     """
+    if isinstance(db_file, GatedPath):
+        expect = db_file.gate.identity(db_file)
     if has_unfolded_wal(db_file):
         raise UnfoldedWalError("db has a non-empty -wal file")
     fd = os.open(db_file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -180,7 +186,7 @@ def open_ro(db_file: Path, expect: tuple[int, int] | None = None) -> sqlite3.Con
         if expect is not None and (st.st_dev, st.st_ino) != expect:
             raise IdentityMismatchError("db is not the file the copy token recorded")
         fd_dir = _dev_fd_dir()
-        target = f"file:{fd_dir}/{fd}" if fd_dir else db_file.resolve().as_uri()
+        target = f"file:{fd_dir}/{fd}" if fd_dir else Path(os.path.realpath(db_file)).as_uri()
         conn = sqlite3.connect(target + "?mode=ro&immutable=1", uri=True, timeout=5.0)
         conn.execute("PRAGMA query_only = 1")
         conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
@@ -210,14 +216,12 @@ class Ctx:
     is_global: bool = False
     db_file: Path | None = None
     layout: Layout = "repo"
-    expect: tuple[int, int] | None = None
     db: sqlite3.Connection | None = None
     _tables: set[str] | None = dataclasses.field(default=None, repr=False)
 
     def open(self) -> None:
-        if self.db is None and self.db_file is not None and (
-                self.expect is not None or self.db_file.is_file()):
-            self.db = open_ro(self.db_file, self.expect)
+        if self.db is None and self.db_file is not None and self.db_file.is_file():
+            self.db = open_ro(self.db_file)
 
     def close(self) -> None:
         if self.db is not None:
@@ -411,13 +415,18 @@ def jsonl_split_count(path: Path | Iterable[Path],
 
 
 def safe(fn: Callable[[Ctx], Result]) -> Callable[[Ctx], Result]:
-    """Wrap a probe: an exception becomes status `error` with its class name only."""
+    """Wrap a probe: an exception becomes status `error` with its class name only.
+
+    A `ManifestMismatch` is re-raised: the runner refuses the copy and exits 2.
+    """
     def wrapped(ctx: Ctx) -> Result:
         try:
             r = fn(ctx)
             if not isinstance(r, Result):  # pyright: ignore[reportUnnecessaryIsInstance]
                 return Result("error", None, {}, "ProbeReturnedNonResult")
             return r
+        except ManifestMismatch:
+            raise
         except Exception as exc:  # noqa: BLE001
             return Result("error", None, {}, type(exc).__name__[:80])
     wrapped.__name__ = getattr(fn, "__name__", "probe")

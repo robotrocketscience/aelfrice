@@ -19,9 +19,10 @@ attempt is thrown away. After 20 such attempts it exits 1 and asks you to
 close the sessions using the store. Any other error ends the run at once.
 
 It creates DEST itself and works in a fresh `mkdtemp` folder inside it, so
-it never deletes a path it didn't create. In the copy only, it checkpoints
-each `-wal` into its db, runs `PRAGMA quick_check`, and then writes the
-copy token (`copy_token`), which the census runner requires. Output is
+it never deletes a path it didn't create. In that temp folder only, it
+checkpoints each `-wal` into its db and runs `PRAGMA quick_check`. Last, it
+writes the copy manifest (`copy_token`), which lists every file it copied
+and which the census runner requires, and moves the copy into DEST. Output is
 counts only, and messages carry no path. Exit codes: 0 on success, 1 when
 no attempt got a quiet, sound copy, 2 on a usage error.
 """
@@ -59,20 +60,37 @@ class UnsafeSourceError(Exception):
     """The source holds a symlink or something that isn't a file or folder."""
 
 
+def _mode(name: str, dirfd: int) -> int | None:
+    """lstat mode of an entry, or None when it vanished after the listing."""
+    try:
+        return os.stat(name, dir_fd=dirfd, follow_symlinks=False).st_mode
+    except FileNotFoundError:
+        return None
+
+
 def _walk(src: Path) -> tuple[list[Path], list[Path], bool]:
-    """(files, dirs, has_symlink) under src, relative paths, no link followed."""
+    """(files, dirs, has_symlink) under src, relative paths, no link followed.
+
+    An entry that vanishes between the listing and its lstat, such as a
+    `-shm` a closing writer removes, is left out.
+    """
     files: list[Path] = []
     dirs: list[Path] = []
     link = False
     for dirpath, dirnames, filenames, dirfd in os.fwalk(src, follow_symlinks=False):
         here = Path(dirpath).relative_to(src)
         for name in dirnames:
-            if stat.S_ISLNK(os.stat(name, dir_fd=dirfd, follow_symlinks=False).st_mode):
+            mode = _mode(name, dirfd)
+            if mode is None:
+                continue
+            if stat.S_ISLNK(mode):
                 link = True
             else:
                 dirs.append(here / name)
         for name in filenames:
-            mode = os.stat(name, dir_fd=dirfd, follow_symlinks=False).st_mode
+            mode = _mode(name, dirfd)
+            if mode is None:
+                continue
             if stat.S_ISLNK(mode):
                 link = True
             elif stat.S_ISREG(mode):
@@ -126,17 +144,26 @@ def _db_state(src: Path, files: list[Path], tmp: Path | None) -> DbState:
     return out
 
 
-def _copy_once(src: Path, tmp: Path) -> None:
-    """One attempt into tmp. Raises BusyError when a writer changed a db file."""
+def _copy_once(src: Path, tmp: Path) -> set[str]:
+    """One attempt into tmp; returns the relpaths it copied.
+
+    Raises BusyError when a writer changed a db file.
+    """
     files, dirs, link = _walk(src)
     if link:
         raise UnsafeSourceError("the source holds a symlink")
     for d in dirs:
         (tmp / d).mkdir(parents=True, exist_ok=True)
+    copied: set[str] = set()
     for rel in files:
         if not rel.name.endswith("-shm") and not _is_db_file(rel):
-            _read(src, rel, tmp / rel)
+            try:
+                _read(src, rel, tmp / rel)
+            except FileNotFoundError:
+                raise BusyError("a file vanished while it was read") from None
+            copied.add(rel.as_posix())
     first = _db_state(src, files, tmp)
+    copied.update(first)
     files_again, _dirs, link = _walk(src)
     if link:
         raise UnsafeSourceError("the source holds a symlink")
@@ -144,10 +171,15 @@ def _copy_once(src: Path, tmp: Path) -> None:
         raise BusyError("db files appeared or vanished")
     if _db_state(src, files, None) != first:
         raise BusyError("a db file changed while it was read")
+    return copied
 
 
 def _fold_and_check(db_file: Path) -> bool:
-    """Checkpoint the copy's WAL into its db file, then quick_check it."""
+    """Checkpoint the copy's WAL into its db file, then quick_check it.
+
+    Closing the last connection removes the copy's `-wal` and `-shm`; a
+    `-shm` left behind makes `_write_token` refuse the copy.
+    """
     conn = sqlite3.connect(str(db_file), timeout=5.0)
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -170,7 +202,7 @@ def copy_store(src: Path, dest: Path) -> dict[str, int]:
             report["attempts"] = attempt
             tmp = Path(tempfile.mkdtemp(dir=dest, prefix=".attempt-"))
             try:
-                _copy_once(src, tmp)
+                copied = _copy_once(src, tmp)
             except BusyError:
                 report["busy"] += 1
                 shutil.rmtree(tmp)
@@ -184,10 +216,12 @@ def copy_store(src: Path, dest: Path) -> dict[str, int]:
             if not sound:
                 shutil.rmtree(tmp)
                 break
+            dst = os.stat(dest, follow_symlinks=False)
+            report.update(copy_token._write_token(  # pyright: ignore[reportPrivateUsage]
+                tmp, copied, (dst.st_dev, dst.st_ino)))
             for entry in sorted(tmp.iterdir()):
                 os.rename(entry, dest / entry.name)
             os.rmdir(tmp)
-            report.update(copy_token.write_token(dest))
             report["quick_check_ok"] = 1
             report["dbs"] = len(dbs)
             break

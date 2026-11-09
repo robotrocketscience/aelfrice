@@ -13,20 +13,21 @@ takes a `git:<name>` store, `--legacy` a legacy per-project store, and
 `--global-dir` a copy of `~/.aelfrice`, which adds the `global` store and,
 when it holds `user/memory.db`, the `user` store.
 
-The runner reads only copies that `copy_store` made. Each store's db must be
-recorded, by inode and size, in the `.fire-census-copy` token at or above
-its folder (`copy_token`), whatever the path; a live store has no token.
-The live-location checks in `guard` run first as a second line. The db is
-opened through a descriptor the runner opened with `O_NOFOLLOW`, checked
-against the token with `fstat`, with a `mode=ro&immutable=1` URI and
-`query_only` on, so the read changes no byte beside the store. Sidecars are
-read with plain reads.
+The runner reads only copies that `copy_store` made. A store folder needs
+the copy manifest `.fire-census-copy` at or above it, and `--global-dir`
+needs one in the folder itself. Every file a probe reads, db, sidecar or
+log, goes through `copy_token.Gate`: it must be listed and still match its
+entry, or the run exits 2. The live-location checks in `guard` run first.
+The db is opened through a checked `O_NOFOLLOW` descriptor with a
+`mode=ro&immutable=1` URI and `query_only` on, so the read changes no byte
+beside the store. These checks prevent accidents; they don't defend against
+a hand-written manifest.
 
 `--out` and `--labels-out` are written through a descriptor for their
 folder: a temp file created there with `O_EXCL | O_NOFOLLOW`, then renamed
 over the final name. The runner refuses a final path that is an existing
-symlink, a folder that holds a store or a copy token, a live location, and
-this repository.
+symlink, a folder that is a symlink, holds a store or sits inside any copy,
+a live location, this repository, and one path given for both flags.
 
 Output is JSON with counts and fixed labels only. Stores appear as
 opaque labels (`store01`, `named01`, `legacy01`, `global`, `user`).
@@ -48,11 +49,11 @@ from pathlib import Path
 from typing import Any
 
 from . import copy_token, guard
+from .copy_token import Gate, GatedPath, ManifestMismatch
 from .core import (
     DEFAULT_PROBE_DEADLINE_S,
     STORE_LABEL_RE,
     Ctx,
-    IdentityMismatchError,
     Layout,
     Probe,
     UnfoldedWalError,
@@ -75,9 +76,9 @@ class UsageError(Exception):
 @dataclasses.dataclass(frozen=True)
 class StoreArg:
     layout: Layout
-    store_dir: Path
-    db_file: Path
-    expect: tuple[int, int]
+    store_dir: GatedPath
+    db_file: GatedPath
+    ident: tuple[int, int]
 
 
 def is_live_location(path: Path) -> bool:
@@ -85,24 +86,33 @@ def is_live_location(path: Path) -> bool:
     return guard.live_reason(path) is not None
 
 
-def _check_db(db_file: Path, what: str) -> tuple[int, int]:
-    """Guard, WAL and token checks for one db; returns the token's identity."""
+def _load(gate: Gate, root: Path, what: str) -> None:
+    try:
+        gate.add(copy_token.load(root))
+    except copy_token.TokenError as exc:
+        raise UsageError(f"{what}: {exc}") from None
+    except OSError:
+        raise UsageError(f"{what}: the copy token can't be read") from None
+
+
+def _check_db(db_file: GatedPath, what: str) -> tuple[int, int]:
+    """Guard, manifest and WAL checks for one db; returns its identity."""
     why = guard.store_live_reason(db_file)
     if why:
         raise UsageError(f"{what} is a live store location ({why}); run on a copy")
     try:
+        ident = db_file.gate.identity(db_file)
         unfolded = has_unfolded_wal(db_file)
+    except ManifestMismatch as exc:
+        raise UsageError(f"{what}: {exc}; make a fresh copy with copy_store") from None
     except OSError:
-        raise UsageError(f"{what} has a -wal file that can't be read") from None
+        raise UsageError(f"{what} has a file that can't be read") from None
     if unfolded:
         raise UsageError(f"{what} has a non-empty -wal file; make the copy with copy_store")
-    try:
-        return copy_token.verify_db(db_file)
-    except copy_token.TokenError as exc:
-        raise UsageError(f"{what}: {exc}") from None
+    return ident
 
 
-def _store_arg(raw: str, layout: Layout, what: str) -> StoreArg:
+def _store_arg(raw: str, layout: Layout, what: str, gate: Gate) -> StoreArg:
     p = Path(os.path.abspath(raw))
     why = guard.live_reason(p)
     if why:
@@ -113,8 +123,14 @@ def _store_arg(raw: str, layout: Layout, what: str) -> StoreArg:
         store_dir, db_file = p.parent, p
     if not os.path.lexists(db_file):
         raise UsageError(f"{what} has no memory.db")
-    expect = _check_db(db_file, what)
-    return StoreArg(layout, store_dir, db_file, expect)
+    try:
+        root = copy_token.find_root(store_dir)
+    except copy_token.TokenError as exc:
+        raise UsageError(f"{what}: {exc}") from None
+    _load(gate, root, what)
+    gdir = GatedPath(store_dir, gate=gate)
+    gdb = GatedPath(db_file, gate=gate)
+    return StoreArg(layout, gdir, gdb, _check_db(gdb, what))
 
 
 def _label(layout: Layout, i: int) -> str:
@@ -124,9 +140,16 @@ def _label(layout: Layout, i: int) -> str:
 
 def build_contexts(stores: list[str], named: list[str], legacy: list[str],
                    global_dir: str | None) -> tuple[list[Ctx], dict[str, str]]:
-    """Contexts with opaque labels, plus the label -> path map. Opens nothing."""
-    gdir: Path | None = None
-    gexpect: dict[str, tuple[int, int]] = {}
+    """Contexts with opaque labels, plus the label -> path map. Opens no db.
+
+    Every context path is a `GatedPath` on one `Gate`, so each file a probe
+    reads must be listed in its copy's manifest. `--global-dir` must hold its
+    own copy token; a token above it doesn't count.
+    """
+    gate = Gate()
+    gdir: GatedPath | None = None
+    gdbs: dict[str, GatedPath] = {}
+    seen_db: set[tuple[int, int]] = set()
     if global_dir is not None:
         g = Path(os.path.abspath(global_dir))
         why = guard.live_reason(g)
@@ -134,44 +157,40 @@ def build_contexts(stores: list[str], named: list[str], legacy: list[str],
             raise UsageError(f"--global-dir is a live store location ({why}); run on a copy")
         if not g.is_dir():
             raise UsageError("--global-dir is not a folder")
-        try:
-            copy_token.verify_folder(g)
-        except copy_token.TokenError as exc:
-            raise UsageError(f"--global-dir: {exc}") from None
-        gdir = g
-        for key, db in (("global", g / "memory.db"), ("user", g / "user" / "memory.db")):
-            if os.path.lexists(db):
-                gexpect[key] = _check_db(db, "--global-dir")
+        _load(gate, g, "--global-dir")
+        gdir = GatedPath(g, gate=gate)
+        for key, db in (("global", gdir / "memory.db"), ("user", gdir / "user" / "memory.db")):
+            try:
+                present = db.is_file()
+            except ManifestMismatch as exc:
+                raise UsageError(f"--global-dir: {exc}") from None
+            if present:
+                seen_db.add(_check_db(db, "--global-dir"))
+                gdbs[key] = db
     groups: list[tuple[Layout, list[str], str]] = [
         ("repo", stores, "store argument"), ("named", named, "--named argument"),
         ("legacy", legacy, "--legacy argument"),
     ]
     ctxs: list[Ctx] = []
     private: dict[str, str] = {}
-    seen_db: set[tuple[int, int]] = set()
     for layout, raws, what in groups:
-        args = [_store_arg(r, layout, f"{what} {i}") for i, r in enumerate(raws, 1)]
+        args = [_store_arg(r, layout, f"{what} {i}", gate) for i, r in enumerate(raws, 1)]
         args.sort(key=lambda a: str(a.db_file))
         if len(args) > MAX_STORES_PER_LAYOUT:
             raise UsageError(f"more than {MAX_STORES_PER_LAYOUT} stores of one kind")
         for i, a in enumerate(args, 1):
-            if a.expect in seen_db:
+            if a.ident in seen_db:
                 raise UsageError(f"{what} names a store twice")
-            seen_db.add(a.expect)
+            seen_db.add(a.ident)
             label = _label(layout, i)
             private[label] = str(a.db_file)
-            ctxs.append(Ctx(label, a.store_dir, gdir, False, a.db_file, layout,
-                            expect=a.expect))
+            ctxs.append(Ctx(label, a.store_dir, gdir, False, a.db_file, layout))
     if gdir is not None:
-        gdb = gdir / "memory.db"
-        ctxs.append(Ctx("global", gdir, gdir, True, gdb if "global" in gexpect else None,
-                        "global", expect=gexpect.get("global")))
-        private["global"] = str(gdb)
-        if "user" in gexpect:
-            user = gdir / "user"
-            ctxs.append(Ctx("user", user, gdir, True, user / "memory.db", "user",
-                            expect=gexpect["user"]))
-            private["user"] = str(user / "memory.db")
+        ctxs.append(Ctx("global", gdir, gdir, True, gdbs.get("global"), "global"))
+        private["global"] = str(gdir / "memory.db")
+        if "user" in gdbs:
+            ctxs.append(Ctx("user", gdir / "user", gdir, True, gdbs["user"], "user"))
+            private["user"] = str(gdbs["user"])
     if not ctxs:
         raise UsageError("no stores given")
     return ctxs, private
@@ -195,14 +214,17 @@ def run_census(probes: list[Probe], ctxs: list[Ctx],
         for c in ctxs:
             try:
                 c.open()
-            except (OSError, IdentityMismatchError, UnfoldedWalError):
+            except (OSError, ManifestMismatch, UnfoldedWalError):
                 raise UsageError("a store changed after it was checked; "
                                  "make a fresh copy with copy_store") from None
         for p in probes:
             results: dict[str, Any] = {}
             for ctx in _targets(p, ctxs):
                 label = "_" if ctx is None else ctx.name
-                r = run_one(p, ctx, deadline_s)
+                try:
+                    r = run_one(p, ctx, deadline_s)
+                except ManifestMismatch as exc:
+                    raise UsageError(f"{exc}; make a fresh copy with copy_store") from None
                 results[label] = r.to_json()
                 status_totals[r.status] = status_totals.get(r.status, 0) + 1
             o = outcome(v["status"] for v in results.values())
@@ -242,9 +264,15 @@ class OutTarget:
         self.name = self.path.name
         self.dfd: int | None = None
         self._refuse_path(roots)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            raise UsageError(f"{flag}'s folder can't be created") from None
         if os.open in os.supports_dir_fd and hasattr(os, "O_DIRECTORY"):
-            self.dfd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | NOFOLLOW)
+            try:
+                self.dfd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | NOFOLLOW)
+            except OSError:
+                raise UsageError(f"{flag}'s folder is a symlink or can't be opened") from None
             st = os.fstat(self.dfd)
             if guard.ident(self.path.parent) != (st.st_dev, st.st_ino):
                 self.close()
@@ -261,6 +289,8 @@ class OutTarget:
                 raise UsageError(f"{flag} exists and is not a regular file")
         if any(guard.inside(self.path, r) for r in roots):
             raise UsageError(f"{flag} is inside a store the census reads")
+        if any(os.path.lexists(d / copy_token.TOKEN_FILENAME) for d in guard.chain(self.path.parent)):
+            raise UsageError(f"{flag} is inside a census copy")
         why = guard.live_reason(self.path)
         if why:
             raise UsageError(f"{flag} is in a live store location ({why})")
@@ -361,6 +391,9 @@ def main(argv: list[str] | None = None) -> int:
             roots = [c.store_dir for c in ctxs]
             if a.deadline <= 0:
                 raise UsageError("--deadline must be positive")
+            if (a.out is not None and a.labels_out is not None
+                    and os.path.abspath(a.out) == os.path.abspath(a.labels_out)):
+                raise UsageError("--out and --labels-out name the same file")
             for flag, path in (("--out", a.out), ("--labels-out", a.labels_out)):
                 if path is not None:
                     targets[flag] = OutTarget(flag, path, roots)

@@ -1,9 +1,9 @@
 """Live-store checks for the census runner and `copy_store` (#1887).
 
-These checks are defense in depth. The guarantee is the copy token
-(`copy_token`): the runner reads only folders `copy_store` made. The checks
-here refuse a live location before the token is even read, and they
-compare file identities, `(st_dev, st_ino)` via `os.stat`, rather than
+These checks prevent accidents, alongside the copy manifest
+(`copy_token`) that every file the runner reads must match. They refuse a
+live location before the manifest is read, and they compare file
+identities, `(st_dev, st_ino)` via `os.stat`, rather than
 path strings, so a firmlink such as `/System/Volumes/Data/...`, a symlink,
 another letter case or a `..` path can't hide one.
 
