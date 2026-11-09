@@ -379,6 +379,55 @@ def test_the_gate_opens_no_symlink_that_appears_after_its_check(
         p.read_text("utf-8")
 
 
+def test_the_gate_refuses_a_file_replaced_after_its_check(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "log.jsonl").write_text("{}\n", encoding="utf-8")
+    dest = _copy(src, tmp_path / "copy")
+    (tmp_path / "other").write_text('{"other": 1}\n', encoding="utf-8")
+    p = _gated(dest, "log.jsonl")
+    real = p.gate.file_stat
+
+    def swap(q: Any) -> os.stat_result | None:
+        st = real(q)
+        os.replace(tmp_path / "other", dest / "log.jsonl")
+        return st
+
+    monkeypatch.setattr(p.gate, "file_stat", swap)
+    with pytest.raises(copy_token.ManifestMismatch):
+        p.read_text("utf-8")
+
+
+def test_the_gate_picks_the_innermost_manifest_and_matches_whole_names(tmp_path: Path) -> None:
+    stamp = {"dev": 1, "ino": 2, "nlink": 1, "size": 3, "mtime_ns": 4}
+    outer = copy_token.Manifest(tmp_path / "c1", frozenset({"inner"}), {})
+    inner = copy_token.Manifest(tmp_path / "c1" / "inner", frozenset(), {"f": stamp})
+    gate = copy_token.Gate()
+    gate.add(outer)
+    gate.add(inner)
+    lookup = gate._lookup  # pyright: ignore[reportPrivateUsage]
+    assert lookup(tmp_path / "c1" / "inner" / "f") == (inner, "f")
+    assert lookup(tmp_path / "c1" / "inner") == (inner, "")
+    assert lookup(tmp_path / "c1") == (outer, "")
+    gate2 = copy_token.Gate()
+    gate2.add(inner)
+    gate2.add(outer)
+    assert gate2._lookup(tmp_path / "c1" / "inner" / "f") == (inner, "f")  # pyright: ignore[reportPrivateUsage]
+    assert lookup(tmp_path / "c10" / "f") == (None, "")
+    assert lookup(tmp_path / "c1x") == (None, "")
+
+
+def test_a_sidecar_link_into_a_live_folder_is_named_as_live(
+        planted_copy: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    live = tmp_path / "repo" / DOT_GIT / "aelfrice"
+    live.mkdir(parents=True)
+    (live / "memory.db-shm").write_bytes(b"")
+    (planted_copy / "memory.db-shm").symlink_to(live / "memory.db-shm")
+    assert runner.main([str(planted_copy), "--dry-run"]) == 2
+    assert "live store location" in capsys.readouterr().err
+
+
 def test_a_sidecar_swapped_for_a_symlink_into_a_live_store_exits_2(
         planted_copy: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     live = tmp_path / "repo" / DOT_GIT / "aelfrice"
@@ -837,6 +886,43 @@ def test_out_and_labels_out_must_differ(planted_copy: Path, tmp_path: Path) -> N
     same = str(tmp_path / "same.json")
     assert runner.main([str(planted_copy), "--out", same, "--labels-out", same]) == 2
     assert not os.path.lexists(same)
+    real = tmp_path / "real" / "sub"
+    real.mkdir(parents=True)
+    (tmp_path / "lnk").symlink_to(tmp_path / "real")
+    assert runner.main([str(planted_copy), "--out", str(real / "b.json"),
+                        "--labels-out", str(tmp_path / "lnk" / "sub" / "b.json")]) == 2
+    assert runner.main([str(planted_copy), "--out", str(real / "C.json"),
+                        "--labels-out", str(real / "c.json")]) == 2
+    (real / "e.json").write_text("{}", encoding="utf-8")
+    assert runner.main([str(planted_copy), "--out", str(real / "e.json"),
+                        "--labels-out", str(tmp_path / "lnk" / "sub" / "e.json")]) == 2
+    assert (real / "e.json").read_text("utf-8") == "{}"
+    (real / "h1.json").write_text("{}", encoding="utf-8")
+    os.link(real / "h1.json", real / "h2.json")
+    assert runner.main([str(planted_copy), "--out", str(real / "h1.json"),
+                        "--labels-out", str(real / "h2.json")]) == 2
+    assert sorted(p.name for p in real.iterdir()) == ["e.json", "h1.json", "h2.json"]
+    new = tmp_path / "new-a" / "x.json"
+    assert runner.main([str(planted_copy), "--out", str(new),
+                        "--labels-out", str(tmp_path / "new-a" / "X.json")]) == 2
+    assert not (tmp_path / "new-a").exists()
+    assert not runner.same_output(real / "b.json", real / "d.json")
+
+
+def test_a_refused_output_leaves_no_folder_behind(planted_copy: Path, tmp_path: Path) -> None:
+    out = tmp_path / "made" / "by" / "out" / "o.json"
+    labels = runner.REPO_ROOT / "benchmarks" / "census-labels-refusal.json"
+    assert runner.main([str(planted_copy), "--out", str(out), "--labels-out", str(labels)]) == 2
+    assert not (tmp_path / "made").exists() and not labels.exists()
+    (tmp_path / "real").mkdir()
+    (tmp_path / "lnk").symlink_to(tmp_path / "real")
+    assert runner.main([str(planted_copy), "--out", str(out),
+                        "--labels-out", str(tmp_path / "lnk" / "l.json")]) == 2
+    assert not (tmp_path / "made").exists()
+    beside = _plain_db(tmp_path / "loose").parent
+    assert runner.main([str(planted_copy), "--out", str(out),
+                        "--labels-out", str(beside / "l.json")]) == 2
+    assert not (tmp_path / "made").exists()
 
 
 def test_only_rejects_an_unknown_id(planted_copy: Path) -> None:
@@ -1122,6 +1208,58 @@ def test_a_threaded_writer_never_gets_a_torn_copy_through(tmp_path: Path) -> Non
 
 
 # --- the documented limits match the probe tests ----------------------------------------
+
+
+_BANNED_OS = frozenset({"open", "stat", "lstat", "listdir", "scandir", "walk", "fwalk",
+                        "readlink", "fdopen"})
+
+
+def _file_access_calls(source: str) -> list[str]:
+    """Calls in probe code that would read a file around the copy manifest."""
+    import ast
+    out: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in ("open", "Path", "PurePath", "PosixPath"):
+            out.append(f.id)
+        elif isinstance(f, ast.Attribute):
+            base = f.value
+            if isinstance(base, ast.Name) and base.id in ("io", "builtins", "sqlite3", "shutil",
+                                                           "glob", "pathlib"):
+                out.append(f"{base.id}.{f.attr}")
+            elif isinstance(base, ast.Name) and base.id == "os" and f.attr in _BANNED_OS:
+                out.append(f"os.{f.attr}")
+            elif (isinstance(base, ast.Attribute) and isinstance(base.value, ast.Name)
+                  and base.value.id == "os" and base.attr == "path"):
+                out.append(f"os.path.{f.attr}")
+            elif f.attr in ("read_text", "read_bytes", "open") and isinstance(base, ast.Call) \
+                    and isinstance(base.func, ast.Name) and base.func.id == "Path":
+                out.append(f"Path().{f.attr}")
+    return out
+
+
+def test_the_scan_catches_each_way_around_the_gate() -> None:
+    planted = "\n".join([
+        "open('x')", "io.open('x')", "os.open('x', 0)", "os.path.exists('x')",
+        "os.listdir('x')", "Path('x').read_text()", "sqlite3.connect('x')",
+        "shutil.copy('a', 'b')", "glob.glob('*')", "pathlib.Path('x')",
+    ])
+    found = _file_access_calls(planted)
+    for want in ("open", "io.open", "os.open", "os.path.exists", "os.listdir", "Path",
+                 "Path().read_text", "sqlite3.connect", "shutil.copy", "glob.glob",
+                 "pathlib.Path"):
+        assert want in found, want
+    assert _file_access_calls("ctx.sidecar('x').read_text()\ncc.open_ro(p)\n") == []
+
+
+def test_probe_modules_read_files_only_through_the_gate() -> None:
+    pkg = runner.REPO_ROOT / "benchmarks" / "real_store_fire_census"
+    mods = sorted(pkg.glob("probes_*.py"))
+    assert len(mods) == len(registry.SUBSYSTEM_MODULES)
+    bad = {m.name: c for m in mods if (c := _file_access_calls(m.read_text("utf-8")))}
+    assert bad == {}
 
 
 def test_the_readme_lists_every_probe_limit() -> None:
