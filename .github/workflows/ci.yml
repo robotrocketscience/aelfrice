@@ -421,7 +421,7 @@ jobs:
       # The two legs' reports from this run. `pattern` with no match is not
       # an error in v4 (a docs-only PR uploads none), and `merge-multiple`
       # puts `junit-3.12.xml` and `junit-3.13.xml` side by side.
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         timeout-minutes: 1
         with:
