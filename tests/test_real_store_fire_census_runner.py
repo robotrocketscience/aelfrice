@@ -268,3 +268,175 @@ def test_the_runner_module_runs_as_a_script(planted_copy: Path) -> None:
         cwd=str(runner.REPO_ROOT), capture_output=True, text=True, timeout=120, check=False)
     assert cp.returncode == 0, cp.stderr
     assert json.loads(cp.stdout)["probes"] == [["A001", "untraceable", "beliefs-graph-feedback"]]
+
+
+# --- review round 1: the live-store guard sees through paths ------------------
+
+DOT_GIT = "." + "git"
+
+
+def _plain_db(folder: Path) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    sqlite3.connect(str(folder / "memory.db")).close()
+    return folder / "memory.db"
+
+
+def test_a_symlinked_db_into_a_git_folder_is_refused(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    live = _plain_db(tmp_path / "repo" / DOT_GIT / "aelfrice")
+    innocent = tmp_path / "innocent"
+    innocent.mkdir()
+    (innocent / "memory.db").symlink_to(live)
+    labels = tmp_path / "labels.json"
+    assert runner.main([str(innocent), "--labels-out", str(labels)]) == 2
+    assert not labels.exists()
+    err = capsys.readouterr().err
+    assert ".git" in err and str(tmp_path) not in err
+
+
+def test_a_symlinked_store_folder_and_a_dotdot_path_are_refused(tmp_path: Path) -> None:
+    live = _plain_db(tmp_path / "repo" / DOT_GIT / "aelfrice").parent
+    link = tmp_path / "linkdir"
+    link.symlink_to(live)
+    assert runner.main([str(link), "--dry-run"]) == 2
+    dotdot = f"{tmp_path}/repo/{DOT_GIT}/../{DOT_GIT}/aelfrice"
+    assert runner.main([dotdot, "--dry-run"]) == 2
+
+
+def test_a_git_folder_in_another_letter_case_is_refused(tmp_path: Path) -> None:
+    folder = tmp_path / "repo" / ".Git" / "aelfrice"
+    _plain_db(folder)
+    assert runner.main([str(folder), "--dry-run"]) == 2
+
+
+def test_a_marker_store_is_refused(tmp_path: Path) -> None:
+    proj = tmp_path / "proj"
+    store = proj / "local-store"
+    _plain_db(store)
+    (proj / ".aelfrice.toml").write_text('[store]\npath = "local-store"\n', encoding="utf-8")
+    assert runner.main([str(store), "--dry-run"]) == 2
+    other = _plain_db(proj / "elsewhere").parent
+    assert runner.main([str(other), "--dry-run"]) == 0
+
+
+def test_an_unreadable_marker_above_a_store_refuses_it(tmp_path: Path) -> None:
+    proj = tmp_path / "proj"
+    store = _plain_db(proj / "s").parent
+    (proj / ".aelfrice.toml").write_text("[store\npath = ", encoding="utf-8")
+    assert runner.main([str(store), "--dry-run"]) == 2
+
+
+def test_the_aelfrice_db_store_is_refused(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = _plain_db(tmp_path / "pinned")
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    assert runner.main([str(db.parent), "--dry-run"]) == 2
+    assert runner.main([str(db), "--dry-run"]) == 2
+
+
+def test_outputs_in_a_live_location_or_the_repo_are_refused(
+        planted_copy: Path, tmp_path: Path) -> None:
+    git_out = tmp_path / "repo" / DOT_GIT / "census.json"
+    assert runner.main([str(planted_copy), "--dry-run", "--out", str(git_out)]) == 2
+    repo_out = runner.REPO_ROOT / "benchmarks" / "census-out-refusal-test.json"
+    assert runner.main([str(planted_copy), "--dry-run", "--out", str(repo_out)]) == 2
+    assert not git_out.exists() and not repo_out.exists()
+
+
+def test_a_symlink_to_a_db_with_wal_frames_exits_2(tmp_path: Path) -> None:
+    src = tmp_path / "busy"
+    writer = _wal_db(src)
+    try:
+        innocent = tmp_path / "innocent"
+        innocent.mkdir()
+        (innocent / "memory.db").symlink_to(src / "memory.db")
+        assert runner.main([str(innocent), "--only", "A309"]) == 2
+    finally:
+        writer.close()
+
+
+def test_dry_run_says_it_writes_no_labels_file(
+        planted_copy: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    labels = tmp_path / "labels.json"
+    assert runner.main([str(planted_copy), "--dry-run", "--labels-out", str(labels)]) == 0
+    assert "not written" in capsys.readouterr().err
+    assert not labels.exists()
+
+
+# --- review round 1: copy_store never touches its source ----------------------
+
+
+def test_copy_store_refuses_a_symlinked_db_and_leaves_its_target_alone(tmp_path: Path) -> None:
+    real_dir = tmp_path / "real"
+    writer = _wal_db(real_dir)
+    try:
+        before = _snapshot(real_dir)
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "memory.db").symlink_to(real_dir / "memory.db")
+        assert copy_store.main([str(src), str(tmp_path / "dest")]) == 2
+        assert _snapshot(real_dir) == before
+        assert not (tmp_path / "dest").exists()
+    finally:
+        writer.close()
+
+
+def test_copy_store_reads_a_store_with_an_open_writer_without_changing_it(tmp_path: Path) -> None:
+    src = tmp_path / "live-like"
+    writer = _wal_db(src)
+    try:
+        before = _snapshot(src)
+        dest = tmp_path / "copy"
+        assert copy_store.main([str(src), str(dest)]) == 0
+        assert _snapshot(src) == before
+    finally:
+        writer.close()
+    assert not (tmp_path / "copy.partial").exists()
+
+
+def test_copy_store_survives_a_writer_that_never_stops(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import threading
+    src = tmp_path / "churn"
+    src.mkdir()
+    c = sqlite3.connect(str(src / "memory.db"))
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("CREATE TABLE t(x)")
+    c.commit()
+    c.close()
+    stop = threading.Event()
+    started = threading.Event()
+
+    def churn() -> None:
+        while not stop.is_set():
+            w = sqlite3.connect(str(src / "memory.db"), timeout=5.0)
+            w.execute("INSERT INTO t VALUES (1)")
+            w.commit()
+            w.close()
+            started.set()
+
+    t = threading.Thread(target=churn, daemon=True)
+    t.start()
+    try:
+        assert started.wait(timeout=30)
+        results = [copy_store.main([str(src), str(tmp_path / f"d{i}")]) for i in range(5)]
+    finally:
+        stop.set()
+        t.join(timeout=30)
+    assert results == [0] * 5
+    err = capsys.readouterr().err
+    assert str(tmp_path) not in err
+    assert not list(tmp_path.glob("*.partial"))
+
+
+def test_the_readme_lists_every_probe_limit() -> None:
+    readme = (runner.REPO_ROOT / "benchmarks" / "real_store_fire_census" / "README.md"
+              ).read_text("utf-8")
+    fired_part, _, silent_part = readme.partition("have no test in which they report `silent`")
+    for item_id in registry.NO_FIRED_TEST:
+        assert f"- `{item_id}`:" in fired_part, item_id
+    for item_id in registry.NO_SILENT_RESULT:
+        assert f"- `{item_id}`:" in silent_part, item_id
+    traceable = {p.item_id for p in registry.all_probes() if p.kind != "untraceable"}
+    assert set(registry.NO_FIRED_TEST) <= traceable
+    assert set(registry.NO_SILENT_RESULT) <= traceable
