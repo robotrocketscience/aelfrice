@@ -248,6 +248,23 @@ def run_census(probes: list[Probe], ctxs: list[Ctx],
     }
 
 
+def same_output(a: Path, b: Path) -> bool:
+    """True when two output paths name one file.
+
+    Existing files compare with `os.path.samefile`. Otherwise the names
+    compare casefolded, inside the same folder by `(st_dev, st_ino)` when
+    both folders exist, or by casefolded resolved path when they don't.
+    """
+    if os.path.lexists(a) and os.path.lexists(b):
+        return guard.same(a, b)
+    if a.name.casefold() != b.name.casefold():
+        return False
+    pa, pb = guard.ident(a.parent), guard.ident(b.parent)
+    if pa is not None and pb is not None:
+        return pa == pb
+    return os.path.realpath(a.parent).casefold() == os.path.realpath(b.parent).casefold()
+
+
 class OutTarget:
     """An output file, checked and pinned to its folder before the run.
 
@@ -259,11 +276,21 @@ class OutTarget:
     """
 
     def __init__(self, flag: str, path: Path, roots: list[Path]) -> None:
+        """Run every refusal that needs no folder; `open` creates and pins it."""
         self.flag = flag
         self.path = Path(os.path.abspath(path))
         self.name = self.path.name
         self.dfd: int | None = None
         self._refuse_path(roots)
+        parent = self.path.parent
+        if os.path.islink(parent):
+            raise UsageError(f"{flag}'s folder is a symlink or can't be opened")
+        if any(os.path.lexists(parent / n) for n in ("memory.db", copy_token.TOKEN_FILENAME)):
+            raise UsageError(f"{flag}'s folder holds a store or a copy token")
+
+    def open(self) -> None:
+        """Create the folder, open it with O_NOFOLLOW and check it again."""
+        flag = self.flag
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         except OSError:
@@ -391,12 +418,14 @@ def main(argv: list[str] | None = None) -> int:
             roots = [c.store_dir for c in ctxs]
             if a.deadline <= 0:
                 raise UsageError("--deadline must be positive")
-            if (a.out is not None and a.labels_out is not None
-                    and os.path.abspath(a.out) == os.path.abspath(a.labels_out)):
-                raise UsageError("--out and --labels-out name the same file")
             for flag, path in (("--out", a.out), ("--labels-out", a.labels_out)):
                 if path is not None:
                     targets[flag] = OutTarget(flag, path, roots)
+            if len(targets) == 2 and same_output(targets["--out"].path,
+                                                 targets["--labels-out"].path):
+                raise UsageError("--out and --labels-out name the same file")
+            for t in targets.values():
+                t.open()
         except UsageError as exc:
             print(f"real_store_fire_census: {exc}", file=sys.stderr)
             return 2
