@@ -6,8 +6,9 @@ feature. A probe counts the rows or log lines that the feature writes when
 it runs, and it reports one of these statuses for each store:
 
 - `fired`: the probe found a trace that only this feature leaves, and the
-  count is above 0. When the note says the count is inferred from indirect
-  rows, the count is a lower bound.
+  count is above 0. If any other code path can write the same rows, the
+  probe reports `ambiguous` instead. When the note says the count is
+  inferred from indirect rows, the count is a lower bound.
 - `ambiguous`: the probe found a trace, and the count is above 0, but another
   writer leaves the same trace, and the store can't show which of them did.
   The note names the other writer. Count an `ambiguous` result as neither
@@ -34,10 +35,9 @@ method, the pre-registered predictions, and the results of the first run.
 
 ## Before you begin
 
-- Run the census only on copies that the copy helper made. The helper writes
-  a copy token, `.fire-census-copy`, at the top of each copy, and the runner
-  refuses any store folder without one. See [How the runner keeps stores
-  unchanged](#how-the-runner-keeps-stores-unchanged).
+- Run the census only on copies that the copy helper made. The runner reads
+  a store folder only when a copy manifest, `.fire-census-copy`, sits at or
+  above it, and `--global-dir` only when the manifest sits in that folder.
 - Keep the copies, the output, and the labels file outside this repository.
   The labels file maps the opaque store labels back to your folder paths.
 - Make sure you have enough free disk space for the copies. A copy is the
@@ -66,8 +66,12 @@ meets a writer, it exits with status 1 and asks you to close the sessions
 that use the store. Any other failure ends the run at once, and the helper
 removes only the folders that it created.
 
-In the copy, the helper folds the WAL into each db, checks it with `PRAGMA
-quick_check`, and writes the copy token. It prints counts only. To see how
+In its temp folder, the helper folds the WAL into each db, checks it with
+`PRAGMA quick_check`, and removes the empty `-wal` and the `-shm` that the
+check left. Last, it writes the copy manifest, which lists every file it
+copied, and moves the copy into the destination. It refuses to write a
+manifest into a folder that holds a file it didn't copy or that is a live
+store location. It prints counts only. To see how
 many files and bytes a copy takes without copying anything, add `--dry-run`.
 
 To include the global store, the user store, and the global logs, copy
@@ -122,40 +126,58 @@ an issue.
 
 ## How the runner keeps stores unchanged
 
-The copy token is the guarantee. For each `memory.db`, the runner reads the
-nearest `.fire-census-copy` at or above the store's folder. The token must
-record that db by its path inside the copy, and the db's `lstat` must still
-match the token: the same device and inode, the same size and mtime, and a
-regular file with one hard link. A live store has no token. A token copied
-beside a live db records another inode. A hard link to a live db has two
-links. The runner refuses all three, whatever their path. `--global-dir` must
-hold a token too.
+The checks below prevent accidents: pointing the census at a live store, a
+stale path, or a symlink, or reading a copy that changed after it was made.
+They don't defend against a user who writes a manifest by hand.
 
-The runner then opens each db with `O_NOFOLLOW`, checks with `fstat` that the
-descriptor is the inode the token recorded, and has sqlite open
-`/dev/fd/<n>`, the same open file. A db swapped after the check is refused,
-and the run exits with status 2. The sqlite URI sets `mode=ro` and
-`immutable=1`, and the connection sets `PRAGMA query_only`. With `mode=ro`
-alone, sqlite creates `-wal` and `-shm` files beside a WAL-mode database and
-rewrites the `-shm` index. With `immutable=1`, it opens neither file and
-takes no locks, but it also ignores the WAL, so the runner refuses a db whose
-`memory.db-wal` still holds frames. The runner reads sidecars with plain file
-reads.
+### The manifest rule
 
-As a second check, the runner refuses a path that is, or sits below, a git
-directory, `~/.aelfrice`, the folder of the store that `$AELFRICE_DB` or
+The copy manifest records the device and inode of the copy folder, the
+copy's folders, and, for every file the helper copied, its path inside the
+copy, device, inode, link count, size, and mtime. It holds no source path.
+
+Every file the runner reads goes through the manifest: the db, its `-wal`
+and `-shm`, every sidecar and log, and every file in the global copy. A file
+must be listed and must still match its entry. The runner opens it with
+`O_NOFOLLOW` and checks the open file's inode again with `fstat`. Listing a
+folder must give exactly the entries that the manifest lists. A file that
+isn't listed, a listed file that changed or is missing, a symlink in place
+of a listed file, and a manifest moved to another folder all make the run
+exit with status 2. The message names no path.
+
+### Reading a db
+
+The runner opens each db through the descriptor it checked, by having
+sqlite open `/dev/fd/<n>`, so a db swapped after the check isn't read. This
+behavior is tested on macOS only; the test skips on other systems. Where
+`/dev/fd` doesn't exist, the runner opens the path and checks the inode
+again after the open.
+
+The sqlite URI sets `mode=ro` and `immutable=1`, and the connection sets
+`PRAGMA query_only`. With `mode=ro` alone, sqlite creates `-wal` and `-shm`
+files beside a WAL-mode database and rewrites the `-shm` index. With
+`immutable=1`, it opens neither file and takes no locks, but it also ignores
+the WAL, so the runner refuses a db whose `memory.db-wal` still holds frames.
+
+### Live locations
+
+The runner also refuses a path that is, or sits below, a git directory,
+`~/.aelfrice`, the folder of the store that `$AELFRICE_DB` or
 `$AELFRICE_USER_DB` names, or a `[store]` marker store. It compares these by
 device and inode, so a symlink, a firmlink, another letter case, or a `..`
 path doesn't hide one. A marker store that a `.aelfrice.toml` names by an
 absolute path is recognized only when the store sits below that file or when
 you run the census from below it.
 
+### Outputs
+
 The runner writes `--out` and `--labels-out` through a descriptor of the
 output folder, to a new temporary file that it creates exclusively, and then
-renames that file into place. It refuses an output path that is an existing
-symlink, an output folder that holds a `memory.db` or a copy token, and an
-output path inside a store that it reads, in a live store location, or in
-this repository.
+renames that file into place. It exits with status 2 when an output path is
+an existing symlink or becomes one during the run, when the output folder is
+a symlink, holds a `memory.db`, or sits inside any copy at any depth, when
+the path is in a live store location or this repository, and when `--out`
+and `--labels-out` name the same file.
 
 ## Probe limits
 
