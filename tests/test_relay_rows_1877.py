@@ -23,8 +23,8 @@ from pathlib import Path
 import pytest
 
 import aelfrice.cli as cli_module
-import aelfrice.ingest as ingest_module
-import aelfrice.store as store_module
+from aelfrice import ingest as ingest_module
+from aelfrice import store as store_module
 from aelfrice.ingest import ingest_jsonl
 from aelfrice.models import (
     ANCHOR_TEXT_MAX_LEN,
@@ -82,7 +82,7 @@ def pre_1875(monkeypatch: pytest.MonkeyPatch) -> None:
         ingest_module, "_user_speech", lambda text: text if text.strip() else None,
     )
     monkeypatch.setattr(store_module, "ulid", make_generator(
-        rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK,
+        rand_source=bytes, time_source=lambda: _PRE_1649_CLOCK,
     ))
 
 
@@ -411,7 +411,7 @@ def test_a_run_that_differs_from_its_anchor_at_the_end_is_not_taken(
 
 
 def test_rows_from_other_source_kinds_are_not_read(tmp_path: Path) -> None:
-    pre = make_generator(rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK)
+    pre = make_generator(rand_source=bytes, time_source=lambda: _PRE_1649_CLOCK)
     s = MemoryStore(str(tmp_path / "memory.db"))
     try:
         s.record_ingest(
@@ -969,7 +969,7 @@ def test_a_later_ingest_of_the_record_stops_the_anchor(
         with monkeypatch.context() as m:
             m.setattr(ingest_module, "_user_speech", lambda t: t if t.strip() else None)
             m.setattr(store_module, "ulid", make_generator(
-                rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK,
+                rand_source=bytes, time_source=lambda: _PRE_1649_CLOCK,
             ))
             ingest_jsonl(s, log)
         before = retire_relay_rows(s, dry_run=True)
@@ -1178,7 +1178,7 @@ def _ingest_at(
         else:
             m.setattr(ingest_module, "cut_relay", lambda t: t)
         m.setattr(store_module, "ulid", make_generator(
-            rand_source=lambda n: bytes(n), time_source=lambda: (ms + 0.5) / 1000,
+            rand_source=bytes, time_source=lambda: (ms + 0.5) / 1000,
         ))
         ingest_jsonl(store, log, source_label=label)
 
@@ -1652,7 +1652,7 @@ def test_a_split_turn_opens_nothing_where_it_resumes(tmp_path: Path) -> None:
     # relay, which `cut_relay` keeps whole.
     first = "I asked the peer about the cache."
     assert cut_relay(_lines(first, AGENT_TAG, T1)) == _lines(first, AGENT_TAG, T1)
-    pre = make_generator(rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK)
+    pre = make_generator(rand_source=bytes, time_source=lambda: _PRE_1649_CLOCK)
     s = MemoryStore(str(tmp_path / "memory.db"))
     try:
         _record_rows(s, [
@@ -1667,7 +1667,7 @@ def test_a_split_turn_opens_nothing_where_it_resumes(tmp_path: Path) -> None:
 
 def test_a_turn_holding_a_row_with_no_time_is_not_read(tmp_path: Path) -> None:
     first = "I asked the peer about the cache."
-    pre = make_generator(rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK)
+    pre = make_generator(rand_source=bytes, time_source=lambda: _PRE_1649_CLOCK)
     untimed = pre()
     untimed = untimed[:9] + "U" + untimed[10:]
     assert ulid_ms(untimed) is None
@@ -1755,7 +1755,7 @@ def test_a_split_turn_opens_no_run_where_it_resumes(tmp_path: Path) -> None:
     from aelfrice.models import EDGE_DERIVED_FROM, Edge
 
     first = "I asked the peer about the cache."
-    pre = make_generator(rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK)
+    pre = make_generator(rand_source=bytes, time_source=lambda: _PRE_1649_CLOCK)
     s = MemoryStore(str(tmp_path / "memory.db"))
     try:
         _record_rows(s, [
@@ -1838,7 +1838,7 @@ def test_two_planted_records_with_one_key_and_the_same_rows_keep_the_typed_words
 ) -> None:
     from aelfrice.models import EDGE_DERIVED_FROM, Edge
 
-    pre = make_generator(rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK)
+    pre = make_generator(rand_source=bytes, time_source=lambda: _PRE_1649_CLOCK)
     s = MemoryStore(str(tmp_path / "memory.db"))
     try:
         _record_rows(s, [
@@ -1922,7 +1922,7 @@ def test_a_second_label_with_other_rows_outside_the_run_gives_nothing(
 def test_a_key_back_at_another_first_row_gives_nothing(tmp_path: Path) -> None:
     from aelfrice.models import EDGE_DERIVED_FROM, Edge
 
-    pre = make_generator(rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK)
+    pre = make_generator(rand_source=bytes, time_source=lambda: _PRE_1649_CLOCK)
     s = MemoryStore(str(tmp_path / "memory.db"))
     try:
         _record_rows(s, [
@@ -1960,7 +1960,7 @@ def test_g1_last_row_derives_nothing(tmp_path: Path, pre_1875: None) -> None:
 def test_a_key_seen_three_times_opens_where_it_repeats_the_first_row(tmp_path: Path) -> None:
     # The key opens at the tag, comes back at another row (a split), then
     # comes back at the tag again (a second ingest).
-    pre = make_generator(rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK)
+    pre = make_generator(rand_source=bytes, time_source=lambda: _PRE_1649_CLOCK)
     s = MemoryStore(str(tmp_path / "memory.db"))
     try:
         _record_rows(s, [
@@ -2008,7 +2008,7 @@ def test_g1b_two_planted_records_with_one_key_each_followed_by_next(tmp_path: Pa
     """
     from aelfrice.models import EDGE_DERIVED_FROM, Edge
 
-    pre = make_generator(rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK)
+    pre = make_generator(rand_source=bytes, time_source=lambda: _PRE_1649_CLOCK)
     s = MemoryStore(str(tmp_path / "memory.db"))
     try:
         _record_rows(s, [
