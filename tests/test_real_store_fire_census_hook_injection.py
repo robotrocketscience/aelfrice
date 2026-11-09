@@ -714,6 +714,7 @@ def test_a107_grep_lane_orphan_ring_ids(ps: PlantedStore) -> None:
     r = run(ps, "A107")
     assert r.status == "fired", r
     assert r.detail["orphan_ids"] >= 1 and r.detail["bash_tel_inj"] == 0
+    assert r.count == r.detail["orphan_ids"], r
 
 
 def test_a107_ups_only_ring_is_untraceable(ps: PlantedStore) -> None:

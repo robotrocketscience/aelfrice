@@ -420,6 +420,20 @@ def test_a298_lock_expiry_sweep(ps: PlantedStore) -> None:
     assert r.detail["sweep_marker"] == 1
 
 
+def test_a298_fires_on_the_sweep_marker_alone(ps: PlantedStore) -> None:
+    ps.belief("A time-boxed lock still in force.", locked=True,
+              lock_expires_at=_iso(datetime.now(timezone.utc) + timedelta(days=30)))
+    ps.close()
+    c = sqlite3.connect(str(ps.db_file))
+    c.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES "
+              "('lock_expiry_sweep_at', '2026-11-01T00:00:00+00:00')")
+    c.commit()
+    c.close()
+    r = run("A298", store_ctx(ps))
+    assert (r.status, r.count, r.detail["expire_rows"], r.detail["sweep_marker"]) == \
+        ("fired", 1, 0, 1), r
+
+
 def test_a298_window_not_due_is_silent(ps: PlantedStore) -> None:
     ps.belief("A time-boxed lock still in force.", locked=True,
               lock_expires_at=_iso(datetime.now(timezone.utc) + timedelta(days=30)))

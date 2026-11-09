@@ -233,7 +233,7 @@ def test_transcript_ingest_family(ps: PlantedStore) -> None:
     assert_fired(r, 1)
     assert r.detail["intra_turn_logged"] == 0
     r = probe(ps, "A175")
-    # plant() pre-creates the backfill sentinel, and the backfill writes the same edge.
+    # aelf spine backfill writes the same edge.
     assert r.status == "ambiguous" and r.count == 1, r
     assert r.detail["spine_non_transcript"] == 0 and r.detail["eligible"] == 1, r
     assert r.detail["eligible_covered"] == 1 and r.detail["backfill_sentinel"] == 1, r
@@ -257,17 +257,17 @@ def test_a134_ingest_transcript_command(ps: PlantedStore) -> None:
                                 "ts": f"2026-11-08T00:00:0{i}+00:00"}) + "\n")
     assert ps.cli("ingest-transcript", str(turns)) == 0
     r = probe(ps, "A134")
-    assert_fired(r, 2)
+    assert r.status == "ambiguous" and r.count == 2, r
     assert r.detail == {"transcript_rows": 2, "default_label": 2, "sessions": 1}
 
 
-def test_a175_fires_when_the_backfill_never_ran(ps: PlantedStore) -> None:
+def test_a175_is_ambiguous_without_a_backfill_sentinel(ps: PlantedStore) -> None:
     ps.ingest_turns([{"role": "user", "text": T1, "session_id": "s1"},
                      {"role": "user", "text": T2, "session_id": "s1"}])
     ps.close()
     ps.remove_precreated_sentinels()
     r = probe(ps, "A175")
-    assert_fired(r, 1)
+    assert r.status == "ambiguous" and r.count == 1, r
     assert r.detail["backfill_sentinel"] == 0
 
 

@@ -368,6 +368,13 @@ def test_a244_untraceable_for_fires_before_the_field_shipped(ps: PlantedStore) -
     assert (r.status, r.count, r.detail["ran_unkeyed"]) == ("untraceable", None, 1)
 
 
+def test_a244_fires_on_the_sidecar_alone(ps: PlantedStore) -> None:
+    (ps.store_dir / pr.BM25_SIDECAR_NAME).write_bytes(pr.SIDECAR_MAGIC + bytes(8))
+    r = run(ps, "A244")
+    assert (r.status, r.count, r.detail["lane_keyed"], r.detail["sidecar"]) == \
+        ("fired", 1, 0, 1), r
+
+
 def test_a244_gate_skipped_warm_is_not_a_lane_fire(ps: PlantedStore) -> None:
     append_audit(ps, {"hook": pr.HOOK_UPS, "ts": "2026-10-01T00:00:00+00:00",
                       "prompt_shape_gate_skip": True, "sidecar_outcome": "fresh"})
