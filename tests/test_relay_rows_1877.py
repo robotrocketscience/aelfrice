@@ -41,6 +41,7 @@ from aelfrice.noise_filter import (
 )
 from aelfrice.relay_rows import (
     RAW_RECORD_CUTOFF_MS,
+    RelayRowsReport,
     SHAPE_BLOCK,
     SOURCE_RELAY_RETIRE,
     format_relay_rows_report,
@@ -1692,11 +1693,12 @@ def test_a_tag_value_with_a_break_or_nothing_visible_is_not_the_host_s(value: st
     assert not relay_cut_is_host_shaped(f"{tag}\n{T1}\n")
 
 
-def test_ingesting_a_transcript_again_takes_both_copies(
+def test_ingesting_a_transcript_again_takes_only_the_first_copy(
     tmp_path: Path, pre_1875: None,
 ) -> None:
-    # The second ingest repeats each turn's key from its first row, so it's
-    # the same record again, not a split turn or a second record.
+    # The second ingest repeats each turn's key and rows. Rows keep no closer,
+    # so the copy may be another record: only the first copy, which wrote the
+    # edge, is taken, and a belief its copy also derived stays.
     log = _write_log(tmp_path / "a.jsonl", [
         (SESSION, _ts(1), _block(AGENT_TAG, T1, T2)), (SESSION, _ts(2), NEXT),
     ])
@@ -1706,17 +1708,17 @@ def test_ingesting_a_transcript_again_takes_both_copies(
         ingest_jsonl(s, log)
         report = retire_relay_rows(s, dry_run=True)
         assert report.anchors_ambiguous == 0
-        assert dict(report.rows_by_shape) == {RELAY_ROW_OPENER: 2, SHAPE_BLOCK: 4}
-        assert _belief_id(s, T1) in report.candidates
+        assert dict(report.rows_by_shape) == {RELAY_ROW_OPENER: 2, SHAPE_BLOCK: 2}
+        assert _belief_id(s, T1) not in report.candidates
     finally:
         s.close()
 
 
-def test_a_copy_ingested_before_its_next_turn_is_taken_with_the_record(
+def test_a_copy_that_fits_no_edge_is_not_taken_with_the_record(
     tmp_path: Path, pre_1875: None,
 ) -> None:
     # The first ingest saw only the relay turn; the second saw the next one
-    # too, so only the second copy fits the edge.
+    # too, so only the second copy fits the edge, and only it is taken.
     s = MemoryStore(str(tmp_path / "memory.db"))
     try:
         opening = (SESSION, _ts(0), "The user typed this turn first.")
@@ -1727,8 +1729,8 @@ def test_a_copy_ingested_before_its_next_turn_is_taken_with_the_record(
             opening, (SESSION, _ts(1), _block(AGENT_TAG, T1, T2)), (SESSION, _ts(2), NEXT),
         ]))
         report = retire_relay_rows(s, dry_run=True)
-        assert dict(report.rows_by_shape) == {RELAY_ROW_OPENER: 2, SHAPE_BLOCK: 4}
-        assert _belief_id(s, T1) in report.candidates
+        assert dict(report.rows_by_shape) == {RELAY_ROW_OPENER: 2, SHAPE_BLOCK: 2}
+        assert _belief_id(s, T1) not in report.candidates
     finally:
         s.close()
 
@@ -1796,5 +1798,174 @@ def test_copies_of_a_record_with_different_rows_give_nothing_through_its_edge(
         report = retire_relay_rows(s, dry_run=True)
         assert report.anchors_ambiguous >= 1
         assert _belief_id(s, AFTER_CLOSER) not in report.candidates
+    finally:
+        s.close()
+
+
+# --- sixth review round: no copy expansion, every stretch of a record --------
+
+
+def _candidate_texts(s: MemoryStore) -> tuple[RelayRowsReport, set[str]]:
+    report = retire_relay_rows(s, dry_run=True)
+    texts: set[str] = set()
+    for bid in report.candidates:
+        belief = s.get_belief(bid)
+        assert belief is not None
+        texts.add(belief.content)
+    return report, texts
+
+
+def test_two_records_with_one_key_and_the_same_rows_keep_the_typed_words(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # The first record closes its relay before the user's T2; the second
+    # never closes. Another session's turn sits between them in one file.
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), _block(AGENT_TAG, T1) + "\n" + T2),
+        (OTHER, _ts(1), OTHER_NEXT),
+        (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2)),
+        (SESSION, _ts(2), NEXT),
+    ])
+    s = MemoryStore(str(db))
+    try:
+        _, texts = _candidate_texts(s)
+        assert T2 not in texts
+    finally:
+        s.close()
+
+
+def test_two_planted_records_with_one_key_and_the_same_rows_keep_the_typed_words(
+    tmp_path: Path,
+) -> None:
+    from aelfrice.models import EDGE_DERIVED_FROM, Edge
+
+    pre = make_generator(rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK)
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        _record_rows(s, [
+            (pre(), SESSION, _ts(1), AGENT_TAG), (pre(), SESSION, _ts(1), T1),
+            (pre(), SESSION, _ts(1), T2), (pre(), OTHER, _ts(9), "Another process row."),
+            (pre(), SESSION, _ts(1), AGENT_TAG), (pre(), SESSION, _ts(1), T1),
+            (pre(), SESSION, _ts(1), T2), (pre(), SESSION, _ts(2), NEXT),
+        ])
+        s.insert_edge(Edge(
+            src=_belief_id(s, NEXT), dst=_belief_id(s, T2), type=EDGE_DERIVED_FROM,
+            weight=1.0, anchor_text=_lines(AGENT_TAG, T1, T2),
+        ))
+        _, texts = _candidate_texts(s)
+        assert T2 not in texts
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("closed_first", [False, True])
+def test_a_record_that_changed_between_ingests_keeps_the_typed_words(
+    tmp_path: Path, pre_1875: None, closed_first: bool,
+) -> None:
+    # One key and one label: one ingest saw the relay unclosed, the other saw
+    # it closed with the user's T2 after it. The rows are the same.
+    unclosed = _lines(AGENT_TAG, T1, T2)
+    closed = _block(AGENT_TAG, T1) + "\n" + T2
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        for text in ((closed, unclosed) if closed_first else (unclosed, closed)):
+            ingest_jsonl(s, _write_log(tmp_path / "a.jsonl", [
+                (SESSION, _ts(1), text), (SESSION, _ts(2), NEXT),
+            ]))
+        _, texts = _candidate_texts(s)
+        assert T2 not in texts
+    finally:
+        s.close()
+
+
+def test_a_copy_with_other_rows_outside_the_run_gives_nothing(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    # The second copy's rows don't match the anchor, and still differ.
+    opening = (SESSION, _ts(0), "The user typed this turn first.")
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        ingest_jsonl(s, _write_log(tmp_path / "a.jsonl", [
+            opening, (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2, AFTER_CLOSER)),
+            (SESSION, _ts(2), NEXT),
+        ]))
+        ingest_jsonl(s, _write_log(tmp_path / "a.jsonl", [
+            opening, (SESSION, _ts(1), _lines(AGENT_TAG, T1, AFTER_CLOSER)),
+            (SESSION, _ts(2), OTHER_NEXT),
+        ]))
+        report, _ = _candidate_texts(s)
+        assert report.rows_by_shape[SHAPE_BLOCK] == 0
+    finally:
+        s.close()
+
+
+def test_a_second_label_with_other_rows_outside_the_run_gives_nothing(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        ingest_jsonl(s, _write_log(tmp_path / "a.jsonl", [
+            (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2)), (SESSION, _ts(2), NEXT),
+        ]))
+        ingest_jsonl(s, _write_log(tmp_path / "b.jsonl", [
+            (SESSION, _ts(1), _lines(AGENT_TAG, AFTER_CLOSER)), (SESSION, _ts(3), OTHER_NEXT),
+        ]), source_label="session-end")
+        report, _ = _candidate_texts(s)
+        assert report.rows_by_shape[SHAPE_BLOCK] == 0
+    finally:
+        s.close()
+
+
+def test_a_key_back_at_another_first_row_gives_nothing(tmp_path: Path) -> None:
+    from aelfrice.models import EDGE_DERIVED_FROM, Edge
+
+    pre = make_generator(rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK)
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        _record_rows(s, [
+            (pre(), SESSION, _ts(1), AGENT_TAG), (pre(), SESSION, _ts(1), T1),
+            (pre(), SESSION, _ts(1), T2), (pre(), SESSION, _ts(2), NEXT),
+            (pre(), SESSION, _ts(1), TYPED), (pre(), SESSION, _ts(1), T2),
+        ])
+        s.insert_edge(Edge(
+            src=_belief_id(s, NEXT), dst=_belief_id(s, T2), type=EDGE_DERIVED_FROM,
+            weight=1.0, anchor_text=_lines(AGENT_TAG, T1, T2),
+        ))
+        report, texts = _candidate_texts(s)
+        assert TYPED not in texts
+        assert report.rows_by_shape[SHAPE_BLOCK] == 0
+    finally:
+        s.close()
+
+
+def test_g1_last_row_derives_nothing(tmp_path: Path, pre_1875: None) -> None:
+    # The turn's last row, a question, derives no belief, so its last belief
+    # comes from the row before.
+    question = "Can you check the logs?"
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2, question)), (SESSION, _ts(2), NEXT),
+    ])
+    s = MemoryStore(str(db))
+    try:
+        report = retire_relay_rows(s, dry_run=True)
+        assert report.anchors_matched == 1
+        assert _belief_id(s, T1) in report.candidates
+    finally:
+        s.close()
+
+
+def test_a_key_seen_three_times_opens_where_it_repeats_the_first_row(tmp_path: Path) -> None:
+    # The key opens at the tag, comes back at another row (a split), then
+    # comes back at the tag again (a second ingest).
+    pre = make_generator(rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK)
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        _record_rows(s, [
+            (pre(), SESSION, _ts(1), AGENT_TAG), (pre(), OTHER, _ts(9), "Another process row."),
+            (pre(), SESSION, _ts(1), T1), (pre(), OTHER, _ts(8), "One more process row."),
+            (pre(), SESSION, _ts(1), AGENT_TAG),
+        ])
+        report = retire_relay_rows(s, dry_run=True)
+        assert dict(report.rows_by_shape) == {RELAY_ROW_OPENER: 2}
     finally:
         s.close()
