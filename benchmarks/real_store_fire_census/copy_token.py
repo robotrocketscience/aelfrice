@@ -344,7 +344,12 @@ class GatedPath(Path):
              errors: str | None = None, newline: str | None = None) -> IO[Any]:
         if _WRITE_MODES & set(mode):
             raise PermissionError("census copies are read only")
-        return io.open(self.gate.open_fd(self), mode, buffering, encoding, errors, newline)
+        fd = self.gate.open_fd(self)
+        try:
+            return io.open(fd, mode, buffering, encoding, errors, newline)
+        except BaseException:
+            os.close(fd)
+            raise
 
     def read_text(self, encoding: str | None = None, errors: str | None = None,
                   newline: str | None = None) -> str:
