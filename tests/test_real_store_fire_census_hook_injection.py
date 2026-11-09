@@ -717,6 +717,34 @@ def test_a107_grep_lane_orphan_ring_ids(ps: PlantedStore) -> None:
     assert r.count == r.detail["orphan_ids"], r
 
 
+def _a107_grep_orphans(ps: PlantedStore) -> None:
+    ps.belief("Granary ledgers reconcile on the first of each month.")
+    seed_topic(ps)
+    ups(ps, "when do granary ledgers reconcile each month")
+    assert ps.hook("search_tool", {"hook_event_name": "PreToolUse", "tool_name": "Grep",
+                                   "tool_input": {"pattern": "kumquat parser"},
+                                   "session_id": "s1", "cwd": str(ps.repo)}) == 0
+
+
+def test_a107_bash_lane_injection_makes_the_orphans_ambiguous(ps: PlantedStore) -> None:
+    _a107_grep_orphans(ps)
+    tel = ps.store_dir / "telemetry" / "search_tool_hook.jsonl"
+    tel.parent.mkdir(exist_ok=True)
+    with tel.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"session_id": "s1", "injected_l1": 1}) + "\n")
+    r = run(ps, "A107")
+    assert r.status == "ambiguous" and r.detail["bash_tel_inj"] >= 1, r
+    assert r.count == r.detail["orphan_ids"] >= 1, r
+
+
+def test_a107_rotated_audit_makes_the_orphans_ambiguous(ps: PlantedStore) -> None:
+    _a107_grep_orphans(ps)
+    (ps.store_dir / "hook_audit.jsonl.1").write_text("{}\n", encoding="utf-8")
+    r = run(ps, "A107")
+    assert r.status == "ambiguous" and r.detail["history_ok"] == 0, r
+    assert r.count == r.detail["orphan_ids"] >= 1, r
+
+
 def test_a107_ups_only_ring_is_untraceable(ps: PlantedStore) -> None:
     seed_topic(ps)
     ups(ps, "how does the kumquat parser flush batches")
