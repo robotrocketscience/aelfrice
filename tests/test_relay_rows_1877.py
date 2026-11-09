@@ -1693,12 +1693,11 @@ def test_a_tag_value_with_a_break_or_nothing_visible_is_not_the_host_s(value: st
     assert not relay_cut_is_host_shaped(f"{tag}\n{T1}\n")
 
 
-def test_ingesting_a_transcript_again_takes_only_the_first_copy(
+def test_ingesting_a_transcript_again_takes_every_copy_that_fits(
     tmp_path: Path, pre_1875: None,
 ) -> None:
-    # The second ingest repeats each turn's key and rows. Rows keep no closer,
-    # so the copy may be another record: only the first copy, which wrote the
-    # edge, is taken, and a belief its copy also derived stays.
+    # The second ingest repeats each turn's key and rows, and its copy of the
+    # relay turn is followed by its copy of NEXT, so both copies fit the edge.
     log = _write_log(tmp_path / "a.jsonl", [
         (SESSION, _ts(1), _block(AGENT_TAG, T1, T2)), (SESSION, _ts(2), NEXT),
     ])
@@ -1708,8 +1707,8 @@ def test_ingesting_a_transcript_again_takes_only_the_first_copy(
         ingest_jsonl(s, log)
         report = retire_relay_rows(s, dry_run=True)
         assert report.anchors_ambiguous == 0
-        assert dict(report.rows_by_shape) == {RELAY_ROW_OPENER: 2, SHAPE_BLOCK: 2}
-        assert _belief_id(s, T1) not in report.candidates
+        assert dict(report.rows_by_shape) == {RELAY_ROW_OPENER: 2, SHAPE_BLOCK: 4}
+        assert _belief_id(s, T1) in report.candidates
     finally:
         s.close()
 
@@ -1859,11 +1858,14 @@ def test_two_planted_records_with_one_key_and_the_same_rows_keep_the_typed_words
 
 
 @pytest.mark.parametrize("closed_first", [False, True])
-def test_a_record_that_changed_between_ingests_keeps_the_typed_words(
+def test_a_record_that_changed_between_ingests(
     tmp_path: Path, pre_1875: None, closed_first: bool,
 ) -> None:
     # One key and one label: one ingest saw the relay unclosed, the other saw
-    # it closed with the user's T2 after it. The rows are the same.
+    # it closed with the user's T2 after it. The rows are the same, and both
+    # copies fit the edge. When the unclosed copy wrote the edge, T2 is
+    # retired: a known gap, built here by hand. A count-only check of the
+    # basilisk and debserver turn logs found no candidate of this kind.
     unclosed = _lines(AGENT_TAG, T1, T2)
     closed = _block(AGENT_TAG, T1) + "\n" + T2
     s = MemoryStore(str(tmp_path / "memory.db"))
@@ -1873,7 +1875,8 @@ def test_a_record_that_changed_between_ingests_keeps_the_typed_words(
                 (SESSION, _ts(1), text), (SESSION, _ts(2), NEXT),
             ]))
         _, texts = _candidate_texts(s)
-        assert T2 not in texts
+        assert (T2 in texts) is not closed_first
+        assert T1 in texts
     finally:
         s.close()
 
