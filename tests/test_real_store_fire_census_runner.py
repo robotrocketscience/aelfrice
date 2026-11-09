@@ -171,6 +171,7 @@ def test_a_run_leaves_every_byte_of_the_copy_unchanged(
         "store01": os.path.abspath(planted_copy / "memory.db")}
     if os.name == "posix":
         assert labels.stat().st_mode & 0o777 == 0o600
+        assert out.stat().st_mode & 0o777 == 0o600
 
 
 def test_the_output_names_no_path_and_no_store_text(

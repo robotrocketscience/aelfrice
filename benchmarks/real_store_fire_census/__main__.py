@@ -67,6 +67,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_VERSION = 1
 MAX_STORES_PER_LAYOUT = 99
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+OUTPUT_MODE = 0o600  # both outputs: owner read and write only
 
 
 class UsageError(Exception):
@@ -340,7 +341,7 @@ class OutTarget:
                 self.close()
                 raise UsageError(f"{self.flag}'s folder holds a store or a copy token")
 
-    def write(self, doc: Any, mode: int = 0o644) -> None:
+    def write(self, doc: Any, mode: int = OUTPUT_MODE) -> None:
         data = (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode("utf-8")
         if self.dfd is None:
             import tempfile
@@ -448,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
                     print("real_store_fire_census: dry run, so --labels-out is not written",
                           file=sys.stderr)
                 else:
-                    targets["--labels-out"].write(private, 0o600)
+                    targets["--labels-out"].write(private)
             if "--out" in targets:
                 targets["--out"].write(doc)
             else:
