@@ -349,7 +349,9 @@ def test_session_end_continuation(ps: PlantedStore, monkeypatch: pytest.MonkeyPa
     r = run(ps, "A209")
     fired(r, 1)
     assert r.detail["core_session_beliefs_since_510"] == 1
-    fired(run(ps, "A199"), 1)
+    r = run(ps, "A199")
+    assert r.status == "untraceable" and r.count is None, r
+    assert r.detail["session_end_no_bg_row"] == 1
     r = run(ps, "A204")
     fired(r, 1)
     assert r.detail["open_session_end"] == 1
@@ -441,13 +443,14 @@ def test_peer_visible_rows(ps: PlantedStore) -> None:
 def test_lock_session_inference(ps: PlantedStore, monkeypatch: pytest.MonkeyPatch) -> None:
     assert ps.lock("Never read a real store from the census.") == 0
     r = run(ps, "A192")
-    fired(r, 1)
-    assert r.detail["null_session"] == 1
+    # A lock with no session id to infer is not an inference.
+    assert r.status == "silent" and r.count == 0, r
+    assert r.detail["null_session"] == 1 and r.detail["lock_ingests"] == 1
     monkeypatch.setenv("AELF_SESSION_ID", "sess-env")
     assert ps.lock("Count rows and never print text.") == 0
     r = run(ps, "A192")
-    fired(r, 2)
-    assert r.detail["with_session"] == 1
+    fired(r, 1)
+    assert r.detail["with_session"] == 1 and r.detail["lock_ingests"] == 2
 
 
 def test_lock_suffix_eligibility(ps: PlantedStore) -> None:
