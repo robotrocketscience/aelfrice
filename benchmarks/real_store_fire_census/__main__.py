@@ -19,9 +19,14 @@ URI with `query_only` on, and reads sidecars with plain reads. It never
 copies, writes or deletes anything beside a store; `immutable=1` keeps
 sqlite from creating or rewriting `-wal` and `-shm`. Because an immutable
 read ignores the `-wal` file, a store whose `-wal` still holds frames is
-refused: `copy_store` folds the WAL into the copy. It refuses a path inside a
-`.git` folder or under `~/.aelfrice`, because those are live stores, and
-it refuses an `--out` or `--labels-out` file inside a store it reads.
+refused: `copy_store` folds the WAL into the copy.
+
+It refuses any store path whose real path, or the real path of its db,
+`-wal` or `-shm`, is a live location as `guard.live_reason` defines it: a
+`.git` folder, `~/.aelfrice`, the `$AELFRICE_DB` store, or a `[store]`
+marker store, compared case-insensitively. It refuses an `--out` or
+`--labels-out` file in a store it reads, in a live location, or in this
+repository.
 
 Output is JSON with counts and fixed labels only. Stores appear as
 opaque labels (`store01`, `named01`, `legacy01`, `global`, `user`).
@@ -29,7 +34,7 @@ Store paths are written only to the `--labels-out` file, which must sit
 outside this repository.
 
 `--dry-run` lists the probes and the store labels without opening any
-store. Exit codes: 0 on a completed run, 2 on a usage error or a refused
+store, and writes no labels file. Exit codes: 0 on a completed run, 2 on a usage error or a refused
 path.
 """
 from __future__ import annotations
@@ -52,6 +57,7 @@ from .core import (
     outcome,
     run_one,
 )
+from . import guard
 from .registry import all_probes, subsystem_of
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -70,41 +76,37 @@ class StoreArg:
     db_file: Path
 
 
-def _account_homes() -> list[Path]:
-    homes = [Path.home()]
-    try:
-        import pwd
-        homes.append(Path(pwd.getpwuid(os.getuid()).pw_dir))
-    except (ImportError, KeyError, AttributeError):
-        pass
-    return [h.resolve() for h in homes]
-
-
 def is_live_location(path: Path) -> bool:
-    """True for a path inside a `.git` folder or under `~/.aelfrice`."""
-    p = path.resolve()
-    if ".git" in p.parts:
-        return True
-    for home in _account_homes():
-        live = home / ".aelfrice"
-        if p == live or live in p.parents:
-            return True
-    return False
+    """True when guard.live_reason refuses the path."""
+    return guard.live_reason(path) is not None
+
+
+def _check_db(db_file: Path, what: str) -> None:
+    why = guard.store_live_reason(db_file)
+    if why:
+        raise UsageError(f"{what} resolves to a live store location ({why}); run on a byte copy")
+    try:
+        # Beside the link and beside its target: sqlite reads the target's.
+        unfolded = has_unfolded_wal(db_file) or has_unfolded_wal(guard.real(db_file))
+    except OSError:
+        raise UsageError(f"{what} has a -wal file that can't be read") from None
+    if unfolded:
+        raise UsageError(f"{what} has a non-empty -wal file; make the copy with copy_store")
 
 
 def _store_arg(raw: str, layout: Layout, what: str) -> StoreArg:
     p = Path(raw)
-    if is_live_location(p):
-        raise UsageError(f"{what} points at a live store location; run on a byte copy")
+    why = guard.live_reason(p)
+    if why:
+        raise UsageError(f"{what} points at a live store location ({why}); run on a byte copy")
     if p.is_dir():
         store_dir, db_file = p, p / "memory.db"
     else:
         store_dir, db_file = p.parent, p
     if not db_file.is_file():
         raise UsageError(f"{what} has no memory.db")
-    if has_unfolded_wal(db_file):
-        raise UsageError(f"{what} has a non-empty -wal file; make the copy with copy_store")
-    return StoreArg(layout, store_dir.resolve(), db_file.resolve())
+    _check_db(db_file, what)
+    return StoreArg(layout, guard.real(store_dir), guard.real(db_file))
 
 
 def _label(layout: Layout, i: int) -> str:
@@ -118,14 +120,15 @@ def build_contexts(stores: list[str], named: list[str], legacy: list[str],
     gdir: Path | None = None
     if global_dir is not None:
         g = Path(global_dir)
-        if is_live_location(g):
-            raise UsageError("--global-dir points at a live store location; run on a copy")
+        why = guard.live_reason(g)
+        if why:
+            raise UsageError(f"--global-dir points at a live store location ({why}); run on a copy")
         if not g.is_dir():
             raise UsageError("--global-dir is not a folder")
-        gdir = g.resolve()
+        gdir = guard.real(g)
         for db in (gdir / "memory.db", gdir / "user" / "memory.db"):
-            if has_unfolded_wal(db):
-                raise UsageError("--global-dir holds a non-empty -wal file; copy it with copy_store")
+            if db.exists() or db.is_symlink():
+                _check_db(db, "--global-dir")
     groups: list[tuple[Layout, list[str], str]] = [
         ("repo", stores, "store argument"), ("named", named, "--named argument"),
         ("legacy", legacy, "--legacy argument"),
@@ -202,9 +205,15 @@ def run_census(probes: list[Probe], ctxs: list[Ctx],
     }
 
 
-def _inside(path: Path, roots: list[Path]) -> bool:
-    p = path.resolve()
-    return any(p == r or r in p.parents for r in roots)
+def _check_output(flag: str, path: Path, roots: list[Path]) -> None:
+    """Refuse an output file in a store the run reads, a live location or the repo."""
+    if any(guard.inside(path, r) for r in roots):
+        raise UsageError(f"{flag} is inside a store the census reads")
+    why = guard.live_reason(path)
+    if why:
+        raise UsageError(f"{flag} is in a live store location ({why})")
+    if guard.inside(path, REPO_ROOT):
+        raise UsageError(f"{flag} is inside the repository; write it elsewhere")
 
 
 def _write_json(path: Path, doc: Any, mode: int | None = None) -> None:
@@ -258,10 +267,8 @@ def main(argv: list[str] | None = None) -> int:
         ctxs, private = build_contexts(a.stores, a.named, a.legacy, a.global_dir)
         roots = [c.store_dir for c in ctxs]
         for flag, path in (("--out", a.out), ("--labels-out", a.labels_out)):
-            if path is not None and _inside(path, roots):
-                raise UsageError(f"{flag} is inside a store the census reads")
-        if a.labels_out is not None and _inside(a.labels_out, [REPO_ROOT]):
-            raise UsageError("--labels-out is inside the repository; write it elsewhere")
+            if path is not None:
+                _check_output(flag, path, roots)
         if a.deadline <= 0:
             raise UsageError("--deadline must be positive")
     except UsageError as exc:
@@ -275,8 +282,12 @@ def main(argv: list[str] | None = None) -> int:
         }
     else:
         doc = run_census(probes, ctxs, a.deadline)
-    if a.labels_out is not None and not a.dry_run:
-        _write_json(a.labels_out, private, 0o600)
+    if a.labels_out is not None:
+        if a.dry_run:
+            print("real_store_fire_census: dry run, so --labels-out is not written",
+                  file=sys.stderr)
+        else:
+            _write_json(a.labels_out, private, 0o600)
     if a.out is None:
         sys.stdout.write(json.dumps(doc, indent=1, sort_keys=True) + "\n")
     else:
