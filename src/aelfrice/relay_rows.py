@@ -40,11 +40,11 @@ time, isn't read. Three shapes are read:
   is `dst`, when the next turn of that transcript has `src` as its last. So a
   run counts only when its stretch's last row that derived a belief derives
   `dst`, and the next stretch with the same session and source label ends on
-  a row that derived `src` (`_Turns.pinned`). A stretch with the record's
-  key and rows is the record ingested again, and is taken with it. Rows keep
-  no closer, so when runs in two records, by session and timestamp, fit one
-  edge, or the record's stretches differ in label or rows, the anchor takes
-  neither.
+  a row that derived `src` (`_Turns.pinned`). Rows keep no closer, so when
+  runs in two records, by session and timestamp, fit one edge, or the
+  record's read stretches differ in label or rows, the anchor takes neither.
+  Of identical copies, only the first that fits the edge is taken, and a
+  belief another copy also derived stays.
   The run's rows that fall in the part `cut_relay` takes are relay rows: its
   first row is a `notice` when it holds a host notice, and the rest are
   `block`. An anchor at the cap may end inside a sentence, so its last
@@ -69,14 +69,15 @@ sentence splitter dropped before the tag can't stop its `opener` row. A host
 relay whose cut part holds any other relay tag the host wouldn't write, such
 as `<agent-message/>` quoted in its body, is skipped whole, its opener row
 included. An install from before #1649 that wrote rows after the cutoff has
-those rows skipped, and a later install whose clock ran behind the cutoff has
-its rows read as raw records. When the turn that wrote an edge has no rows
+those rows skipped. A later install whose clock ran behind the cutoff has its
+rows read as raw records, so a relay behind a reminder there can retire typed
+words. When the turn that wrote an edge has no rows
 from before the cutoff, another turn with the same rows that fits the edge is
 read through that edge's anchor. The edge fit misses relay rows in a turn
 followed by one that produced no belief, which ingest chains past, in a turn
 from before #1364, which chained on the last belief a turn inserted, in a
-turn another writer's row split, in a bulk ingest's shared timestamp, and in
-a record ingested under a second label. Two files of one session ingested
+turn another writer's row split, in a bulk ingest's shared timestamp, in a
+record ingested under a second label, and in a turn ingested more than once. Two files of one session ingested
 under one label read as one transcript.
 
 A belief is retired only when every `ingest_log` row that derived or
@@ -224,6 +225,12 @@ class _Turns:
             self._end[-1] = i + 1
             if derives[i]:
                 self._head[-1] = derives[i]
+        # Every read stretch of a record, by session and timestamp, as
+        # `(key, rows)`.
+        self._record: dict[tuple[str | None, str], set[tuple[_Key, tuple[str, ...]]]] = {}
+        for t, key in enumerate(self._keys):
+            body = tuple(rows.texts[self._first[t]:self._end[t]])
+            self._record.setdefault(key[:2], set()).add((key, body))
         # Ingest chains turns within one transcript file, so the next stretch
         # is the next one with the same session and source label.
         self._next: list[int | None] = [None] * len(self._keys)
@@ -233,10 +240,13 @@ class _Turns:
             self._next[t] = last.get((sid, path))
             last[(sid, path)] = t
 
-    def rows_of(self, i: int) -> tuple[int, int]:
-        """`(first, end)` of the stretch row `i` is in."""
-        t = self._of[i]
-        return self._first[t], self._end[t]
+    def stretch(self, i: int) -> int:
+        """The stretch row `i` is in."""
+        return self._of[i]
+
+    def one_body(self, record: tuple[str | None, str]) -> bool:
+        """True when every read stretch of `record` has one label and the same rows."""
+        return len(self._record.get(record, set())) == 1
 
     def pinned(self, i: int, n: int, capped: bool, src: str, dst: str) -> bool:
         """True when the run `[i, i + n)` could be the turn that wrote `src -> dst`.
@@ -293,9 +303,9 @@ def _block_rows(
 
     An anchor's rows are taken only from a run in a turn that could have
     written its edge (`_Turns.pinned`), and only when every such run is in one
-    record, by session and timestamp, under one label and with one set of
-    rows: rows keep no closer, so a second record with the same rows may have
-    closed its relay sooner. Copies of the record ingested again are taken.
+    record, by session and timestamp, whose read stretches all have one label
+    and one set of rows: rows keep no closer, so a second record with the same
+    rows may have closed its relay sooner. Only the first pinned copy is taken.
     """
     starts_by_text: dict[str, list[int]] = {}
     for i, text in enumerate(rows.texts):
@@ -334,17 +344,16 @@ def _block_rows(
         takes = [r for r in runs if r[3]]
         if not takes:
             continue
-        # A record is its session and timestamp. A stretch with the same key
-        # and rows is the record ingested again, and is taken with it. Rows
-        # keep no closer, so when runs in two records fit the edge, or the
-        # record's stretches differ in label or rows, the anchor takes neither.
+        # A record is its session and timestamp. Rows keep no closer, so when
+        # runs in two records fit the edge, or the record's read stretches
+        # differ in label or rows, the anchor takes neither. Of identical
+        # copies, only the first pinned one, which wrote the edge, is taken.
         records = {rows.keys[i][:2] for i, _, _, _ in takes}
-        takes = [r for r in runs if rows.keys[r[0]][:2] in records]
-        labels = {rows.keys[i] for i, _, _, _ in takes}
-        bodies = {tuple(rows.texts[slice(*turns.rows_of(i))]) for i, _, _, _ in takes}
-        if len(labels) > 1 or len(bodies) > 1:
+        if len(records) > 1 or not turns.one_body(next(iter(records))):
             report.anchors_ambiguous += 1
             continue
+        first = min(turns.stretch(i) for i, _, _, _ in takes)
+        takes = [r for r in takes if turns.stretch(r[0]) == first]
         # A later ingest that saw this record stored its speech, and may have
         # written the anchor from it.
         if any((rows.keys[i][0], rows.texts[i]) in rows.late for i, _, _, _ in takes):
