@@ -156,8 +156,9 @@ def _a273(ctx: cc.Ctx) -> cc.Result:
 # a block). Doctor derives the path as <git-common-dir>/aelfrice/telemetry/
 # (doctor._derive_telemetry_path), which equals the writer path for a
 # repository store only. Named, legacy, global and user stores write
-# beside their own db, which doctor never reads, so they are untraceable.
-# Fired when doctor reads this store and either file has rows.
+# beside their own db, which doctor never reads. Doctor itself writes no
+# row when it prints these sections, so the probe is untraceable on every
+# store; the detail counts the rows a doctor run would have read.
 
 _TELEMETRY_CAP = 1000
 
@@ -180,7 +181,8 @@ def _a280(ctx: cc.Ctx) -> cc.Result:
     d["doctor_reads"] = 1 if is_repo else 0
     if not is_repo:
         return cc.Result("untraceable", None, d, "doctor never reads this store telemetry")
-    return cc.from_count(d["st_rows"] + d["ups_rows"], d)
+    return cc.Result("untraceable", None, d,
+                     "doctor only reads these rows; the hooks wrote them, not doctor")
 
 
 # --- A281 doctor auto-migration of legacy per-project DBs ------------------
