@@ -16,6 +16,7 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import time
 import types
@@ -255,8 +256,9 @@ def test_a134_ingest_transcript_command(ps: PlantedStore) -> None:
                                 "ts": f"2026-11-08T00:00:0{i}+00:00"}) + "\n")
     assert ps.cli("ingest-transcript", str(turns)) == 0
     r = probe(ps, "A134")
-    assert_fired(r, 2)
-    assert r.detail == {"default_label": 2, "sessions": 1}
+    # The rows are the ones PreCompact and the Stop flush also write.
+    assert r.status == "untraceable" and r.count is None, r
+    assert r.detail == {"transcript_rows": 2, "default_label": 2, "sessions": 1}
 
 
 def test_a146_corroboration(ps: PlantedStore) -> None:
@@ -414,6 +416,39 @@ def test_scanner_extractors(ps: PlantedStore) -> None:
     assert probe(ps, "A151").status == "silent"
     assert probe(ps, "A148").status == "silent"
     assert probe(ps, "A152").status == "silent"
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=census", "-c",
+                    "user.email=census@example.invalid", "-c", "commit.gpgsign=false",
+                    *args], check=True, capture_output=True, timeout=60)
+
+
+def test_a151_git_log_subjects_are_scanned(ps: PlantedStore) -> None:
+    from aelfrice.scanner import scan_repo
+    proj = make_project(ps.root)
+    _git(proj, "init", "-q")
+    _git(proj, "add", "-A")
+    _git(proj, "commit", "-q", "-m",
+         "The billing service now reads its settings from the shared config file")
+    res = scan_repo(ps.open(), proj)
+    assert res.inserted >= 1, res
+    assert_fired(probe(ps, "A151"), 1)
+
+
+def test_a171_an_assistant_row_in_ingest_log_is_a_contract_error(ps: PlantedStore) -> None:
+    ps.close()
+    conn = sqlite3.connect(str(ps.db_file))
+    try:
+        conn.execute("INSERT INTO ingest_log (id, ts, source_kind, source_path, raw_text, "
+                     "raw_meta, session_id) VALUES ('x1', '2026-11-08T00:00:00+00:00', "
+                     "'transcript', 'transcript', 'x', ?, 's1')",
+                     (json.dumps({"role": "assistant"}),))
+        conn.commit()
+    finally:
+        conn.close()
+    r = probe(ps, "A171")
+    assert r.status == "error" and r.count == 1, r
 
 
 def test_a161_scan_rows_make_the_filter_untraceable(ps: PlantedStore) -> None:
@@ -647,11 +682,13 @@ def test_a133_prune_noise(ps: PlantedStore) -> None:
     ps.belief("What does the parser return on empty input?", source="doc:a.md:p0")
     keep = ps.belief("The parser returns an empty list on empty input.", source="doc:a.md:p1")
     gone = ps.belief("How is the cache invalidated after a deploy?", source="doc:a.md:p2")
+    other = ps.belief("The scheduler flushes kumquat batches every night.", source="doc:a.md:p3")
     assert ps.cli("retire", gone) == 0  # user retire writes user_retired; excluded
+    ps.open().soft_delete_belief(other)  # another unaudited retire, of text that is not noise
     assert ps.cli("doctor", "--prune-noise", "--apply") == 0
     r = probe(ps, "A133")
     assert_fired(r, 1)
-    assert r.detail == {"retired_agent_inferred": 2, "beliefs_rows": 3}
+    assert r.detail == {"retired_unaudited": 2, "retired_noise_now": 1, "beliefs_rows": 4}
     c = ps.ctx()
     try:
         assert c.count("SELECT COUNT(*) FROM beliefs WHERE id=? AND valid_to IS NULL",
