@@ -29,7 +29,8 @@ GLOBAL_LOG = frozenset(p.item_id for p in pm.PROBES if p.kind == "global-log")
 # and A298 probes report untraceable when their feature had no input, and
 # every store aelfrice opens is in WAL mode, so A309 fires (its silent case
 # is a plain sqlite file, tested below).
-EMPTY_STATUS: dict[str, str] = {"A292": "untraceable", "A298": "untraceable", "A309": "fired"}
+EMPTY_STATUS: dict[str, str] = {"A280": "untraceable", "A292": "untraceable",
+                                "A298": "untraceable", "A309": "fired"}
 
 
 def _iso(dt: datetime) -> str:
@@ -242,7 +243,8 @@ def test_ups_hook_fires_audit_telemetry_and_rebuild_log(ps: PlantedStore) -> Non
     fired(r, 1)
     assert r.detail.get("null_scores") == 1 and r.detail["files"] == 1
     t = run("A280", store_ctx(ps))
-    fired(t)
+    # The rows exist, but the hook wrote them: doctor leaves no trace of a read.
+    assert t.status == "untraceable" and t.count is None, t
     assert t.detail["ups_rows"] >= 1 and t.detail["doctor_reads"] == 1
     # Doctor never reads the telemetry of a store outside the repo layout.
     n = run("A280", store_ctx(ps, "named"))
