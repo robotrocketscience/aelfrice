@@ -192,11 +192,29 @@ def _dropped_rows(c: Ctx) -> dict[str, dict[str, int]]:
 _PRUNE_NEEDS = ("origin", "lock_level", "valid_to")
 
 
-def a133(c: Ctx) -> Result:
-    """doctor --prune-noise selects origin='agent_inferred' and sets valid_to.
+def _noise_now() -> Any:
+    """doctor --prune-noise's own predicate, from aelfrice's pure functions."""
+    from aelfrice.classification_core import classify_sentence
+    from aelfrice.derivation import decision_text
+    from aelfrice.models import ORIGIN_AGENT_INFERRED
+    from aelfrice.noise_filter import is_stranded_capture_noise, is_transcript_noise
 
-    A beliefs table without those columns is a pre-feature schema the
-    command cannot act on: silent, with the missing-column count.
+    def noise(bid: str, content: str) -> bool:
+        text = decision_text(bid, content)
+        if is_transcript_noise(text) or is_stranded_capture_noise(text):
+            return True
+        return not classify_sentence(text, ORIGIN_AGENT_INFERRED).persist
+    return noise
+
+
+def a133(c: Ctx) -> Result:
+    """doctor --prune-noise soft-deletes active agent_inferred unlocked beliefs
+    that the current noise filters reject, and writes no audit row.
+
+    The count is retired agent_inferred unlocked beliefs with no retire or
+    review audit row whose text the same filters still reject: the command's
+    own selection, applied after the fact. A beliefs table without the
+    columns the command reads is a pre-feature schema: silent.
     """
     if (r := _missing(c, "beliefs")) is not None:
         return r
@@ -205,28 +223,37 @@ def a133(c: Ctx) -> Result:
     if missing:
         return cc.silent(0, {"beliefs_rows": n_rows, "missing_cols": len(missing)},
                          "pre-feature schema: beliefs lacks a column prune-noise needs")
-    sql = ("SELECT COUNT(*) FROM beliefs b WHERE b.origin='agent_inferred' "
+    sql = ("SELECT b.id, b.content FROM beliefs b WHERE b.origin='agent_inferred' "
            "AND b.lock_level='none' AND b.valid_to IS NOT NULL")
-    total = c.count(sql)
-    n = total
     if c.column_exists("feedback_history", "source"):
-        n = c.count(sql + " AND NOT EXISTS (SELECT 1 FROM feedback_history f "
-                    "WHERE f.belief_id=b.id AND (f.source LIKE 'user_retired%' "
-                    "OR f.source='review:remove'))")
-    return cc.from_count(n, {"retired_agent_inferred": total, "beliefs_rows": n_rows},
-                         "ambiguous: scheduled-prompt retire and unaudited soft deletes "
-                         "also set valid_to; retire and review rows excluded")
+        sql += (" AND NOT EXISTS (SELECT 1 FROM feedback_history f WHERE f.belief_id=b.id "
+                "AND (f.source LIKE 'user_retired%' OR f.source='review:remove'))")
+    noise = _noise_now()
+    retired = matched = 0
+    for bid, content in _rows(c, sql):
+        retired += 1
+        if isinstance(bid, str) and isinstance(content, str) and noise(bid, content):
+            matched += 1
+    return cc.from_count(matched, {"retired_unaudited": retired,
+                                   "retired_noise_now": matched, "beliefs_rows": n_rows},
+                         "ambiguous: another unaudited retire of text the filters reject "
+                         "looks the same")
 
 
 def a134(c: Ctx) -> Result:
+    """aelf ingest-transcript writes the same transcript rows as PreCompact,
+    the Stop flush and doctor --backfill-ingest (all call ingest_jsonl with
+    the default label), so no row is its own: untraceable, with the shared
+    rows in detail."""
     if (r := _missing(c, "ingest_log")) is not None:
         return r
     n, n_default, n_sess = c.counts(
         "SELECT COUNT(*), SUM(source_path='transcript'), COUNT(DISTINCT session_id) "
         "FROM ingest_log WHERE source_kind='transcript'")
-    return cc.from_count(n, {"default_label": n_default, "sessions": n_sess},
-                         "ambiguous: PreCompact, Stop flush and doctor backfill run the "
-                         "same ingest_jsonl")
+    return cc.Result("untraceable", None,
+                     {"transcript_rows": n, "default_label": n_default, "sessions": n_sess},
+                     "shared trace: PreCompact, Stop flush and doctor backfill write the "
+                     "same rows")
 
 
 def a138(c: Ctx) -> Result:
@@ -824,7 +851,7 @@ def a171(c: Ctx) -> Result:
     violation = d.get("role_assistant", 0) + d.get("speaker_assistant", 0)
     d["violation"] = violation
     if violation > 0:
-        return cc.fired(violation, d, "VIOLATION assistant rows reached ingest_log")
+        return cc.Result("error", violation, d, "contract broken: assistant rows reached ingest_log")
     if exposed > 0:
         return cc.fired(exposed, d,
                         "inferred: assistant lines read by ingest, 0 assistant rows written")
@@ -1172,4 +1199,4 @@ TRACEABLE: frozenset[str] = frozenset(p.item_id for p in PROBES if p.kind != "un
 UNTRACEABLE: frozenset[str] = frozenset(p.item_id for p in PROBES if p.kind == "untraceable")
 # Store probes that report untraceable, not silent, on an empty store: no
 # row they could join or count exists there.
-UNTRACEABLE_WHEN_EMPTY: frozenset[str] = frozenset({"A143", "A156", "A171", "A177"})
+UNTRACEABLE_WHEN_EMPTY: frozenset[str] = frozenset({"A134", "A143", "A156", "A171", "A177"})
