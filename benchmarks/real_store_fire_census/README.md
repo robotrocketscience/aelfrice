@@ -177,7 +177,12 @@ renames that file into place. It exits with status 2 when an output path is
 an existing symlink or becomes one during the run, when the output folder is
 a symlink, holds a `memory.db`, or sits inside any copy at any depth, when
 the path is in a live store location or this repository, and when `--out`
-and `--labels-out` name the same file.
+and `--labels-out` name the same file. Two existing files are the same when
+`os.path.samefile` says so. Otherwise two paths are the same when their names
+match ignoring case and their folders are the same folder by device and
+inode, so a symlinked folder or a case-only difference doesn't hide a match.
+The runner makes every check before it creates any output folder, so a
+refused run leaves no folder behind.
 
 ## Probe limits
 
