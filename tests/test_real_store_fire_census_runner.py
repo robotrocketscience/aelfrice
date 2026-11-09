@@ -72,6 +72,13 @@ def _plain_db(folder: Path) -> Path:
     return folder / "memory.db"
 
 
+def _gated(copy: Path, *rel: str) -> copy_token.GatedPath:
+    """A path in a copy whose reads go through the copy's manifest."""
+    gate = copy_token.Gate()
+    gate.add(copy_token.load(copy))
+    return copy_token.GatedPath(copy.joinpath(*rel), gate=gate)
+
+
 def _copy(src: Path, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     assert copy_store.main([str(src), str(dest)]) == 0
@@ -300,63 +307,189 @@ def test_open_ro_refuses_an_identity_the_token_did_not_record(planted_copy: Path
     core.open_ro(planted_copy / "memory.db", (st.st_dev, st.st_ino)).close()
 
 
-def test_verify_db_names_each_reason_it_refuses(tmp_path: Path) -> None:
+def test_the_gate_reads_only_files_its_manifest_lists(tmp_path: Path) -> None:
     src = tmp_path / "src"
     _plain_db(src)
+    (src / "hook_audit.jsonl").write_text('{"a": 1}\n', encoding="utf-8")
+    (src / "telemetry").mkdir()
+    (src / "telemetry" / "t.jsonl").write_text("{}\n", encoding="utf-8")
     dest = _copy(src, tmp_path / "copy")
-    db = dest / "memory.db"
-    assert copy_token.verify_db(db) == guard.ident(db)
-    os.link(db, tmp_path / "second.db")
-    with pytest.raises(copy_token.TokenError, match="another hard link"):
-        copy_token.verify_db(db)
-    os.unlink(tmp_path / "second.db")
-    st = os.stat(db)
-    os.utime(db, ns=(st.st_atime_ns, st.st_mtime_ns + 1))
-    with pytest.raises(copy_token.TokenError, match="not the file"):
-        copy_token.verify_db(db)
-    os.utime(db, ns=(st.st_atime_ns, st.st_mtime_ns))
+    db = _gated(dest, "memory.db")
+    root = db.parent
+    assert db.gate.identity(db) == guard.ident(dest / "memory.db")
+    assert (root / "hook_audit.jsonl").read_text("utf-8") == '{"a": 1}\n'
+    assert [p.name for p in (root / "telemetry").glob("*.jsonl")] == ["t.jsonl"]
+    assert not (root / "hook_audit.jsonl.1").is_file()
+    assert (root / "telemetry").is_dir() and not (root / "nothing").exists()
+    with pytest.raises(PermissionError):
+        (root / "hook_audit.jsonl").open("a")
+    os.link(dest / "hook_audit.jsonl", tmp_path / "second-name")
+    with pytest.raises(copy_token.ManifestMismatch):
+        (root / "hook_audit.jsonl").is_file()
+    os.unlink(tmp_path / "second-name")
+    st = os.stat(dest / "hook_audit.jsonl")
+    os.utime(dest / "hook_audit.jsonl", ns=(st.st_atime_ns, st.st_mtime_ns + 1))
+    with pytest.raises(copy_token.ManifestMismatch):
+        (root / "hook_audit.jsonl").read_text("utf-8")
+    os.utime(dest / "hook_audit.jsonl", ns=(st.st_atime_ns, st.st_mtime_ns))
+    (dest / "hook_audit.jsonl.1").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(copy_token.ManifestMismatch):
+        (root / "hook_audit.jsonl.1").is_file()
+    with pytest.raises(copy_token.ManifestMismatch):
+        list(root.iterdir())
+    os.unlink(dest / "hook_audit.jsonl.1")
     (dest / "memory.db-shm").symlink_to(tmp_path / "anything")
-    with pytest.raises(copy_token.TokenError, match="symlink"):
-        copy_token.verify_db(db)
-    with pytest.raises(copy_token.TokenError, match="no copy token"):
-        copy_token.verify_db(_plain_db(tmp_path / "bare"))
+    with pytest.raises(copy_token.ManifestMismatch):
+        db.gate.identity(db)
+    os.unlink(dest / "memory.db-shm")
+    os.unlink(dest / "telemetry" / "t.jsonl")
+    with pytest.raises(copy_token.ManifestMismatch):
+        list((root / "telemetry").glob("*.jsonl"))
+    _plain_db(tmp_path / "outside")
+    with pytest.raises(copy_token.ManifestMismatch):
+        (root.parent / "outside" / "memory.db").is_file()
+    (dest / "extra-folder").mkdir()
+    with pytest.raises(copy_token.ManifestMismatch):
+        (root / "extra-folder").is_dir()
+    os.rmdir(dest / "extra-folder")
+    (dest / "memory.db-shm").symlink_to(tmp_path / "anything")
+    with pytest.raises(copy_token.ManifestMismatch):
+        core.open_ro(db)
+    os.unlink(dest / "memory.db-shm")
+    assert not (root.parent / "not-there").is_file()
+
+
+def test_the_gate_opens_no_symlink_that_appears_after_its_check(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "log.jsonl").write_text("{}\n", encoding="utf-8")
+    dest = _copy(src, tmp_path / "copy")
+    p = _gated(dest, "log.jsonl")
+    real = p.gate.file_stat
+
+    def swap(q: Any) -> os.stat_result | None:
+        st = real(q)
+        os.rename(dest / "log.jsonl", tmp_path / "moved")
+        os.symlink(tmp_path / "moved", dest / "log.jsonl")
+        return st
+
+    monkeypatch.setattr(p.gate, "file_stat", swap)
+    with pytest.raises(OSError):
+        p.read_text("utf-8")
+
+
+def test_a_sidecar_swapped_for_a_symlink_into_a_live_store_exits_2(
+        planted_copy: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    live = tmp_path / "repo" / DOT_GIT / "aelfrice"
+    live.mkdir(parents=True)
+    (live / "hook_audit.jsonl").write_text('{"hook": "user_prompt_submit"}\n', encoding="utf-8")
+    before = _snapshot(live)
+    log = planted_copy / "hook_audit.jsonl"
+    assert log.is_file()
+    log.unlink()
+    log.symlink_to(live / "hook_audit.jsonl")
+    out = tmp_path / "o.json"
+    assert runner.main([str(planted_copy), "--out", str(out)]) == 2
+    err = capsys.readouterr().err
+    assert "copy token" in err and str(tmp_path) not in err
+    assert not out.exists() and _snapshot(live) == before
+
+
+def test_a_file_planted_in_a_copy_exits_2(
+        planted_copy: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (planted_copy / "hook_audit.jsonl.1").write_text("{}\n", encoding="utf-8")
+    assert runner.main([str(planted_copy), "--out", str(tmp_path / "o.json")]) == 2
+    assert "doesn't list" in capsys.readouterr().err
+
+
+def test_a_copy_of_a_copy_is_refused(planted_copy: Path, tmp_path: Path) -> None:
+    again = tmp_path / "again"
+    shutil.copytree(planted_copy, again)
+    assert runner.main([str(again), "--dry-run"]) == 2
+    with pytest.raises(copy_token.TokenError, match="another folder"):
+        copy_token.load(again)
+
+
+def test_gated_and_plain_reads_give_the_same_results(planted_copy: Path) -> None:
+    probes = registry.all_probes()
+    root = _gated(planted_copy)
+    gated = core.Ctx("store01", root, None, False, root / "memory.db")
+    plain = core.Ctx("store01", planted_copy, None, False, planted_copy / "memory.db")
+    a = runner.run_census(probes, [gated])
+    b = runner.run_census(probes, [plain])
+    assert a == b
 
 
 def test_a_malformed_token_is_refused(tmp_path: Path) -> None:
-    db = _plain_db(tmp_path / "m")
-    st = os.stat(db)
-    rec = {"memory.db": copy_token.stamp_of(st)}
-    tok = tmp_path / "m" / copy_token.TOKEN_FILENAME
-    docs: list[dict[str, Any]] = [{"version": 1, "token": "not-hex", "dbs": rec},
-                                  {"version": 2, "token": "a" * 32, "dbs": rec},
-                                  {"version": 1, "token": "a" * 32, "dbs": []}]
-    for doc in docs:
+    src = tmp_path / "src"
+    _plain_db(src)
+    dest = _copy(src, tmp_path / "copy")
+    tok = dest / copy_token.TOKEN_FILENAME
+    good: dict[str, Any] = json.loads(tok.read_text("utf-8"))
+    entry: dict[str, int] = good["files"]["memory.db"]
+
+    def with_entry(**change: Any) -> dict[str, Any]:
+        doc = json.loads(json.dumps(good))
+        doc["files"]["memory.db"] = {**entry, **change}
+        return doc
+
+    bad: list[dict[str, Any]] = [
+        {**good, "token": "not-hex"}, {**good, "version": 1}, {**good, "files": []},
+        {**good, "root": {"dev": 1}}, {**good, "dirs": ["../up"]},
+        {**good, "files": {"../memory.db": entry}},
+        with_entry(ino=str(entry["ino"])), with_entry(size=True), with_entry(nlink=1.0),
+        {**good, "files": {"memory.db": {k: v for k, v in entry.items() if k != "size"}}},
+    ]
+    os.chmod(tok, 0o600)
+    for doc in bad:
         tok.write_text(json.dumps(doc), encoding="utf-8")
         with pytest.raises(copy_token.TokenError, match="malformed"):
-            copy_token.verify_db(db)
-    tok.write_text(json.dumps({"version": 1, "token": "a" * 32, "dbs": rec}), encoding="utf-8")
-    assert copy_token.verify_db(db) == (st.st_dev, st.st_ino)
+            copy_token.load(dest)
+    tok.write_text(json.dumps(good), encoding="utf-8")
+    assert copy_token.load(dest).files["memory.db"] == entry
 
 
-def test_write_token_refuses_a_linked_db_and_an_unfolded_wal(tmp_path: Path) -> None:
-    db = _plain_db(tmp_path / "linked")
+def test_write_token_refuses_what_the_helper_did_not_copy(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "tmp"
+    db = _plain_db(root)
+    ident = guard.ident(root)
+    assert ident is not None
+    write = copy_token._write_token  # pyright: ignore[reportPrivateUsage]
+    (root / "extra").write_text("x", encoding="utf-8")
+    with pytest.raises(copy_token.TokenError, match="didn't copy"):
+        write(root, {"memory.db"}, ident)
+    os.unlink(root / "extra")
     os.link(db, tmp_path / "other-name.db")
     with pytest.raises(copy_token.TokenError, match="single-link"):
-        copy_token.write_token(db.parent)
+        write(root, {"memory.db"}, ident)
+    os.unlink(tmp_path / "other-name.db")
+    (root / "link").symlink_to(tmp_path)
+    with pytest.raises(copy_token.TokenError, match="symlink"):
+        write(root, {"memory.db"}, ident)
+    os.unlink(root / "link")
     writer = _wal_db(tmp_path / "walled")
     try:
         with pytest.raises(copy_token.TokenError, match="non-empty -wal"):
-            copy_token.write_token(tmp_path / "walled")
+            write(tmp_path / "walled", {"memory.db", "memory.db-wal", "memory.db-shm"},
+                  guard.ident(tmp_path / "walled") or (0, 0))
     finally:
         writer.close()
-    assert not (tmp_path / "linked" / copy_token.TOKEN_FILENAME).exists()
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    with pytest.raises(copy_token.TokenError, match="live"):
+        write(root, {"memory.db"}, ident)
+    assert not (root / copy_token.TOKEN_FILENAME).exists()
+    assert not hasattr(copy_token, "write_token")
 
 
-def test_open_ro_refuses_a_symlink_and_an_unfolded_wal(tmp_path: Path) -> None:
+def test_open_ro_refuses_a_symlink_a_folder_and_an_unfolded_wal(tmp_path: Path) -> None:
     real = _plain_db(tmp_path / "real")
     (tmp_path / "link.db").symlink_to(real)
     with pytest.raises(OSError):
         core.open_ro(tmp_path / "link.db")
+    with pytest.raises(core.IdentityMismatchError):
+        core.open_ro(tmp_path / "real")
     writer = _wal_db(tmp_path / "walled")
     try:
         with pytest.raises(core.UnfoldedWalError):
@@ -365,7 +498,8 @@ def test_open_ro_refuses_a_symlink_and_an_unfolded_wal(tmp_path: Path) -> None:
         writer.close()
 
 
-@pytest.mark.skipif(not os.path.isdir("/dev/fd"), reason="needs /dev/fd")
+@pytest.mark.skipif(sys.platform != "darwin",
+                    reason="verified on macOS only; sqlite on Linux /dev/fd is unverified")
 def test_open_ro_reads_the_file_it_checked_even_if_the_path_is_swapped(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     checked = _plain_db(tmp_path / "a")
@@ -394,6 +528,33 @@ def test_a_global_dir_without_a_token_is_refused(planted_copy: Path, tmp_path: P
     gdir = tmp_path / "global-hand-copy"
     gdir.mkdir()
     assert runner.main([str(planted_copy), "--global-dir", str(gdir), "--dry-run"]) == 2
+
+
+def test_a_global_dir_below_another_copy_token_is_refused(
+        planted_copy: Path, tmp_path: Path) -> None:
+    src = tmp_path / "gsrc"
+    (src / "a" / "b").mkdir(parents=True)
+    _plain_db(src)
+    gcopy = _copy(src, tmp_path / "copies" / "g")
+    assert runner.main([str(planted_copy), "--global-dir", str(gcopy / "a" / "b"),
+                        "--dry-run"]) == 2
+    assert runner.main([str(planted_copy), "--global-dir", str(gcopy), "--dry-run"]) == 0
+
+
+def test_a_global_file_swapped_for_a_symlink_exits_2(
+        planted_copy: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    src = tmp_path / "gsrc"
+    src.mkdir()
+    (src / "migrated-to-uv").write_text("x", encoding="utf-8")
+    gcopy = _copy(src, tmp_path / "copies" / "g")
+    live = tmp_path / "home" / ".aelfrice"
+    live.mkdir(parents=True)
+    (live / "migrated-to-uv").write_text("live", encoding="utf-8")
+    (gcopy / "migrated-to-uv").unlink()
+    (gcopy / "migrated-to-uv").symlink_to(live / "migrated-to-uv")
+    assert runner.main([str(planted_copy), "--global-dir", str(gcopy),
+                        "--only", "A064", "--out", str(tmp_path / "o.json")]) == 2
+    assert "copy token" in capsys.readouterr().err
 
 
 def test_global_dir_adds_global_and_user_and_global_log_probes_run_there(
@@ -494,6 +655,9 @@ def test_guard_refuses_the_env_store_folders(
     assert guard.live_reason(tmp_path / "alias.db") == "the store AELFRICE_DB names"
     os.link(db, tmp_path / "elsewhere.db")
     assert guard.live_reason(tmp_path / "elsewhere.db")
+    plain = _plain_db(tmp_path / "plain")
+    os.link(plain, tmp_path / "plain-twin.db")
+    assert guard.live_reason(plain) == "a file with another hard link"
     assert guard.live_reason(_plain_db(tmp_path / "unrelated")) is None
 
 
@@ -617,12 +781,62 @@ def test_an_out_path_that_becomes_a_symlink_during_the_run_is_refused(
     assert [p.name for p in out.parent.iterdir()] == ["o.json"]
 
 
+def test_an_out_folder_that_is_a_symlink_exits_2_without_a_path(
+        planted_copy: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    real = tmp_path / "real-out"
+    real.mkdir()
+    (tmp_path / "link-out").symlink_to(real)
+    assert runner.main([str(planted_copy), "--dry-run",
+                        "--out", str(tmp_path / "link-out" / "o.json")]) == 2
+    err = capsys.readouterr().err
+    assert "symlink" in err and str(tmp_path) not in err
+    assert list(real.iterdir()) == []
+
+
+def test_an_out_path_inside_any_copy_is_refused(planted_copy: Path, tmp_path: Path) -> None:
+    src = tmp_path / "osrc"
+    _plain_db(src)
+    other = _copy(src, tmp_path / "copies" / "other")
+    deep = other / "a" / "b"
+    assert runner.main([str(planted_copy), "--dry-run", "--out", str(deep / "o.json")]) == 2
+    assert not deep.exists()
+
+
+def test_an_out_folder_swapped_between_its_check_and_its_open_is_refused(
+        planted_copy: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    import stat as st_mod
+    import types
+    real_fstat = os.fstat
+
+    def fstat(fd: int) -> os.stat_result:
+        st = real_fstat(fd)
+        if st_mod.S_ISDIR(st.st_mode):
+            vals = list(st[:10])
+            vals[1] += 1  # another inode
+            return os.stat_result(vals)
+        return st
+
+    proxy = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+    proxy.fstat = fstat
+    monkeypatch.setattr(runner, "os", proxy)
+    assert runner.main([str(planted_copy), "--dry-run",
+                        "--out", str(tmp_path / "od" / "o.json")]) == 2
+    assert "changed while it was checked" in capsys.readouterr().err
+
+
 def test_dry_run_says_it_writes_no_labels_file(
         planted_copy: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     labels = tmp_path / "labels.json"
     assert runner.main([str(planted_copy), "--dry-run", "--labels-out", str(labels)]) == 0
     assert "not written" in capsys.readouterr().err
     assert not labels.exists()
+
+
+def test_out_and_labels_out_must_differ(planted_copy: Path, tmp_path: Path) -> None:
+    same = str(tmp_path / "same.json")
+    assert runner.main([str(planted_copy), "--out", same, "--labels-out", same]) == 2
+    assert not os.path.lexists(same)
 
 
 def test_only_rejects_an_unknown_id(planted_copy: Path) -> None:
@@ -632,13 +846,21 @@ def test_only_rejects_an_unknown_id(planted_copy: Path) -> None:
 # --- copy_store reads bytes only and never writes the source ----------------------------
 
 
-def test_copy_store_writes_a_token_that_records_each_db(tmp_path: Path) -> None:
+def test_copy_store_writes_a_manifest_of_every_file_it_copied(tmp_path: Path) -> None:
     src = tmp_path / "src"
-    _plain_db(src)
-    _plain_db(src / "stores" / "named")
-    dest = _copy(src, tmp_path / "copy")
+    writer = _wal_db(src)
+    try:
+        _plain_db(src / "stores" / "named")
+        (src / "hook_audit.jsonl").write_text("{}\n", encoding="utf-8")
+        dest = _copy(src, tmp_path / "copy")
+    finally:
+        writer.close()
     doc = json.loads((dest / copy_token.TOKEN_FILENAME).read_text("utf-8"))
-    assert sorted(doc["dbs"]) == ["memory.db", "stores/named/memory.db"]
+    assert sorted(doc["files"]) == ["hook_audit.jsonl", "memory.db", "stores/named/memory.db"]
+    assert doc["dirs"] == ["stores", "stores/named"]
+    assert (doc["root"]["dev"], doc["root"]["ino"]) == guard.ident(dest)
+    for rel, entry in doc["files"].items():
+        assert entry == copy_token.stamp_of(os.stat(dest / rel)), rel
     assert copy_token.TOKEN_RE.match(doc["token"])
     assert str(tmp_path) not in (dest / copy_token.TOKEN_FILENAME).read_text("utf-8")
 
@@ -712,7 +934,7 @@ def test_copy_store_reads_a_store_with_an_open_writer_without_changing_it(
         assert _snapshot(src) == before
     finally:
         writer.close()
-    conn = core.open_ro(dest / "memory.db", copy_token.verify_db(dest / "memory.db"))
+    conn = core.open_ro(_gated(dest, "memory.db"))
     try:
         assert conn.execute("SELECT COUNT(*) FROM beliefs").fetchone() == (1,)
     finally:
@@ -743,9 +965,57 @@ def test_copy_store_gives_up_on_a_writer_that_never_stops(
     monkeypatch.setattr(copy_store, "_read", read)
     before = sorted(p.name for p in tmp_path.iterdir())
     assert copy_store.main([str(src), str(tmp_path / "dest")]) == 1
-    err = capsys.readouterr().err
+    out, err = capsys.readouterr()
     assert "close the sessions" in err and str(tmp_path) not in err
     assert sorted(p.name for p in tmp_path.iterdir()) == before
+    assert copy_store.ATTEMPTS == 20
+    rep = json.loads(out)
+    assert rep["attempts"] == rep["busy"] == 20, rep
+    readme = (runner.REPO_ROOT / "benchmarks" / "real_store_fire_census" / "README.md"
+              ).read_text("utf-8")
+    assert "up to 20 times" in readme
+
+
+def test_copy_store_retries_when_a_file_vanishes_mid_read(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(copy_store, "RETRY_PAUSE_S", 0.0)
+    src = tmp_path / "src"
+    _plain_db(src)
+    (src / "hook_audit.jsonl").write_text("{}\n", encoding="utf-8")
+    real_read = copy_store._read  # pyright: ignore[reportPrivateUsage]
+    calls: list[int] = []
+
+    def read(s: Path, rel: Path, out: Path | None) -> Any:
+        if rel.name == "hook_audit.jsonl" and not calls:
+            calls.append(1)
+            raise FileNotFoundError("rotated away")
+        return real_read(s, rel, out)
+
+    monkeypatch.setattr(copy_store, "_read", read)
+    rep = copy_store.copy_store(src, tmp_path / "dest")
+    assert rep["quick_check_ok"] == 1 and rep["attempts"] == 2 and rep["busy"] == 1, rep
+
+
+def test_copy_store_refuses_a_symlink_its_first_walk_sees(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src = tmp_path / "src"
+    _plain_db(src)
+    real_walk = copy_store._walk  # pyright: ignore[reportPrivateUsage]
+    calls: list[int] = []
+
+    def walk(p: Path) -> tuple[list[Path], list[Path], bool]:
+        calls.append(1)
+        if len(calls) != 2:
+            return real_walk(p)
+        (src / "brief").symlink_to(tmp_path)
+        try:
+            return real_walk(p)
+        finally:
+            (src / "brief").unlink()
+
+    monkeypatch.setattr(copy_store, "_walk", walk)
+    assert copy_store.main([str(src), str(tmp_path / "dest")]) == 1
+    assert not (tmp_path / "dest").exists()
 
 
 def test_copy_store_sees_a_same_size_write_that_keeps_the_mtime(
@@ -845,7 +1115,7 @@ def test_a_threaded_writer_never_gets_a_torn_copy_through(tmp_path: Path) -> Non
     for i, code in enumerate(codes):
         d = tmp_path / f"d{i}"
         if code == 0:
-            conn = core.open_ro(d / "memory.db", copy_token.verify_db(d / "memory.db"))
+            conn = core.open_ro(_gated(d, "memory.db"))
             conn.close()
         else:
             assert not d.exists()
