@@ -43,8 +43,8 @@ time, isn't read. Three shapes are read:
   a row that derived `src` (`_Turns.pinned`). Rows keep no closer, so when
   runs in two records, by session and timestamp, fit one edge, or the
   record's read stretches differ in label or rows, the anchor takes neither.
-  Of identical copies, only the first that fits the edge is taken, and a
-  belief another copy also derived stays.
+  Every identical copy that fits the edge is taken. A copy that doesn't
+  isn't, and a belief it also derived stays.
   The run's rows that fall in the part `cut_relay` takes are relay rows: its
   first row is a `notice` when it holds a host notice, and the rest are
   `block`. An anchor at the cap may end inside a sentence, so its last
@@ -77,8 +77,11 @@ read through that edge's anchor. The edge fit misses relay rows in a turn
 followed by one that produced no belief, which ingest chains past, in a turn
 from before #1364, which chained on the last belief a turn inserted, in a
 turn another writer's row split, in a bulk ingest's shared timestamp, in a
-record ingested under a second label, and in a turn ingested more than once. Two files of one session ingested
-under one label read as one transcript.
+record ingested under a second label, and in a turn ingested again before
+its next turn was logged. Two files of one session ingested under one label
+read as one transcript. One record ingested twice, unclosed and then closed,
+reads as two copies of the unclosed one, and its words after the closer are
+taken.
 
 A belief is retired only when every `ingest_log` row that derived or
 corroborated it is a relay row, and `scheduled_prompts.split_by_evidence`
@@ -240,10 +243,6 @@ class _Turns:
             self._next[t] = last.get((sid, path))
             last[(sid, path)] = t
 
-    def stretch(self, i: int) -> int:
-        """The stretch row `i` is in."""
-        return self._of[i]
-
     def one_body(self, record: tuple[str | None, str]) -> bool:
         """True when every read stretch of `record` has one label and the same rows."""
         return len(self._record.get(record, set())) == 1
@@ -305,7 +304,7 @@ def _block_rows(
     written its edge (`_Turns.pinned`), and only when every such run is in one
     record, by session and timestamp, whose read stretches all have one label
     and one set of rows: rows keep no closer, so a second record with the same
-    rows may have closed its relay sooner. Only the first pinned copy is taken.
+    rows may have closed its relay sooner. Every pinned copy is taken.
     """
     starts_by_text: dict[str, list[int]] = {}
     for i, text in enumerate(rows.texts):
@@ -346,14 +345,12 @@ def _block_rows(
             continue
         # A record is its session and timestamp. Rows keep no closer, so when
         # runs in two records fit the edge, or the record's read stretches
-        # differ in label or rows, the anchor takes neither. Of identical
-        # copies, only the first pinned one, which wrote the edge, is taken.
+        # differ in label or rows, the anchor takes neither. Every pinned copy
+        # is taken; a copy that doesn't fit the edge isn't.
         records = {rows.keys[i][:2] for i, _, _, _ in takes}
         if len(records) > 1 or not turns.one_body(next(iter(records))):
             report.anchors_ambiguous += 1
             continue
-        first = min(turns.stretch(i) for i, _, _, _ in takes)
-        takes = [r for r in takes if turns.stretch(r[0]) == first]
         # A later ingest that saw this record stored its speech, and may have
         # written the anchor from it.
         if any((rows.keys[i][0], rows.texts[i]) in rows.late for i, _, _, _ in takes):
