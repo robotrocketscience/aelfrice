@@ -279,20 +279,32 @@ MUTANTS: list[tuple[str, str, str, str]] = [
      '        stretches[-1] = (k, held, all_raw and raw)',
      '        stretches[-1] = (k, held, all_raw)'),
     ('ambiguity_off', RR,
-     '        if len(labels) > 1 or len(bodies) > 1:\n            report.anchors_ambiguous += 1\n            continue\n',
+     '        if len(records) > 1 or not turns.one_body(next(iter(records))):\n            report.anchors_ambiguous += 1\n            continue\n',
      ''),
-    ('labels_check_off', RR,
-     '        if len(labels) > 1 or len(bodies) > 1:',
-     '        if len(bodies) > 1:'),
-    ('bodies_check_off', RR,
-     '        if len(labels) > 1 or len(bodies) > 1:',
-     '        if len(labels) > 1:'),
+    ('one_body_off', RR,
+     '        if len(records) > 1 or not turns.one_body(next(iter(records))):',
+     '        if len(records) > 1:'),
+    ('records_check_off', RR,
+     '        if len(records) > 1 or not turns.one_body(next(iter(records))):',
+     '        if not turns.one_body(next(iter(records))):'),
+    ('record_ignores_rows', RR,
+     '            self._record.setdefault(key[:2], set()).add((key, body))',
+     '            self._record.setdefault(key[:2], set()).add((key, ()))'),
+    ('record_ignores_label', RR,
+     '            self._record.setdefault(key[:2], set()).add((key, body))',
+     '            self._record.setdefault(key[:2], set()).add((key[:2], body))'),
+    ('all_pinned_copies_taken', RR,
+     '        takes = [r for r in takes if turns.stretch(r[0]) == first]\n',
+     ''),
+    ('head_last_row_only', RR,
+     '            if derives[i]:\n                self._head[-1] = derives[i]\n',
+     '            self._head[-1] = derives[i]\n'),
+    ('opens_last_first_row', RR,
+     'opens_turn = first_text.setdefault(key, held[0][1]) == held[0][1]',
+     'opens_turn = first_text.get(key, held[0][1]) == held[0][1]; first_text[key] = held[0][1]'),
     ('takes_all_runs', RR,
      '        takes = [r for r in runs if r[3]]',
      '        takes = runs'),
-    ('copies_not_taken', RR,
-     '        takes = [r for r in runs if rows.keys[r[0]][:2] in records]\n',
-     ''),
     ('veto_same_session_as_first', RR,
      'for i, n in _runs(rows, starts_by_text, whole, capped):\n                        vetoed.update(range(i, i + n))',
      'for i, n in [r for r in _runs(rows, starts_by_text, whole, capped) if rows.keys[r[0]][0] == rows.keys[_runs(rows, starts_by_text, whole, capped)[0][0]][0]]:\n                        vetoed.update(range(i, i + n))'),
@@ -302,10 +314,6 @@ MUTANTS: list[tuple[str, str, str, str]] = [
 RETIRED: dict[str, str] = {
     "no_seen_dedupe": "equivalent: a second sentence split equal to the first repeats the "
                       "same veto and take calls, which change nothing the second time",
-    "key_not_checked_in_run": "equivalent: a run that leaves its stretch fits an edge only when "
-                              "the anchor is capped, and then the stretch's last row, inside the "
-                              "run, has to derive the edge's earlier end, so the record that "
-                              "wrote the edge would end on a sentence it held before the cap",
 }
 
 
