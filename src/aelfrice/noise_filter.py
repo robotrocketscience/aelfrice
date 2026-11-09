@@ -526,16 +526,19 @@ _RELAY_NAME_RE: Final[re.Pattern[str]] = re.compile(
 )
 # The tag as the host writes it, a narrower form of `_RELAY_TAG`: tag and
 # attribute names in lower case, one ASCII space before each attribute, each
-# value double-quoted with a character other than whitespace and no line break
-# of any kind, and `>` right after the last one. All 232 stored relay openers
-# have this form (#1877).
-_HOST_VALUE: Final[str] = (
-    r'"(?=[^"]*[^"\s])[^"\n\r\v\f' + "\x85\u2028\u2029" + r']+"'
-)
+# value double-quoted, and `>` right after the last one. `_host_value` checks
+# each value. All 232 stored relay openers have this form (#1877).
 _HOST_TAG_RE: Final[re.Pattern[str]] = re.compile(
-    r"<(" + _RELAY_TAG_ALT + r")((?: [a-z0-9_-]+=" + _HOST_VALUE + r")+)>",
+    r"<(" + _RELAY_TAG_ALT + r')((?: [a-z0-9_-]+="[^"]+")+)>',
 )
-_HOST_ATTRIBUTE_RE: Final[re.Pattern[str]] = re.compile(r' ([a-z0-9_-]+)="')
+_HOST_ATTRIBUTE_RE: Final[re.Pattern[str]] = re.compile(r' ([a-z0-9_-]+)="([^"]*)"')
+
+
+def _host_value(value: str) -> bool:
+    """True when `value` has no line break `str.splitlines` reads, and a visible character."""
+    return value.splitlines() == [value] and any(
+        c.isprintable() and not c.isspace() for c in value
+    )
 
 
 def _host_shaped(tag: str) -> bool:
@@ -547,8 +550,10 @@ def _host_shaped(tag: str) -> bool:
     host = _HOST_TAG_RE.fullmatch(tag)
     if host is None:
         return False
-    names = set(_HOST_ATTRIBUTE_RE.findall(host.group(2)))
-    return HOST_RELAY_ATTRIBUTES[host.group(1)] <= names
+    attributes = _HOST_ATTRIBUTE_RE.findall(host.group(2))
+    if not all(_host_value(value) for _, value in attributes):
+        return False
+    return HOST_RELAY_ATTRIBUTES[host.group(1)] <= {name for name, _ in attributes}
 
 
 def relay_row_shape(text: str) -> str | None:
