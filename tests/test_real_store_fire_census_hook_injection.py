@@ -537,6 +537,14 @@ def test_a101_budget_applies_without_coverage_line(ps: PlantedStore) -> None:
     assert r.detail["cov_after_close"] == 0
 
 
+def test_a101_silent_when_a_ups_block_packs_only_locks(ps: PlantedStore) -> None:
+    ps.lock(LOCK)
+    ups(ps, "what do census probes report")
+    r = run(ps, "A101")
+    assert r.status == "silent" and r.count == 0, r
+    assert r.detail["ups_rows"] >= 1 and r.detail["budget_rows"] == 0
+
+
 def test_a097_exploration(ps: PlantedStore, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     monkeypatch.setenv("AELFRICE_EXPLORATION_CADENCE", "1")
@@ -756,25 +764,49 @@ def test_a119_baseline(ps: PlantedStore) -> None:
     assert r.detail == {"startup": 1}
 
 
-def test_a120_single_session_start_is_silent(ps: PlantedStore) -> None:
+def test_a120_single_session_start_is_untraceable(ps: PlantedStore) -> None:
     ps.lock(LOCK)
     session_start(ps, "s1")
     r = run(ps, "A120")
-    assert r.status == "silent", r
+    assert r.status == "untraceable" and r.count is None, r
     assert r.detail["last_ts_file"] == 1 and r.detail["inner_gaps"] == 0
+    assert r.detail["inner_gaps_ge3"] == 0
 
 
-def test_a120_recap_gap_replayed(ps: PlantedStore) -> None:
-    ps.lock(LOCK)
+def _recap_gap(ps: PlantedStore, locks: int) -> cc.Result:
+    ps.lock(LOCK)  # an empty store's SessionStart emits no block, so no audit row
     session_start(ps, "s1")
     time.sleep(1.1)
-    for i in range(3):
+    for i in range(locks):
         assert ps.lock(f"Recap rule {i}: granary ledgers are reconciled monthly.") == 0
     time.sleep(1.1)
     session_start(ps, "s2")
-    r = run(ps, "A120")
-    assert_fired(r, 1)
-    assert r.detail["inner_gaps_ge3"] == 1 and r.detail["max_inner_gap"] >= 3
+    return run(ps, "A120")
+
+
+def test_a120_gap_at_the_threshold_is_replayed(ps: PlantedStore) -> None:
+    r = _recap_gap(ps, ph.RECAP_THRESHOLD)
+    assert r.status == "untraceable" and r.count is None, r
+    assert r.detail["inner_gaps_ge3"] == 1
+    assert r.detail["max_inner_gap"] == ph.RECAP_THRESHOLD
+
+
+def test_a120_gap_below_the_threshold_is_not_counted(ps: PlantedStore) -> None:
+    r = _recap_gap(ps, ph.RECAP_THRESHOLD - 1)
+    assert r.status == "untraceable", r
+    assert r.detail["inner_gaps_ge3"] == 0
+    assert r.detail["max_inner_gap"] == ph.RECAP_THRESHOLD - 1
+
+
+def test_a120_recap_off_still_replays_a_gap(
+        ps: PlantedStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the recap off no line prints, yet the feed rows are the same:
+    why the probe reports untraceable rather than fired."""
+    monkeypatch.setenv("AELFRICE_SESSIONSTART_RECAP", "0")
+    r = _recap_gap(ps, ph.RECAP_THRESHOLD)
+    assert r.status == "untraceable", r
+    assert r.detail["inner_gaps_ge3"] == 1
+    assert r.detail["last_ts_file"] == 0
 
 
 def test_a121_speculative(ps: PlantedStore) -> None:
