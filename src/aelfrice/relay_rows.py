@@ -19,10 +19,13 @@ nothing to what the pass takes: it can only stop an anchor whose first
 sentence it holds in its session, or keep a belief it also derived.
 
 An `ingest_log` row holds one sentence, so it can't show line breaks, a
-closer, or where its record began. A row starts its turn when the row before
-it, in id order, has another `(session_id, ts, source_path)`. A stretch is a
-run of rows with one such key: one turn, or several that a bulk ingest gave
-one timestamp. Three shapes are read:
+closer, or where its record began. A stretch is a run of rows, in id order,
+with one `(session_id, ts, source_path)`: one turn, or several that a bulk
+ingest gave one timestamp. A row starts its turn when it opens a stretch
+whose key no earlier stretch had, or had from the same first row, as when a
+transcript is ingested again. The part of a turn after another writer's row
+opens nothing. A stretch holding a row from after the cutoff, or one with no
+time, isn't read. Three shapes are read:
 
 - `opener`: a row that starts its turn and holds a relay opening tag and
   nothing else, in the form the host writes it, with its attributes
@@ -32,11 +35,16 @@ one timestamp. Three shapes are read:
   and every relay tag and notice line in the part it takes must be the host's
   (`noise_filter.relay_cut_is_host_shaped`). The anchor's sentences are
   matched in order to a run of rows that opens at a row that starts its turn,
-  takes that row, and stays in its stretch. Ingest anchors the edge
-  `src -> dst` on the turn whose last belief is `dst`, when the next turn of
-  that transcript has `src` as its last, so a run counts only in a turn that
-  fits the edge (`_Turns.pinned`). Rows keep no closer, so when runs in two
-  records, by session and timestamp, fit one edge, the anchor takes neither.
+  takes that row, and fills its stretch, or stays in it when the anchor is
+  capped. Ingest anchors the edge `src -> dst` on the turn whose last belief
+  is `dst`, when the next turn of that transcript has `src` as its last. So a
+  run counts only when its stretch's last row that derived a belief derives
+  `dst`, and the next stretch with the same session and source label ends on
+  a row that derived `src` (`_Turns.pinned`). A stretch with the record's
+  key and rows is the record ingested again, and is taken with it. Rows keep
+  no closer, so when runs in two records, by session and timestamp, fit one
+  edge, or the record's stretches differ in label or rows, the anchor takes
+  neither.
   The run's rows that fall in the part `cut_relay` takes are relay rows: its
   first row is a `notice` when it holds a host notice, and the rest are
   `block`. An anchor at the cap may end inside a sentence, so its last
@@ -64,7 +72,12 @@ included. An install from before #1649 that wrote rows after the cutoff has
 those rows skipped, and a later install whose clock ran behind the cutoff has
 its rows read as raw records. When the turn that wrote an edge has no rows
 from before the cutoff, another turn with the same rows that fits the edge is
-read through that edge's anchor.
+read through that edge's anchor. The edge fit misses relay rows in a turn
+followed by one that produced no belief, which ingest chains past, in a turn
+from before #1364, which chained on the last belief a turn inserted, in a
+turn another writer's row split, in a bulk ingest's shared timestamp, and in
+a record ingested under a second label. Two files of one session ingested
+under one label read as one transcript.
 
 A belief is retired only when every `ingest_log` row that derived or
 corroborated it is a relay row, and `scheduled_prompts.split_by_evidence`
@@ -140,52 +153,77 @@ class _Rows:
     ids: list[str]
     keys: list[_Key]
     texts: list[str]
+    # Where a stretch begins: the row before has another key.
     starts: list[bool]
+    # Where a turn begins: a stretch whose key no earlier stretch had.
+    opens: list[bool]
     # `(session_id, sentence)` of each row written at or after the cutoff, or
     # with an id that carries no time.
     late: set[tuple[str | None, str]]
 
 
 def _read_rows(store: "MemoryStore") -> _Rows:
+    late: set[tuple[str | None, str]] = set()
+    # Each stretch of the listing, with its rows and whether all were raw.
+    stretches: list[tuple[_Key, list[tuple[str, str]], bool]] = []
+    for log_id, sid, ts, path, text in store.list_transcript_sentences():
+        ms = ulid_ms(log_id)
+        raw = ms is not None and ms < RAW_RECORD_CUTOFF_MS
+        if not raw:
+            late.add((sid, text))
+        key = (sid, ts, path)
+        if not stretches or stretches[-1][0] != key:
+            stretches.append((key, [], True))
+        k, held, all_raw = stretches[-1]
+        held.append((log_id, text))
+        stretches[-1] = (k, held, all_raw and raw)
     ids: list[str] = []
     keys: list[_Key] = []
     texts: list[str] = []
     starts: list[bool] = []
-    late: set[tuple[str | None, str]] = set()
-    for log_id, sid, ts, path, text in store.list_transcript_sentences():
-        ms = ulid_ms(log_id)
-        if ms is None or ms >= RAW_RECORD_CUTOFF_MS:
-            late.add((sid, text))
+    opens: list[bool] = []
+    first_text: dict[_Key, str] = {}
+    for key, held, all_raw in stretches:
+        # A stretch holding a row from after the cutoff, or one with no time,
+        # isn't read at all.
+        if not all_raw:
             continue
-        key = (sid, ts, path)
-        starts.append(not keys or keys[-1] != key)
-        ids.append(log_id)
-        keys.append(key)
-        texts.append(text)
-    return _Rows(ids=ids, keys=keys, texts=texts, starts=starts, late=late)
+        # Ingesting a transcript again repeats a turn's key from its first
+        # row. A key that comes back at another row is a turn another
+        # writer's row split, and that part opens nothing.
+        opens_turn = first_text.setdefault(key, held[0][1]) == held[0][1]
+        for j, (log_id, text) in enumerate(held):
+            starts.append(j == 0)
+            opens.append(opens_turn and j == 0)
+            ids.append(log_id)
+            keys.append(key)
+            texts.append(text)
+    return _Rows(ids=ids, keys=keys, texts=texts, starts=starts, opens=opens, late=late)
 
 
 class _Turns:
-    """Which beliefs each row derived, by stretch, and the stretch that follows.
+    """Each stretch's last derived beliefs, and the stretch that follows it.
 
     A stretch is a run of rows with one `(session_id, ts, source_path)`. It
     holds one turn, or several when a bulk ingest gave them one timestamp.
     """
 
     def __init__(self, rows: _Rows, derives: list[set[str]]) -> None:
-        self._derives = derives
         self._of: list[int] = []
+        self._first: list[int] = []
         self._end: list[int] = []
-        self._beliefs: list[set[str]] = []
+        self._head: list[set[str]] = []
         self._keys: list[_Key] = []
         for i, key in enumerate(rows.keys):
             if rows.starts[i]:
-                self._beliefs.append(set())
                 self._keys.append(key)
+                self._first.append(i)
                 self._end.append(i)
+                self._head.append(set())
             self._of.append(len(self._keys) - 1)
-            self._beliefs[-1] |= derives[i]
             self._end[-1] = i + 1
+            if derives[i]:
+                self._head[-1] = derives[i]
         # Ingest chains turns within one transcript file, so the next stretch
         # is the next one with the same session and source label.
         self._next: list[int | None] = [None] * len(self._keys)
@@ -195,34 +233,26 @@ class _Turns:
             self._next[t] = last.get((sid, path))
             last[(sid, path)] = t
 
+    def rows_of(self, i: int) -> tuple[int, int]:
+        """`(first, end)` of the stretch row `i` is in."""
+        t = self._of[i]
+        return self._first[t], self._end[t]
+
     def pinned(self, i: int, n: int, capped: bool, src: str, dst: str) -> bool:
         """True when the run `[i, i + n)` could be the turn that wrote `src -> dst`.
 
         Ingest anchors `src -> dst` on a turn whose last belief is `dst`, when
-        the next turn in its transcript has `src` as its last. An anchor holds
-        its whole turn unless it is capped, so the turn ends with the run, or,
-        when capped, at a later row of its stretch. The next turn follows in
-        the same stretch, when a bulk ingest gave both one timestamp, or opens
-        the next stretch.
+        the next turn in its transcript has `src` as its last. The run opens
+        its stretch, and has to fill it unless the anchor is capped. The
+        stretch's last row that derived a belief has to derive `dst`, and the
+        next stretch with the same session and source label has to end on a
+        row that derived `src`.
         """
         t = self._of[i]
-        if self._keys[t][0] is None:
+        if self._keys[t][0] is None or (not capped and i + n != self._end[t]):
             return False
-        end = self._end[t]
-        for last in range(i + n - 1, end if capped else i + n):
-            head = next(
-                (j for j in range(last, i - 1, -1) if self._derives[j]), None,
-            )
-            if head is None or dst not in self._derives[head]:
-                continue
-            if last + 1 < end:
-                if any(src in self._derives[k] for k in range(last + 1, end)):
-                    return True
-                continue
-            nxt = self._next[t]
-            if nxt is not None and src in self._beliefs[nxt]:
-                return True
-        return False
+        nxt = self._next[t]
+        return dst in self._head[t] and nxt is not None and src in self._head[nxt]
 
 
 def _runs(
@@ -263,13 +293,13 @@ def _block_rows(
 
     An anchor's rows are taken only from a run in a turn that could have
     written its edge (`_Turns.pinned`), and only when every such run is in one
-    record, by session and timestamp: rows keep no closer, so a second record
-    with the same rows may have closed its relay sooner. The same record
-    ingested under a second label gives its runs too.
+    record, by session and timestamp, under one label and with one set of
+    rows: rows keep no closer, so a second record with the same rows may have
+    closed its relay sooner. Copies of the record ingested again are taken.
     """
     starts_by_text: dict[str, list[int]] = {}
     for i, text in enumerate(rows.texts):
-        if rows.starts[i]:
+        if rows.opens[i]:
             starts_by_text.setdefault(text, []).append(i)
     found: dict[int, str] = {}
     vetoed: set[int] = set()
@@ -301,15 +331,20 @@ def _block_rows(
             for i, n in _runs(rows, starts_by_text, whole, capped):
                 pinned = turns.pinned(i, n, capped, src, dst)
                 runs.append((i, min(n, len(head)), notice, pinned))
-        # The record is its session and timestamp: ingesting one transcript
-        # under a second label gives the same rows another source label.
-        records = {rows.keys[i][:2] for i, _, _, pinned in runs if pinned}
-        if not records:
+        takes = [r for r in runs if r[3]]
+        if not takes:
             continue
-        if len(records) > 1:
+        # A record is its session and timestamp. A stretch with the same key
+        # and rows is the record ingested again, and is taken with it. Rows
+        # keep no closer, so when runs in two records fit the edge, or the
+        # record's stretches differ in label or rows, the anchor takes neither.
+        records = {rows.keys[i][:2] for i, _, _, _ in takes}
+        takes = [r for r in runs if rows.keys[r[0]][:2] in records]
+        labels = {rows.keys[i] for i, _, _, _ in takes}
+        bodies = {tuple(rows.texts[slice(*turns.rows_of(i))]) for i, _, _, _ in takes}
+        if len(labels) > 1 or len(bodies) > 1:
             report.anchors_ambiguous += 1
             continue
-        takes = [r for r in runs if rows.keys[r[0]][:2] in records]
         # A later ingest that saw this record stored its speech, and may have
         # written the anchor from it.
         if any((rows.keys[i][0], rows.texts[i]) in rows.late for i, _, _, _ in takes):
@@ -339,7 +374,7 @@ def _select(store: "MemoryStore", report: RelayRowsReport) -> None:
     # A notice row is taken only through an anchor: a sentence after the notice
     # on its line is a row of its own, and only the record shows the line.
     for i, text in enumerate(rows.texts):
-        if rows.starts[i] and i not in vetoed:
+        if rows.opens[i] and i not in vetoed:
             if relay_row_shape(text) == RELAY_ROW_OPENER:
                 shape_at[i] = RELAY_ROW_OPENER
     for i, shape in found.items():
