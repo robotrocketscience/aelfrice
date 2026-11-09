@@ -218,8 +218,9 @@ def p_a185(ctx: Ctx) -> Result:
     n, acc, runs, items = ctx.counts(
         "SELECT COUNT(*), SUM(accepted_at IS NOT NULL), COUNT(DISTINCT created_at), "
         "SUM(json_array_length(items_json)) FROM core_gate_batches WHERE origin='doctor'")
-    return cc.from_count(n, {"batches": n, "accepted": acc, "emit_runs": runs, "items": items},
-                         note="doctor origin batches; a rerun of a session_end batch also writes one")
+    return cc.from_shared_count(
+        n, {"batches": n, "accepted": acc, "emit_runs": runs, "items": items},
+        note="ambiguous: a rerun of a session_end batch also writes a doctor batch")
 
 
 def p_a186(ctx: Ctx) -> Result:
@@ -374,7 +375,7 @@ def p_a198(ctx: Ctx) -> Result:
 def p_a199(ctx: Ctx) -> Result:
     """A session_end batch with no background log row is either a
     continuation-turn label or a background child killed before its log
-    write, and the store can't tell them apart: untraceable when one exists,
+    write, and the store can't tell them apart: ambiguous when one exists,
     silent when every session_end batch has its background row."""
     if not _has_gate(ctx):
         return _no_table()
@@ -384,8 +385,8 @@ def p_a199(ctx: Ctx) -> Result:
     detail = {"session_end_batches": len(se), "session_end_no_bg_row": len(cont),
               "of_them_accepted": sum(1 for b in cont if b[4] is not None)}
     if cont:
-        return cc.Result("untraceable", None, detail,
-                         "ambiguous: a background child killed before its log write looks the same")
+        return cc.ambiguous(len(cont), detail,
+                            "a background child killed before its log write looks the same")
     return cc.silent(0, detail, "every session_end batch has a background log row")
 
 
@@ -502,7 +503,7 @@ def p_a192(ctx: Ctx) -> Result:
         "SELECT COUNT(*), SUM(session_id IS NULL) FROM ingest_log "
         "WHERE source_kind = 'cli_remember'")
     with_sid = n - null_sid
-    return cc.from_count(with_sid, {"lock_ingests": n, "null_session": null_sid,
+    return cc.from_shared_count(with_sid, {"lock_ingests": n, "null_session": null_sid,
                                     "with_session": with_sid},
                          note="ambiguous: an explicit --session-id writes the same row")
 

@@ -981,10 +981,12 @@ def a107(ctx: cc.Ctx) -> cc.Result:
     if not orphans:
         return cc.Result("untraceable", None, detail, "no orphan ring ids")
     if bash_inj > 0:
-        return cc.Result("untraceable", None, detail, "orphans but Bash lane also injected")
+        return cc.ambiguous(max(orphan_fires, 1), detail,
+                            "the Bash lane also injected for this session")
     if not history_ok:
-        return cc.Result("untraceable", None, detail, "orphans but audit rotated past session")
-    return cc.fired(orphan_fires, detail, "orphan ring ids lower bound")
+        return cc.ambiguous(max(orphan_fires, 1), detail,
+                            "UPS rows for this session rotated out of the audit log")
+    return cc.fired(max(orphan_fires, 1), detail, "orphan ring ids lower bound")
 
 
 def _gate_label(r: dict[str, Any]) -> str | None:
@@ -1117,8 +1119,10 @@ def a118(ctx: cc.Ctx) -> cc.Result:
         return cc.silent(0)
     ids: Any = obj.get("session_ids")  # pyright: ignore[reportUnknownMemberType]
     n = len([s for s in ids if isinstance(s, str) and s]) if isinstance(ids, list) else 0  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
-    return (cc.fired if n >= 2 else cc.silent)(n, {"window_ids": n},
-                                               "fired when the window holds 2 or more session ids")
+    note = "fired when the window holds 2 or more session ids"
+    if n >= 2:
+        return cc.fired(n, {"window_ids": n}, note)
+    return cc.silent(0, {"window_ids": n}, note)
 
 
 def a119(ctx: cc.Ctx) -> cc.Result:

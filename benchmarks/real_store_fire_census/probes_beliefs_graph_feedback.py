@@ -244,7 +244,7 @@ def p_a005(ctx: Ctx) -> Result:
 @_store_probe
 def p_a006(ctx: Ctx) -> Result:
     gap = _seq_gap(ctx, "deferred_feedback_queue")
-    return cc.from_count(gap, {
+    return cc.from_shared_count(gap, {
         "queue_rows": _n(ctx, "deferred_feedback_queue",
                          "SELECT COUNT(*) FROM deferred_feedback_queue"),
         "belief_delete_audit_rows": _fb(ctx, "source LIKE 'user_deleted%'"),
@@ -253,7 +253,7 @@ def p_a006(ctx: Ctx) -> Result:
 
 @_store_probe
 def p_a008(ctx: Ctx) -> Result:
-    return cc.from_count(_fb(ctx, "source = 'lock:unlock'"),
+    return cc.from_shared_count(_fb(ctx, "source = 'lock:unlock'"),
                          note="ambiguous: aelf demote on a locked belief writes the same row")
 
 

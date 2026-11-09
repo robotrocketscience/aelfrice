@@ -195,7 +195,7 @@ def _a280(ctx: cc.Ctx) -> cc.Result:
 #   eligible      legacy schema with rows: doctor would migrate it, has not
 #   empty_legacy  legacy schema, zero rows: doctor skips it by design
 #   migrated      origin column present plus unlogged origin='unknown' rows
-# Fired if migrated; silent otherwise (count = eligible).
+# Fired if migrated; silent otherwise (detail eligible = 1 when doctor would migrate).
 
 def _a281(ctx: cc.Ctx) -> cc.Result:
     if not _is_legacy(ctx):
@@ -210,7 +210,7 @@ def _a281(ctx: cc.Ctx) -> cc.Result:
     if not ctx.column_exists("beliefs", "origin"):
         if d["rows"] > 0:
             d["eligible"] = 1
-            return cc.silent(1, d, note="legacy schema with rows; doctor would migrate")
+            return cc.silent(0, d, note="legacy schema with rows; doctor would migrate")
         d["empty_legacy"] = 1
         return cc.silent(0, d, note="legacy schema, zero rows; doctor skips by design")
     d["has_origin"] = 1
@@ -238,8 +238,8 @@ def _a283(ctx: cc.Ctx) -> cc.Result:
     for _, o in rows:
         k = o if o in _ORIGINS else "other"
         detail[k] = detail.get(k, 0) + 1
-    return cc.from_count(len(rows), detail,
-                         note="unlogged non-phantom beliefs; a worker crash before stamping looks the same")
+    return cc.from_shared_count(len(rows), detail,
+                                note="ambiguous: a worker crash before stamping looks the same")
 
 
 # --- A284 aelf store split -------------------------------------------------

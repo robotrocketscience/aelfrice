@@ -234,26 +234,25 @@ def a133(c: Ctx) -> Result:
         retired += 1
         if isinstance(bid, str) and isinstance(content, str) and noise(bid, content):
             matched += 1
-    return cc.from_count(matched, {"retired_unaudited": retired,
+    return cc.from_shared_count(matched, {"retired_unaudited": retired,
                                    "retired_noise_now": matched, "beliefs_rows": n_rows},
                          "ambiguous: another unaudited retire of text the filters reject "
                          "looks the same")
 
 
 def a134(c: Ctx) -> Result:
-    """aelf ingest-transcript writes the same transcript rows as PreCompact,
-    the Stop flush and doctor --backfill-ingest (all call ingest_jsonl with
-    the default label), so no row is its own: untraceable, with the shared
-    rows in detail."""
+    """aelf ingest-transcript: the transcript logger's PreCompact rotation and
+    Stop flush spawn this command, so their rows are its rows. doctor
+    --backfill-ingest calls ingest_jsonl with the same default label, and no
+    column tells its rows apart, so they are counted too and the note says so."""
     if (r := _missing(c, "ingest_log")) is not None:
         return r
     n, n_default, n_sess = c.counts(
         "SELECT COUNT(*), SUM(source_path='transcript'), COUNT(DISTINCT session_id) "
         "FROM ingest_log WHERE source_kind='transcript'")
-    return cc.Result("untraceable", None,
-                     {"transcript_rows": n, "default_label": n_default, "sessions": n_sess},
-                     "shared trace: PreCompact, Stop flush and doctor backfill write the "
-                     "same rows")
+    return cc.from_count(n, {"transcript_rows": n, "default_label": n_default,
+                             "sessions": n_sess},
+                         "includes doctor --backfill-ingest rows, which carry the same label")
 
 
 def a138(c: Ctx) -> Result:
@@ -762,8 +761,8 @@ def a169(c: Ctx) -> Result:
     Trace: unanchored SUPPORTS or SUPERSEDES edges, minus SUPERSEDES rows the
     resolver explains (a RESOLVES edge on the pair or a tiebreaker feedback
     row on the loser). The kept CONTRADICTS writer is reported in detail
-    only. The reverted writers never shipped in a release, so leftover rows
-    are untraceable, not fired.
+    only. Other edge writers can leave the same unanchored shape, so
+    leftover rows are ambiguous, not fired.
     """
     if (r := _missing(c, "edges")) is not None:
         return r
@@ -788,8 +787,8 @@ def a169(c: Ctx) -> Result:
     d["unexplained"] = unexplained
     if unexplained == 0:
         return cc.silent(0, d, note="no reverted-writer shaped edges")
-    return cc.Result("untraceable", unexplained, d,
-                     "unanchored typed edges with no resolver trace")
+    return cc.ambiguous(unexplained, d,
+                        "other edge writers can leave unanchored typed edges with no resolver trace")
 
 
 def a170(c: Ctx) -> Result:
@@ -930,8 +929,10 @@ def a175(c: Ctx) -> Result:
     d["spine_non_transcript"] = c.count(
         _TRANSCRIPT_IDS_CTE + "SELECT COUNT(*) FROM edges x WHERE " + _SPINE_EDGE
         + " AND x.src NOT IN (SELECT id FROM t)")
+    if n > 0 and d["backfill_sentinel"]:
+        return cc.ambiguous(n, d, "ambiguous: the spine backfill ran and writes the same edge")
     if n > 0:
-        return cc.fired(n, d, "ambiguous when backfill_sentinel=1: the backfill writes the same edge")
+        return cc.fired(n, d, "no backfill sentinel in the global dir")
     if d["eligible"] == 0:
         return cc.silent(0, d, "no writer-eligible belief")
     return cc.silent(0, d, "eligible beliefs carry no spine edge")
@@ -1199,4 +1200,4 @@ TRACEABLE: frozenset[str] = frozenset(p.item_id for p in PROBES if p.kind != "un
 UNTRACEABLE: frozenset[str] = frozenset(p.item_id for p in PROBES if p.kind == "untraceable")
 # Store probes that report untraceable, not silent, on an empty store: no
 # row they could join or count exists there.
-UNTRACEABLE_WHEN_EMPTY: frozenset[str] = frozenset({"A134", "A143", "A156", "A171", "A177"})
+UNTRACEABLE_WHEN_EMPTY: frozenset[str] = frozenset({"A143", "A156", "A171", "A177"})

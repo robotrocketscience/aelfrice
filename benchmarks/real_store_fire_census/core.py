@@ -19,19 +19,21 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import re
 import sqlite3
+import stat
 import time
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any, Literal
 
 Kind = Literal["store", "sidecar", "global-log", "untraceable"]
-Status = Literal["fired", "silent", "untraceable", "error"]
+Status = Literal["fired", "ambiguous", "silent", "untraceable", "error"]
 Layout = Literal["repo", "named", "legacy", "global", "user", "none"]
 
 KINDS: frozenset[str] = frozenset({"store", "sidecar", "global-log", "untraceable"})
-STATUSES: frozenset[str] = frozenset({"fired", "silent", "untraceable", "error"})
+STATUSES: frozenset[str] = frozenset({"fired", "ambiguous", "silent", "untraceable", "error"})
 LAYOUTS: frozenset[str] = frozenset({"repo", "named", "legacy", "global", "user", "none"})
 
 LABEL_RE = re.compile(r"^[a-z0-9_.:-]{1,64}$")
@@ -89,6 +91,12 @@ def validate_result(r: Result) -> None:
             raise TypeError("detail value must be int")
     if not isinstance(r.note, str) or not NOTE_RE.match(r.note):  # pyright: ignore[reportUnnecessaryIsInstance]
         raise ValueError("note outside NOTE_RE")
+    if r.status in ("fired", "ambiguous") and (r.count is None or r.count <= 0):
+        raise ValueError("fired and ambiguous need a count above 0")
+    if r.status == "silent" and r.count not in (0, None):
+        raise ValueError("silent needs a count of 0 or null")
+    if r.status == "untraceable" and r.count is not None:
+        raise ValueError("untraceable has a null count")
 
 
 def fired(count: int, detail: dict[str, int] | None = None, note: str = "") -> Result:
@@ -109,6 +117,17 @@ def from_count(count: int, detail: dict[str, int] | None = None, note: str = "")
     return (fired if count > 0 else silent)(count, detail, note)
 
 
+def ambiguous(count: int, detail: dict[str, int] | None = None, note: str = "") -> Result:
+    """The trace is there, but another writer leaves the same rows; the note names it."""
+    return Result("ambiguous", count, detail or {}, note)
+
+
+def from_shared_count(count: int, detail: dict[str, int] | None = None,
+                      note: str = "") -> Result:
+    """`ambiguous` when count > 0, else `silent`: for a trace another writer shares."""
+    return (ambiguous if count > 0 else silent)(count, detail, note)
+
+
 # --- context ---------------------------------------------------------------
 
 
@@ -125,23 +144,53 @@ def has_unfolded_wal(db_file: Path) -> bool:
     return wal.is_file() and wal.stat().st_size > 0
 
 
-def open_ro(db_file: Path) -> sqlite3.Connection:
-    """Open a sqlite file through a `mode=ro&immutable=1` URI, `query_only` on.
+class IdentityMismatchError(Exception):
+    """The db file is not the file its copy token recorded."""
 
-    `mode=ro` alone is not enough to leave a folder untouched: on a
-    WAL-mode database it creates `-wal` and `-shm` beside the file when
-    they are missing and rewrites the `-shm` index when it is present.
-    `immutable=1` takes no locks and opens neither file, so the read
-    changes no byte in the folder. It also ignores the `-wal` file, so a
-    db whose `-wal` still holds frames raises `UnfoldedWalError` instead
-    of returning a partial count. `copy_store` folds the WAL into the
-    copy it makes.
+
+def _dev_fd_dir() -> Path | None:
+    d = Path("/dev/fd")
+    return d if os.name == "posix" and d.is_dir() else None
+
+
+def open_ro(db_file: Path, expect: tuple[int, int] | None = None) -> sqlite3.Connection:
+    """Open a sqlite file read-only through a descriptor this function opened.
+
+    The file is opened with `O_NOFOLLOW`, so a symlink is refused, and
+    `fstat` on that descriptor must show a regular file and, when
+    `expect` is given, the `(st_dev, st_ino)` its copy token recorded.
+    sqlite then opens `/dev/fd/<n>`, the same open file, so a path swapped
+    after the check can't change what is read. Where `/dev/fd` doesn't
+    exist (Windows), sqlite opens the path and the identity is checked
+    again after the open.
+
+    The URI sets `mode=ro&immutable=1` and the connection `query_only`.
+    `mode=ro` alone creates `-wal` and `-shm` beside a WAL-mode database
+    and rewrites the `-shm` index; `immutable=1` opens neither, so the
+    read changes no byte in the folder. It also ignores the `-wal` file,
+    so a db whose `-wal` still holds frames raises `UnfoldedWalError`.
     """
     if has_unfolded_wal(db_file):
         raise UnfoldedWalError("db has a non-empty -wal file")
-    uri = db_file.resolve().as_uri() + "?mode=ro&immutable=1"
-    conn = sqlite3.connect(uri, uri=True, timeout=5.0)
-    conn.execute("PRAGMA query_only = 1")
+    fd = os.open(db_file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise IdentityMismatchError("db is not a regular file")
+        if expect is not None and (st.st_dev, st.st_ino) != expect:
+            raise IdentityMismatchError("db is not the file the copy token recorded")
+        fd_dir = _dev_fd_dir()
+        target = f"file:{fd_dir}/{fd}" if fd_dir else db_file.resolve().as_uri()
+        conn = sqlite3.connect(target + "?mode=ro&immutable=1", uri=True, timeout=5.0)
+        conn.execute("PRAGMA query_only = 1")
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        if fd_dir is None:
+            again = os.stat(db_file, follow_symlinks=False)
+            if (again.st_dev, again.st_ino) != (st.st_dev, st.st_ino):
+                conn.close()
+                raise IdentityMismatchError("db changed while it was opened")
+    finally:
+        os.close(fd)
     return conn
 
 
@@ -161,12 +210,14 @@ class Ctx:
     is_global: bool = False
     db_file: Path | None = None
     layout: Layout = "repo"
+    expect: tuple[int, int] | None = None
     db: sqlite3.Connection | None = None
     _tables: set[str] | None = dataclasses.field(default=None, repr=False)
 
     def open(self) -> None:
-        if self.db is None and self.db_file is not None and self.db_file.is_file():
-            self.db = open_ro(self.db_file)
+        if self.db is None and self.db_file is not None and (
+                self.expect is not None or self.db_file.is_file()):
+            self.db = open_ro(self.db_file, self.expect)
 
     def close(self) -> None:
         if self.db is not None:
@@ -414,13 +465,16 @@ def run_one(p: Probe, ctx: Ctx | None, deadline_s: float = DEFAULT_PROBE_DEADLIN
 def outcome(statuses: Iterable[str]) -> str:
     """Fold per-store statuses into one per-feature outcome.
 
-    `fired` if any store fired, else `silent` if any was silent, else
-    `error` when only errors and untraceable results remain and at least
-    one is an error, else `untraceable`.
+    `fired` if any store fired, else `ambiguous` if any store holds the
+    shared trace, else `silent` if any was silent, else `error` when only
+    errors and untraceable results remain and at least one is an error,
+    else `untraceable`.
     """
     s = set(statuses)
     if "fired" in s:
         return "fired"
+    if "ambiguous" in s:
+        return "ambiguous"
     if "silent" in s:
         return "silent"
     if "error" in s:

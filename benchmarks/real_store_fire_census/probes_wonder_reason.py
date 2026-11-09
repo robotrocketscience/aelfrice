@@ -232,8 +232,8 @@ def a312(ctx: cc.Ctx) -> cc.Result:
         return cc.silent(0)
     used, harmful = ctx.counts(
         "SELECT SUM(valence > 0), SUM(valence < 0) FROM feedback_history WHERE source = 'user'")
-    return cc.from_count(used, {"used": used, "harmful": harmful},
-                         "ambiguous: any aelf feedback with default source user")
+    return cc.from_shared_count(used, {"used": used, "harmful": harmful},
+                                "ambiguous: any aelf feedback with default source user")
 
 
 def a316(ctx: cc.Ctx) -> cc.Result:
