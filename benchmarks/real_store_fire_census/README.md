@@ -121,8 +121,8 @@ sorted order of their paths. Each probe entry has these fields:
   probe has one entry, `_`.
 
 The labels file is written only when you pass `--labels-out` without
-`--dry-run`, with mode `0600`. Don't commit the labels file or paste it into
-an issue.
+`--dry-run`. The runner writes both output files with mode `0600`. Don't
+commit the labels file or paste it into an issue.
 
 ## How the runner keeps stores unchanged
 
