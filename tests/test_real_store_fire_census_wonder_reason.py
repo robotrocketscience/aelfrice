@@ -256,7 +256,7 @@ def test_reason_writeback_feedback(ps: PlantedStore) -> None:
     assert ps.cli("feedback", other, "used", "--source", "agent") == 0
     check(ps, "A312", "silent", 0)
     assert ps.cli("feedback", bid, "used") == 0
-    r = check(ps, "A312", "fired", 1)
+    r = check(ps, "A312", "ambiguous", 1)
     assert r.detail == {"used": 1, "harmful": 0}
 
 

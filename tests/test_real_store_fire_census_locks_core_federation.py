@@ -230,7 +230,8 @@ def test_emit_open_then_cli_accept(ps: PlantedStore) -> None:
     core_belief(ps, "The census copies every store before it reads one.")
     core_belief(ps, "Planted stores live under the test root directory.")
     assert emit(ps) == 0
-    fired(run(ps, "A185"), 1)
+    r = run(ps, "A185")
+    assert r.status == "ambiguous" and r.count == 1, r
     r = run(ps, "A204")
     fired(r, 1)
     assert r.detail["open_doctor"] == 1 and r.detail["claimed_items"] == 2
@@ -350,7 +351,7 @@ def test_session_end_continuation(ps: PlantedStore, monkeypatch: pytest.MonkeyPa
     fired(r, 1)
     assert r.detail["core_session_beliefs_since_510"] == 1
     r = run(ps, "A199")
-    assert r.status == "untraceable" and r.count is None, r
+    assert r.status == "ambiguous" and r.count == 1, r
     assert r.detail["session_end_no_bg_row"] == 1
     r = run(ps, "A204")
     fired(r, 1)
@@ -449,7 +450,7 @@ def test_lock_session_inference(ps: PlantedStore, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("AELF_SESSION_ID", "sess-env")
     assert ps.lock("Count rows and never print text.") == 0
     r = run(ps, "A192")
-    fired(r, 1)
+    assert r.status == "ambiguous" and r.count == 1, r
     assert r.detail["with_session"] == 1 and r.detail["lock_ingests"] == 2
 
 

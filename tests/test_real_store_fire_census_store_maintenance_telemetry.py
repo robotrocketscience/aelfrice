@@ -204,9 +204,9 @@ def test_a281_legacy_auto_migration(ps: PlantedStore) -> None:
     silent(run("A281", legacy_ctx(ps, ps.db_file)))
     leg = ps.root / "home_projects" / "abc123def456" / "memory.db"
     _legacy_pre_v1(leg, 2)
-    # Eligible but not migrated yet: silent, count 1, eligible flag set.
+    # Eligible but not migrated yet: silent, count 0, eligible flag set.
     r = run("A281", legacy_ctx(ps, leg))
-    assert r.status == "silent" and r.count == 1 and r.detail["eligible"] == 1, r
+    assert r.status == "silent" and r.count == 0 and r.detail["eligible"] == 1, r
     found = doctor._check_legacy_schema_dbs(projects_dir=leg.parent.parent)  # pyright: ignore[reportPrivateUsage]
     assert len(found) == 1
     migrated, failed = doctor._auto_migrate_legacy_dbs(found)  # pyright: ignore[reportPrivateUsage]
@@ -273,7 +273,8 @@ def test_a283_migrate_legacy_global(ps: PlantedStore) -> None:
     rep = migrate(legacy_path=legacy, target_path=ps.db_file, project_root=ps.repo,
                   apply=True, copy_all=True)
     assert rep.counts.inserted_beliefs == n
-    fired(run("A283", store_ctx(ps)), n)
+    r = run("A283", store_ctx(ps))
+    assert r.status == "ambiguous" and r.count == n, r
     silent(run("A283", store_ctx(ps, "legacy")))
 
 

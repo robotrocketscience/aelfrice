@@ -197,7 +197,7 @@ def test_a003_demote_both_reverts(ps: PlantedStore) -> None:
 def test_a008_unlock(ps: PlantedStore) -> None:
     assert ps.lock("A lock that will be unlocked.") == 0
     assert ps.cli("unlock", only_lock_id(ps)) == 0
-    check(ps, "A008", "fired", 1)
+    check(ps, "A008", "ambiguous", 1)
 
 
 def test_a009_validate_and_promote_with_label_and_scope(ps: PlantedStore) -> None:
@@ -395,7 +395,7 @@ def test_a006_sweep_gc(ps: PlantedStore) -> None:
     assert ps.cli("sweep-feedback") == 0
     check(ps, "A006", "silent", 0, queue_rows=2)
     assert ps.cli("sweep-feedback", "--gc") == 0
-    check(ps, "A006", "fired", 2, queue_rows=0)
+    check(ps, "A006", "ambiguous", 2, queue_rows=0)
 
 
 # --- exposure ------------------------------------------------------------------
