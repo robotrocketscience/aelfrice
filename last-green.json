@@ -1,32 +1,32 @@
 {
  "canary": {
-  "attempt": 2,
-  "date": "2026-11-08",
-  "path": "runs/2026-11-08-42465396640-a2",
-  "run_id": 42465396640,
-  "sha": "3044bbd809752cce6c59e23cf48bf6371ecf08b8"
+  "attempt": 1,
+  "date": "2026-11-09",
+  "path": "runs/2026-11-09-42596400743-a1",
+  "run_id": 42596400743,
+  "sha": "c62c32cff6f2aeb17dff221761f6603babf442d0"
  },
  "legs": {
   "3.12": {
-   "attempt": 2,
-   "date": "2026-11-08",
-   "path": "runs/2026-11-08-42465396640-a2",
-   "run_id": 42465396640,
-   "sha": "3044bbd809752cce6c59e23cf48bf6371ecf08b8"
+   "attempt": 1,
+   "date": "2026-11-09",
+   "path": "runs/2026-11-09-42596400743-a1",
+   "run_id": 42596400743,
+   "sha": "c62c32cff6f2aeb17dff221761f6603babf442d0"
   },
   "3.13": {
-   "attempt": 2,
-   "date": "2026-11-08",
-   "path": "runs/2026-11-08-42465396640-a2",
-   "run_id": 42465396640,
-   "sha": "3044bbd809752cce6c59e23cf48bf6371ecf08b8"
+   "attempt": 1,
+   "date": "2026-11-09",
+   "path": "runs/2026-11-09-42596400743-a1",
+   "run_id": 42596400743,
+   "sha": "c62c32cff6f2aeb17dff221761f6603babf442d0"
   },
   "3.14": {
-   "attempt": 2,
-   "date": "2026-11-08",
-   "path": "runs/2026-11-08-42465396640-a2",
-   "run_id": 42465396640,
-   "sha": "3044bbd809752cce6c59e23cf48bf6371ecf08b8"
+   "attempt": 1,
+   "date": "2026-11-09",
+   "path": "runs/2026-11-09-42596400743-a1",
+   "run_id": 42596400743,
+   "sha": "c62c32cff6f2aeb17dff221761f6603babf442d0"
   },
   "macos-3.13": {
    "attempt": 1,
