@@ -221,8 +221,8 @@ def test_output_files_inside_a_store_or_the_repo_are_refused(planted_copy: Path)
     assert runner.main([str(planted_copy), "--labels-out",
                         str(planted_copy / "labels.json")]) == 2
     assert runner.main([str(planted_copy), "--dry-run", "--labels-out",
-                        str(runner.REPO_ROOT / "labels.json")]) == 2
-    assert not (runner.REPO_ROOT / "labels.json").exists()
+                        str(runner.REPO_ROOT / "benchmarks" / "census-labels-refusal-test.json")]) == 2
+    assert not (runner.REPO_ROOT / "benchmarks" / "census-labels-refusal-test.json").exists()
 
 
 def test_only_rejects_an_unknown_id(planted_copy: Path) -> None:
@@ -230,7 +230,7 @@ def test_only_rejects_an_unknown_id(planted_copy: Path) -> None:
 
 
 def test_copy_store_refuses_a_destination_in_the_repo(planted_copy: Path) -> None:
-    dest = runner.REPO_ROOT / "census-copy-refusal-test"
+    dest = runner.REPO_ROOT / "benchmarks" / "census-copy-refusal-test"
     assert copy_store.main([str(planted_copy), str(dest)]) == 2
     assert not dest.exists()
 
