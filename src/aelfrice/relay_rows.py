@@ -79,9 +79,14 @@ from before #1364, which chained on the last belief a turn inserted, in a
 turn another writer's row split, in a bulk ingest's shared timestamp, in a
 record ingested under a second label, and in a turn ingested again before
 its next turn was logged. Two files of one session ingested under one label
-read as one transcript. One record ingested twice, unclosed and then closed,
-reads as two copies of the unclosed one, and its words after the closer are
-taken.
+read as one transcript.
+
+The rule can retire typed words in these shapes: two distinct records that
+share a session, timestamp and source label; a record that changed between
+ingests, from unclosed to closed or into a form #1875 keeps whole; two files
+of one session ingested under one label; and rows an install wrote with its
+clock set before the cutoff. The dry run lists every candidate before any
+apply, and `restore_relay_rows` undoes a pass.
 
 A belief is retired only when every `ingest_log` row that derived or
 corroborated it is a relay row, and `scheduled_prompts.split_by_evidence`
