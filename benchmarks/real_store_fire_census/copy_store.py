@@ -4,163 +4,146 @@ Usage:
 
     uv run python -m benchmarks.real_store_fire_census.copy_store SRC DEST [--dry-run]
 
-SRC is a store folder, such as `<repo>/.git/aelfrice`, or a copy source
-such as `~/.aelfrice` whose global-log files the census reads even when it
-holds no `memory.db`. DEST must not exist yet, and must not be in this
-repository, in SRC, or in a live store location (`guard.live_reason`).
+SRC is a store folder, such as `<repo>/.git/aelfrice`, or `~/.aelfrice`,
+whose global-log files the census reads even when it holds no
+`memory.db`. DEST must not exist yet, and must not be in this repository,
+in SRC, or in a live store location (`guard.live_reason`).
 
-The helper never writes under SRC. It first reads
-each file under SRC as plain bytes into a temporary folder beside DEST:
-`memory.db`, `memory.db-wal`, the JSONL sidecars and any `stores/<name>/`
-named stores. It leaves `-shm` files out, because a `-shm` file is an
-index that sqlite rebuilds from the WAL, and a copy of a live one can be
-stale. It records the size, modification time and inode of every
-`memory.db` and `-wal` before and after the read, and when any of them
-changed, a writer was active, so it discards the copy and tries again.
-When 20 byte copies in a row meet a writer, it copies each db through
-sqlite's backup API instead, from a `mode=ro` connection opened only while
-the source's `-wal` and `-shm` exist, so the read creates no file beside
-the store; like any reader, that connection updates the `-shm` index the
-writer keeps, and it never writes the db or the `-wal`. Then, in the copy
-only, it checkpoints each `-wal` into its db file and
-runs `PRAGMA quick_check`, and renames the folder to DEST. sqlite removes
-the copy's `-wal` when that connection closes, which lets the census read
-the copy with `immutable=1`.
+The helper never opens SRC with sqlite and never writes under it. It walks
+SRC with `os.fwalk` and opens every file with `O_NOFOLLOW`, so it follows no
+symlink, and it refuses a SRC that holds one. It reads every file except
+`-shm` (an index sqlite rebuilds) as plain bytes, then reads each
+`memory.db` and `-wal` a second time and compares the bytes and the size,
+mtime and inode. When anything differs, a writer was active, and the
+attempt is thrown away. After 20 such attempts it exits 1 and asks you to
+close the sessions using the store. Any other error ends the run at once.
 
-SRC is refused when it, or anything under it, is a symlink: following one
-could read or name a file outside the store. Output is counts only, and
-messages carry no path. Exit codes: 0 on success, 1 when no attempt got a
-quiet, sound copy, 2 on a usage error.
+It creates DEST itself and works in a fresh `mkdtemp` folder inside it, so
+it never deletes a path it didn't create. In the copy only, it checkpoints
+each `-wal` into its db, runs `PRAGMA quick_check`, and then writes the
+copy token (`copy_token`), which the census runner requires. Output is
+counts only, and messages carry no path. Exit codes: 0 on success, 1 when
+no attempt got a quiet, sound copy, 2 on a usage error.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
 import sqlite3
+import stat
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-from . import guard
+from . import copy_token, guard
 from .core import has_unfolded_wal
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BYTE_ATTEMPTS = 20
-BACKUP_ATTEMPTS = 30
-RETRY_PAUSE_S = 0.02
+ATTEMPTS = 20
+RETRY_PAUSE_S = 0.1
 CHUNK = 1 << 20
+NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
-Stamp = dict[str, tuple[int, int, int] | None]
+DbState = dict[str, tuple[int, int, int, str]]
 
 
-def _tree(src: Path) -> tuple[list[Path], list[Path], bool]:
+class BusyError(Exception):
+    """A db file changed while it was read."""
+
+
+class UnsafeSourceError(Exception):
+    """The source holds a symlink or something that isn't a file or folder."""
+
+
+def _walk(src: Path) -> tuple[list[Path], list[Path], bool]:
     """(files, dirs, has_symlink) under src, relative paths, no link followed."""
     files: list[Path] = []
     dirs: list[Path] = []
-    link = src.is_symlink()
-    for root, dnames, fnames in os.walk(src, followlinks=False):
-        r = Path(root)
-        for d in dnames:
-            if (r / d).is_symlink():
+    link = False
+    for dirpath, dirnames, filenames, dirfd in os.fwalk(src, follow_symlinks=False):
+        here = Path(dirpath).relative_to(src)
+        for name in dirnames:
+            if stat.S_ISLNK(os.stat(name, dir_fd=dirfd, follow_symlinks=False).st_mode):
                 link = True
-            dirs.append((r / d).relative_to(src))
-        for f in fnames:
-            if (r / f).is_symlink():
+            else:
+                dirs.append(here / name)
+        for name in filenames:
+            mode = os.stat(name, dir_fd=dirfd, follow_symlinks=False).st_mode
+            if stat.S_ISLNK(mode):
                 link = True
-            files.append((r / f).relative_to(src))
+            elif stat.S_ISREG(mode):
+                files.append(here / name)
     return sorted(files), sorted(dirs), link
 
 
 def _is_db_file(rel: Path) -> bool:
-    return rel.name == "memory.db" or rel.name == "memory.db-wal"
+    return rel.name in ("memory.db", "memory.db-wal")
 
 
-def _stamp(src: Path, files: list[Path]) -> Stamp:
-    """size, mtime_ns and inode of every db and -wal file (None when missing)."""
-    names = {f for f in files if _is_db_file(f)}
-    names |= {f.with_name("memory.db-wal") for f in files if f.name == "memory.db"}
-    out: Stamp = {}
-    for rel in sorted(names):
+def _read(src: Path, rel: Path, out: Path | None) -> tuple[tuple[int, int, int], str]:
+    """Read one source file with O_NOFOLLOW; copy it to out when given.
+
+    Returns ((size, mtime_ns, ino) from fstat, sha256 of the bytes read).
+    """
+    fd = os.open(src / rel, os.O_RDONLY | NOFOLLOW)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise UnsafeSourceError("not a regular file")
+        h = hashlib.sha256()
+        dst = None
+        if out is not None:
+            dst = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW, 0o600)
         try:
-            st = os.stat(src / rel, follow_symlinks=False)
-            out[str(rel)] = (st.st_size, st.st_mtime_ns, st.st_ino)
-        except FileNotFoundError:
-            out[str(rel)] = None
+            while True:
+                buf = os.read(fd, CHUNK)
+                if not buf:
+                    break
+                h.update(buf)
+                if dst is not None:
+                    os.write(dst, buf)
+        finally:
+            if dst is not None:
+                os.close(dst)
+        return (st.st_size, st.st_mtime_ns, st.st_ino), h.hexdigest()
+    finally:
+        os.close(fd)
+
+
+def _db_state(src: Path, files: list[Path], tmp: Path | None) -> DbState:
+    out: DbState = {}
+    for rel in files:
+        if _is_db_file(rel):
+            try:
+                meta, digest = _read(src, rel, tmp / rel if tmp is not None else None)
+            except FileNotFoundError:
+                raise BusyError("a db file vanished while it was read") from None
+            out[rel.as_posix()] = (*meta, digest)
     return out
 
 
-def _copy_bytes(src: Path, dst: Path) -> None:
-    """Read src as plain bytes into a new dst; src is opened read-only."""
-    with src.open("rb") as reader, dst.open("xb") as writer:
-        while True:
-            buf = reader.read(CHUNK)
-            if not buf:
-                break
-            writer.write(buf)
-
-
-def _copy_once(src: Path, tmp: Path) -> bool:
-    """One copy attempt into tmp. False when a writer changed a db file meanwhile.
-
-    Sidecars are copied first; the db files last and back to back, so the
-    window the size, mtime and inode check has to cover is as short as it
-    can be.
-    """
-    files, dirs, _link = _tree(src)
-    tmp.mkdir(parents=True)
+def _copy_once(src: Path, tmp: Path) -> None:
+    """One attempt into tmp. Raises BusyError when a writer changed a db file."""
+    files, dirs, link = _walk(src)
+    if link:
+        raise UnsafeSourceError("the source holds a symlink")
     for d in dirs:
         (tmp / d).mkdir(parents=True, exist_ok=True)
     for rel in files:
         if not rel.name.endswith("-shm") and not _is_db_file(rel):
-            _copy_bytes(src / rel, tmp / rel)
-    before = _stamp(src, files)
-    for rel in sorted(before):
-        if before[rel] is None:
-            continue
-        try:
-            _copy_bytes(src / rel, tmp / rel)
-        except FileNotFoundError:
-            return False  # the writer checkpointed and removed a -wal mid-copy
-    return _stamp(src, files) == before
-
-
-def _backup_db(src_db: Path, dst_db: Path) -> bool:
-    """Copy a db in use through sqlite's backup API, from a `mode=ro` connection.
-
-    Only while the source's `-wal` exists, so the read creates no file
-    beside it. The connection never writes the db or the `-wal`; as any
-    reader does, it updates the `-shm` index the writer keeps.
-    """
-    if not (src_db.with_name(src_db.name + "-wal").is_file()
-            and src_db.with_name(src_db.name + "-shm").is_file()):
-        return False
-    s = sqlite3.connect(src_db.resolve().as_uri() + "?mode=ro", uri=True, timeout=5.0)
-    try:
-        d = sqlite3.connect(str(dst_db))
-        try:
-            s.backup(d)
-        finally:
-            d.close()
-    finally:
-        s.close()
-    return True
-
-
-def _backup_once(src: Path, tmp: Path) -> bool:
-    """A copy attempt that reads the dbs through the backup API."""
-    files, dirs, _link = _tree(src)
-    tmp.mkdir(parents=True)
-    for d in dirs:
-        (tmp / d).mkdir(parents=True, exist_ok=True)
-    for rel in files:
-        if not rel.name.endswith("-shm") and not _is_db_file(rel):
-            _copy_bytes(src / rel, tmp / rel)
-    for rel in files:
-        if rel.name == "memory.db" and not _backup_db(src / rel, tmp / rel):
-            return False
-    return True
+            _read(src, rel, tmp / rel)
+    first = _db_state(src, files, tmp)
+    files_again, _dirs, link = _walk(src)
+    if link:
+        raise UnsafeSourceError("the source holds a symlink")
+    if [f for f in files_again if _is_db_file(f)] != [f for f in files if _is_db_file(f)]:
+        raise BusyError("db files appeared or vanished")
+    if _db_state(src, files, None) != first:
+        raise BusyError("a db file changed while it was read")
 
 
 def _fold_and_check(db_file: Path) -> bool:
@@ -175,55 +158,66 @@ def _fold_and_check(db_file: Path) -> bool:
 
 
 def copy_store(src: Path, dest: Path) -> dict[str, int]:
-    """Copy src to dest. Returns integer counts; quick_check_ok is 0 on failure.
+    """Copy src into dest, which this call creates. Returns integer counts.
 
-    Byte copies come first, since they never open the source. When the
-    store never holds still for one, the backup API takes over.
+    quick_check_ok is 0 when every attempt met a writer or the copy wasn't
+    sound; dest is then removed again, since this call made it.
     """
-    report = {"attempts": 0, "quick_check_ok": 0, "dbs": 0, "busy": 0, "errors": 0,
-              "via_backup": 0}
-    tmp = dest.with_name(dest.name + ".partial")
-    for attempt in range(1, BYTE_ATTEMPTS + BACKUP_ATTEMPTS + 1):
-        report["attempts"] = attempt
-        backup = attempt > BYTE_ATTEMPTS
-        shutil.rmtree(tmp, ignore_errors=True)
-        try:
-            if not (_backup_once if backup else _copy_once)(src, tmp):
+    report = {"attempts": 0, "quick_check_ok": 0, "dbs": 0, "busy": 0}
+    os.mkdir(dest)
+    try:
+        for attempt in range(1, ATTEMPTS + 1):
+            report["attempts"] = attempt
+            tmp = Path(tempfile.mkdtemp(dir=dest, prefix=".attempt-"))
+            try:
+                _copy_once(src, tmp)
+            except BusyError:
                 report["busy"] += 1
-                continue
-            dbs = sorted(p for p in tmp.rglob("memory.db") if p.is_file())
-            if all(_fold_and_check(db) for db in dbs):
-                os.replace(tmp, dest)
-                report["quick_check_ok"] = 1
-                report["dbs"] = len(dbs)
-                report["via_backup"] = int(backup)
-                break
-            report["errors"] += 1
-        except (OSError, shutil.Error, sqlite3.Error):
-            report["errors"] += 1
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-            if not report["quick_check_ok"]:
+                shutil.rmtree(tmp)
                 time.sleep(RETRY_PAUSE_S)
-    if report["quick_check_ok"]:
-        files, _dirs, _link = _tree(dest)
-        report["files"] = len(files)
-        report["bytes"] = sum((dest / f).stat().st_size for f in files)
+                continue
+            except BaseException:
+                shutil.rmtree(tmp)
+                raise
+            dbs = sorted(p for p in tmp.rglob("memory.db") if p.is_file())
+            sound = all(_fold_and_check(db) for db in dbs)
+            if not sound:
+                shutil.rmtree(tmp)
+                break
+            for entry in sorted(tmp.iterdir()):
+                os.rename(entry, dest / entry.name)
+            os.rmdir(tmp)
+            report.update(copy_token.write_token(dest))
+            report["quick_check_ok"] = 1
+            report["dbs"] = len(dbs)
+            break
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    if not report["quick_check_ok"]:
+        os.rmdir(dest)
+        return report
+    files, _dirs, _link = _walk(dest)
+    report["files"] = len(files)
+    report["bytes"] = sum((dest / f).stat().st_size for f in files)
     return report
 
 
 def _usage_problem(src: Path, dest: Path) -> str:
     if not src.is_dir() or src.is_symlink():
         return "SRC is not a folder"
-    if _tree(src)[2]:
+    if _walk(src)[2]:
         return "SRC holds a symlink; copy its target by hand"
-    if dest.exists() or dest.is_symlink():
+    if os.path.lexists(dest):
         return "DEST already exists"
-    if guard.inside(dest, REPO_ROOT):
+    parent = Path(os.path.abspath(dest)).parent
+    if not parent.is_dir():
+        return "DEST's folder doesn't exist"
+    if guard.inside(parent, REPO_ROOT):
         return "DEST is inside the repository"
-    if guard.inside(dest, src):
+    if guard.inside(parent, src):
         return "DEST is inside SRC"
-    why = guard.live_reason(dest)
+    why = guard.live_reason(parent)
     if why:
         return f"DEST is in a live store location ({why})"
     return ""
@@ -231,7 +225,7 @@ def _usage_problem(src: Path, dest: Path) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m benchmarks.real_store_fire_census.copy_store")
-    ap.add_argument("src", type=Path, help="store folder that holds memory.db")
+    ap.add_argument("src", type=Path, help="store folder to copy")
     ap.add_argument("dest", type=Path, help="new folder for the copy, outside this repo")
     ap.add_argument("--dry-run", action="store_true", help="count what would be copied")
     a = ap.parse_args(argv)
@@ -242,13 +236,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"copy_store: {problem}", file=sys.stderr)
         return 2
     if a.dry_run:
-        files, _dirs, _link = _tree(src)
-        size = 0
-        for f in files:
-            try:
-                size += (src / f).stat().st_size
-            except OSError:
-                pass
+        files, _dirs, _link = _walk(src)
+        size = sum(os.stat(src / f, follow_symlinks=False).st_size for f in files)
         print(json.dumps({"dry_run": True, "files": len(files), "bytes": size}, sort_keys=True))
         return 0
     try:
@@ -258,8 +247,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(json.dumps(report, sort_keys=True))
     if not report["quick_check_ok"]:
-        print("copy_store: no attempt got a quiet, sound copy; retry when the store is idle",
-              file=sys.stderr)
+        if report["busy"] == report["attempts"]:
+            print("copy_store: the store kept changing while it was read; close the sessions "
+                  "using it and run copy_store again", file=sys.stderr)
+        else:
+            print("copy_store: the copied db failed PRAGMA quick_check", file=sys.stderr)
         return 1
     return 0
 
