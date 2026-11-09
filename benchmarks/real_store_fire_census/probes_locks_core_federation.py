@@ -372,15 +372,21 @@ def p_a198(ctx: Ctx) -> Result:
 
 
 def p_a199(ctx: Ctx) -> Result:
+    """A session_end batch with no background log row is either a
+    continuation-turn label or a background child killed before its log
+    write, and the store can't tell them apart: untraceable when one exists,
+    silent when every session_end batch has its background row."""
     if not _has_gate(ctx):
         return _no_table()
     logged = _bg_batch_ids(ctx)
     se = _batches(ctx, "origin='session_end'")
     cont = [b for b in se if b[0] not in logged]
-    return cc.from_count(len(cont), {
-        "session_end_no_bg_row": len(cont),
-        "of_them_accepted": sum(1 for b in cont if b[4] is not None)},
-        note="a background child killed before its log write looks the same")
+    detail = {"session_end_batches": len(se), "session_end_no_bg_row": len(cont),
+              "of_them_accepted": sum(1 for b in cont if b[4] is not None)}
+    if cont:
+        return cc.Result("untraceable", None, detail,
+                         "ambiguous: a background child killed before its log write looks the same")
+    return cc.silent(0, detail, "every session_end batch has a background log row")
 
 
 def p_a204(ctx: Ctx) -> Result:
@@ -487,14 +493,18 @@ def p_a209(ctx: Ctx) -> Result:
 
 
 def p_a192(ctx: Ctx) -> Result:
+    """aelf lock fills ingest_log.session_id from $AELF_SESSION_ID when no
+    --session-id is passed. Count lock rows that carry a session id; a lock
+    with neither leaves NULL."""
     if not ctx.table_exists("ingest_log"):
         return cc.silent(0, note="no ingest_log table")
     n, null_sid = ctx.counts(
         "SELECT COUNT(*), SUM(session_id IS NULL) FROM ingest_log "
         "WHERE source_kind = 'cli_remember'")
-    return cc.from_count(n, {"lock_ingests": n, "null_session": null_sid,
-                             "with_session": n - null_sid},
-                         note="aelf lock rows only; explicit id and env inference not separable")
+    with_sid = n - null_sid
+    return cc.from_count(with_sid, {"lock_ingests": n, "null_session": null_sid,
+                                    "with_session": with_sid},
+                         note="ambiguous: an explicit --session-id writes the same row")
 
 
 _SUFFIX_KEYS = ("rows", "rows_post_ship", "directives", "directives_post", "window_spec",
