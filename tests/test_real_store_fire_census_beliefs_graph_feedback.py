@@ -371,7 +371,8 @@ def test_a014_enqueue_on_retrieve(ps: PlantedStore, monkeypatch: pytest.MonkeyPa
 
 def test_a014_silent_with_enqueue_off(ps: PlantedStore) -> None:
     ps.belief("The census tool reads sqlite copies in read-only mode.")
-    assert len(retrieve(ps.open(), "census sqlite copies")) == 1
+    hits = retrieve(ps.open(), "census sqlite copies")
+    assert len(hits) == 1
     check(ps, "A014", "silent", 0, total=0)
 
 
@@ -406,7 +407,8 @@ def test_a030_exposure_audit_only(ps: PlantedStore) -> None:
     b = ps.belief("Beta belief linked to alpha.")
     ps.belief("Gamma belief that nothing touches.")
     ps.edge(a, b, "SUPPORTS")
-    assert record_retrieval(ps.open(), [ps.open().get_belief(a)]) == 1
+    recorded = record_retrieval(ps.open(), [ps.open().get_belief(a)])
+    assert recorded == 1
     # the default mode records exposure but moves no posterior
     check(ps, "A030", "silent", 0, hook_rows_post_4_0_0=1, prop_hook_post=0,
           hook_only_beliefs=1, at_prior=1)
@@ -420,7 +422,8 @@ def test_a030_legacy_mode_bumps_and_propagates(ps: PlantedStore,
     b = ps.belief("Beta belief linked to alpha.")
     ps.belief("Gamma belief that nothing touches.")
     ps.edge(a, b, "SUPPORTS")
-    assert record_retrieval(ps.open(), [ps.open().get_belief(a)]) == 1
+    recorded = record_retrieval(ps.open(), [ps.open().get_belief(a)])
+    assert recorded == 1
     check(ps, "A030", "fired", 2, prop_hook_post=1, bumped_incl_post_rows=1)
 
 

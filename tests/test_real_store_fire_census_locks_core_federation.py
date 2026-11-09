@@ -475,7 +475,8 @@ def test_time_boxed_lock_and_sweep(ps: PlantedStore) -> None:
     r = run(ps, "A212")
     fired(r, 1)
     assert r.detail["windowed_active_locked"] == 1
-    assert ps.open().sweep_expired_locks(now="2999-01-01T00:00:00+00:00") == 1
+    swept = ps.open().sweep_expired_locks(now="2999-01-01T00:00:00+00:00")
+    assert swept == 1
     r = run(ps, "A212")
     fired(r, 1)
     assert r.detail["expire_rows"] == 1 and r.detail["sweep_marker"] == 1

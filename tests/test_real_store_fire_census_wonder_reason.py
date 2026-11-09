@@ -166,8 +166,9 @@ def test_auto_wonder_contradiction_axis(ps: PlantedStore) -> None:
 
     anchor = ps.belief("The queue drains in under a minute.")
     gen = claim_generator("contradiction_resolution", "Claim about the queue.")
-    assert wonder_ingest(ps.open(), [phantom([anchor], gen, "Claim about the queue.")],
-                         session_id="s1").inserted == 1
+    res = wonder_ingest(ps.open(), [phantom([anchor], gen, "Claim about the queue.")],
+                        session_id="s1")
+    assert res.inserted == 1
     r = check(ps, "A329", "fired", 1)
     assert r.detail["auto_axis"] == 1 and r.detail["sub_axis"] == 0
 
@@ -268,10 +269,11 @@ def test_auto_promote_on_user_evidence(ps: PlantedStore) -> None:
 
     anchor = ps.belief("Anchor about the staging database.")
     text = "The staging database is rebuilt every night."
-    assert wonder_ingest(ps.open(), [
-        phantom([anchor], DISPATCH + "domain_research", text)]).inserted == 1
-    assert wonder_ingest(ps.open(), [
-        phantom([anchor], "bfs+wonder_consolidation", "Manual promote phantom.")]).inserted == 1
+    res = wonder_ingest(ps.open(), [phantom([anchor], DISPATCH + "domain_research", text)])
+    assert res.inserted == 1
+    res = wonder_ingest(ps.open(), [
+        phantom([anchor], "bfs+wonder_consolidation", "Manual promote phantom.")])
+    assert res.inserted == 1
     manual = _conn(ps).execute(
         "SELECT id FROM beliefs WHERE content = 'Manual promote phantom.'").fetchone()[0]
     assert ps.cli("promote", manual) == 0
@@ -371,7 +373,7 @@ def _run(ctx: cc.Ctx, item_id: str) -> cc.Result:
 
 PRE_TYPE_DDL = [
     "CREATE TABLE beliefs (id TEXT PRIMARY KEY, content TEXT, belief_type TEXT,"
-    " beta_param REAL, locked INTEGER, created_at TEXT)",
+    + " beta_param REAL, locked INTEGER, created_at TEXT)",
     "CREATE TABLE edges (from_id TEXT, to_id TEXT, edge_type TEXT)",
 ]
 
@@ -396,12 +398,12 @@ def test_pre_type_schema_reports_silent_with_schema_flags(tmp_path: Path) -> Non
 
 NO_VALID_TO_DDL = [
     "CREATE TABLE beliefs (id TEXT PRIMARY KEY, content TEXT, type TEXT, origin TEXT,"
-    " alpha REAL, beta REAL, created_at TEXT)",
+    + " alpha REAL, beta REAL, created_at TEXT)",
     "CREATE TABLE edges (src TEXT, dst TEXT, type TEXT, weight REAL)",
     "CREATE TABLE belief_corroborations (id INTEGER PRIMARY KEY, belief_id TEXT,"
-    " ingested_at TEXT, source_type TEXT, session_id TEXT, source_path_hash TEXT)",
+    + " ingested_at TEXT, source_type TEXT, session_id TEXT, source_path_hash TEXT)",
     "CREATE TABLE feedback_history (id INTEGER PRIMARY KEY, belief_id TEXT, valence REAL,"
-    " source TEXT, created_at TEXT)",
+    + " source TEXT, created_at TEXT)",
 ]
 
 
