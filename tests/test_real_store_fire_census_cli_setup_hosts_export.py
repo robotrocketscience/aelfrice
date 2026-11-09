@@ -11,6 +11,7 @@ puts a stub `uv` that exits 0 first on PATH, so no real install runs.
 from __future__ import annotations
 
 import argparse
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -177,6 +178,10 @@ def test_a068_project_warm_sentinel(ps: PlantedStore) -> None:
     from aelfrice.store import MemoryStore
     work = (ps.root / "workspace").resolve()
     work.mkdir(parents=True)
+    # tmp_path sits under /tmp on Linux, which the default deny list refuses.
+    ps.global_dir.mkdir(parents=True, exist_ok=True)
+    (ps.global_dir / "config.json").write_text(
+        json.dumps({"project_warm": {"deny_globs": []}}), encoding="utf-8")
     pid = project_warm._project_id(work)  # pyright: ignore[reportPrivateUsage]
     legacy_db = ps.global_dir / "projects" / pid / "memory.db"
     legacy_db.parent.mkdir(parents=True)
