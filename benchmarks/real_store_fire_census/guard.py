@@ -78,6 +78,8 @@ def account_homes() -> list[Path]:
         import pwd
         homes.append(Path(pwd.getpwuid(os.getuid()).pw_dir))
     except (ImportError, KeyError, AttributeError):
+        # No pwd module (Windows) or no passwd entry for this uid: $HOME is
+        # then the only home to check, so there is nothing to add.
         pass
     return homes
 

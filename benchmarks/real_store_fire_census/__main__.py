@@ -361,6 +361,7 @@ class OutTarget:
             if stat.S_ISLNK(final.st_mode):
                 raise UsageError(f"{self.flag} became a symlink during the run")
         except FileNotFoundError:
+            # No file at the final name yet: the rename below creates it.
             pass
         except UsageError:
             os.unlink(tmp, dir_fd=self.dfd)
