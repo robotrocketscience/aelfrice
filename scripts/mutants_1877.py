@@ -14,8 +14,9 @@ Usage:
     uv run python scripts/mutants_1877.py --shard 0/4    # run every 4th mutant, from the first
 
 A full run takes about 15 minutes and needs one copy of the tree, so check free disk
-space first. It prints one line per mutant, `killed NAME by TEST` or `SURVIVED NAME`,
-and exits 1 when a mutant survives or its anchor isn't found exactly once.
+space first. It runs the tests on the unmutated copy first and exits 1 if they fail.
+Then it prints one line per mutant, `killed NAME by TEST` or `SURVIVED NAME`, and
+exits 1 when a mutant survives or its anchor isn't found exactly once.
 """
 from __future__ import annotations
 
@@ -336,18 +337,36 @@ def _copy_tree(into: Path) -> None:
             shutil.copy(ROOT / name, into / name)
 
 
+def _pytest(root: Path) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ, PYTHONPATH=str(root / "src"), PYTHONDONTWRITEBYTECODE="1")
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", *TESTS, "-x", "-q", "--no-header",
+         "-p", "no:cacheprovider", "--tb=no", "--timeout=240"],
+        cwd=root, env=env, capture_output=True, text=True, timeout=TEST_TIMEOUT_SECONDS,
+    )
+
+
+def _baseline_passes(root: Path) -> bool:
+    """True when the tests pass on the unmutated copy, so a failure means a kill."""
+    try:
+        result = _pytest(root)
+    except subprocess.TimeoutExpired:
+        print("baseline timed out", flush=True)
+        return False
+    if result.returncode != 0:
+        print(f"baseline failed rc={result.returncode}", flush=True)
+        return False
+    print("baseline passed", flush=True)
+    return True
+
+
 def _run_one(root: Path, name: str, path: str, old: str, new: str) -> bool:
     """Apply one mutant in `root`, run the tests, restore the file. True when killed."""
     target = root / path
     original = target.read_text(encoding="utf-8")
     target.write_text(original.replace(old, new), encoding="utf-8")
-    env = dict(os.environ, PYTHONPATH=str(root / "src"), PYTHONDONTWRITEBYTECODE="1")
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pytest", *TESTS, "-x", "-q", "--no-header",
-             "-p", "no:cacheprovider", "--tb=no", "--timeout=240"],
-            cwd=root, env=env, capture_output=True, text=True, timeout=TEST_TIMEOUT_SECONDS,
-        )
+        result = _pytest(root)
     except subprocess.TimeoutExpired:
         print(f"killed   {name} by timeout", flush=True)
         return True
@@ -396,6 +415,8 @@ def main(argv: list[str]) -> int:
     with tempfile.TemporaryDirectory(prefix="mutants-1877-") as folder:
         root = Path(folder)
         _copy_tree(root)
+        if not _baseline_passes(root):
+            return 1
         for number, (name, path, old, new) in enumerate(MUTANTS):
             if (args.names and name not in args.names) or number % shards != shard:
                 continue
