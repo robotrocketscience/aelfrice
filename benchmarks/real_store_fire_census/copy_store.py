@@ -93,12 +93,12 @@ def _stamp(src: Path, files: list[Path]) -> Stamp:
 
 def _copy_bytes(src: Path, dst: Path) -> None:
     """Read src as plain bytes into a new dst; src is opened read-only."""
-    with src.open("rb") as fi, dst.open("xb") as fo:
+    with src.open("rb") as reader, dst.open("xb") as writer:
         while True:
-            buf = fi.read(CHUNK)
+            buf = reader.read(CHUNK)
             if not buf:
                 break
-            fo.write(buf)
+            writer.write(buf)
 
 
 def _copy_once(src: Path, tmp: Path) -> bool:
