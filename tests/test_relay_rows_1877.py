@@ -1972,3 +1972,99 @@ def test_a_key_seen_three_times_opens_where_it_repeats_the_first_row(tmp_path: P
         assert dict(report.rows_by_shape) == {RELAY_ROW_OPENER: 2}
     finally:
         s.close()
+
+
+# --- seventh review round: the constructed shapes that retire typed words ----
+#
+# A count-only check of the basilisk and debserver turn logs put all 91 and
+# 117 candidates inside a host relay block, so the real stores hold none of
+# these shapes. Each test pins the take the every-copy rule gives.
+
+
+def test_g1_two_records_with_one_key_each_followed_by_next(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    """Two distinct records share session, timestamp and label; T2 is retired.
+
+    A constructed case that the real stores don't contain, per the count. The
+    first record never closes; the second closes before the user's typed T2.
+    """
+    db = _ingest(tmp_path, [
+        (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2)), (SESSION, _ts(2), NEXT),
+        (SESSION, _ts(1), _block(AGENT_TAG, T1) + "\n" + T2), (SESSION, _ts(3), NEXT),
+    ])
+    s = MemoryStore(str(db))
+    try:
+        _, texts = _candidate_texts(s)
+        assert T2 in texts
+    finally:
+        s.close()
+
+
+def test_g1b_two_planted_records_with_one_key_each_followed_by_next(tmp_path: Path) -> None:
+    """The g1 shape with rows planted directly; T2 is retired.
+
+    A constructed case that the real stores don't contain, per the count.
+    """
+    from aelfrice.models import EDGE_DERIVED_FROM, Edge
+
+    pre = make_generator(rand_source=lambda n: bytes(n), time_source=lambda: _PRE_1649_CLOCK)
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        _record_rows(s, [
+            (pre(), SESSION, _ts(1), AGENT_TAG), (pre(), SESSION, _ts(1), T1),
+            (pre(), SESSION, _ts(1), T2), (pre(), SESSION, _ts(2), NEXT),
+            (pre(), SESSION, _ts(1), AGENT_TAG), (pre(), SESSION, _ts(1), T1),
+            (pre(), SESSION, _ts(1), T2), (pre(), SESSION, _ts(3), NEXT),
+        ])
+        s.insert_edge(Edge(
+            src=_belief_id(s, NEXT), dst=_belief_id(s, T2), type=EDGE_DERIVED_FROM,
+            weight=1.0, anchor_text=_lines(AGENT_TAG, T1, T2),
+        ))
+        _, texts = _candidate_texts(s)
+        assert T2 in texts
+    finally:
+        s.close()
+
+
+def test_g2_a_record_changed_into_one_cut_relay_keeps_whole(
+    tmp_path: Path, pre_1875: None,
+) -> None:
+    """One record ingested unclosed, then with a dropped `Context:` line first.
+
+    A constructed case that the real stores don't contain, per the count.
+    #1875 keeps the second form whole, and the sentence splitter drops the
+    line, so both copies' rows match and T2 is retired.
+    """
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        ingest_jsonl(s, _write_log(tmp_path / "a.jsonl", [
+            (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2)), (SESSION, _ts(2), NEXT),
+        ]))
+        ingest_jsonl(s, _write_log(tmp_path / "a.jsonl", [
+            (SESSION, _ts(1), _lines("Context:", AGENT_TAG, T1, T2)), (SESSION, _ts(2), NEXT),
+        ]))
+        _, texts = _candidate_texts(s)
+        assert T2 in texts
+    finally:
+        s.close()
+
+
+def test_g3_two_files_of_one_session_under_one_label(tmp_path: Path, pre_1875: None) -> None:
+    """Two files under one label, one record each at one timestamp; T2 is retired.
+
+    A constructed case that the real stores don't contain, per the count. The
+    second file's record closes before the user's typed T2.
+    """
+    s = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        ingest_jsonl(s, _write_log(tmp_path / "a.jsonl", [
+            (SESSION, _ts(1), _lines(AGENT_TAG, T1, T2)), (SESSION, _ts(2), NEXT),
+        ]))
+        ingest_jsonl(s, _write_log(tmp_path / "b.jsonl", [
+            (SESSION, _ts(1), _block(AGENT_TAG, T1) + "\n" + T2), (SESSION, _ts(5), NEXT),
+        ]))
+        _, texts = _candidate_texts(s)
+        assert T2 in texts
+    finally:
+        s.close()
