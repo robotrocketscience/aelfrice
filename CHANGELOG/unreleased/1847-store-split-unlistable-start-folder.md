@@ -1,3 +1,0 @@
-### Fixed
-
-- **`aelf store split` no longer reports a slow git as a folder outside a work tree ([#1847](https://github.com/robotrocketscience/aelfrice/issues/1847)).** The command gives git 5 seconds to find the work tree. In a folder you can search but not list, such as one with mode `111`, git can take longer, and the command then reported that a folder inside a work tree wasn't in a git work tree. Only a git timeout changes the error now. When you can't list the folder the command starts from, the error is `cannot list or search <folder>`, as it is for any such folder in the work tree. Otherwise the error is `git timed out after 5 s finding the work tree of <folder>`. When git answers in time, every error is the same as before.
