@@ -36,3 +36,6 @@ tests.test_real_store_fire_census_runner::test_guard_sees_through_a_firmlink
 
 # macOS-only (#1887): needs the macOS /dev/fd reopen behavior verified for sqlite, so both Linux legs skip it.
 tests.test_real_store_fire_census_runner::test_open_ro_reads_the_file_it_checked_even_if_the_path_is_swapped
+
+# Skips by design while CHANGELOG/unreleased and the [Unreleased] block are both empty, which every release cut leaves until the next entry lands.
+tests.test_collate_changelog::test_the_committed_v4_changelog_collates_without_loss
