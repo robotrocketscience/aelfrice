@@ -381,6 +381,9 @@ _WRAPPERS = {
     "group with arguments": "{{ {p} --host codex; }}",
     "if": "if {p}; then :; fi",
     "if with arguments": "if {p} --host codex; then :; fi",
+    # shlex can't split a command that ends in a backslash, but bash 3.2,
+    # bash 5.2, and zsh 5.9 run the program.
+    "trailing backslash": "{p} --host codex\\",
     # Doctor doesn't read `!`. bash 3.2, bash 5.2, and zsh 5.9 run no
     # program for `X=1 !` and `nice !`.
     "!": "! {p} --host codex",

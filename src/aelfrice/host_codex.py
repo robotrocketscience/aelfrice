@@ -2140,12 +2140,14 @@ def _top_level_words(cmd: str, *, windows: bool) -> list[str]:
 
     On POSIX, Codex runs the command as a shell script, so it splits the
     way `_script_words` does, with each operator as its own word: the
-    program word in `{ PROGRAM; }` is `PROGRAM`, not `PROGRAM;`. The
+    program word in `{ PROGRAM; }` is `PROGRAM`, not `PROGRAM;`. A
+    command that `shlex` can't split, such as one that ends in a
+    backslash, splits at whitespace, since a shell can still run it. The
     Windows splitter keeps single quotes and has no operators to split.
     """
     if windows:
         return command_tokens(cmd, windows=True)
-    return _script_words(cmd)
+    return _script_words(cmd) or cmd.split()
 
 
 def _wrapped_owned_keys(
