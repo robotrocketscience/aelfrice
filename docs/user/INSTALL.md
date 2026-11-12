@@ -96,7 +96,12 @@ If you set up Codex with an earlier release, run `aelf setup --host codex` again
 
 ##### Move off a SessionStart wrapper
 
-Some setups replace the SessionStart handler with a wrapper script that runs `aelf-session-start-hook` and adds a `systemMessage`. The summary line makes that wrapper unnecessary. Setup decides which handlers it owns by the program each command runs, so it treats a wrapper started by `python3` as one of your own handlers, keeps it, and adds its own SessionStart handler next to it. Codex then runs the session-start hook twice and injects the baseline twice. `aelf doctor --host codex` reports this state as a failure and exits 1: it names each event where more than one handler runs the same aelfrice program. A handler runs the program when its command starts it, passes it to a wrapper as an argument, or starts it from the script of an `sh -c` or `bash -c` command, from an argument after that script, or from a command substitution such as `"$(aelf-session-start-hook)"`. A command that only prints the program's name, such as `echo aelf-session-start-hook`, doesn't count unless a pipe sends that output to another command. On Windows, doctor doesn't read the script of an `sh -c` command or a command substitution, so it can miss some of those wrappers.
+Some setups replace the SessionStart handler with a wrapper script that runs `aelf-session-start-hook` and adds a `systemMessage`. The summary line makes that wrapper unnecessary. Setup decides which handlers it owns by the program each command runs, so it treats a wrapper started by `python3` as one of your own handlers, keeps it, and adds its own SessionStart handler next to it. Codex then runs the session-start hook twice and injects the baseline twice. `aelf doctor --host codex` checks each event for this state:
+
+- When two or more handlers in one event run the same aelfrice program as the first word of their command, doctor reports a failure that names the event and the program, and exits 1. `VAR=value` words and prefix words such as `env`, `exec`, `nohup`, `time`, and `command`, each with its flags, can come before the program, as in `/usr/bin/env aelf-session-start-hook`. `command -v` and `command -V` don't run the program, so they don't count.
+- When a handler names the program anywhere else, doctor prints a `[warn]` line that names the event and the handler's command, and the exit code doesn't change. Doctor looks in a wrapper's arguments, in the script of an `sh -c` or `bash -c` command, in an argument after that script, in a command substitution such as `"$(aelf-session-start-hook)"`, and in a command after the first one, such as `cd /tmp && aelf-session-start-hook`. Doctor doesn't read quotes or comments, and it doesn't know what commands such as `command -v`, `test -x`, and `grep` do with the name, so the warning can name a handler that only checks for the program. A command that only prints the program's name, such as `echo aelf-session-start-hook`, gets no warning unless a pipe sends that output to another command.
+
+A wrapper started by `python3`, `timeout`, or `nice` gets the warning, because doctor reads its program from an argument. On Windows, doctor doesn't read the script of an `sh -c` command or a command substitution, so it can miss some of those wrappers.
 
 To move off the wrapper:
 
@@ -105,7 +110,7 @@ To move off the wrapper:
 3. In `$CODEX_HOME/hooks.json`, under `SessionStart`, delete the handler whose `command` runs the wrapper. Keep the handler whose command ends in `aelf-session-start-hook --host codex`.
 4. Delete the wrapper script.
 5. Open `/hooks` in a Codex session and approve the changed entries.
-6. Run `aelf doctor --host codex` to confirm the wiring. It exits 0 when only one SessionStart handler runs `aelf-session-start-hook`. Then start a session and check for the `aelfrice:` line.
+6. Run `aelf doctor --host codex` to confirm the wiring. Check that it exits 0 and that no `[warn]` line names a `SessionStart` handler. Then start a session and check for the `aelfrice:` line.
 
 #### `$CODEX_HOME` (unreleased)
 
