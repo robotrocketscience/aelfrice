@@ -328,6 +328,24 @@ def test_doctor_ignores_a_foreign_handler_that_runs_no_aelfrice_program(
 
 
 @pytest.mark.timeout(60)
+@pytest.mark.parametrize("folder", ["gone", "first last"])
+def test_doctor_names_a_missing_program_without_its_arguments(
+    tmp_path: Path, folder: str,
+) -> None:
+    """The fault names the program path, as it did before the SessionStart
+    command gained `--host codex`. A path with a space stays whole."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    missing = f"{tmp_path / folder / 'aelf-session-start-hook'}"
+    _set_session_start_commands(hooks, f"{missing} --host codex")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    line = next(
+        ln for ln in out.splitlines() if "not present on disk" in ln
+    )
+    assert line.endswith(f"not present on disk: {missing}"), line
+
+
+@pytest.mark.timeout(60)
 def test_doctor_passes_a_hooks_json_written_before_this_build(
     tmp_path: Path,
 ) -> None:
