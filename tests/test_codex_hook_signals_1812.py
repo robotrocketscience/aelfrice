@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice.cli import _cmd_doctor_codex, main
-from aelfrice.hook import _host_from_argv, session_start
+from aelfrice.hook import _host_from_argv, _SessionStartTally, session_start
 from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT
 from aelfrice.hook_summary import ENV_HOOK_SUMMARY_LINE
 from aelfrice.host_codex import (
@@ -494,6 +494,59 @@ def test_a_compact_fire_counts_the_rebuild_block_too(
     assert "<aelfrice-rebuild>" in context
     assert _context_counts(context) == (2, 1)
     assert doc["systemMessage"] == "aelfrice: 2 beliefs injected (1 locked)"
+
+
+@pytest.mark.timeout(60)
+def test_locks_the_payload_bound_cuts_are_not_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1639 names the locks that don't fit instead of showing them, so the
+    line counts the locks the model got, not the locks in the store."""
+    locks = tuple(
+        _belief(
+            f"L{i:03d}",
+            f"lock {i:03d} " + "keep this standing rule in mind always " * 3,
+            LOCK_USER,
+        )
+        for i in range(150)
+    )
+    doc = json.loads(_fire(
+        tmp_path / "t", monkeypatch, host="codex", beliefs=locks,
+        env={ENV_HOOK_SUMMARY_LINE: "1", "AELFRICE_SESSIONSTART_RECAP": "0"},
+    ))
+    shown, shown_locked = _context_counts(
+        doc["hookSpecificOutput"]["additionalContext"],
+    )
+    assert 0 < shown < len(locks)
+    assert shown_locked == shown
+    assert doc["systemMessage"] == (
+        f"aelfrice: {shown} beliefs injected ({shown} locked)"
+    )
+
+
+def test_the_tally_counts_an_id_once_and_keeps_its_lock() -> None:
+    """A lock stays a lock when the other block's element doesn't say so."""
+    tally = _SessionStartTally()
+    tally.note("a", True)
+    tally.note("a", False)
+    tally.note_block(
+        '<belief id="b" locked="false">x</belief>\n'
+        '<belief id="a" locked="false">y</belief>\n',
+    )
+    assert (tally.n_beliefs, tally.n_locked) == (2, 1)
+
+
+@pytest.mark.timeout(60)
+def test_one_belief_reads_singular(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = _fire(
+        tmp_path / "t", monkeypatch, host="codex", beliefs=_BELIEFS[:1],
+        env={ENV_HOOK_SUMMARY_LINE: "1", "AELFRICE_SESSIONSTART_RECAP": "0"},
+    )
+    assert json.loads(raw)["systemMessage"] == (
+        "aelfrice: 1 belief injected (1 locked)"
+    )
 
 
 @pytest.mark.timeout(60)
