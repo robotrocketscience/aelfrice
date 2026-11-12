@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, cast
 
+from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT
 from aelfrice.launcher import (
     command_launcher_key,
     command_program_keys,
@@ -177,18 +178,65 @@ def codex_config_path(codex_dir: Path | None = None) -> Path:
     return cdir / CODEX_CONFIG_FILENAME
 
 
-def _handler(command: str, *, timeout: int | None = None) -> dict[str, object]:
+CODEX_ADDITIONAL_CONTEXT_LIMIT: Final[int] = HOOK_PAYLOAD_CHAR_LIMIT
+"""`additionalContextLimit` on the handlers whose stdout reaches the model.
+
+Codex limits each model-visible hook output to about 2,500 tokens by
+default and saves a longer one to a file, so the model sees only a preview
+(https://developers.openai.com/codex/hooks, "additionalContextLimit"). The
+field is an approximate token threshold, and Codex reads it on SessionStart
+and UserPromptSubmit handlers only; codex-cli 0.167.1 logs "ignoring
+additionalContextLimit ... this event cannot emit additionalContext" for
+any other event.
+
+The value is the bound aelfrice already enforces on every hook fire's
+whole stdout, `HOOK_PAYLOAD_CHAR_LIMIT` characters. A token estimate of a
+string charges at most one token per character for any estimator that
+counts bytes per token at 4 or more, so a fire never exceeds this many
+tokens and Codex never cuts aelfrice's block to a preview. The retrieval
+token budget is not the bound: locks are never trimmed to it, several
+lanes are packed against separate budgets, and
+`AELFRICE_RETRIEVAL_TOKEN_BUDGET` can raise it.
+"""
+
+def _handler(
+    command: str,
+    *,
+    timeout: int | None = None,
+    status_message: str | None = None,
+    additional_context_limit: int | None = None,
+) -> dict[str, object]:
+    """One Codex command handler.
+
+    `statusMessage` and `additionalContextLimit` are the Codex handler
+    fields (https://developers.openai.com/codex/hooks). Each is written only
+    when it has a value, so a handler without them is byte-identical to
+    the one earlier releases wrote.
+    """
     entry: dict[str, object] = {"type": "command", "command": command}
     if timeout is not None:
         entry["timeout"] = timeout
+    if status_message is not None:
+        entry["statusMessage"] = status_message
+    if additional_context_limit is not None:
+        entry["additionalContextLimit"] = additional_context_limit
     return entry
 
 
-def desired_codex_hooks(scope: SettingsScope = "user") -> dict[str, list[dict[str, object]]]:
+def desired_codex_hooks(
+    scope: SettingsScope = "user",
+    *,
+    status_message: str | None = None,
+) -> dict[str, list[dict[str, object]]]:
     """The aelfrice hook set in Codex hooks.json shape, keyed by event.
 
     Commands resolve to absolute paths via the same resolvers the Claude
     installers use, so both hosts pin identical executables.
+
+    `status_message` goes on the handlers that `aelf setup --status-message`
+    covers on the claude host: retrieval (UserPromptSubmit), the
+    SessionStart baseline, and the stop hook. The transcript logger and the
+    tool hooks carry none there either.
     """
     hook_cmd = resolve_hook_command(scope)
     logger_cmd = resolve_transcript_logger_command(scope)
@@ -199,10 +247,20 @@ def desired_codex_hooks(scope: SettingsScope = "user") -> dict[str, list[dict[st
     commit_cmd = resolve_commit_ingest_command(scope)
     return {
         "UserPromptSubmit": [
-            {"hooks": [_handler(hook_cmd), _handler(logger_cmd)]},
+            {"hooks": [
+                _handler(
+                    hook_cmd,
+                    status_message=status_message,
+                    additional_context_limit=CODEX_ADDITIONAL_CONTEXT_LIMIT,
+                ),
+                _handler(logger_cmd),
+            ]},
         ],
         "Stop": [
-            {"hooks": [_handler(logger_cmd), _handler(stop_cmd)]},
+            {"hooks": [
+                _handler(logger_cmd),
+                _handler(stop_cmd, status_message=status_message),
+            ]},
         ],
         "PreCompact": [
             {"hooks": [_handler(logger_cmd)]},
@@ -213,7 +271,11 @@ def desired_codex_hooks(scope: SettingsScope = "user") -> dict[str, list[dict[st
         "SessionStart": [
             {
                 "matcher": _SESSION_START_MATCHER,
-                "hooks": [_handler(session_cmd)],
+                "hooks": [_handler(
+                    session_cmd,
+                    status_message=status_message,
+                    additional_context_limit=CODEX_ADDITIONAL_CONTEXT_LIMIT,
+                )],
             },
         ],
         # #1055: Codex reports shell commands as tool_name "Bash", so the
@@ -538,7 +600,7 @@ def _atomic_replace_hooks(path: Path, text: str, expected: str) -> bool:
 
 def _plan_install(
     text: str | None, scope: SettingsScope, force: bool, hooks_path: Path,
-    *, windows: bool | None = None,
+    *, windows: bool | None = None, status_message: str | None = None,
 ) -> tuple[str | None, CodexInstallResult]:
     """Merge our hook set into one snapshot. Pure — touches no file.
 
@@ -609,7 +671,7 @@ def _plan_install(
             "fix it, or re-run with --force to replace it"
         )
 
-    desired = desired_codex_hooks(scope)
+    desired = desired_codex_hooks(scope, status_message=status_message)
     if not force:
         for event in desired:
             current = hooks_map.get(event, _ABSENT)
@@ -810,6 +872,7 @@ def install_codex_hooks(
     scope: SettingsScope = "user",
     force: bool = False,
     windows: bool | None = None,
+    status_message: str | None = None,
 ) -> CodexInstallResult:
     """Write the aelfrice hook set into ``hooks_path``, merge-aware.
 
@@ -817,11 +880,17 @@ def install_codex_hooks(
     see the transaction notes above. Refuses (with ``error`` set) when
     the existing file is unparseable, or holds a foreign structure at a
     key we would have to reshape, and ``force`` is False.
+
+    ``status_message`` becomes the Codex ``statusMessage`` field on the
+    handlers `desired_codex_hooks` names. A re-run without it writes the
+    handlers without the field, the way the claude host replaces its
+    entries on every run.
     """
     return _commit_hooks_transaction(
         hooks_path,
         lambda text: _plan_install(
-            text, scope, force, hooks_path, windows=windows,
+            text, scope, force, hooks_path,
+            windows=windows, status_message=status_message,
         ),
     )
 

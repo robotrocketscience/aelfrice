@@ -6117,6 +6117,7 @@ def _cmd_setup_codex(
         target,
         scope="user",
         force=bool(getattr(args, "force", False)),
+        status_message=getattr(args, "status_message", None),
     )
     if result.error:
         print(f"setup --host codex: {result.error}", file=sys.stderr)
@@ -12224,7 +12225,10 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_setup.add_argument(
         "--status-message", default=None,
-        help="status message the upstream auto-memory tool shows while the hook runs",
+        help=(
+            "status message the host shows while the hook runs; on the "
+            "codex host it is written as the handler's statusMessage field"
+        ),
     )
     p_setup.add_argument(
         "--no-statusline", action="store_true",
@@ -12941,8 +12945,9 @@ _UPDATE_CHECK_SKIP_CMDS: Final[frozenset[str]] = frozenset(
 )
 
 # #1429: the options the Codex host path actually reads. `aelf setup
-# --host codex` consults only `--host`, `--force`, and `--codex-skills`;
-# `aelf unsetup --host codex` consults only `--host`. Every other option
+# --host codex` consults only `--host`, `--force`, `--codex-skills`, and
+# `--status-message` (written as each handler's Codex `statusMessage`
+# field since #1812); `aelf unsetup --host codex` consults only `--host`. Every other option
 # the shared parser accepts is a Claude-host option that the Codex
 # executor drops on the floor, so an explicitly supplied one is refused
 # (exit 2) before anything on disk moves, rather than accepted and
@@ -12952,7 +12957,7 @@ _UPDATE_CHECK_SKIP_CMDS: Final[frozenset[str]] = frozenset(
 # with what the caller wanted. Making these options take effect on the
 # Codex host is separate work, and stays gated on a Codex host.
 _CODEX_APPLICABLE_DESTS: Final[dict[str, frozenset[str]]] = {
-    "setup": frozenset({"host", "force", "codex_skills"}),
+    "setup": frozenset({"host", "force", "codex_skills", "status_message"}),
     "unsetup": frozenset({"host"}),
 }
 
