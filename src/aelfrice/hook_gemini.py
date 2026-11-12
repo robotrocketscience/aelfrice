@@ -27,7 +27,10 @@ to the user instead of the model, so the handlers' stdout is captured and
 the script prints exactly one JSON object: `hookSpecificOutput` with
 `additionalContext` on `SessionStart` and `BeforeAgent` when a handler
 produced context, and `{}` otherwise. The installed Gemini CLI 0.68.0
-wraps that text in `<hook_context>` and tells the model to treat it as
+reads that text through `DefaultHookOutput.getAdditionalContext`, which
+replaces every `<` with `&lt;` and every `>` with `&gt;`, so the model
+sees aelfrice's `<belief>` tags as `&lt;belief&gt;`. It then wraps the
+escaped text in `<hook_context>` and tells the model to treat it as
 read-only data, which its docs don't describe. The exit code is always 0
 and no `decision` is ever printed, so no aelfrice failure blocks a turn
 and `AfterAgent` never makes Gemini retry one.
