@@ -453,7 +453,7 @@ _CODEX_HOOKS = {
         "PostCompact": [{"hooks": [_codex_handler("aelf-transcript-logger")]}],
         "SessionStart": [
             {
-                "matcher": "startup|resume|clear|compact",
+                "matcher": "startup|resume|clear|compact|fork",
                 "hooks": [
                     _codex_handler(
                         "aelf-session-start-hook --host codex",
