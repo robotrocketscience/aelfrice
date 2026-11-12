@@ -41,6 +41,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import shlex
 import tempfile
 import tomllib
 from collections.abc import Callable
@@ -1408,8 +1410,8 @@ class CodexDoctorReport:
     missing_handlers: list[str] = field(default_factory=list[str])
     stale_commands: list[str] = field(default_factory=list[str])
     #: (event, program, count) for each aelfrice program that more than one
-    #: handler in one event runs, either as its own handler or as an
-    #: argument to a foreign one such as a wrapper script (#1812).
+    #: handler in one event runs, either as its own handler or from a
+    #: foreign one such as a wrapper script or an `sh -c` script (#1812).
     duplicate_runs: list[tuple[str, str, int]] = field(
         default_factory=list[tuple[str, str, int]],
     )
@@ -1541,26 +1543,138 @@ def orphaned_codex_skills(dest_dir: Path | None = None) -> list[str]:
     ]
 
 
+#: Shells whose `-c` option runs the next operand as a script (#1812).
+_SHELLS: Final[frozenset[str]] = frozenset(
+    {"ash", "bash", "dash", "ksh", "mksh", "sh", "zsh"},
+)
+#: Words that run the command after them, so the next word is the program.
+#: The shell reserved words are here because a `-c` script can open with one.
+_PREFIX_WORDS: Final[frozenset[str]] = frozenset({
+    "!", "{", "command", "do", "elif", "else", "env", "exec", "if",
+    "nohup", "then", "time", "until", "while",
+})
+#: Characters of the shell operators that end one simple command.
+_COMMAND_SEPARATORS: Final[frozenset[str]] = frozenset(";&|()\n")
+_ASSIGNMENT: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+#: How many `sh -c` scripts deep the scan reads. Each level is one quoted
+#: script inside another; real wrappers use one.
+_MAX_SHELL_DEPTH: Final[int] = 4
+
+
+def _script_words(script: str) -> list[str]:
+    """A `-c` script split into words, with each operator as its own word.
+
+    `shlex` with `punctuation_chars` splits `a|b` and `a;b` the way a shell
+    does. A script with unbalanced quotes yields no words.
+    """
+    lexer = shlex.shlex(script, posix=True, punctuation_chars="();<>|&\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        return list(lexer)
+    except ValueError:
+        return []
+
+
+def _simple_commands(words: list[str]) -> list[list[str]]:
+    """Split words at shell operators such as `|`, `;` and `&&`."""
+    commands: list[list[str]] = [[]]
+    for word in words:
+        if set(word) <= _COMMAND_SEPARATORS:
+            commands.append([])
+        else:
+            commands[-1].append(word)
+    return [c for c in commands if c]
+
+
+def _shell_script(args: list[str]) -> str | None:
+    """The script a shell runs for its `-c` option, None without one.
+
+    Covers `sh -c SCRIPT`, combined flags such as `bash -lc SCRIPT`, and
+    options before it such as `bash -o pipefail -c SCRIPT`.
+    """
+    has_c = False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            return args[i + 1] if has_c and i + 1 < len(args) else None
+        if arg in ("-o", "+o", "-O", "+O"):
+            i += 2
+            continue
+        if len(arg) > 1 and arg[0] in "-+":
+            if arg[0] == "-" and not arg.startswith("--") and "c" in arg[1:]:
+                has_c = True
+            i += 1
+            continue
+        return arg if has_c else None
+    return None
+
+
 def _wrapped_owned_keys(
     handler: object, *, windows: bool | None = None,
 ) -> set[str]:
-    """Owned programs a foreign handler's command passes as arguments.
+    """Owned programs a foreign handler's command runs.
 
     A wrapper such as `python3 aelf-visible.py SessionStart
     <bin>/aelf-session-start-hook` is not ours by its program, so setup
-    keeps it and adds its own handler beside it (#1812). Its arguments
-    still name the aelfrice program it runs.
+    keeps it and adds its own handler beside it (#1812). A program counts
+    when the command runs it:
+
+    * as its program after any `VAR=value` words and prefix words such as
+      `env` or `exec`, as in `/usr/bin/env <bin>/aelf-session-start-hook`;
+    * as an argument, since a wrapper takes the program it runs as one;
+    * inside the script of a shell's `-c` option, such as `sh -c
+      '<bin>/aelf-session-start-hook | cat'`, which is read the same way.
+      This one is POSIX only, because the Windows splitter keeps single
+      quotes.
     """
     if not isinstance(handler, dict):
         return set()
     cmd = cast(dict[str, object], handler).get("command")
     if not isinstance(cmd, str):
         return set()
-    owned = owned_keys(_OWNED_BASENAMES, windows=windows)
-    return {
-        key for tok in command_tokens(cmd, windows=windows)
-        if (key := launcher_key(tok, windows=windows)) in owned
-    }
+    win = os.name == "nt" if windows is None else windows
+    owned = owned_keys(_OWNED_BASENAMES, windows=win)
+    found: set[str] = set()
+    pending: list[tuple[list[str], int]] = [
+        (command_tokens(cmd, windows=win), 0),
+    ]
+    while pending:
+        words, depth = pending.pop()
+        for simple in _simple_commands(words):
+            i = 0
+            while i < len(simple):
+                key = launcher_key(simple[i], windows=win)
+                if _ASSIGNMENT.match(simple[i]):
+                    i += 1
+                elif key in _PREFIX_WORDS:
+                    i += 1
+                    while i < len(simple) and simple[i].startswith("-"):
+                        i += 1
+                else:
+                    break
+            if i >= len(simple):
+                continue
+            head = launcher_key(simple[i], windows=win)
+            args = simple[i + 1:]
+            if head in owned:
+                found.add(head)
+                continue
+            script = (
+                _shell_script(args)
+                if head in _SHELLS and not win else None
+            )
+            if script is not None:
+                if depth < _MAX_SHELL_DEPTH:
+                    pending.append((_script_words(script), depth + 1))
+                continue
+            found.update(
+                key for arg in args
+                if (key := launcher_key(arg, windows=win)) in owned
+            )
+    return found
 
 
 def doctor_codex(
