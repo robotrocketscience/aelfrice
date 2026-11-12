@@ -252,10 +252,59 @@ def _installed(tmp_path: Path) -> tuple[Path, Path, str]:
     return codex_dir, hooks, program
 
 
-# Each wrapper runs the session-start program. `{p}` is the program path.
+# Each wrapper runs the session-start program as its first word. `{p}` is
+# the program path.
+_DIRECT = {
+    "env": "/usr/bin/env {p}",
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_DIRECT))
+def test_doctor_faults_setup_run_over_a_direct_session_start_wrapper(
+    tmp_path: Path, shape: str,
+) -> None:
+    """The state the move-off-a-wrapper steps start from.
+
+    A user replaces setup's SessionStart handler with a wrapper, then runs
+    setup again. Setup doesn't own the wrapper, so it keeps the wrapper's
+    group and adds its own handler in a new group, and Codex injects the
+    baseline twice.
+    """
+    codex_dir, hooks, program = _installed(tmp_path)
+    wrapper = _DIRECT[shape].format(p=program)
+    _set_session_start_commands(hooks, wrapper)
+    install_codex_hooks(hooks)
+    groups = json.loads(hooks.read_text(encoding="utf-8"))["hooks"][
+        "SessionStart"
+    ]
+    assert [[h["command"] for h in g["hooks"]] for g in groups] == [
+        [wrapper], [f"{program} --host codex"],
+    ]
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+    assert "may also run" not in out
+
+
+def _warning_for(out: str, command: str) -> str | None:
+    """The doctor warning line that names `command`, if there is one."""
+    return next(
+        (
+            ln for ln in out.splitlines()
+            if ln.startswith("[warn] SessionStart handler may also run "
+                             "aelf-session-start-hook")
+            and ln.endswith(f"delete this one: {command}")
+        ),
+        None,
+    )
+
+
+# Each wrapper names the session-start program in a shell script or an
+# argument, which doctor can't prove the wrapper runs. `{p}` is the program
+# path.
 _WRAPPERS = {
     "python": "/usr/bin/python3 /x/aelf-visible.py SessionStart {p}",
-    "env": "/usr/bin/env {p}",
     "sh -c": "sh -c '{p} --host codex'",
     "bash -lc pipe": "bash -lc '{p} | cat'",
     "sh -c sequence": "sh -c 'echo start; {p}'",
@@ -287,15 +336,13 @@ _WRAPPERS = {
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("shape", sorted(_WRAPPERS))
-def test_doctor_faults_setup_run_over_a_session_start_wrapper(
+def test_doctor_warns_about_setup_run_over_a_session_start_wrapper(
     tmp_path: Path, shape: str,
 ) -> None:
-    """The state the move-off-a-wrapper steps start from.
+    """Setup keeps a wrapper it doesn't own and adds its handler beside it.
 
-    A user replaces setup's SessionStart handler with a wrapper, then runs
-    setup again. Setup doesn't own the wrapper, so it keeps the wrapper's
-    group and adds its own handler in a new group, and Codex injects the
-    baseline twice.
+    Doctor reads the program from the wrapper's script or arguments, so it
+    names the wrapper in a warning and doesn't fail.
     """
     codex_dir, hooks, program = _installed(tmp_path)
     wrapper = _WRAPPERS[shape].format(p=program)
@@ -308,8 +355,9 @@ def test_doctor_faults_setup_run_over_a_session_start_wrapper(
         [wrapper], [f"{program} --host codex"],
     ]
     rc, out = _doctor(codex_dir, tmp_path / "skills")
-    assert rc == 1, out
-    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+    assert rc == 0, out
+    assert "times" not in out
+    assert _warning_for(out, wrapper) is not None, out
 
 
 @pytest.mark.parametrize(
@@ -368,6 +416,7 @@ def test_doctor_ignores_a_foreign_handler_that_runs_no_aelfrice_program(
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert "times" not in out
+    assert "may also run" not in out
 
 
 @pytest.mark.timeout(60)
