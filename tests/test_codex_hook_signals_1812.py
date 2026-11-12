@@ -255,6 +255,14 @@ def _installed(tmp_path: Path) -> tuple[Path, Path, str]:
 _WRAPPERS = {
     "python": "/usr/bin/python3 /x/aelf-visible.py SessionStart {p}",
     "env": "/usr/bin/env {p}",
+    "sh -c": "sh -c '{p} --host codex'",
+    "bash -lc pipe": "bash -lc '{p} | cat'",
+    "sh -c sequence": "sh -c 'echo start; {p}'",
+    "bash -o -c": "/bin/bash -o pipefail -c '{p} | cat'",
+    "env assignment bash -c": (
+        "/usr/bin/env AELFRICE_HOOK_SUMMARY_LINE=1 "
+        "bash -c '{p} --host codex'"
+    ),
 }
 
 
