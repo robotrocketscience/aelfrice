@@ -286,6 +286,15 @@ _DIRECT = {
     "env time -o FILE": "env time -o /dev/null {p} --host codex",
     "exec time -o FILE": "exec time -o /dev/null {p} --host codex",
     "nohup time -o FILE": "nohup time -o /dev/null {p} --host codex",
+    # A shell reads no quoted or escaped word as its reserved `time`, and
+    # none after an assignment or after its own `time`, so these are the
+    # `time` program.
+    "escaped time -o FILE": "\\time -o /dev/null {p} --host codex",
+    "single-quoted time -o FILE": "'time' -o /dev/null {p} --host codex",
+    "double-quoted time -o FILE": '"time" -o /dev/null {p} --host codex',
+    "partly quoted time -o FILE": "ti'me' -o /dev/null {p} --host codex",
+    "assignment time -o FILE": "X=1 time -o /dev/null {p} --host codex",
+    "second time -o FILE": "time time -o /dev/null {p} --host codex",
     # The shell's own `time` takes `-p` in bash and sh.
     "time -p": "time -p {p} --host codex",
     # env splits the string into its own arguments, so the program can be

@@ -39,6 +39,7 @@ established in #1054/#1052 triage:
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -1631,6 +1632,50 @@ _ASSIGNMENT: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _MAX_SHELL_DEPTH: Final[int] = 4
 
 
+class _QuotedWord(str):
+    """A command word written with a quote or a backslash in it, such as
+    `'time'` or `\\time`. A shell reads no such word as a reserved word, so
+    a quoted `time` is the `time` program (#1812)."""
+
+    __slots__ = ()
+
+
+#: The characters that quote or escape part of a POSIX shell word.
+_QUOTING: Final[frozenset[str]] = frozenset("'\"\\")
+
+
+def _command_words(cmd: str, *, windows: bool) -> list[str]:
+    """`command_tokens(cmd)`, with each quoted POSIX word a `_QuotedWord`.
+
+    The POSIX words equal `shlex.split(cmd)`. A word is quoted when its
+    text holds a quote or a backslash. Its text runs from where the
+    lexer's input stood before the word to where it stands after, and the
+    lexer reads no further than the whitespace that ends the word. The
+    Windows splitter is unchanged, since no Windows shell has a `time`
+    reserved word. Only the first word of a direct run needs the mark, so
+    the words of an `sh -c` script, which only ever get a warning, carry
+    none.
+    """
+    if windows:
+        return command_tokens(cmd, windows=True)
+    text = cmd.strip()
+    stream = io.StringIO(text)
+    lexer = shlex.shlex(stream, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    words: list[str] = []
+    try:
+        while True:
+            start = stream.tell()
+            word = lexer.get_token()
+            if word is None:
+                return words
+            quoted = not _QUOTING.isdisjoint(text[start:stream.tell()])
+            words.append(_QuotedWord(word) if quoted else word)
+    except ValueError:
+        return []
+
+
 def _script_words(script: str) -> list[str]:
     """A `-c` script split into words, with each operator as its own word.
 
@@ -1822,32 +1867,41 @@ def _program_index(
     `env -S STRING` split in its place (`_after_options`). The index equals
     the number of words when no word is left.
 
-    A bare `time` word is the shell's reserved word, which takes no
-    operand: Codex runs a hook as `$SHELL -lc COMMAND`, and bash, zsh, and
-    sh read `time -o FILE PROGRAM` as running a program named `-o`. Doctor
-    skips a `-p` after it, the one option bash and sh read there, though
-    zsh reads `-p` as the program. Only a `time` word that names the
-    program, as a path such as
-    `/usr/bin/time` or after a word in `_PROGRAM_RUNNERS` such as `env`,
-    takes the `-o FILE` operand.
+    A `time` word is the shell's reserved word, which takes no operand,
+    when it is unquoted and unescaped, isn't a path, and follows no
+    `VAR=value` word, no other `time`, and no word in `_PROGRAM_RUNNERS`
+    such as `env`. Codex runs a hook as `$SHELL -lc COMMAND`, and bash,
+    zsh, and sh read `time -o FILE PROGRAM` as running a program named
+    `-o`. Doctor skips a `-p` after the reserved word, the one option bash
+    and sh read there, though zsh reads `-p` as the program. Any other
+    `time` word, such as `/usr/bin/time`, `\\time`, `'time'`, the `time`
+    in `X=1 time`, or the second `time` in `time time`, is the `time`
+    program, which takes the `-o FILE` operand.
     """
     words = simple
     i = 0
     after_runner = False
+    # False once a `VAR=value` word or a reserved `time` has come before.
+    reserved_position = True
     while i < len(words):
         if _ASSIGNMENT.match(words[i]):
             i += 1
+            reserved_position = False
             continue
         prefix = launcher_key(words[i], windows=windows)
         if prefix not in _PREFIX_WORDS:
             break
-        if prefix == "time" and not (
-            after_runner or _names_a_path(words[i], windows=windows)
+        if (
+            prefix == "time"
+            and reserved_position
+            and not after_runner
+            and not isinstance(words[i], _QuotedWord)
+            and not _names_a_path(words[i], windows=windows)
         ):
             i += 1
             while i < len(words) and words[i] == "-p":
                 i += 1
-            after_runner = False
+            reserved_position = False
             continue
         words, i = _after_options(words, i + 1, prefix)
         after_runner = prefix in _PROGRAM_RUNNERS
@@ -1896,7 +1950,7 @@ def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
     if not isinstance(cmd, str):
         return ""
     win = os.name == "nt" if windows is None else windows
-    commands = _simple_commands(command_tokens(cmd, windows=win))
+    commands = _simple_commands(_command_words(cmd, windows=win))
     if not commands:
         return ""
     simple, i = _program_index(commands[0][0], windows=win)
@@ -1949,7 +2003,7 @@ def _wrapped_owned_keys(
     # Each entry is a command's text, its words, and how many scripts deep
     # it is.
     pending: list[tuple[str, list[str], int]] = [
-        (cmd, command_tokens(cmd, windows=win), 0),
+        (cmd, _command_words(cmd, windows=win), 0),
     ]
     while pending:
         text, words, depth = pending.pop()
