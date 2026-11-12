@@ -1706,7 +1706,8 @@ def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
     The program is the word after any `VAR=value` words and prefix words,
     as in `/usr/bin/env <bin>/aelf-session-start-hook`, in the command's
     first simple command. Such a handler certainly runs the program, so
-    doctor counts it toward a duplicate run (#1812).
+    doctor counts it toward a duplicate run (#1812). `command -v` and
+    `command -V` only look the program up, so they don't count.
     """
     if not isinstance(handler, dict):
         return ""
@@ -1720,6 +1721,12 @@ def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
     simple = commands[0][0]
     i = _program_index(simple, windows=win)
     if i >= len(simple):
+        return ""
+    if any(
+        launcher_key(word, windows=win) == "command"
+        and flag.startswith("-") and set(flag[1:]) & {"v", "V"}
+        for word, flag in zip(simple[:i], simple[1:i])
+    ):
         return ""
     key = launcher_key(simple[i], windows=win)
     return key if key in owned_keys(_OWNED_BASENAMES, windows=win) else ""
