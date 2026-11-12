@@ -590,6 +590,9 @@ _NOT_DIRECT_RUN = {
     "env -S with a quote": f"env -S \"'{_ABS}'\"",
     "env -S empty": f"env -S '' {_ABS}",
     "env -S at the end": "env -S",
+    # env reads no option after an assignment, so it runs `-S`.
+    "env -S after an assignment": f"env X=1 -S '{_ABS}'",
+    "env -u after an assignment": f"env X=1 -u FOO {_ABS}",
     "env -S assignment then nice assignment": f"env -S 'X=1 nice X=1 {_ABS}'",
     "quoted assignment name": f"'X=1' {_ABS}",
     "escaped assignment name": f"\\X=1 {_ABS}",
