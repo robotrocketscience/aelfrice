@@ -45,6 +45,7 @@ import re
 import shlex
 import tempfile
 import tomllib
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1904,14 +1905,100 @@ _MATCHER_VALUES: Final[dict[str, tuple[str, ...]]] = {
     "PreCompact": ("manual", "auto"),
     "PostCompact": ("manual", "auto"),
 }
+#: The events whose `matcher` Codex reads. Codex ignores the matcher on
+#: the others, so it never compiles one there (`matcher_pattern_for_event`
+#: in codex-rs/hooks/src/events/common.rs at openai/codex@c0cc9fc82).
+#: This leaves out Codex's two agent start and stop events, where aelfrice
+#: writes no hooks, so doctor counts every handler there.
+_MATCHER_EVENTS: Final[frozenset[str]] = frozenset({
+    "PermissionRequest", "PostCompact", "PostToolUse", "PreCompact",
+    "PreToolUse", "SessionEnd", "SessionStart",
+})
 #: The one value that stands for every fire of an event not in
 #: `_MATCHER_VALUES`.
 _EVERY_FIRE: Final[frozenset[str]] = frozenset({""})
 #: A matcher of only these characters is a list of exact names to Codex.
 _EXACT_MATCHER: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_|]+")
+#: The flags Rust's `regex` crate takes in a `(?flags)` or `(?flags:...)`
+#: group. Python's `re` also takes `a` and `L`, which Rust rejects.
+_RUST_REGEX_FLAGS: Final[str] = "imsUuxR-"
+#: Escapes that Python's `re` reads and Rust's `regex` crate rejects: a
+#: digit, which Python reads as a backreference or an octal escape, `\Z`,
+#: and `\N{name}`.
+_RUST_BAD_ESCAPES: Final[frozenset[str]] = frozenset("0123456789NZ")
 
 
-def _matched_values(event: str, group: object) -> frozenset[str]:
+def _rust_regex_rejects(pattern: str) -> bool:
+    r"""True when Rust's `regex` crate rejects syntax in a pattern.
+
+    Rust's `regex` has no look-around and no backreferences, so it rejects
+    `(?=`, `(?!`, `(?<=`, `(?<!`, `\1`, and `(?P=name)`. It also rejects
+    the other `(?` groups that Python's `re` reads, such as `(?>...)`,
+    `(?#...)`, and `(?a)`, the escapes in `_RUST_BAD_ESCAPES`, `\b` inside
+    a class, and a `{,n}` repetition. A `(?` inside a class, as in `[(?=]`,
+    is literal. Checked against regex 1.12.3, the version openai/codex pins
+    at c0cc9fc82.
+    """
+    i = 0
+    in_class = False
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            escaped = pattern[i + 1:i + 2]
+            if escaped in _RUST_BAD_ESCAPES or (in_class and escaped == "b"):
+                return True
+            i += 2
+            continue
+        if in_class:
+            in_class = ch != "]"
+            i += 1
+            continue
+        if ch == "[":
+            in_class = True
+            i += 1
+            # A `]` first in a class, after any `^`, is literal.
+            i += pattern.startswith("^", i)
+            i += pattern.startswith("]", i)
+            continue
+        if pattern.startswith("(?", i):
+            rest = pattern[i + 2:]
+            named = rest.startswith("P<") or (
+                rest.startswith("<") and rest[1:2] not in ("=", "!")
+            )
+            flags = len(rest) - len(rest.lstrip(_RUST_REGEX_FLAGS))
+            if not named and rest[flags:flags + 1] not in (":", ")"):
+                return True
+            i += 2
+            continue
+        if pattern.startswith("{,", i):
+            return True
+        i += 1
+    return False
+
+
+def _codex_skips_matcher(pattern: str) -> bool:
+    """True when Codex can't compile a regex matcher, so it skips the group.
+
+    Codex compiles a matcher that isn't empty, `*`, or a list of exact
+    names with Rust's `regex` crate (`HookMatcher::new` in
+    codex-rs/hooks/src/engine/matcher.rs at openai/codex@c0cc9fc82). When
+    that fails, `append_matcher_groups` in
+    codex-rs/hooks/src/engine/discovery.rs logs "invalid matcher" and goes
+    on to the next group, so none of the group's handlers run. Doctor
+    takes a pattern as one Codex skips when Python's `re` can't compile it
+    or when it uses syntax Rust's `regex` rejects.
+    """
+    with warnings.catch_warnings():
+        # `[[:alpha:]]` compiles with a FutureWarning about nested sets.
+        warnings.simplefilter("ignore")
+        try:
+            re.compile(pattern)
+        except re.error:
+            return True
+    return _rust_regex_rejects(pattern)
+
+
+def _matched_values(event: str, group: object) -> frozenset[str] | None:
     """The values of `event` whose fires run a matcher group's handlers.
 
     This follows Codex's matcher (codex-rs/hooks/src/engine/matcher.rs in
@@ -1922,25 +2009,28 @@ def _matched_values(event: str, group: object) -> frozenset[str]:
     and `start` matches none. Any other matcher is a regex that matches a
     value when it matches anywhere in it, so `^res` matches `resume`.
     Doctor compiles that regex with Python's `re`, whose syntax differs
-    from Rust's `regex` in places. A matcher `re` can't compile, or one
-    that isn't a string, is taken to match every value, so a pattern
-    doctor can't read never hides a duplicate run.
+    from Rust's `regex` in places. None when Codex skips the group because
+    it can't compile the matcher (`_codex_skips_matcher`). A matcher that
+    isn't a string is taken to match every value, so a pattern doctor
+    can't read never hides a duplicate run.
     """
-    values = _MATCHER_VALUES.get(event)
-    if values is None:
+    if event not in _MATCHER_EVENTS:
         return _EVERY_FIRE
     matcher = (
         cast(dict[str, object], group).get("matcher")
         if isinstance(group, dict) else None
     )
     if not isinstance(matcher, str) or matcher in ("", "*"):
-        return frozenset(values)
-    if _EXACT_MATCHER.fullmatch(matcher):
+        return frozenset(_MATCHER_VALUES.get(event, _EVERY_FIRE))
+    exact = _EXACT_MATCHER.fullmatch(matcher) is not None
+    if not exact and _codex_skips_matcher(matcher):
+        return None
+    values = _MATCHER_VALUES.get(event)
+    if values is None:
+        return _EVERY_FIRE
+    if exact:
         return frozenset(values) & frozenset(matcher.split("|"))
-    try:
-        pattern = re.compile(matcher)
-    except re.error:
-        return frozenset(values)
+    pattern = re.compile(matcher)
     return frozenset(v for v in values if pattern.search(v))
 
 
@@ -2041,12 +2131,19 @@ def doctor_codex(
             # #1812: handlers whose matchers share no value never run on
             # the same fire, so they don't count as duplicate runs.
             values = _matched_values(event, group)
+            if values is None:
+                matcher = cast(dict[str, object], group).get("matcher")
+                report.warnings.append(
+                    f"{event} group with matcher {matcher!r} never runs: "
+                    "Codex logs \"invalid matcher\" for it and skips the "
+                    "group, so doctor doesn't count its handlers as runs",
+                )
             # #1812: a foreign handler that runs an aelfrice program as its
             # first word counts toward duplicate runs. One that names it
             # only in a shell script or an argument may run it, so doctor
             # warns about it.
             for other in _handlers_in(group):
-                if _handler_is_owned(other, windows=windows):
+                if values is None or _handler_is_owned(other, windows=windows):
                     continue
                 direct = _direct_owned_key(other, windows=windows)
                 if direct:
@@ -2074,7 +2171,8 @@ def doctor_codex(
                         or command_launcher_key(cmd, windows=windows)
                     )
                     found_keys.setdefault(event, set()).add(own_key)
-                    runs.setdefault((event, own_key), []).append(values)
+                    if values is not None:
+                        runs.setdefault((event, own_key), []).append(values)
                     exe = Path(program_token(cmd, windows=windows))
                     path = _program_path(cmd, own_key, windows=windows)
                     if (
