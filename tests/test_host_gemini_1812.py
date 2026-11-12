@@ -417,6 +417,42 @@ def test_remove_never_deletes_the_settings_file(
     assert _read(path) == {}
 
 
+_needs_symlinks = pytest.mark.skipif(
+    os.name == "nt", reason="creating a symlink needs privileges on Windows",
+)
+
+
+@_needs_symlinks
+def test_a_symlinked_settings_file_is_written_through(
+    gdir: Path, cmd: str, tmp_path: Path,
+) -> None:
+    """Killed by: replacing the link with a regular file."""
+    target = tmp_path / "dotfiles" / "gemini-settings.json"
+    target.parent.mkdir()
+    original = '{\n  "theme": "widget"\n}\n'
+    target.write_text(original, encoding="utf-8")
+    link = gdir / "settings.json"
+    link.symlink_to(target)
+    assert _install(link, cmd).error is None
+    assert link.is_symlink()
+    assert sorted(_read(target)["hooks"]) == EVENTS  # type: ignore[arg-type]
+    assert hgm.remove_gemini_hooks(link).error is None
+    assert link.is_symlink()
+    assert target.read_text(encoding="utf-8") == original
+
+
+@_needs_symlinks
+def test_a_dangling_settings_link_is_refused(
+    gdir: Path, cmd: str, tmp_path: Path,
+) -> None:
+    link = gdir / "settings.json"
+    link.symlink_to(tmp_path / "gone" / "settings.json")
+    result = _install(link, cmd)
+    assert result.error is not None and "could not read" in result.error
+    assert link.is_symlink()
+    assert not (tmp_path / "gone").exists()
+
+
 def _not_utf8(path: Path) -> bytes:
     raw = b'{"theme": "\xff", "x": "aelf-gemini-hook"}\n'
     path.write_bytes(raw)

@@ -410,11 +410,17 @@ def _read_snapshot(path: Path) -> tuple[str | None, str]:
 
     Raises `OSError` when the path can't be read, for example a directory,
     a file without read permission, or a parent that is not a directory,
-    and `UnicodeDecodeError` when the bytes are not UTF-8.
+    and `UnicodeDecodeError` when the bytes are not UTF-8. A symlink to a
+    missing file is an `OSError` too, so setup never creates a file at
+    the place a broken link points to.
     """
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
+        if path.is_symlink():
+            raise OSError(
+                f"it is a symlink to {os.readlink(path)}, which does not exist"
+            ) from None
         return None, ""
     return raw.decode("utf-8"), hashlib.sha256(raw).hexdigest()
 
@@ -427,9 +433,16 @@ def _fingerprint(path: Path) -> str:
 
 
 def _atomic_replace(path: Path, text: str, expected: str) -> bool:
-    """Replace `path` with `text` iff it still hashes to `expected`."""
+    """Replace `path` with `text` iff it still hashes to `expected`.
+
+    A symlinked `path` is written through: the file it points to is
+    replaced and the link is kept, so a settings file kept elsewhere, for
+    example in a dotfiles repository, stays linked.
+    """
     if _fingerprint(path) != expected:
         return False
+    if path.is_symlink():
+        path = Path(os.path.realpath(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         prefix=path.name + ".", suffix=".tmp", dir=str(path.parent),
