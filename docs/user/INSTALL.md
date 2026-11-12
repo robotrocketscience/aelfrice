@@ -152,7 +152,9 @@ The hooks map Gemini's events onto the aelfrice handlers:
 | `SessionStart` | `aelfrice-session-start` | Injects the locked beliefs. |
 | `BeforeAgent` | `aelfrice-prompt` | Injects the retrieval results for the prompt, then logs the turn. |
 | `AfterAgent` | `aelfrice-turn-end` | Logs the reply, then runs the end-of-turn lock prompt. It never returns a `deny` decision, so it never makes Gemini retry the turn. |
-| `PreCompress` | `aelfrice-pre-compress` | Rotates the turn log and ingests it. Gemini fires `PreCompress` asynchronously, so the rotation can still be running when compression starts. |
+| `PreCompress` | `aelfrice-pre-compress` | Rotates the turn log and starts its ingest in the background. |
+
+The Gemini 0.68.0 hooks reference says `PreCompress` fires asynchronously, but the 0.68.0 program waits for it: `ChatCompressionService.compress` in the installed bundle runs `await config2.getHookSystem()?.firePreCompressEvent(trigger)` and only then measures the history and compresses it. The rotation therefore ends before compression starts. Only the ingest that the hook starts in the background can still be running. Because the event fires before that measurement, a call with trigger `auto` fires it whether or not the history is long enough to compress, and with the default settings Gemini makes that call before each request to the model. Each of those fires that finds a turn log rotates it and starts an ingest, whether or not Gemini then compresses.
 
 To turn one hook off, run `/hooks disable <hook name>` in Gemini, for example `/hooks disable aelfrice-pre-compress`.
 
