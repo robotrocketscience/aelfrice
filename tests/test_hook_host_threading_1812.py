@@ -34,9 +34,10 @@ def test_every_host_has_search_and_shell_tool_names() -> None:
     assert SEARCH_TOOL_NAMES_BY_HOST["codex"] == SEARCH_TOOL_NAMES
     assert SHELL_TOOL_NAME_BY_HOST["claude"] == "Bash"
     assert SHELL_TOOL_NAME_BY_HOST["codex"] == "Bash"
-    # The Gemini CLI's own tool names (#1812).
+    # The Gemini CLI 0.68.0 tool names (#1812), from docs/reference/tools.md;
+    # `search_file_content` is only the legacy alias of `grep_search`.
     assert SEARCH_TOOL_NAMES_BY_HOST["gemini"] == (
-        "search_file_content", "glob", "google_web_search", "web_fetch",
+        "grep_search", "glob", "google_web_search", "web_fetch",
     )
     assert SHELL_TOOL_NAME_BY_HOST["gemini"] == "run_shell_command"
 

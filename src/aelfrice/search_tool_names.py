@@ -52,13 +52,15 @@ SHELL_TOOL_NAME: Final[str] = "Bash"
 # the default, so a Codex payload is read with the claude names. That is
 # also correct for Codex, which reports shell commands as `Bash` (#1055)
 # and installs no search-tool matcher. The gemini entries are the Gemini
-# CLI tool names; `aelf setup --host gemini` installs no tool hook yet,
-# because the input fields of its tool payloads are not documented.
+# CLI 0.68.0 tool names (docs/reference/tools.md, where
+# `search_file_content` is the legacy alias of `grep_search`). That page
+# also lists each tool's argument keys, but `aelf setup --host gemini`
+# installs no tool hook yet.
 SEARCH_TOOL_NAMES_BY_HOST: Final[Mapping[str, tuple[str, ...]]] = {
     CLAUDE_HOST: SEARCH_TOOL_NAMES,
     CODEX_HOST: SEARCH_TOOL_NAMES,
     GEMINI_HOST: (
-        "search_file_content",
+        "grep_search",
         "glob",
         "google_web_search",
         "web_fetch",
