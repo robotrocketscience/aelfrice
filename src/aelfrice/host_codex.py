@@ -1682,6 +1682,22 @@ def _wrapped_owned_keys(
     return found
 
 
+def _program_path(cmd: str, key: str, *, windows: bool | None = None) -> str:
+    """The program path of an owned handler's command, without arguments.
+
+    The SessionStart command ends in `--host codex` (#1812), and doctor
+    names a missing program by its path alone. The path is the shortest
+    run of leading words whose key is `key`, so an unquoted path with a
+    space in it stays whole.
+    """
+    tokens = command_tokens(cmd, windows=windows)
+    for k in range(1, len(tokens) + 1):
+        candidate = " ".join(tokens[:k])
+        if launcher_key(candidate, windows=windows) == key:
+            return candidate
+    return program_token(cmd, windows=windows)
+
+
 def doctor_codex(
     codex_dir: Path | None = None, *, windows: bool | None = None,
 ) -> CodexDoctorReport:
@@ -1770,12 +1786,13 @@ def doctor_codex(
                     found_keys.setdefault(event, set()).add(own_key)
                     runs[(event, own_key)] = runs.get((event, own_key), 0) + 1
                     exe = Path(program_token(cmd, windows=windows))
+                    path = _program_path(cmd, own_key, windows=windows)
                     if (
                         exe.is_absolute()
                         and not program_exists(cmd, windows=windows)
-                        and cmd not in report.stale_commands
+                        and path not in report.stale_commands
                     ):
-                        report.stale_commands.append(cmd)
+                        report.stale_commands.append(path)
     report.missing_events = sorted(expected_events - covered)
     report.duplicate_runs = [
         (event, key, count)
