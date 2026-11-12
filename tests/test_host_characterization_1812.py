@@ -466,7 +466,7 @@ _CODEX_HOOKS = {
             {
                 "matcher": "Bash",
                 "hooks": [
-                    _codex_handler("aelf-search-tool-hook"),
+                    _codex_handler("aelf-search-tool-hook", context_limit=9500),
                     _codex_handler("aelf-pre-issue-hook"),
                 ],
             },

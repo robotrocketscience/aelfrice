@@ -187,11 +187,20 @@ CODEX_ADDITIONAL_CONTEXT_LIMIT: Final[int] = HOOK_PAYLOAD_CHAR_LIMIT
 
 Codex limits each model-visible hook output to about 2,500 tokens by
 default and saves a longer one to a file, so the model sees only a preview
-(https://developers.openai.com/codex/hooks, "additionalContextLimit"). The
-field is an approximate token threshold, and Codex reads it on SessionStart
-and UserPromptSubmit handlers only; codex-cli 0.167.1 logs "ignoring
-additionalContextLimit ... this event cannot emit additionalContext" for
-any other event.
+(https://developers.openai.com/codex/hooks, "Large hook output"). The
+field is an approximate token threshold. The docs say: "For any command
+hook that returns additionalContext, set additionalContextLimit on the
+handler", and "For events that can't produce additional context, Codex
+ignores additionalContextLimit and reports a configuration warning."
+Three aelfrice handlers return `additionalContext`: retrieval
+(UserPromptSubmit), the SessionStart baseline, and the search-tool hook
+on PreToolUse, an event whose docs say "To add model-visible context
+without blocking, return hookSpecificOutput.additionalContext". Codex's
+hook discovery (codex-rs/hooks/src/engine/discovery.rs in openai/codex)
+keeps the field on PreToolUse, PostToolUse, SessionStart, and
+UserPromptSubmit, among others, and on an event that can't emit context
+logs "ignoring additionalContextLimit ... this event cannot emit
+additionalContext" and runs the handler without it.
 
 The value is the bound aelfrice already enforces on every hook fire's
 whole stdout, `HOOK_PAYLOAD_CHAR_LIMIT` characters. A token estimate of a
@@ -297,7 +306,13 @@ def desired_codex_hooks(
         "PreToolUse": [
             {
                 "matcher": "Bash",
-                "hooks": [_handler(search_bash_cmd), _handler(pre_issue_cmd)],
+                "hooks": [
+                    _handler(
+                        search_bash_cmd,
+                        additional_context_limit=CODEX_ADDITIONAL_CONTEXT_LIMIT,
+                    ),
+                    _handler(pre_issue_cmd),
+                ],
             },
         ],
         "PostToolUse": [
