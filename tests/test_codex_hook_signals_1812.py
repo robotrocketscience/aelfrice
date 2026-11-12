@@ -31,6 +31,7 @@ from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT
 from aelfrice.hook_summary import ENV_HOOK_SUMMARY_LINE
 from aelfrice.host_codex import (
     CODEX_ADDITIONAL_CONTEXT_LIMIT,
+    _rust_regex_rejects,
     _wrapped_owned_keys,
     install_codex_hooks,
     install_codex_skills,
@@ -440,8 +441,23 @@ _OVERLAPPING_SESSION_START = {
     "copy under ^res": ("{ours}", "^res"),
     "copy under *": ("{ours}", "*"),
     "copy under empty": ("{ours}", ""),
-    "copy under an unreadable regex": ("{ours}", "("),
     "copy under a number": ("{ours}", 5),
+    # Rust's regex reads these, so Codex runs the group.
+    "copy under (?i)": ("{ours}", "(?i)RESUME"),
+    "copy under a class holding (?=": ("{ours}", "[(?=]?resume"),
+}
+# Matchers Codex can't compile. It logs "invalid matcher" and skips the
+# group, so a copy under one never runs. Each would match `resume` if
+# Codex could compile it.
+_SKIPPED_MATCHERS = {
+    "unclosed group": "(",
+    "lookahead": "(?=resume)",
+    "negative lookahead": "(?!fork)resume",
+    "lookbehind": "(?<=r)esume",
+    "negative lookbehind": "(?<!x)resume",
+    "backreference": r"(r)\1?esume",
+    "named backreference": "(?P<a>r)(?P=a)?esume",
+    "atomic group": "(?>resume)",
 }
 
 
@@ -478,6 +494,80 @@ def test_doctor_faults_a_second_run_under_an_overlapping_matcher(
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 1, out
     assert "SessionStart runs aelf-session-start-hook 2 times" in out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_SKIPPED_MATCHERS))
+def test_doctor_skips_a_group_whose_matcher_codex_cannot_compile(
+    tmp_path: Path, shape: str,
+) -> None:
+    codex_dir, hooks, _program = _installed(tmp_path)
+    matcher = _SKIPPED_MATCHERS[shape]
+    _add_group(hooks, "SessionStart", _session_start_command(hooks), matcher)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    assert (
+        f"[warn] SessionStart group with matcher {matcher!r} never runs"
+        in out
+    ), out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_skips_a_wrapper_under_a_matcher_codex_cannot_compile(
+    tmp_path: Path,
+) -> None:
+    """A skipped group's wrapper gets no `may also run` warning either."""
+    codex_dir, hooks, program = _installed(tmp_path)
+    _add_group(hooks, "SessionStart", f"sh -c '{program}'", "(?=resume)")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "may also run" not in out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_skips_a_tool_group_whose_matcher_codex_cannot_compile(
+    tmp_path: Path,
+) -> None:
+    """Codex compiles a tool event's matcher too, and skips the group."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    _add_group(
+        hooks, "PreToolUse", _first_command(hooks, "PreToolUse"), "(?<=B)ash",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+
+
+@pytest.mark.parametrize(
+    ("pattern", "rejected"),
+    [
+        ("(?=x)", True),
+        ("(?<!x)", True),
+        (r"\1", True),
+        (r"[\1]", True),
+        ("(?P=a)", True),
+        ("(?#c)", True),
+        ("(?a)x", True),
+        (r"x\Z", True),
+        (r"[\b]", True),
+        ("x{,3}", True),
+        ("(?i:x)", False),
+        ("(?-s)x", False),
+        ("(?P<a>x)", False),
+        ("(?<a>x)", False),
+        ("[(?=]", False),
+        ("[](?=]", False),
+        (r"\(?=x", False),
+        (r"\bx\b", False),
+        ("x{2,}", False),
+    ],
+)
+def test_rust_regex_rejects_what_regex_1_12_rejects(
+    pattern: str, rejected: bool,
+) -> None:
+    """Each verdict is what regex 1.12.3's `Regex::new` returned."""
+    assert _rust_regex_rejects(pattern) is rejected
 
 
 @pytest.mark.timeout(60)
