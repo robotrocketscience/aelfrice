@@ -140,6 +140,8 @@ Restart Gemini CLI after setup so it loads the hooks.
 
 `aelf setup --host gemini` writes to Gemini's user directory, `~/.gemini`. When `$GEMINI_CLI_HOME` is set, Gemini reads `$GEMINI_CLI_HOME/.gemini` instead, and so do all three verbs. A `$GEMINI_CLI_HOME` that isn't an existing directory is an error: the verbs refuse and create nothing.
 
+The verbs follow symlinks, as the Codex host follows a symlinked `$CODEX_HOME`. When `$GEMINI_CLI_HOME`, `.gemini`, or `commands/aelf` is a symlink, setup writes into the directory it points to, which is the directory Gemini reads through the same link, and keeps the link. Unsetup removes the generated commands through the link and never removes the link. When `commands/aelf` is the link, unsetup also keeps the directory it points to, even if that leaves the directory empty.
+
 Setup writes two things there, and nothing into your project:
 
 - **Hooks in `settings.json`.** Each hook runs `aelf-gemini-hook` at the absolute path setup resolves on your machine. When setup resolves none, for example because the only copy is in a venv under `.claude/worktrees/` (#928), it writes the bare name, and Gemini then looks it up on `PATH`. Setup quotes a path that holds a space so that a POSIX shell, or PowerShell on Windows, reads it as one word. The Gemini 0.68.0 docs show hook scripts for both shells but don't say which shell runs the command string. Gemini reads each hook `timeout` in milliseconds.
