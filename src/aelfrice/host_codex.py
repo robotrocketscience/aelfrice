@@ -199,6 +199,11 @@ lanes are packed against separate budgets, and
 `AELFRICE_RETRIEVAL_TOKEN_BUDGET` can raise it.
 """
 
+#: The argument setup appends to the SessionStart command so the hook knows
+#: it runs under Codex. The `--host` spelling matches the CLI option.
+CODEX_SESSION_START_ARGS: Final[str] = "--host codex"
+
+
 def _handler(
     command: str,
     *,
@@ -240,7 +245,10 @@ def desired_codex_hooks(
     """
     hook_cmd = resolve_hook_command(scope)
     logger_cmd = resolve_transcript_logger_command(scope)
-    session_cmd = resolve_session_start_hook_command(scope)
+    session_cmd = (
+        f"{resolve_session_start_hook_command(scope)} "
+        f"{CODEX_SESSION_START_ARGS}"
+    )
     stop_cmd = resolve_stop_hook_command(scope)
     search_bash_cmd = resolve_search_tool_bash_command(scope)
     pre_issue_cmd = resolve_pre_issue_guard_command(scope)

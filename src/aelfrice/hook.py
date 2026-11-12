@@ -22,6 +22,7 @@ flows here automatically.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -60,6 +61,8 @@ from aelfrice.config_discovery import (
     discover_config,
 )
 from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT, lock_overflow_line
+# A leaf (it imports only `typing`), so it cannot be the import that fails.
+from aelfrice.hosts import CODEX_HOST, DEFAULT_HOST
 # #1631: the escapers moved to the leaf `hook_payload`, so the search hook
 # and `provenance_render` can share them without importing this module.
 # `_escape_for_hook_block` is bound under its old name for the call sites
@@ -6982,11 +6985,72 @@ def _spawn_sidecar_warm() -> bool:
         return False
 
 
+@dataclass
+class _SessionStartTally:
+    """What one SessionStart fire injected, for the summary line (#1812).
+
+    The counts are the ones the fire's audit row records: the baseline
+    beliefs shown verbatim, and how many of them are user locks.
+    """
+
+    cwd: str | None = None
+    n_beliefs: int = 0
+    n_locked: int = 0
+
+
+_SESSION_START_EVENT: Final[str] = "SessionStart"
+
+
 def session_start(
     *,
     stdin: IO[str] | None = None,
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
+    host: str = DEFAULT_HOST,
+) -> int:
+    """Run the SessionStart hook for `host`. Always returns 0.
+
+    On every host but Codex this is `_session_start` writing straight to
+    stdout. On Codex the fire's stdout is collected first. With the
+    `[hook] summary_line` opt-in off (the default), the collected text is
+    written unchanged, byte for byte. With it on, the text goes out as JSON:
+    `hookSpecificOutput.additionalContext` carries it for the model and
+    `systemMessage` carries one line for the user, which Codex shows and
+    plain stdout never is (`aelfrice.hook_summary`).
+    """
+    if host != CODEX_HOST:
+        return _session_start(stdin=stdin, stdout=stdout, stderr=stderr)
+    sout = stdout if stdout is not None else sys.stdout
+    serr = stderr if stderr is not None else sys.stderr
+    buf = io.StringIO()
+    tally = _SessionStartTally()
+    rc = _session_start(stdin=stdin, stdout=buf, stderr=stderr, tally=tally)
+    text = buf.getvalue()
+    try:
+        from aelfrice import hook_summary  # noqa: PLC0415
+
+        start = Path(tally.cwd) if tally.cwd else None
+        if hook_summary.is_summary_line_enabled(start=start, stderr=serr):
+            text = hook_summary.codex_hook_json(
+                _SESSION_START_EVENT, text,
+                n_beliefs=tally.n_beliefs, n_locked=tally.n_locked,
+            )
+    except Exception:  # non-blocking: fall back to the plain text
+        traceback.print_exc(file=serr)
+    try:
+        sout.write(text)
+        sout.flush()
+    except Exception:  # non-blocking: surface but do not fail
+        traceback.print_exc(file=serr)
+    return rc
+
+
+def _session_start(
+    *,
+    stdin: IO[str] | None = None,
+    stdout: IO[str] | None = None,
+    stderr: IO[str] | None = None,
+    tally: _SessionStartTally | None = None,
 ) -> int:
     """Run the SessionStart hook. Always returns 0.
 
@@ -7070,6 +7134,9 @@ def session_start(
         payload = _parse_pre_compact_payload(raw) or {}
         source_obj = payload.get(_SOURCE_KEY)
         source = source_obj if isinstance(source_obj, str) else ""
+        if tally is not None:
+            cwd_obj = payload.get(_CWD_KEY)
+            tally.cwd = cwd_obj if isinstance(cwd_obj, str) and cwd_obj else None
         # #1652: a `$HOME/.aelfrice.toml` that #1582 stopped reading. Not on
         # a post-compaction fire, which would only repeat it; resolved from
         # the agent's cwd, the project whose config applies. Printed last on
@@ -7131,6 +7198,11 @@ def session_start(
             # Now that the baseline is on stdout, record what it showed
             # verbatim. Only reachable once the bytes are written.
             _begin_injection_epoch(session_id, hits)
+            if tally is not None:
+                tally.n_beliefs = len(hits)
+                tally.n_locked = sum(
+                    1 for h in hits if h.lock_level == LOCK_USER
+                )
             # #280 mitigation 3: per-turn audit of the rendered block.
             # #321 additive fields: beliefs[], latency_ms, tokens.
             _write_hook_audit_record(
@@ -9413,10 +9485,32 @@ def main_pre_compact() -> int:
     return pre_compact()
 
 
+def _host_from_argv(argv: Sequence[str]) -> str:
+    """The host a hook command names with `--host NAME`, else the default.
+
+    `aelf setup --host codex` appends `--host codex` to the SessionStart
+    command it writes (#1812). Anything else on the command line, an
+    unknown host included, reads as the default host: a hook must never
+    fail on its own arguments.
+    """
+    from aelfrice.hosts import SUPPORTED_HOSTS  # noqa: PLC0415
+
+    args = list(argv)
+    for i, arg in enumerate(args):
+        if arg == "--host" and i + 1 < len(args):
+            value = args[i + 1]
+        elif arg.startswith("--host="):
+            value = arg.split("=", 1)[1]
+        else:
+            continue
+        return value if value in SUPPORTED_HOSTS else DEFAULT_HOST
+    return DEFAULT_HOST
+
+
 def main_session_start() -> int:
     """Entry point for the SessionStart hook console script."""
     ensure_utf8_streams()
-    return session_start()
+    return session_start(host=_host_from_argv(sys.argv[1:]))
 
 
 def main_stop() -> int:
