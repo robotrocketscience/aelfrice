@@ -1410,8 +1410,8 @@ class CodexDoctorReport:
     missing_handlers: list[str] = field(default_factory=list[str])
     stale_commands: list[str] = field(default_factory=list[str])
     #: (event, program, count) for each aelfrice program that more than one
-    #: handler in one event runs, either as its own handler or from a
-    #: foreign one such as a wrapper script or an `sh -c` script (#1812).
+    #: handler in one event runs as its command's first word, either as its
+    #: own handler or after a prefix word such as `env` (#1812).
     duplicate_runs: list[tuple[str, str, int]] = field(
         default_factory=list[tuple[str, str, int]],
     )
@@ -1680,10 +1680,60 @@ def _word_program_key(
     return launcher_key(inner[0], windows=windows) if inner else ""
 
 
+def _program_index(simple: list[str], *, windows: bool) -> int:
+    """The index of a simple command's program word.
+
+    Skips `VAR=value` words, and prefix words such as `env` or `exec` with
+    the flags after them, as in `env -i PROGRAM`. Equals `len(simple)`
+    when no word is left.
+    """
+    i = 0
+    while i < len(simple):
+        if _ASSIGNMENT.match(simple[i]):
+            i += 1
+        elif launcher_key(simple[i], windows=windows) in _PREFIX_WORDS:
+            i += 1
+            while i < len(simple) and simple[i].startswith("-"):
+                i += 1
+        else:
+            break
+    return i
+
+
+def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
+    """The owned program a foreign handler runs as its first word, or ''.
+
+    The program is the word after any `VAR=value` words and prefix words,
+    as in `/usr/bin/env <bin>/aelf-session-start-hook`, in the command's
+    first simple command. Such a handler certainly runs the program, so
+    doctor counts it toward a duplicate run (#1812).
+    """
+    if not isinstance(handler, dict):
+        return ""
+    cmd = cast(dict[str, object], handler).get("command")
+    if not isinstance(cmd, str):
+        return ""
+    win = os.name == "nt" if windows is None else windows
+    commands = _simple_commands(command_tokens(cmd, windows=win))
+    if not commands:
+        return ""
+    simple = commands[0][0]
+    i = _program_index(simple, windows=win)
+    if i >= len(simple):
+        return ""
+    key = launcher_key(simple[i], windows=win)
+    return key if key in owned_keys(_OWNED_BASENAMES, windows=win) else ""
+
+
 def _wrapped_owned_keys(
     handler: object, *, windows: bool | None = None,
 ) -> set[str]:
-    """Owned programs a foreign handler's command runs.
+    """Owned programs a foreign handler's command may run.
+
+    Every program `_direct_owned_key` finds is here too. The others are
+    heuristic matches: the scan doesn't read quotes, `command -v`, `test`,
+    or comments, so a script that only names a program also matches, and
+    doctor warns about them instead of failing (#1812).
 
     A wrapper such as `python3 aelf-visible.py SessionStart
     <bin>/aelf-session-start-hook` is not ours by its program, so setup
@@ -1726,17 +1776,7 @@ def _wrapped_owned_keys(
                 for inner in _substitutions(text)
             )
         for simple, piped in _simple_commands(words):
-            i = 0
-            while i < len(simple):
-                key = launcher_key(simple[i], windows=win)
-                if _ASSIGNMENT.match(simple[i]):
-                    i += 1
-                elif key in _PREFIX_WORDS:
-                    i += 1
-                    while i < len(simple) and simple[i].startswith("-"):
-                        i += 1
-                else:
-                    break
+            i = _program_index(simple, windows=win)
             if i >= len(simple):
                 continue
             head = launcher_key(simple[i], windows=win)
@@ -1852,16 +1892,26 @@ def doctor_codex(
     covered: set[str] = set()
     found_keys: dict[str, set[str]] = {}
     runs: dict[tuple[str, str], int] = {}
+    maybe: dict[tuple[str, str], list[str]] = {}
     for event, groups in hooks_map.items():
         if not isinstance(groups, list):
             continue
         for group in cast(list[object], groups):
-            # #1812: a foreign handler that runs an aelfrice program as an
-            # argument still runs it, so it counts toward duplicate runs.
+            # #1812: a foreign handler that runs an aelfrice program as its
+            # first word counts toward duplicate runs. One that names it
+            # only in a shell script or an argument may run it, so doctor
+            # warns about it.
             for other in _handlers_in(group):
-                if not _handler_is_owned(other, windows=windows):
-                    for key in _wrapped_owned_keys(other, windows=windows):
-                        runs[(event, key)] = runs.get((event, key), 0) + 1
+                if _handler_is_owned(other, windows=windows):
+                    continue
+                direct = _direct_owned_key(other, windows=windows)
+                if direct:
+                    runs[(event, direct)] = runs.get((event, direct), 0) + 1
+                for key in _wrapped_owned_keys(other, windows=windows):
+                    if key != direct:
+                        maybe.setdefault((event, key), []).append(
+                            str(cast(dict[str, object], other)["command"]),
+                        )
             # #1412: count per handler. Gating on a fully-owned group made
             # an aelfrice handler sharing a group with a foreign one
             # invisible to doctor — the same blind spot that let setup
@@ -1895,6 +1945,18 @@ def doctor_codex(
         for (event, key), count in sorted(runs.items())
         if count > 1
     ]
+    for (event, key), commands in sorted(maybe.items()):
+        if runs.get((event, key), 0) + len(commands) < 2:
+            continue
+        for cmd in commands:
+            warning = (
+                f"{event} handler may also run {key}: doctor found it in a "
+                "shell script or an argument and can't tell whether the "
+                "handler runs it. If it does, keep the handler `aelf setup "
+                f"--host codex` wrote and delete this one: {cmd}"
+            )
+            if warning not in report.warnings:
+                report.warnings.append(warning)
     report.missing_handlers = sorted(
         f"{event}:{key}"
         for event in sorted(expected_keys)
