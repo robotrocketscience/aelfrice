@@ -1700,14 +1700,35 @@ def _program_index(simple: list[str], *, windows: bool) -> int:
     return i
 
 
+def _looks_up(simple: list[str], end: int, *, windows: bool) -> bool:
+    """True when a `command` word before `end` has `-v` or `-V` as an option.
+
+    `command -v` and `command -V` print what the program is and don't run
+    it. The letter can follow another option or share a word with one, as
+    in `command -p -v PROGRAM` or `command -pv PROGRAM`.
+    """
+    for j in range(end):
+        if launcher_key(simple[j], windows=windows) != "command":
+            continue
+        k = j + 1
+        while (
+            k < end and simple[k].startswith("-")
+            and not simple[k].startswith("--")
+        ):
+            if set(simple[k][1:]) & {"v", "V"}:
+                return True
+            k += 1
+    return False
+
+
 def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
     """The owned program a foreign handler runs as its first word, or ''.
 
     The program is the word after any `VAR=value` words and prefix words,
     as in `/usr/bin/env <bin>/aelf-session-start-hook`, in the command's
     first simple command. Such a handler certainly runs the program, so
-    doctor counts it toward a duplicate run (#1812). `command -v` and
-    `command -V` only look the program up, so they don't count.
+    doctor counts it toward a duplicate run (#1812). `command` with a `-v`
+    or `-V` option only looks the program up, so it doesn't count.
     """
     if not isinstance(handler, dict):
         return ""
@@ -1722,11 +1743,7 @@ def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
     i = _program_index(simple, windows=win)
     if i >= len(simple):
         return ""
-    if any(
-        launcher_key(word, windows=win) == "command"
-        and flag.startswith("-") and set(flag[1:]) & {"v", "V"}
-        for word, flag in zip(simple[:i], simple[1:i])
-    ):
+    if _looks_up(simple, i, windows=win):
         return ""
     key = launcher_key(simple[i], windows=win)
     return key if key in owned_keys(_OWNED_BASENAMES, windows=win) else ""

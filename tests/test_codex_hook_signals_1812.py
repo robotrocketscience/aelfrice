@@ -260,6 +260,8 @@ _DIRECT = {
     # word.
     "env -i": "/usr/bin/env -i {p} --host codex",
     "assignment": "AELFRICE_HOOK_SUMMARY_LINE=1 {p} --host codex",
+    # `-p` sets a default PATH and still runs the program.
+    "command -p": "command -p {p} --host codex",
 }
 
 
@@ -432,6 +434,10 @@ _CHECKS = {
     # `command` is a prefix word, but `-v` only looks the program up.
     "top-level command -v": "command -v {p} >/dev/null",
     "top-level command -V": "command -V {p}",
+    # The lookup option can follow another option or share a word with one.
+    "command -p -v": "command -p -v {p}",
+    "command -p -V": "command -p -V {p}",
+    "command -pv": "command -pv {p}",
     "test -x": "sh -c 'test -x {p} || echo missing'",
 }
 
