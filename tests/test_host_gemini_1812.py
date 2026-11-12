@@ -336,6 +336,21 @@ def test_install_then_remove_gives_back_the_same_bytes(
     assert path.read_bytes() == text.encode("utf-8")
 
 
+def test_install_then_remove_spaces_a_compact_file_as_json_dumps_does(
+    gdir: Path, cmd: str,
+) -> None:
+    """Pins the documented limit: spacing after `:` and `,` isn't kept.
+
+    Killed by: adding a final newline the file lacked, or keeping the
+    compact separators without changing INSTALL.md to match.
+    """
+    path = gdir / "settings.json"
+    path.write_bytes(b'{"theme":"x","n":1}')
+    _install(path, cmd)
+    hgm.remove_gemini_hooks(path)
+    assert path.read_bytes() == b'{"theme": "x", "n": 1}'
+
+
 def test_remove_drops_a_hooks_object_it_empties(gdir: Path, cmd: str) -> None:
     """Killed by: leaving `"hooks": {}` behind in a file that had none."""
     path = gdir / "settings.json"
