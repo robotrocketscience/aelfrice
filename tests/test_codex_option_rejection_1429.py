@@ -434,3 +434,18 @@ def test_generated_setup_skill_states_the_refusal_contract() -> None:
     assert "--force" in text
     assert "--codex-skills" in text
     assert "#1429" in text
+
+
+@pytest.mark.timeout(60)
+def test_generated_setup_skill_names_every_option_codex_setup_accepts() -> None:
+    """The skill lists what setup accepts, so an agent following it knows
+    `--status-message` works on this host (#1812)."""
+    text = _bundled_codex_skills()["aelf-setup"]
+    sub = _subcommand_parser(build_parser(), "setup")
+    assert sub is not None
+    accepted = {
+        opt for dest, opt in _option_dests(sub).items()
+        if dest in _CODEX_APPLICABLE_DESTS["setup"] and dest != "host"
+    }
+    assert "--status-message" in accepted
+    assert sorted(opt for opt in accepted if opt not in text) == []
