@@ -754,6 +754,21 @@ def test_doctor_reports_a_disabled_hook_name_without_failing(
     assert report.faults() == []
 
 
+def test_doctor_reports_a_hook_disabled_by_its_command(
+    gdir: Path, cmd: str,
+) -> None:
+    """`hooksConfig.disabled` lists hook names or commands
+    (docs/reference/configuration.md). Killed by: matching names only."""
+    path = gdir / "settings.json"
+    _install(path, cmd)
+    doc = _read(path)
+    doc["hooksConfig"] = {"disabled": [cmd, "echo other"]}
+    _write(path, doc)
+    report = hgm.doctor_gemini(gdir)
+    assert report.disabled_hook_names == [cmd]
+    assert report.faults() == []
+
+
 def test_doctor_reports_an_unparseable_file(gdir: Path) -> None:
     """Not a fault: nothing in the file says aelfrice was installed."""
     (gdir / "settings.json").write_text("{ nope", encoding="utf-8")

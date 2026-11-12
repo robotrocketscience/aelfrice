@@ -977,16 +977,21 @@ def doctor_gemini(
         report.hooks_turned_off_by.append("hooksConfig.enabled")
     disabled = _setting(doc, "hooksConfig", "disabled")
     if isinstance(disabled, list):
+        # Gemini documents the entries as hook names or commands
+        # (docs/reference/configuration.md, `hooksConfig.disabled`).
         ours = {name for name, _, _ in HOOK_SPECS.values()}
         report.disabled_hook_names = sorted(
-            name for name in cast(list[object], disabled)
-            if isinstance(name, str) and name in ours
+            entry for entry in cast(list[object], disabled)
+            if isinstance(entry, str) and (
+                entry in ours
+                or _handler_is_owned({"command": entry}, windows=windows)
+            )
         )
     for cmd in report.stale_commands:
         report.warnings.append(f"hook command not found on disk: {cmd}")
     if report.disabled_hook_names:
         report.warnings.append(
-            "aelfrice hooks turned off with /hooks disable: "
+            "aelfrice hooks turned off in hooksConfig.disabled: "
             + ", ".join(report.disabled_hook_names),
         )
     if not report.owned_handler_count and report.settings_valid:
