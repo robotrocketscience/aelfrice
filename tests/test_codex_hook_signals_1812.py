@@ -374,7 +374,12 @@ _WRAPPERS = {
     # A direct run is one simple command, so an operator makes the
     # handler a wrapper.
     "after cd": "cd /tmp && {p} --host codex",
+    # A compound command, with or without arguments after the program.
+    # Doctor splits the command at its operators, so the program word in
+    # `{ PROGRAM; }` is `PROGRAM`, not `PROGRAM;`.
+    "group": "{{ {p}; }}",
     "group with arguments": "{{ {p} --host codex; }}",
+    "if": "if {p}; then :; fi",
     "if with arguments": "if {p} --host codex; then :; fi",
     # Doctor doesn't read `!`. bash 3.2, bash 5.2, and zsh 5.9 run no
     # program for `X=1 !` and `nice !`.

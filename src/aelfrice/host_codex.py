@@ -2131,6 +2131,19 @@ def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
     return _direct_run_key(cmd.strip(), windows=win)
 
 
+def _top_level_words(cmd: str, *, windows: bool) -> list[str]:
+    """A handler's command split into words for the warning scan.
+
+    On POSIX, Codex runs the command as a shell script, so it splits the
+    way `_script_words` does, with each operator as its own word: the
+    program word in `{ PROGRAM; }` is `PROGRAM`, not `PROGRAM;`. The
+    Windows splitter keeps single quotes and has no operators to split.
+    """
+    if windows:
+        return command_tokens(cmd, windows=True)
+    return _script_words(cmd)
+
+
 def _wrapped_owned_keys(
     handler: object, *, windows: bool | None = None,
 ) -> set[str]:
@@ -2172,7 +2185,7 @@ def _wrapped_owned_keys(
     # Each entry is a command's text, its words, and how many scripts deep
     # it is.
     pending: list[tuple[str, list[str], int]] = [
-        (cmd, command_tokens(cmd, windows=win), 0),
+        (cmd, _top_level_words(cmd, windows=win), 0),
     ]
     while pending:
         text, words, depth = pending.pop()
