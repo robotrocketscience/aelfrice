@@ -716,20 +716,29 @@ def test_doctor_faults_an_unquoted_spaced_command(gdir: Path, tmp_path: Path) ->
     assert any("is not quoted" in f for f in report.faults())
 
 
-@pytest.mark.parametrize(
-    ("section", "key"), [("tools", "enableHooks"), ("hooksConfig", "enabled")],
-)
-def test_doctor_faults_hooks_turned_off(
-    gdir: Path, cmd: str, section: str, key: str,
-) -> None:
+def test_doctor_faults_hooks_turned_off(gdir: Path, cmd: str) -> None:
     path = gdir / "settings.json"
     _install(path, cmd)
     doc = _read(path)
-    doc[section] = {key: False}
+    doc["hooksConfig"] = {"enabled": False}
     _write(path, doc)
     report = hgm.doctor_gemini(gdir)
-    assert report.hooks_turned_off_by == [f"{section}.{key}"]
+    assert report.hooks_turned_off_by == ["hooksConfig.enabled"]
     assert any("turned off" in f for f in report.faults())
+
+
+def test_doctor_ignores_tools_enable_hooks(gdir: Path, cmd: str) -> None:
+    """Gemini 0.68.0 documents only `hooksConfig.enabled` as the hooks
+    switch (docs/reference/configuration.md), so `tools.enableHooks` set
+    to false is not a reason to exit 1."""
+    path = gdir / "settings.json"
+    _install(path, cmd)
+    doc = _read(path)
+    doc["tools"] = {"enableHooks": False}
+    _write(path, doc)
+    report = hgm.doctor_gemini(gdir)
+    assert report.hooks_turned_off_by == []
+    assert report.faults() == []
 
 
 def test_doctor_reports_a_disabled_hook_name_without_failing(

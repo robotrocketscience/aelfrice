@@ -6470,7 +6470,7 @@ def _cmd_setup_gemini(
     )
     print(
         "  next: restart Gemini CLI to load the hooks. Gemini runs them "
-        "while tools.enableHooks and hooksConfig.enabled are true, which "
+        "while hooksConfig.enabled is true, which "
         "is the default.",
         file=out,  # type: ignore[arg-type]
     )

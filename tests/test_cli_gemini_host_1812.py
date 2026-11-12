@@ -130,7 +130,7 @@ def test_setup_writes_the_hooks_and_commands(sb: Sandbox) -> None:
     assert lines == [
         f"wrote <TMP>/userhome/.gemini/settings.json (events: {EVENTS})",
         "  next: restart Gemini CLI to load the hooks. Gemini runs them "
-        "while tools.enableHooks and hooksConfig.enabled are true, which "
+        "while hooksConfig.enabled is true, which "
         "is the default.",
         f"installed {_n_commands()} Gemini command(s) in "
         "<TMP>/userhome/.gemini/commands/aelf: invoke as /aelf:<name>",

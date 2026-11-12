@@ -971,9 +971,10 @@ def doctor_gemini(
                     report, _handler_command(handler), windows=windows,
                 )
     report.missing_events = sorted(set(HOOK_SPECS) - covered)
-    for setting in (("tools", "enableHooks"), ("hooksConfig", "enabled")):
-        if _setting(doc, *setting) is False:
-            report.hooks_turned_off_by.append(".".join(setting))
+    # The one hooks switch Gemini 0.68.0 documents
+    # (docs/reference/configuration.md, `hooksConfig.enabled`).
+    if _setting(doc, "hooksConfig", "enabled") is False:
+        report.hooks_turned_off_by.append("hooksConfig.enabled")
     disabled = _setting(doc, "hooksConfig", "disabled")
     if isinstance(disabled, list):
         ours = {name for name, _, _ in HOOK_SPECS.values()}
