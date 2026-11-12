@@ -79,9 +79,33 @@ aelf unsetup --host codex    # remove the aelfrice hooks and skills together
 
 `aelf setup --host codex` writes the hook set to the Codex configuration home (#1052). The same command installs the `/aelf:*` slash-command bundle as `$aelf-*` agent skills under `~/.agents/skills/` (v4.1.0+). aelfrice generates both surfaces from one source bundle, so the two never differ. To install the hooks only, pass `--no-codex-skills`. The default is `--codex-skills`.
 
-`aelf setup --host codex` accepts only `--force` and `--codex-skills` / `--no-codex-skills`, and `aelf unsetup --host codex` accepts no option but `--host`. The Codex path never reads the other options the two commands share with the `claude` host — `--scope`, `--settings-path`, `--no-statusline`, `--rebuilder`, and the per-lane opt-outs among them — so passing one exits 2 and changes nothing, rather than reporting success for an instruction that was discarded (#1429).
+`aelf setup --host codex` accepts only `--force`, `--codex-skills` / `--no-codex-skills`, and `--status-message`, and `aelf unsetup --host codex` accepts no option but `--host`. The Codex path never reads the other options the two commands share with the `claude` host, such as `--scope`, `--settings-path`, `--no-statusline`, `--rebuilder`, and the per-lane opt-outs. Passing one of them exits 2 and changes nothing, rather than reporting success for an instruction that was discarded (#1429).
 
 The skill install is idempotent and removes orphan skills. It touches only the skills aelfrice generated, because an `AELFRICE-CODEX-SKILL` marker controls replacement and removal. For the full detail — the invocation, the generation transform, and the approval warnings specific to Codex — see [the Codex host section of the slash-command reference](SLASH_COMMANDS.md#codex-host-aelf--skills).
+
+#### Signs that aelfrice ran (unreleased)
+
+Codex adds the text a hook prints to the model's context and doesn't show it to you, and its status line takes only built-in items. aelfrice offers two ways to see it run (#1812):
+
+- `aelf setup --host codex --status-message "aelfrice memory"` writes the text as the Codex `statusMessage` field of the retrieval, SessionStart, and stop handlers. Codex shows it only while the hook runs, so it can disappear within a fraction of a second. Run setup without the option to remove it.
+- The `[hook] summary_line` key, or `AELFRICE_HOOK_SUMMARY_LINE=1`, makes the SessionStart hook add one line that Codex shows, such as `aelfrice: 37 beliefs injected (37 locked)`. It's off by default. For the details, see [`[hook] summary_line`](CONFIG.md#hook-summary_line-unreleased).
+
+`aelf setup --host codex` also writes `"additionalContextLimit": 9500` on the SessionStart and retrieval handlers. Codex saves hook output over its limit, about 2,500 tokens by default, to a file and gives the model only a preview ([Codex hooks](https://developers.openai.com/codex/hooks)). aelfrice caps each hook's output at 9,500 characters, so a limit of 9,500 tokens keeps the whole block in the model's context.
+
+If you set up Codex with an earlier release, run `aelf setup --host codex` again to get these fields and the `--host codex` argument that the summary line needs. Then open `/hooks` in a Codex session and approve the changed entries, because Codex skips a hook whose definition changed until you approve it again. `aelf doctor --host codex` accepts both the earlier and the new handler shapes.
+
+##### Move off a SessionStart wrapper
+
+Some setups replace the SessionStart handler with a wrapper script that runs `aelf-session-start-hook` and adds a `systemMessage`. The summary line makes that wrapper unnecessary. Setup decides which handlers it owns by the program each command runs, so it treats a wrapper started by `python3` as one of your own handlers, keeps it, and adds its own SessionStart handler next to it. Codex then runs the session-start hook twice and injects the baseline twice.
+
+To move off the wrapper:
+
+1. Turn on the summary line: add `summary_line = true` under `[hook]` in the project's `.aelfrice.toml`, or set `AELFRICE_HOOK_SUMMARY_LINE=1` in the environment that starts Codex.
+2. Run `aelf setup --host codex`.
+3. In `$CODEX_HOME/hooks.json`, under `SessionStart`, delete the handler whose `command` runs the wrapper. Keep the handler whose command ends in `aelf-session-start-hook --host codex`.
+4. Delete the wrapper script.
+5. Open `/hooks` in a Codex session and approve the changed entries.
+6. Run `aelf doctor --host codex` to confirm the wiring, then start a session and check for the `aelfrice:` line.
 
 #### `$CODEX_HOME` (unreleased)
 
