@@ -56,6 +56,8 @@ Run these commands in a terminal, from any folder:
 
    This adds the hooks and `/aelf:` commands for every project on the machine. On Codex, run `aelf setup --host codex` instead, then trust the hooks with `/hooks`. Codex uses `$aelf-*` in place of `/aelf:`.
 
+   On Gemini CLI, run `aelf setup --host gemini` instead, then restart Gemini CLI. Gemini uses the same `/aelf:` commands.
+
 To have your agent run these steps, paste this prompt into it, then exit and start a new session:
 
 ```text
@@ -85,9 +87,9 @@ Install aelfrice from github.com/robotrocketscience/aelfrice for all my projects
    /aelf:lock never push directly to main
    ```
 
-aelfrice then runs without further commands. To check the install, run `/aelf:doctor` (`aelf doctor --host codex` on Codex). The [installation guide](docs/user/INSTALL.md) covers every option.
+aelfrice then runs without further commands. To check the install, run `/aelf:doctor` (`aelf doctor --host codex` on Codex, `aelf doctor --host gemini` on Gemini CLI). The [installation guide](docs/user/INSTALL.md) covers every option.
 
-Each git repository keeps its own store, in its `.git` folder. Folders outside git share one store at `~/.aelfrice/memory.db`. On the `claude` CLI, `aelf setup` adds the git hook that reads commit messages only to the repository you run it in, so run `aelf setup` once in each project where you want that. Codex doesn't get this hook.
+Each git repository keeps its own store, in its `.git` folder. Folders outside git share one store at `~/.aelfrice/memory.db`. On the `claude` CLI, `aelf setup` adds the git hook that reads commit messages only to the repository you run it in, so run `aelf setup` once in each project where you want that. Codex and Gemini CLI don't get this hook.
 
 <p align="center"><img src="docs/assets/retrieval-lanes.png" width="88%" alt="An illustrative schematic of the retrieval lanes of aelfrice over a belief graph: locked beliefs pinned at the query, keyword seeds from full-text search spreading outward, an optional typed-edge graph walk, and a structural lane for marker queries."></p>
 

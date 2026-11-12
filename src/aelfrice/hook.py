@@ -7997,7 +7997,11 @@ def _maybe_core_gate_session_end(
        twice in a row.
     2. A headless host entrypoint (#1634, `print_mode.is_headless_hook_env`):
        return. Nobody is there to see the turn it would add.
-    3. The Codex host (`_CODEX_TURN_ID_KEY` in the payload): return.
+    3. The Codex host (`_CODEX_TURN_ID_KEY` in the payload): return. So
+       does any host other than claude that `AELFRICE_HOST` names
+       (#1812): the Gemini adapter sets it, Gemini documents no
+       `additionalContext` on its turn-end event, and step 5's child
+       runs the `claude` CLI, which is no CLI of that host's.
     4. Collect candidates with one indexed query on this session's rows.
        None: return. This is the non-firing path every Stop takes once a
        flush's candidates are batched, so the config reads below stay
@@ -8044,6 +8048,10 @@ def _maybe_core_gate_session_end(
     if is_headless_hook_env(env):
         return False
     if _CODEX_TURN_ID_KEY in payload:
+        return False
+    from aelfrice.hosts import CLAUDE_HOST, host_from_env  # noqa: PLC0415
+
+    if host_from_env(env) != CLAUDE_HOST:
         return False
     if not _collect_core_gate_session_candidates(store, session_id):
         return False
@@ -8148,7 +8156,7 @@ def stop(
     ingest flush, only when opted in (`AELFRICE_CORE_GATE_SESSION_END=1`
     or `[core_gate] session_end = true`; off by default, #1740), and
     never while `stop_hook_active` is set, in a headless session, or on
-    the Codex host. Before #1638 this hook never wrote stdout; the lock
+    the Codex or Gemini host. Before #1638 this hook never wrote stdout; the lock
     listing below still goes to stderr.
 
     The Stop event fires once per assistant-turn end (harness-defined).

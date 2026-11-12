@@ -49,6 +49,7 @@ from aelfrice.hosts import (
     CLAUDE_HOST,
     CODEX_HOST,
     DEFAULT_HOST,
+    GEMINI_HOST,
     SUPPORTED_HOSTS,
     host_of,
 )
@@ -6171,10 +6172,27 @@ def _cmd_setup_codex(
                 f"Codex skills already up to date in {sk.dest_dir}",
                 file=out,  # type: ignore[arg-type]
             )
-    # #1053: Codex-only user (no aelfrice hooks on the Claude host) ->
-    # persist the claude auto-install opt-out so `aelf` invocations from
-    # Codex hooks stop rewriting ~/.claude/settings.json. Dual-host
-    # users (Claude hooks present) keep auto-install untouched.
+    _claude_auto_install_consent(out)
+    from aelfrice.host_codex import onboard_skill_installed
+
+    _print_setup_next_step(
+        out,
+        _ONBOARD_IN_CODEX
+        if onboard_skill_installed(skills_dest)
+        else _ONBOARD_IN_TERMINAL,
+    )
+    return 0
+
+
+def _claude_auto_install_consent(out: object) -> None:
+    """Opt the claude host out of auto-install on a single-host machine.
+
+    #1053: a setup for another host on a machine whose Claude settings
+    wire no aelfrice hook persists the claude auto-install opt-out, so
+    `aelf` invocations from that host's hooks and commands stop rewriting
+    ~/.claude/settings.json. Dual-host users (Claude hooks present) keep
+    auto-install untouched. The codex and gemini setups both run this.
+    """
     from aelfrice.auto_install import add_host_opt_out, read_host_opt_outs
     from aelfrice.host_codex import claude_host_has_aelfrice_hooks
     from aelfrice.setup import USER_SETTINGS_PATH
@@ -6194,15 +6212,6 @@ def _cmd_setup_codex(
             "`aelf setup` (default claude host).",
             file=out,  # type: ignore[arg-type]
         )
-    from aelfrice.host_codex import onboard_skill_installed
-
-    _print_setup_next_step(
-        out,
-        _ONBOARD_IN_CODEX
-        if onboard_skill_installed(skills_dest)
-        else _ONBOARD_IN_TERMINAL,
-    )
-    return 0
 
 
 def _cmd_unsetup_codex(
@@ -6421,6 +6430,227 @@ def _cmd_doctor_codex(
 
     if report.hooks_file_present and not report.hooks_file_valid:
         return 1
+    return 1 if faults else 0
+
+
+def _cmd_setup_gemini(
+    args: argparse.Namespace,
+    out: object,
+    *,
+    gemini_dir: Path | None = None,
+) -> int:
+    """`aelf setup --host gemini`: hooks and /aelf:* commands (#1812).
+
+    Writes the hooks into Gemini's user settings.json and the commands
+    under its `commands/aelf/`. `gemini_dir` overrides the resolved
+    directory for tests.
+    """
+    from aelfrice.gemini_paths import GeminiHomeError, resolve_gemini_dir
+    from aelfrice.host_gemini import (
+        gemini_settings_path,
+        install_gemini_commands,
+        install_gemini_hooks,
+    )
+
+    try:
+        gdir = gemini_dir if gemini_dir is not None else resolve_gemini_dir()
+    except GeminiHomeError as exc:
+        print(f"setup --host gemini: {exc}", file=sys.stderr)
+        return 1
+    result = install_gemini_hooks(
+        gemini_settings_path(gdir), force=bool(getattr(args, "force", False)),
+    )
+    if result.error:
+        print(f"setup --host gemini: {result.error}", file=sys.stderr)
+        return 1
+    verb = "wrote" if result.changed else "already current:"
+    print(
+        f"{verb} {result.path} (events: {', '.join(result.events)})",
+        file=out,  # type: ignore[arg-type]
+    )
+    print(
+        "  next: restart Gemini CLI to load the hooks. Gemini runs them "
+        "while hooksConfig.enabled is true, which "
+        "is the default.",
+        file=out,  # type: ignore[arg-type]
+    )
+    try:
+        cmds = install_gemini_commands(gdir)
+    except OSError as exc:
+        print(
+            f"setup --host gemini: hooks written, but the commands install "
+            f"failed: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    if cmds.written:
+        print(
+            f"installed {len(cmds.written)} Gemini command(s) in "
+            f"{cmds.dest_dir}: invoke as /aelf:<name>",
+            file=out,  # type: ignore[arg-type]
+        )
+    if cmds.pruned:
+        print(
+            f"removed {len(cmds.pruned)} stale Gemini command(s) from "
+            f"{cmds.dest_dir}: {', '.join(cmds.pruned)}",
+            file=out,  # type: ignore[arg-type]
+        )
+    if cmds.skipped:
+        print(
+            f"skipped {len(cmds.skipped)} command file(s) in {cmds.dest_dir} "
+            f"that aelfrice did not write (not overwritten): "
+            f"{', '.join(cmds.skipped)}",
+            file=out,  # type: ignore[arg-type]
+        )
+    for msg in cmds.failed:
+        print(f"[warn] gemini command: {msg}", file=out)  # type: ignore[arg-type]
+    if not (cmds.written or cmds.pruned or cmds.skipped or cmds.failed):
+        print(
+            f"Gemini commands already up to date in {cmds.dest_dir}",
+            file=out,  # type: ignore[arg-type]
+        )
+    _claude_auto_install_consent(out)
+    return 0
+
+
+def _cmd_unsetup_gemini(
+    args: argparse.Namespace,
+    out: object,
+    *,
+    gemini_dir: Path | None = None,
+) -> int:
+    """`aelf unsetup --host gemini`: remove what the gemini setup wrote.
+
+    Touches Gemini's user settings.json and `commands/aelf/` only.
+    `gemini_dir` overrides the resolved directory for tests.
+    """
+    from aelfrice.gemini_paths import GeminiHomeError, resolve_gemini_dir
+    from aelfrice.host_gemini import (
+        gemini_settings_path,
+        remove_gemini_commands,
+        remove_gemini_hooks,
+    )
+
+    _ = args
+    try:
+        gdir = gemini_dir if gemini_dir is not None else resolve_gemini_dir()
+    except GeminiHomeError as exc:
+        print(f"unsetup --host gemini: {exc}", file=sys.stderr)
+        return 1
+    result = remove_gemini_hooks(gemini_settings_path(gdir))
+    if result.error:
+        print(f"unsetup --host gemini: {result.error}", file=sys.stderr)
+        return 1
+    if result.changed:
+        print(
+            f"removed aelfrice hooks from {result.path} "
+            f"(events: {', '.join(result.events)})",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(f"no aelfrice hooks in {result.path}", file=out)  # type: ignore[arg-type]
+    try:
+        cmds = remove_gemini_commands(gdir)
+    except OSError as exc:
+        print(
+            f"unsetup --host gemini: commands removal failed: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    if cmds.pruned:
+        print(
+            f"removed {len(cmds.pruned)} Gemini command(s) from "
+            f"{cmds.dest_dir}",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(
+            f"no aelfrice Gemini commands in {cmds.dest_dir}",
+            file=out,  # type: ignore[arg-type]
+        )
+    for msg in cmds.failed:
+        print(f"[warn] gemini command: {msg}", file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_doctor_gemini(
+    args: argparse.Namespace,
+    out: object,
+    *,
+    gemini_dir: Path | None = None,
+) -> int:
+    """`aelf doctor --host gemini`: scan Gemini's user settings (#1812).
+
+    Exit 1 on wiring that is installed and broken: a hook command not on
+    disk, a bare one not on PATH, or one not quoted for the shell, a
+    partly installed hook set,
+    hooks turned off in settings.json, a settings.json that can't be read
+    as JSON but names the hook script, a generated command that differs
+    from what this build writes or that this build no longer ships, or an
+    `aelf` that does not resolve on PATH, which the commands run by name.
+    Exit 0 when the wiring is absent, as on the codex host (#1430), and a
+    settings.json that can't be read but names no aelfrice hook is only a
+    warning.
+    """
+    from aelfrice.gemini_paths import GeminiHomeError, resolve_gemini_dir
+    from aelfrice.host_gemini import (
+        doctor_gemini,
+        installed_gemini_commands,
+        modified_gemini_commands,
+        orphaned_gemini_commands,
+    )
+
+    _ = args
+    try:
+        gdir = gemini_dir if gemini_dir is not None else resolve_gemini_dir()
+    except GeminiHomeError as exc:
+        print(f"doctor --host gemini: {exc}", file=sys.stderr)
+        return 1
+    report = doctor_gemini(gdir)
+    print(f"[i] gemini dir: {report.gemini_dir}", file=out)  # type: ignore[arg-type]
+    ok = "ok" if report.settings_valid else "-"
+    print(
+        f"[{ok}] gemini settings.json: present={report.settings_present} "
+        f"valid={report.settings_valid} "
+        f"aelfrice_handlers={report.owned_handler_count}",
+        file=out,  # type: ignore[arg-type]
+    )
+    installed = installed_gemini_commands(gdir)
+    orphaned = orphaned_gemini_commands(gdir)
+    print(
+        f"[i] gemini commands (/aelf:*): {len(installed)} installed "
+        f"({len(orphaned)} orphaned)",
+        file=out,  # type: ignore[arg-type]
+    )
+    for warning in report.warnings:
+        print(f"[warn] {warning}", file=out)  # type: ignore[arg-type]
+    faults = report.faults()
+    if report.owned_handler_count:
+        modified = modified_gemini_commands(gdir)
+        if modified:
+            faults.append(
+                "installed /aelf:* command(s) do not match what this build "
+                "writes (edited, or left stale by an upgrade): "
+                + ", ".join(modified)
+                + "; re-run `aelf setup --host gemini`",
+            )
+        if orphaned:
+            faults.append(
+                "installed /aelf:* command(s) are no longer part of this "
+                "build: " + ", ".join(orphaned)
+                + "; re-run `aelf setup --host gemini`",
+            )
+        from aelfrice import launcher
+
+        if launcher.which_on_path("aelf") is None:
+            faults.append(
+                "Gemini wiring is installed but `aelf` is not on PATH, so "
+                "the /aelf:* commands can't run it by name; install the "
+                "CLI with `uv tool install aelfrice`, then put its bin "
+                "directory on PATH with `uv tool update-shell`",
+            )
+    for fault in faults:
+        print(f"[FAIL] {fault}", file=out)  # type: ignore[arg-type]
     return 1 if faults else 0
 
 
@@ -6654,16 +6884,19 @@ _HostCommand = Callable[[argparse.Namespace, object], int]
 _SETUP_BY_HOST: Final[Mapping[str, _HostCommand]] = {
     CLAUDE_HOST: _cmd_setup_claude,
     CODEX_HOST: _cmd_setup_codex,
+    GEMINI_HOST: _cmd_setup_gemini,
 }
 _UNSETUP_BY_HOST: Final[Mapping[str, _HostCommand]] = {
     CLAUDE_HOST: _cmd_unsetup_claude,
     CODEX_HOST: _cmd_unsetup_codex,
+    GEMINI_HOST: _cmd_unsetup_gemini,
 }
 # Doctor differs: the claude host runs the full `_cmd_doctor`, whose
 # brain-graph checks are host-independent. A host listed here replaces
 # that run with a scan of its own wiring.
 _DOCTOR_BY_HOST: Final[Mapping[str, _HostCommand]] = {
     CODEX_HOST: _cmd_doctor_codex,
+    GEMINI_HOST: _cmd_doctor_gemini,
 }
 
 
@@ -11511,8 +11744,10 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "host to diagnose. 'codex' scans the Codex home's hooks.json "
             "shape ($CODEX_HOME, else ~/.codex), "
             "aelfrice hook coverage, the `hooks` feature state, and "
-            "[hooks.state] trust coverage (#1052); brain-graph checks "
-            "are host-independent and are skipped in this mode."
+            "[hooks.state] trust coverage (#1052). 'gemini' scans the "
+            "hooks in Gemini's user settings.json and the /aelf:* "
+            "commands (#1812). Brain-graph checks are host-independent "
+            "and are skipped in both modes."
         ),
     )
     p_doctor.add_argument(
@@ -12185,15 +12420,18 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "subset into $CODEX_HOME/hooks.json (else ~/.codex) and prints "
             "trust-approval "
             "guidance (#1052). Tool-matcher hooks are Claude-only "
-            "pending #1055."
+            "pending #1055. 'gemini' writes the aelfrice hooks into "
+            "Gemini's user settings.json ($GEMINI_CLI_HOME/.gemini, else "
+            "~/.gemini) and the /aelf:* commands as TOML "
+            "(#1812)."
         ),
     )
     p_setup.add_argument(
         "--force", action="store_true",
         help=(
-            "with --host codex: replace an existing hooks.json that is "
-            "unparseable instead of refusing. No effect on the claude "
-            "host path."
+            "with --host codex or --host gemini: replace an existing "
+            "hooks.json or settings.json that is unparseable instead of "
+            "refusing. No effect on the claude host path."
         ),
     )
     p_setup.add_argument(
@@ -12410,7 +12648,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "host whose hook wiring the unsetup half removes. 'codex' "
             "removes the aelfrice entries from $CODEX_HOME/hooks.json "
             "(else ~/.codex) and "
-            "the $aelf-* agent skills (#1136); data disposition "
+            "the $aelf-* agent skills (#1136); 'gemini' removes the "
+            "aelfrice hooks from Gemini's user settings.json and the "
+            "/aelf:* commands (#1812). Data disposition "
             "(--keep-db / --purge / --archive) is host-independent."
         ),
     )
@@ -12456,7 +12696,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--host", choices=SUPPORTED_HOSTS, default=DEFAULT_HOST,
         help=(
             "host to remove hooks from. 'codex' removes only "
-            "aelfrice-owned entries from $CODEX_HOME/hooks.json (#1052)."
+            "aelfrice-owned entries from $CODEX_HOME/hooks.json (#1052); "
+            "'gemini' removes only the aelfrice hooks and commands from "
+            "Gemini's user directory (#1812)."
         ),
     )
     p_unsetup.add_argument(
@@ -12955,6 +13197,16 @@ _CODEX_APPLICABLE_DESTS: Final[dict[str, frozenset[str]]] = {
     "setup": frozenset({"host", "force", "codex_skills"}),
     "unsetup": frozenset({"host"}),
 }
+# #1812: the gemini host path reads `--host` and `--force` on setup and
+# `--host` alone on unsetup, and refuses the rest the same way.
+_GEMINI_APPLICABLE_DESTS: Final[dict[str, frozenset[str]]] = {
+    "setup": frozenset({"host", "force"}),
+    "unsetup": frozenset({"host"}),
+}
+_HOST_APPLICABLE_DESTS: Final[Mapping[str, Mapping[str, frozenset[str]]]] = {
+    CODEX_HOST: _CODEX_APPLICABLE_DESTS,
+    GEMINI_HOST: _GEMINI_APPLICABLE_DESTS,
+}
 
 
 def _subparser_map(
@@ -13024,7 +13276,14 @@ def _option_dests(parser: argparse.ArgumentParser) -> dict[str, str]:
 def codex_inapplicable_options(
     parser: argparse.ArgumentParser, cmd: str
 ) -> dict[str, str]:
-    """Map dest -> option string for the options `cmd`'s Codex path ignores.
+    """`host_inapplicable_options` for the codex host."""
+    return host_inapplicable_options(parser, cmd, CODEX_HOST)
+
+
+def host_inapplicable_options(
+    parser: argparse.ArgumentParser, cmd: str, host: str
+) -> dict[str, str]:
+    """Map dest -> option string for the options `host`'s `cmd` path ignores.
 
     Derived from the live parser rather than a hand-kept list, so an option
     added to `setup` or `unsetup` later falls under the #1429 gate the
@@ -13033,14 +13292,16 @@ def codex_inapplicable_options(
     A subcommand the gate does not cover has no inapplicable options, not
     every option: only `setup` and `unsetup` have a Codex path that
     discards a read set, so returning the whole option list for, say,
-    `doctor` would be a claim this function cannot make.
+    `doctor` would be a claim this function cannot make. The claude host
+    reads every option, so it has none either.
     """
-    if cmd not in _CODEX_APPLICABLE_DESTS:
+    by_cmd = _HOST_APPLICABLE_DESTS.get(host, {})
+    if cmd not in by_cmd:
         return {}
     sub = _subcommand_parser(parser, cmd)
     if sub is None:
         return {}
-    applicable = _CODEX_APPLICABLE_DESTS[cmd]
+    applicable = by_cmd[cmd]
     return {
         dest: opt
         for dest, opt in _option_dests(sub).items()
@@ -13100,7 +13361,7 @@ def _typed_spelling(
     return fallback
 
 
-def _codex_option_rejection(
+def _host_option_rejection(
     parser: argparse.ArgumentParser,
     cmd: str | None,
     args: argparse.Namespace,
@@ -13109,11 +13370,10 @@ def _codex_option_rejection(
     """The #1429 refusal text for `argv`, or None if there is nothing to
     refuse. Pure: it reads the parser and the argv, and changes no state.
     """
-    if cmd not in _CODEX_APPLICABLE_DESTS:
+    host = host_of(args)
+    if cmd is None or cmd not in _HOST_APPLICABLE_DESTS.get(host, {}):
         return None
-    if host_of(args) != CODEX_HOST:
-        return None
-    inapplicable = codex_inapplicable_options(parser, cmd)
+    inapplicable = host_inapplicable_options(parser, cmd, host)
     supplied = _explicitly_supplied_dests(argv)
     sub = _subcommand_parser(parser, cmd)
     actions = (
@@ -13132,10 +13392,10 @@ def _codex_option_rejection(
     refused = set(inapplicable.values())
     accepted = sorted(opt for opt in every if opt not in refused)
     return (
-        f"{cmd} --host codex: refusing {', '.join(offenders)} — the codex "
+        f"{cmd} --host {host}: refusing {', '.join(offenders)}; the {host} "
         f"host path never reads these options, so accepting them would "
         f"discard them silently (#1429). Nothing was changed. "
-        f"`aelf {cmd} --host codex` accepts only {', '.join(accepted)}; "
+        f"`aelf {cmd} --host {host}` accepts only {', '.join(accepted)}; "
         f"re-run without the rest."
     )
 
@@ -13217,12 +13477,12 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
     parser = build_parser()
     args = parser.parse_args(effective_argv)
     cmd = getattr(args, "cmd", None)
-    # #1429: an option the codex host path never reads must fail here —
-    # ahead of the auto-installer, the update check, and every executor —
-    # so the refusal is provably before any filesystem mutation.
-    codex_rejection = _codex_option_rejection(parser, cmd, args, effective_argv)
-    if codex_rejection is not None:
-        print(codex_rejection, file=sys.stderr)
+    # #1429: an option the codex or gemini host path never reads must fail
+    # here, ahead of the auto-installer, the update check, and every
+    # executor, so the refusal is provably before any filesystem mutation.
+    host_rejection = _host_option_rejection(parser, cmd, args, effective_argv)
+    if host_rejection is not None:
+        print(host_rejection, file=sys.stderr)
         return 2
     if cmd not in _AUTO_INSTALL_SKIP_CMDS:
         # Idempotent post-upgrade hook installer (#623). Gated on a
