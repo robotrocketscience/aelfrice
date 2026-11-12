@@ -1571,11 +1571,17 @@ _PREFIX_WORDS: Final[frozenset[str]] = frozenset({
     "!", "{", "command", "do", "elif", "else", "env", "exec", "if",
     "nohup", "then", "time", "until", "while",
 })
+#: The prefix words that find the program after them on `PATH` and run it,
+#: so a `time` after one is the `time` program, not the shell's own.
+_PROGRAM_RUNNERS: Final[frozenset[str]] = frozenset(
+    {"command", "env", "exec", "nohup", "time"},
+)
 #: The options of a prefix word that take the next word as their operand,
-#: as in `env -u VAR`, `env -C DIR`, `exec -a NAME`, and `time -o FILE`:
-#: the short option letters, then the long options. GNU env takes `-C` and
-#: `--chdir`, BSD env takes `-P`, both take `-S`, and GNU and BSD
-#: `/usr/bin/time` take `-o`, which GNU also spells `--output`.
+#: as in `env -u VAR`, `env -C DIR`, `exec -a NAME`, and `/usr/bin/time -o
+#: FILE`: the short option letters, then the long options. GNU env takes
+#: `-C` and `--chdir`, BSD env takes `-P`, both take `-S`, and GNU and BSD
+#: `/usr/bin/time` take `-o`, which GNU also spells `--output`. The `time`
+#: entry is for the `time` program only (`_program_index`).
 _PREFIX_OPERAND_OPTIONS: Final[
     dict[str, tuple[frozenset[str], frozenset[str]]]
 ] = {
@@ -1795,9 +1801,19 @@ def _program_index(
     `env -u VAR PROGRAM`. The words are `simple` with the string of each
     `env -S STRING` split in its place (`_after_options`). The index equals
     the number of words when no word is left.
+
+    A bare `time` word is the shell's reserved word, which takes no
+    operand: Codex runs a hook as `$SHELL -lc COMMAND`, and bash, zsh, and
+    sh read `time -o FILE PROGRAM` as running a program named `-o`. Doctor
+    skips a `-p` after it, the one option bash and sh read there, though
+    zsh reads `-p` as the program. Only a `time` word that names the
+    program, as a path such as
+    `/usr/bin/time` or after a word in `_PROGRAM_RUNNERS` such as `env`,
+    takes the `-o FILE` operand.
     """
     words = simple
     i = 0
+    after_runner = False
     while i < len(words):
         if _ASSIGNMENT.match(words[i]):
             i += 1
@@ -1805,8 +1821,23 @@ def _program_index(
         prefix = launcher_key(words[i], windows=windows)
         if prefix not in _PREFIX_WORDS:
             break
+        if prefix == "time" and not (
+            after_runner or _names_a_path(words[i], windows=windows)
+        ):
+            i += 1
+            while i < len(words) and words[i] == "-p":
+                i += 1
+            after_runner = False
+            continue
         words, i = _after_options(words, i + 1, prefix)
+        after_runner = prefix in _PROGRAM_RUNNERS
     return words, i
+
+
+def _names_a_path(word: str, *, windows: bool) -> bool:
+    """True when a command word is a path, such as `/usr/bin/time` or
+    `bin/time`, which the shell runs as a program."""
+    return "/" in word or (windows and "\\" in word)
 
 
 def _looks_up(simple: list[str], end: int, *, windows: bool) -> bool:

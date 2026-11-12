@@ -277,9 +277,17 @@ _DIRECT = {
     "env -iC DIR": "env -iC /tmp {p} --host codex",
     "env --chdir DIR": "env --chdir /tmp {p} --host codex",
     "env -P PATH": "/usr/bin/env -P /bin {p} --host codex",
-    "time -o FILE": "time -o /dev/null {p} --host codex",
+    # Only the `time` program takes `-o FILE`: a path to it, or a `time`
+    # that a prefix word finds on PATH.
     "/usr/bin/time -o FILE": "/usr/bin/time -o /dev/null {p} --host codex",
+    "relative time -o FILE": "bin/time -o /dev/null {p} --host codex",
     "time --output FILE": "/usr/bin/time --output /dev/null {p} --host codex",
+    "command time -o FILE": "command time -o /dev/null {p} --host codex",
+    "env time -o FILE": "env time -o /dev/null {p} --host codex",
+    "exec time -o FILE": "exec time -o /dev/null {p} --host codex",
+    "nohup time -o FILE": "nohup time -o /dev/null {p} --host codex",
+    # The shell's own `time` takes `-p` in bash and sh.
+    "time -p": "time -p {p} --host codex",
     # env splits the string into its own arguments, so the program can be
     # in it.
     "env -S": "/usr/bin/env -S '{p} --host codex'",
@@ -364,6 +372,10 @@ _WRAPPERS = {
     "sh -c -- runs $0": "sh -c -- 'exec \"$0\" --host codex' {p}",
     # Only the first command's first word is a direct run.
     "after cd": "cd /tmp && {p} --host codex",
+    # The shell's own `time` takes no `-o`, so bash, zsh, and sh run `-o`
+    # as the program and never run the hook.
+    "bare time -o FILE": "time -o /dev/null {p} --host codex",
+    "bare time -p -o FILE": "time -p -o /dev/null {p} --host codex",
 }
 
 
@@ -772,7 +784,7 @@ _NOT_RUNNING = {
     # The option's operand is skipped, so echo is the program.
     "exec -a echo": "exec -a name echo {p}",
     "env -C echo": "env -C {p} echo hello",
-    "time -o echo": "time -o {p} echo hello",
+    "time -o echo": "/usr/bin/time -o {p} echo hello",
     # The split string's first word is the program.
     "env -S echo": "env -S 'echo {p}'",
 }
