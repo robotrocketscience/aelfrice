@@ -2045,10 +2045,14 @@ def _direct_run_key(cmd: str, *, windows: bool) -> str:
         i += 1
         builtin_ok, after = False, runner
         if runner == "env":
+            # env reads its options only before its first assignment.
+            options = True
             while i < len(words):
                 if words[i].assigns:
                     path_set = path_set or words[i].assigns == "PATH"
-                    i += 1
+                    i, options = i + 1, False
+                elif not options:
+                    break
                 elif words[i].plain("-u") and i + 1 < len(words):
                     name = words[i + 1].value
                     if not _IDENTIFIER.fullmatch(name):
