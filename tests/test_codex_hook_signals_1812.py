@@ -272,6 +272,7 @@ _WRAPPERS = {
     "echo into xargs": "echo {p} | xargs -I{{}} sh -c '{{}} --host codex'",
     "timeout sh -c": "timeout 30 sh -c '{p} --host codex | cat'",
     "nice bash -c": "nice -n 5 bash -c '{p} --host codex | cat'",
+    "env -i sh -c": "env -i sh -c '{p} --host codex | cat'",
 }
 
 
@@ -319,6 +320,8 @@ _NOT_RUNNING = {
     "sh -c printf": "sh -c 'printf \"%s\\n\" {p}'",
     "echo or true": "echo {p} || true",
     "printf into a file": "printf '%s\\n' {p} > /dev/null",
+    # The flag after a prefix word is skipped, so echo is the program.
+    "env -i echo": "env -i echo {p}",
 }
 
 
