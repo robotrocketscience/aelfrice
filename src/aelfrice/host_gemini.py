@@ -568,6 +568,15 @@ _SETUP_DESCRIPTION: Final[str] = (
     "under its commands/aelf/ directory."
 )
 
+#: The #1429 option rule for this host. It lives here, not in the shared
+#: `setup.md`, which also builds the claude command and the codex skill.
+_SETUP_OPTION_NOTE: Final[str] = (
+    "On this host, `aelf setup --host gemini` accepts only `--force`, and "
+    "`aelf unsetup --host gemini` accepts no option but `--host`. Both "
+    "refuse every other option, including the flags the steps below list "
+    "for other hosts, with exit 2 and change nothing."
+)
+
 _HOST_MANAGEMENT_NOTE: Final[str] = (
     "On this host, every `aelf setup`, `aelf doctor`, `aelf unsetup`, or "
     "`aelf uninstall` command in the steps below must carry `--host "
@@ -638,6 +647,8 @@ def gemini_command_from_slash(filename: str, text: str) -> tuple[str, str]:
         )
     if stem in _HOST_MANAGEMENT_COMMANDS:
         preamble.append(_HOST_MANAGEMENT_NOTE)
+    if stem == "setup":
+        preamble.append(_SETUP_OPTION_NOTE)
     preamble.append(
         "Run each `aelf ...` command with your shell tool and show its "
         "output to the user. Run `aelf` directly, as written."

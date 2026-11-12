@@ -581,6 +581,23 @@ def test_the_setup_command_describes_the_gemini_install() -> None:
     assert "Gemini's user settings.json" in parsed["description"]
 
 
+def test_the_shared_setup_source_holds_no_gemini_text() -> None:
+    """`setup.md` also builds the claude command and the codex skill.
+
+    The codex doctor faults an installed skill that differs from what the
+    build generates (#1430), and nothing refreshes codex skills on
+    upgrade, so Gemini text in the shared source fails `aelf doctor
+    --host codex` on every existing codex install.
+    """
+    assert "gemini" not in bundled_slash_files()["setup.md"].lower()
+
+
+def test_the_setup_command_states_the_gemini_option_rule() -> None:
+    prompt = tomllib.loads(hgm.bundled_gemini_commands()["setup.toml"])["prompt"]
+    assert "`aelf setup --host gemini` accepts only `--force`" in prompt
+    assert "`aelf unsetup --host gemini` accepts no option but `--host`" in prompt
+
+
 @pytest.mark.parametrize(
     "value",
     ["one line", "two\nlines", "it's '''quoted'''\nhere", "tab\there\n", "cr\r\nline"],
