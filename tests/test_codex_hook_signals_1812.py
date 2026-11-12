@@ -273,6 +273,21 @@ _DIRECT = {
     # The operand is in the option's own word.
     "env -uVAR": "env -uFOO {p} --host codex",
     "env --unset=VAR": "env --unset=FOO {p} --host codex",
+    "env -C DIR": "env -C /tmp {p} --host codex",
+    "env -iC DIR": "env -iC /tmp {p} --host codex",
+    "env --chdir DIR": "env --chdir /tmp {p} --host codex",
+    "env -P PATH": "/usr/bin/env -P /bin {p} --host codex",
+    "time -o FILE": "time -o /dev/null {p} --host codex",
+    "/usr/bin/time -o FILE": "/usr/bin/time -o /dev/null {p} --host codex",
+    "time --output FILE": "/usr/bin/time --output /dev/null {p} --host codex",
+    # env splits the string into its own arguments, so the program can be
+    # in it.
+    "env -S": "/usr/bin/env -S '{p} --host codex'",
+    "env -S after a flag": "env -i -S '{p} --host codex'",
+    "env -S holding options": "env -S '-i FOO=1 {p} --host codex'",
+    "env -S attached": "env '-S{p} --host codex'",
+    "env --split-string": "env --split-string '{p} --host codex'",
+    "env --split-string=": "env '--split-string={p} --host codex'",
 }
 
 
@@ -341,7 +356,6 @@ _WRAPPERS = {
     "nice bash -c": "nice -n 5 bash -c '{p} --host codex | cat'",
     "env -i sh -c": "env -i sh -c '{p} --host codex | cat'",
     "python one argument": "/usr/bin/python3 /x/w.py '{p} --host codex'",
-    "env -S": "/usr/bin/env -S '{p} --host codex'",
     # The script opens with another command, so reading the script is the
     # only way to find the program.
     "bash -lc after cd": "bash -lc 'cd /tmp && {p} | cat'",
@@ -717,6 +731,10 @@ _NOT_RUNNING = {
     "assignment echo": "AELFRICE_HOOK_SUMMARY_LINE=1 echo {p}",
     # The option's operand is skipped, so echo is the program.
     "exec -a echo": "exec -a name echo {p}",
+    "env -C echo": "env -C {p} echo hello",
+    "time -o echo": "time -o {p} echo hello",
+    # The split string's first word is the program.
+    "env -S echo": "env -S 'echo {p}'",
 }
 
 

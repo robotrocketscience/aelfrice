@@ -1572,13 +1572,26 @@ _PREFIX_WORDS: Final[frozenset[str]] = frozenset({
     "nohup", "then", "time", "until", "while",
 })
 #: The options of a prefix word that take the next word as their operand,
-#: as in `env -u VAR`, `env --unset VAR`, and `exec -a NAME`: the short
-#: option letters, then the long options.
+#: as in `env -u VAR`, `env -C DIR`, `exec -a NAME`, and `time -o FILE`:
+#: the short option letters, then the long options. GNU env takes `-C` and
+#: `--chdir`, BSD env takes `-P`, both take `-S`, and GNU and BSD
+#: `/usr/bin/time` take `-o`, which GNU also spells `--output`.
 _PREFIX_OPERAND_OPTIONS: Final[
     dict[str, tuple[frozenset[str], frozenset[str]]]
 ] = {
-    "env": (frozenset({"u"}), frozenset({"--unset"})),
-    "exec": (frozenset({"a"}), frozenset()),
+    "env": (
+        frozenset("uCPS"),
+        frozenset({"--unset", "--chdir", "--split-string"}),
+    ),
+    "exec": (frozenset("a"), frozenset()),
+    "time": (frozenset("o"), frozenset({"--output"})),
+}
+#: The option of a prefix word whose operand is a string the word splits
+#: into more of its own arguments, as `env -S 'PROGRAM --host codex'` and
+#: `env --split-string=STRING` do: the short option letter, then the long
+#: option.
+_SPLIT_STRING_OPTIONS: Final[dict[str, tuple[str, str]]] = {
+    "env": ("S", "--split-string"),
 }
 #: Programs that print their arguments and run none of them.
 _PRINTERS: Final[frozenset[str]] = frozenset({"echo", "printf"})
@@ -1697,8 +1710,8 @@ def _word_program_key(
     """The key of the program a word names, or of the first word in it.
 
     A wrapper can take a whole command as one word, as in `python3 w.py
-    '<program> --host codex'` or `env -S '<program> --host codex'`, so a
-    word whose own key isn't owned is split and its first word is tried.
+    '<program> --host codex'`, so a word whose own key isn't owned is
+    split and its first word is tried.
     """
     key = launcher_key(word, windows=windows)
     if key in owned:
@@ -1707,48 +1720,93 @@ def _word_program_key(
     return launcher_key(inner[0], windows=windows) if inner else ""
 
 
-def _after_options(simple: list[str], start: int, prefix: str) -> int:
-    """The index of the first word after a prefix word's options.
+def _split_string_words(text: str) -> list[str]:
+    """The words `env -S STRING` splits STRING into.
+
+    GNU env splits the string at spaces and tabs and reads single quotes,
+    double quotes, and backslash escapes in it
+    (https://www.gnu.org/software/coreutils/manual/html_node/env-invocation.html),
+    which POSIX `shlex` splitting follows. A string with unbalanced quotes
+    yields no words.
+    """
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return []
+
+
+def _after_options(
+    simple: list[str], start: int, prefix: str,
+) -> tuple[list[str], int]:
+    """A simple command's words, and the index of the first word after the
+    options of the prefix word before `start`.
 
     An option in `_PREFIX_OPERAND_OPTIONS` takes the next word as its
     operand, as in `env -u VAR` or `exec -a NAME`, unless the operand is
-    in the same word, as in `env -uVAR` or `env --unset=VAR`.
+    in the same word, as in `env -uVAR` or `env --unset=VAR`. The operand
+    of an option in `_SPLIT_STRING_OPTIONS` is split into words that take
+    the option's place, so `env -S 'PROGRAM --host codex'` reads as `env
+    PROGRAM --host codex`. Each split takes out at least the option's
+    letter, so the words get shorter and the loop ends.
     """
     short, long = _PREFIX_OPERAND_OPTIONS.get(
         prefix, (frozenset[str](), frozenset[str]()),
     )
+    split_short, split_long = _SPLIT_STRING_OPTIONS.get(prefix, ("", ""))
+    words = simple
     i = start
-    while i < len(simple) and simple[i].startswith("-"):
-        word = simple[i]
+    while i < len(words) and words[i].startswith("-"):
+        at_option = i
+        word = words[i]
         i += 1
+        split: str | None = None
         if word.startswith("--"):
+            name, eq, value = word.partition("=")
             if word in long:
+                if word == split_long and i < len(words):
+                    split = words[i]
                 i += 1
-            continue
-        letters = word[1:]
-        at = next((k for k, ch in enumerate(letters) if ch in short), None)
-        if at is not None and at == len(letters) - 1:
-            i += 1
-    return i
+            elif eq and name == split_long:
+                split = value
+        else:
+            letters = word[1:]
+            at = next((k for k, ch in enumerate(letters) if ch in short), None)
+            if at is not None and at == len(letters) - 1:
+                if letters[at] == split_short and i < len(words):
+                    split = words[i]
+                i += 1
+            elif at is not None and letters[at] == split_short:
+                split = letters[at + 1:]
+        if split is not None:
+            words = [
+                *words[:at_option], *_split_string_words(split), *words[i:],
+            ]
+            i = at_option
+    return words, i
 
 
-def _program_index(simple: list[str], *, windows: bool) -> int:
-    """The index of a simple command's program word.
+def _program_index(
+    simple: list[str], *, windows: bool,
+) -> tuple[list[str], int]:
+    """A simple command's words, and the index of its program word.
 
     Skips `VAR=value` words, and prefix words such as `env` or `exec` with
     the options after them and their operands, as in `env -i PROGRAM` or
-    `env -u VAR PROGRAM`. Equals `len(simple)` when no word is left.
+    `env -u VAR PROGRAM`. The words are `simple` with the string of each
+    `env -S STRING` split in its place (`_after_options`). The index equals
+    the number of words when no word is left.
     """
+    words = simple
     i = 0
-    while i < len(simple):
-        if _ASSIGNMENT.match(simple[i]):
+    while i < len(words):
+        if _ASSIGNMENT.match(words[i]):
             i += 1
             continue
-        prefix = launcher_key(simple[i], windows=windows)
+        prefix = launcher_key(words[i], windows=windows)
         if prefix not in _PREFIX_WORDS:
             break
-        i = _after_options(simple, i + 1, prefix)
-    return i
+        words, i = _after_options(words, i + 1, prefix)
+    return words, i
 
 
 def _looks_up(simple: list[str], end: int, *, windows: bool) -> bool:
@@ -1790,8 +1848,7 @@ def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
     commands = _simple_commands(command_tokens(cmd, windows=win))
     if not commands:
         return ""
-    simple = commands[0][0]
-    i = _program_index(simple, windows=win)
+    simple, i = _program_index(commands[0][0], windows=win)
     if i >= len(simple):
         return ""
     if _looks_up(simple, i, windows=win):
@@ -1850,8 +1907,8 @@ def _wrapped_owned_keys(
                 (inner, _script_words(inner), depth + 1)
                 for inner in _substitutions(text)
             )
-        for simple, piped in _simple_commands(words):
-            i = _program_index(simple, windows=win)
+        for command, piped in _simple_commands(words):
+            simple, i = _program_index(command, windows=win)
             if i >= len(simple):
                 continue
             head = launcher_key(simple[i], windows=win)
