@@ -295,6 +295,20 @@ _DIRECT = {
     "partly quoted time -o FILE": "ti'me' -o /dev/null {p} --host codex",
     "assignment time -o FILE": "X=1 time -o /dev/null {p} --host codex",
     "second time -o FILE": "time time -o /dev/null {p} --host codex",
+    # `timeout` takes a duration, and its `-s` and `-k` options and `nice
+    # -n` take an operand, before the program.
+    "timeout DURATION": "timeout 30 {p} --host codex",
+    "timeout -s SIGNAL": "timeout -s KILL 30 {p} --host codex",
+    "timeout -k DURATION": "timeout -k 5 30 {p} --host codex",
+    "timeout --signal=SIGNAL": "timeout --signal=KILL 30 {p} --host codex",
+    "timeout --kill-after DURATION": (
+        "/usr/bin/timeout --kill-after 5 30 {p} --host codex"
+    ),
+    "timeout time -o FILE": "timeout 30 time -o /dev/null {p} --host codex",
+    "nice": "nice {p} --host codex",
+    "nice -n ADJUSTMENT": "nice -n 5 {p} --host codex",
+    "nice --adjustment ADJUSTMENT": "nice --adjustment 5 {p} --host codex",
+    "nice time -o FILE": "nice time -o /dev/null {p} --host codex",
     # env splits the string into its own arguments, so the program can be
     # in it.
     "env -S": "/usr/bin/env -S '{p} --host codex'",
@@ -376,6 +390,10 @@ _WRAPPERS = {
     "bash -lc after cd": "bash -lc 'cd /tmp && {p} | cat'",
     "bash -o -c after cd": "/bin/bash -o pipefail -c 'cd /tmp && {p} | cat'",
     "timeout sh -c after cd": "timeout 30 sh -c 'cd /tmp && {p} | cat'",
+    # A wrapper that isn't a prefix word can start the shell too.
+    "flock sh -c after cd": (
+        "flock /tmp/aelf.lock sh -c 'cd /tmp && {p} | cat'"
+    ),
     "sh -c -- runs $0": "sh -c -- 'exec \"$0\" --host codex' {p}",
     # Only the first command's first word is a direct run.
     "after cd": "cd /tmp && {p} --host codex",
@@ -948,6 +966,8 @@ _NOT_RUNNING = {
     "exec -a echo": "exec -a name echo {p}",
     "env -C echo": "env -C {p} echo hello",
     "time -o echo": "/usr/bin/time -o {p} echo hello",
+    "timeout -s echo": "timeout -s KILL 30 echo {p}",
+    "nice -n echo": "nice -n 5 echo {p}",
     # The split string's first word is the program.
     "env -S echo": "env -S 'echo {p}'",
 }

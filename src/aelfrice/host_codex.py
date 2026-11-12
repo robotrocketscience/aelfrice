@@ -1590,19 +1590,23 @@ _SHELLS: Final[frozenset[str]] = frozenset(
 #: The shell reserved words are here because a `-c` script can open with one.
 _PREFIX_WORDS: Final[frozenset[str]] = frozenset({
     "!", "{", "command", "do", "elif", "else", "env", "exec", "if",
-    "nohup", "then", "time", "until", "while",
+    "nice", "nohup", "then", "time", "timeout", "until", "while",
 })
 #: The prefix words that find the program after them on `PATH` and run it,
 #: so a `time` after one is the `time` program, not the shell's own.
 _PROGRAM_RUNNERS: Final[frozenset[str]] = frozenset(
-    {"command", "env", "exec", "nohup", "time"},
+    {"command", "env", "exec", "nice", "nohup", "time", "timeout"},
 )
 #: The options of a prefix word that take the next word as their operand,
 #: as in `env -u VAR`, `env -C DIR`, `exec -a NAME`, and `/usr/bin/time -o
 #: FILE`: the short option letters, then the long options. GNU env takes
 #: `-C` and `--chdir`, BSD env takes `-P`, both take `-S`, and GNU and BSD
 #: `/usr/bin/time` take `-o`, which GNU also spells `--output`. The `time`
-#: entry is for the `time` program only (`_program_index`).
+#: entry is for the `time` program only (`_program_index`). GNU `timeout`
+#: takes `-s SIGNAL` and `-k DURATION`
+#: (https://www.gnu.org/software/coreutils/manual/html_node/timeout-invocation.html),
+#: and `nice` takes `-n ADJUSTMENT`, which GNU also spells `--adjustment`
+#: (https://www.gnu.org/software/coreutils/manual/html_node/nice-invocation.html).
 _PREFIX_OPERAND_OPTIONS: Final[
     dict[str, tuple[frozenset[str], frozenset[str]]]
 ] = {
@@ -1611,8 +1615,13 @@ _PREFIX_OPERAND_OPTIONS: Final[
         frozenset({"--unset", "--chdir", "--split-string"}),
     ),
     "exec": (frozenset("a"), frozenset()),
+    "nice": (frozenset("n"), frozenset({"--adjustment"})),
     "time": (frozenset("o"), frozenset({"--output"})),
+    "timeout": (frozenset("sk"), frozenset({"--signal", "--kill-after"})),
 }
+#: How many words a prefix word takes after its options before the
+#: program, as `timeout 30 PROGRAM` takes its duration.
+_PREFIX_OPERANDS: Final[dict[str, int]] = {"timeout": 1}
 #: The option of a prefix word whose operand is a string the word splits
 #: into more of its own arguments, as `env -S 'PROGRAM --host codex'` and
 #: `env --split-string=STRING` do: the short option letter, then the long
@@ -1864,7 +1873,8 @@ def _program_index(
 
     Skips `VAR=value` words, and prefix words such as `env` or `exec` with
     the options after them and their operands, as in `env -i PROGRAM` or
-    `env -u VAR PROGRAM`. The words are `simple` with the string of each
+    `env -u VAR PROGRAM`, and with the words in `_PREFIX_OPERANDS`, as in
+    `timeout -s KILL 30 PROGRAM`. The words are `simple` with the string of each
     `env -S STRING` split in its place (`_after_options`). The index equals
     the number of words when no word is left.
 
@@ -1908,6 +1918,7 @@ def _program_index(
             reserved_position = False
             continue
         words, i = _after_options(words, i + 1, prefix)
+        i = min(len(words), i + _PREFIX_OPERANDS.get(prefix, 0))
         after_runner = prefix in _PROGRAM_RUNNERS
     return words, i, zsh_differs
 
@@ -1995,7 +2006,7 @@ def _wrapped_owned_keys(
       '<bin>/aelf-session-start-hook | cat'`, which is read the same way,
       or as an argument after that script, such as `sh -c 'exec "$0"'
       <bin>/aelf-session-start-hook`. The shell can follow another
-      wrapper, as in `timeout 30 sh -c SCRIPT`. This one is POSIX only,
+      wrapper, as in `flock FILE sh -c SCRIPT`. This one is POSIX only,
       because the Windows splitter keeps single quotes.
     """
     if not isinstance(handler, dict):
@@ -2041,7 +2052,7 @@ def _wrapped_owned_keys(
                         (script, _script_words(script), depth + 1),
                     )
             elif not win and head not in _PRINTERS:
-                # A wrapper such as `timeout 30` or `nice -n 5` can start
+                # A wrapper such as `flock FILE` or `ionice -c 3` can start
                 # the shell, so its words from the shell on are a command.
                 at = next(
                     (
