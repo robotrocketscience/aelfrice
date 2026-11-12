@@ -12,7 +12,6 @@ same handlers the claude host runs:
 | `BeforeAgent` | `UserPromptSubmit` | retrieval, then the transcript logger |
 | `AfterAgent` | `Stop` | the transcript logger, then the Stop hook |
 | `PreCompress` | `PreCompact` | the transcript logger |
-| `AfterTool` on `save_memory` | none | the saved-memory mirror below |
 
 Gemini has no event after compression, so the logger's
 `compaction_complete` marker is never written on this host.
@@ -35,13 +34,8 @@ Host. The script sets `AELFRICE_HOST=gemini` in its own process for the
 duration of the call, and the Stop hook reads it to skip the paths that
 only the claude host supports.
 
-Saved memories. Gemini's `save_memory` tool appends each fact under a
-`## Gemini Added Memories` heading in the global `GEMINI.md`. After a
-successful call the adapter reads that section and adds each fact the
-store does not already hold as a transcript-sourced belief, so a fact the
-store holds is never corroborated again by a later save. The mirror is one
-way: aelfrice never writes `GEMINI.md`. Gemini's own `/hooks disable`
-turns it off by the hook's name, `aelfrice-memory-mirror`.
+No tool event is wired, so the adapter prints `{}` for `AfterTool` and
+every other event the table doesn't name.
 """
 from __future__ import annotations
 
@@ -52,18 +46,13 @@ import os
 import sys
 import traceback
 from collections.abc import Callable, Generator, Mapping
-from pathlib import Path
 from typing import IO, Final, cast
 
 from aelfrice.gemini_paths import (
     AFTER_AGENT_EVENT,
-    AFTER_TOOL_EVENT,
     BEFORE_AGENT_EVENT,
-    GLOBAL_CONTEXT_FILENAME,
     PRE_COMPRESS_EVENT,
-    SAVE_MEMORY_TOOL,
     SESSION_START_EVENT,
-    resolve_gemini_dir,
 )
 from aelfrice.hosts import GEMINI_HOST, HOST_ENV
 from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
@@ -77,13 +66,10 @@ EVENT_MAP: Final[Mapping[str, str]] = {
 }
 
 #: The events whose `additionalContext` reaches the model, per the Gemini
-#: hooks reference. `AfterTool` is one, but the mirror adds no context.
+#: hooks reference, that aelfrice adds context on.
 CONTEXT_EVENTS: Final[frozenset[str]] = frozenset(
     {SESSION_START_EVENT, BEFORE_AGENT_EVENT},
 )
-
-SAVED_MEMORIES_HEADING: Final[str] = "## Gemini Added Memories"
-
 
 def to_aelfrice_payload(payload: Mapping[str, object]) -> dict[str, object] | None:
     """The payload the aelfrice handlers read, or None for an unmapped event."""
@@ -202,101 +188,6 @@ def _run_handlers(
     return contexts
 
 
-# --- the saved-memory mirror ----------------------------------------------
-
-
-def saved_memories(text: str) -> list[str]:
-    """The facts under the saved-memories heading of a `GEMINI.md` text.
-
-    Reads from the heading to the next Markdown heading. Each non-blank
-    line is one fact, with a leading `-` or `*` list marker removed.
-    Gemini documents the heading; the list-item form of each fact is an
-    assumption, and a line in another form is kept whole.
-    """
-    facts: list[str] = []
-    inside = False
-    for raw in text.splitlines():
-        line = raw.strip()
-        if line == SAVED_MEMORIES_HEADING:
-            inside = True
-            continue
-        if not inside:
-            continue
-        if line.startswith("#"):
-            break
-        if line[:2] in ("- ", "* "):
-            line = line[2:].strip()
-        if line:
-            facts.append(line)
-    return facts
-
-
-def _save_succeeded(payload: Mapping[str, object]) -> bool:
-    if payload.get("tool_name") != SAVE_MEMORY_TOOL:
-        return False
-    response = payload.get("tool_response")
-    if isinstance(response, dict):
-        return not cast(dict[str, object], response).get("error")
-    return True
-
-
-def mirror_saved_memories(
-    payload: Mapping[str, object], *, gemini_dir: Path | None = None,
-) -> int:
-    """Add the saved facts the store lacks; the number added.
-
-    Returns 0 without opening the store unless `payload` is a successful
-    `save_memory` call and the global context file holds a fact.
-    """
-    if not _save_succeeded(payload):
-        return 0
-    target = gemini_dir if gemini_dir is not None else resolve_gemini_dir()
-    try:
-        text = (target / GLOBAL_CONTEXT_FILENAME).read_text(
-            encoding="utf-8", errors="replace",
-        )
-    except OSError:
-        return 0
-    facts = saved_memories(text)
-    if not facts:
-        return 0
-
-    from aelfrice.db_paths import db_path  # noqa: PLC0415
-    from aelfrice.derivation import DerivationInput, derive  # noqa: PLC0415
-    from aelfrice.models import (  # noqa: PLC0415
-        CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
-        INGEST_SOURCE_TRANSCRIPT,
-    )
-    from aelfrice.store import MemoryStore  # noqa: PLC0415
-
-    path = db_path()
-    if str(path) != ":memory:":
-        path.parent.mkdir(parents=True, exist_ok=True)
-    session = payload.get("session_id")
-    store = MemoryStore(str(path))
-    added = 0
-    try:
-        for fact in facts:
-            belief = derive(DerivationInput(
-                raw_text=fact,
-                source_kind=INGEST_SOURCE_TRANSCRIPT,
-                session_id=session if isinstance(session, str) else None,
-            )).belief
-            if belief is None:
-                continue
-            if store.get_belief_by_content_hash(
-                belief.content_hash, include_retired=True,
-            ) is not None:
-                continue
-            store.insert_or_corroborate(
-                belief, source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
-            )
-            added += 1
-    finally:
-        store.close()
-    return added
-
-
 # --- entry point ------------------------------------------------------------
 
 
@@ -345,9 +236,7 @@ def main(
             payload = _read_payload(sin, serr)
             raw_event = payload.get("hook_event_name") if payload else None
             event = raw_event if isinstance(raw_event, str) else ""
-            if payload is not None and event == AFTER_TOOL_EVENT:
-                mirror_saved_memories(payload)
-            elif payload is not None:
+            if payload is not None:
                 mapped = to_aelfrice_payload(payload)
                 if mapped is not None:
                     contexts = _run_handlers(event, mapped, serr)

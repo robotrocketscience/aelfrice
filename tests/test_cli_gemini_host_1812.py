@@ -26,7 +26,7 @@ from aelfrice.cli import build_parser, host_inapplicable_options, main
 
 pytestmark = pytest.mark.timeout(60)
 
-EVENTS = "AfterAgent, AfterTool, BeforeAgent, PreCompress, SessionStart"
+EVENTS = "AfterAgent, BeforeAgent, PreCompress, SessionStart"
 
 
 @dataclass(frozen=True)
@@ -310,7 +310,7 @@ def test_doctor_on_a_clean_install(
     assert rc == 0
     assert lines == [
         "[i] gemini dir: <TMP>/userhome/.gemini",
-        "[ok] gemini settings.json: present=True valid=True aelfrice_handlers=5",
+        "[ok] gemini settings.json: present=True valid=True aelfrice_handlers=4",
         f"[i] gemini commands (/aelf:*): {_n_commands()} installed (0 orphaned)",
     ]
 

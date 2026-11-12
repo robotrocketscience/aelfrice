@@ -153,11 +153,10 @@ The hooks map Gemini's events onto the aelfrice handlers:
 | `BeforeAgent` | `aelfrice-prompt` | Injects the retrieval results for the prompt, then logs the turn. |
 | `AfterAgent` | `aelfrice-turn-end` | Logs the reply, then runs the end-of-turn lock prompt. |
 | `PreCompress` | `aelfrice-pre-compress` | Rotates the turn log and ingests it. |
-| `AfterTool` on `save_memory` | `aelfrice-memory-mirror` | Adds each fact under `## Gemini Added Memories` in `~/.gemini/GEMINI.md` that the store doesn't hold yet. aelfrice never writes `GEMINI.md`. |
 
-To turn one hook off, run `/hooks disable <hook name>` in Gemini, for example `/hooks disable aelfrice-memory-mirror`. Gemini escapes `<` and `>` in the injected text, so tags such as `<aelfrice-memory>` reach the model as `&lt;aelfrice-memory&gt;`.
+To turn one hook off, run `/hooks disable <hook name>` in Gemini, for example `/hooks disable aelfrice-pre-compress`. Gemini escapes `<` and `>` in the injected text, so tags such as `<aelfrice-memory>` reach the model as `&lt;aelfrice-memory&gt;`.
 
-Gemini has no event after compression, and no aelfrice hook acts on Gemini's tool calls other than `save_memory`. The search, issue-duplicate, and commit hooks of the Claude host therefore have no Gemini counterpart yet. The Stop hook's core-gate follow-up turn and its background labeler don't run on Gemini either.
+Gemini has no event after compression, and no aelfrice hook acts on Gemini's tool calls. Gemini 0.68.0 saves memories by editing `GEMINI.md` with its file tools and has no `save_memory` tool, so aelfrice doesn't copy them into the store. The search, issue-duplicate, and commit hooks of the Claude host therefore have no Gemini counterpart yet. The Stop hook's core-gate follow-up turn and its background labeler don't run on Gemini either.
 
 On a machine whose Claude settings carry no aelfrice hook, setup also opts the Claude host out of auto-install, as `--host codex` does.
 

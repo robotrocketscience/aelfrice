@@ -43,10 +43,8 @@ from typing import Final, cast
 
 from aelfrice.gemini_paths import (
     AFTER_AGENT_EVENT,
-    AFTER_TOOL_EVENT,
     BEFORE_AGENT_EVENT,
     PRE_COMPRESS_EVENT,
-    SAVE_MEMORY_TOOL,
     SESSION_START_EVENT,
     resolve_gemini_dir,
 )
@@ -69,17 +67,14 @@ COMMAND_NAMESPACE: Final[str] = "aelf"
 COMMAND_SUFFIX: Final[str] = ".toml"
 
 #: Gemini event -> (hook name, matcher, timeout in milliseconds). A
-#: lifecycle matcher of "*" matches every trigger; the tool matcher is a
-#: regex on the tool name. Each timeout is the sum of the claude-host
-#: timeouts, in seconds, of the handlers the event runs in sequence.
+#: lifecycle matcher of "*" matches every trigger. Each timeout is the sum
+#: of the claude-host timeouts, in seconds, of the handlers the event runs
+#: in sequence. No tool event is wired.
 HOOK_SPECS: Final[Mapping[str, tuple[str, str, int]]] = {
     SESSION_START_EVENT: ("aelfrice-session-start", "*", 15_000),
     BEFORE_AGENT_EVENT: ("aelfrice-prompt", "*", 45_000),
     AFTER_AGENT_EVENT: ("aelfrice-turn-end", "*", 60_000),
     PRE_COMPRESS_EVENT: ("aelfrice-pre-compress", "*", 30_000),
-    AFTER_TOOL_EVENT: (
-        "aelfrice-memory-mirror", f"^{SAVE_MEMORY_TOOL}$", 30_000,
-    ),
 }
 
 _OWNED_BASENAMES: Final[frozenset[str]] = frozenset({GEMINI_HOOK_SCRIPT_NAME})

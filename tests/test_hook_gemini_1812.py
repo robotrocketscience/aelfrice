@@ -10,7 +10,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -346,104 +345,29 @@ def test_a_turn_reaches_the_turn_log(store_env: Path, tmp_path: Path) -> None:
     ]
 
 
-# --- the saved-memory mirror ---------------------------------------------------
+# --- no tool hook ------------------------------------------------------------
 
 
-_GEMINI_MD = (
-    "# Project notes\n\nKeep this.\n\n"
-    "## Gemini Added Memories\n"
-    "- The widget service listens on port 8443.\n"
-    "* The widget team ships on Thursdays.\n"
-    "\n"
-    "The widget cache lives in the shared volume.\n"
-    "## Later heading\n"
-    "- Not a saved memory.\n"
-)
-
-
-def test_saved_memories_reads_only_the_heading_section() -> None:
-    assert hg.saved_memories(_GEMINI_MD) == [
-        "The widget service listens on port 8443.",
-        "The widget team ships on Thursdays.",
-        "The widget cache lives in the shared volume.",
-    ]
-
-
-def test_saved_memories_without_the_heading_is_empty() -> None:
-    assert hg.saved_memories("# notes\n- a fact\n") == []
-
-
-def _gemini_dir(tmp_path: Path) -> Path:
-    gdir = tmp_path / "ghome" / ".gemini"
-    gdir.mkdir(parents=True)
-    (gdir / "GEMINI.md").write_text(_GEMINI_MD, encoding="utf-8")
-    return gdir
-
-
-_COUNT_SQL = {
-    "beliefs": "SELECT COUNT(*) FROM beliefs",
-    "belief_corroborations": "SELECT COUNT(*) FROM belief_corroborations",
-}
-
-
-def _count(db: Path, table: str) -> int:
-    conn = sqlite3.connect(str(db))
-    try:
-        return int(conn.execute(_COUNT_SQL[table]).fetchone()[0])
-    finally:
-        conn.close()
-
-
-def _save(**response: object) -> dict[str, object]:
-    return _payload(
-        "AfterTool", tool_name="save_memory", tool_input={},
-        tool_response=response or {"llmContent": "ok", "returnDisplay": "ok"},
-    )
-
-
-def test_a_saved_memory_becomes_a_belief_once(
-    store_env: Path, tmp_path: Path,
-) -> None:
-    """Killed by: corroborating a fact the store already holds."""
-    gdir = _gemini_dir(tmp_path)
-    added = hg.mirror_saved_memories(_save(), gemini_dir=gdir)
-    assert added == 3
-    beliefs = _count(store_env, "beliefs")
-    corroborations = _count(store_env, "belief_corroborations")
-    assert hg.mirror_saved_memories(_save(), gemini_dir=gdir) == 0
-    assert _count(store_env, "beliefs") == beliefs
-    assert _count(store_env, "belief_corroborations") == corroborations
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [_save(error="widget failure"),
-     _payload("AfterTool", tool_name="write_file", tool_response={}),
-     _payload("AfterTool", tool_response={})],
-)
-def test_only_a_successful_save_is_mirrored(
-    store_env: Path, tmp_path: Path, payload: dict[str, object],
-) -> None:
-    gdir = _gemini_dir(tmp_path)
-    assert hg.mirror_saved_memories(payload, gemini_dir=gdir) == 0
-    assert not store_env.exists()
-
-
-def test_a_missing_context_file_mirrors_nothing(
-    store_env: Path, tmp_path: Path,
-) -> None:
-    assert hg.mirror_saved_memories(_save(), gemini_dir=tmp_path) == 0
-    assert not store_env.exists()
-
-
-def test_after_tool_runs_the_mirror_from_the_gemini_home(
+def test_an_after_tool_payload_writes_nothing(
     store_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gdir = _gemini_dir(tmp_path)
+    """Gemini 0.68.0 has no `save_memory` tool (docs/reference/tools.md;
+    docs/tools/memory.md says memories are written with write_file or
+    replace), so the adapter mirrors nothing from a tool call. Killed by:
+    restoring the `save_memory` mirror."""
+    gdir = tmp_path / "ghome" / ".gemini"
+    gdir.mkdir(parents=True)
+    (gdir / "GEMINI.md").write_text(
+        "## Gemini Added Memories\n- The widget service listens on 8443.\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("GEMINI_CLI_HOME", str(gdir.parent))
-    out, _ = _run(_save())
+    out, _ = _run(_payload(
+        "AfterTool", tool_name="save_memory", tool_input={},
+        tool_response={"llmContent": "ok", "returnDisplay": "ok"},
+    ))
     assert out == "{}\n"
-    assert _count(store_env, "beliefs") == 3
+    assert not store_env.exists()
 
 
 # --- the Gemini home -----------------------------------------------------------

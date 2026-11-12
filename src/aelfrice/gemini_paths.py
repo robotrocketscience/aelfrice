@@ -15,13 +15,9 @@ SESSION_START_EVENT: Final[str] = "SessionStart"
 BEFORE_AGENT_EVENT: Final[str] = "BeforeAgent"
 AFTER_AGENT_EVENT: Final[str] = "AfterAgent"
 PRE_COMPRESS_EVENT: Final[str] = "PreCompress"
-AFTER_TOOL_EVENT: Final[str] = "AfterTool"
-
-SAVE_MEMORY_TOOL: Final[str] = "save_memory"
 
 GEMINI_CLI_HOME_ENV: Final[str] = "GEMINI_CLI_HOME"
 GEMINI_DIRNAME: Final[str] = ".gemini"
-GLOBAL_CONTEXT_FILENAME: Final[str] = "GEMINI.md"
 
 
 class GeminiHomeError(RuntimeError):

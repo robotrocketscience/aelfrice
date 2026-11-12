@@ -23,7 +23,7 @@ from aelfrice.setup import bundled_slash_files
 
 pytestmark = pytest.mark.timeout(60)
 
-EVENTS = ["AfterAgent", "AfterTool", "BeforeAgent", "PreCompress", "SessionStart"]
+EVENTS = ["AfterAgent", "BeforeAgent", "PreCompress", "SessionStart"]
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +72,7 @@ _FOREIGN_GROUP = {"matcher": "write_file", "hooks": [_FOREIGN_HANDLER]}
 # --- the hook set -------------------------------------------------------------
 
 
-def test_the_hook_set_covers_five_events_in_milliseconds(cmd: str) -> None:
+def test_the_hook_set_covers_four_lifecycle_events_in_milliseconds(cmd: str) -> None:
     desired = hgm.desired_gemini_hooks(cmd)
     assert sorted(desired) == EVENTS
     specs = {
@@ -88,7 +88,6 @@ def test_the_hook_set_covers_five_events_in_milliseconds(cmd: str) -> None:
         "BeforeAgent": ("*", "aelfrice-prompt", 45000),
         "AfterAgent": ("*", "aelfrice-turn-end", 60000),
         "PreCompress": ("*", "aelfrice-pre-compress", 30000),
-        "AfterTool": ("^save_memory$", "aelfrice-memory-mirror", 30000),
     }
     for groups in desired.values():
         assert groups[0]["hooks"] == [{
@@ -151,7 +150,7 @@ def test_a_spaced_hook_path_is_one_word_to_gemini_shell(
     else:
         assert shlex.split(command) == [str(exe)]
     report = hgm.doctor_gemini(gdir)
-    assert report.owned_handler_count == 5
+    assert report.owned_handler_count == 4
     assert report.faults() == []
 
 
@@ -269,7 +268,7 @@ def test_a_windows_launcher_is_owned() -> None:
         ('{"hooks": null}\n', "non-object `hooks` value (null)"),
         ('{"hooks": 42}\n', "non-object `hooks` value (number)"),
         ('{"hooks": {"BeforeAgent": {"x": 1}}}\n', "`BeforeAgent` event (object)"),
-        ('{"hooks": {"AfterTool": null}}\n', "`AfterTool` event (null)"),
+        ('{"hooks": {"PreCompress": null}}\n', "`PreCompress` event (null)"),
     ],
 )
 def test_install_refuses_what_it_would_reshape(
@@ -674,7 +673,7 @@ def test_doctor_without_a_gemini_dir(tmp_path: Path) -> None:
 def test_doctor_on_a_clean_install(gdir: Path, cmd: str) -> None:
     _install(gdir / "settings.json", cmd)
     report = hgm.doctor_gemini(gdir)
-    assert (report.settings_valid, report.owned_handler_count) == (True, 5)
+    assert (report.settings_valid, report.owned_handler_count) == (True, 4)
     assert report.missing_events == []
     assert report.faults() == []
 
@@ -712,7 +711,7 @@ def test_doctor_faults_an_unquoted_spaced_command(gdir: Path, tmp_path: Path) ->
     exe = str(_spaced_hook(tmp_path))
     _install(gdir / "settings.json", exe)
     report = hgm.doctor_gemini(gdir)
-    assert report.owned_handler_count == 5
+    assert report.owned_handler_count == 4
     assert (report.unquoted_commands, report.stale_commands) == ([exe], [])
     assert any("is not quoted" in f for f in report.faults())
 
@@ -739,10 +738,10 @@ def test_doctor_reports_a_disabled_hook_name_without_failing(
     path = gdir / "settings.json"
     _install(path, cmd)
     doc = _read(path)
-    doc["hooksConfig"] = {"disabled": ["aelfrice-memory-mirror", "other"]}
+    doc["hooksConfig"] = {"disabled": ["aelfrice-pre-compress", "other"]}
     _write(path, doc)
     report = hgm.doctor_gemini(gdir)
-    assert report.disabled_hook_names == ["aelfrice-memory-mirror"]
+    assert report.disabled_hook_names == ["aelfrice-pre-compress"]
     assert report.faults() == []
 
 
