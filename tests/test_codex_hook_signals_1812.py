@@ -17,6 +17,7 @@ import argparse
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -400,6 +401,99 @@ def test_opt_in_with_nothing_to_inject_still_says_it_ran(
         env={ENV_HOOK_SUMMARY_LINE: "1", "AELFRICE_SESSIONSTART_RECAP": "0"},
     )
     assert json.loads(raw) == {"systemMessage": "aelfrice: ran, nothing injected"}
+
+
+_ELEMENT_RE = re.compile(r'<belief id="([^"]+)"([^>]*)>')
+
+
+def _context_counts(context: str) -> tuple[int, int]:
+    """Distinct belief ids in a context, and how many of them are locks.
+
+    Both renderers mark a lock: the baseline writes `lock="user"` and the
+    rebuild block writes `locked="true"`.
+    """
+    locked: dict[str, bool] = {}
+    for bid, attrs in _ELEMENT_RE.findall(context):
+        is_lock = 'lock="user"' in attrs or 'locked="true"' in attrs
+        locked[bid] = locked.get(bid, False) or is_lock
+    return len(locked), sum(locked.values())
+
+
+def _fire_compact(
+    root: Path, monkeypatch: pytest.MonkeyPatch, *, env: dict[str, str],
+) -> str:
+    """A post-compaction SessionStart fire on the #1031 AC1 fixture.
+
+    One lock, one session-scoped belief, and one general belief, with a
+    turn log the rebuilder reads, so the baseline block and the rebuild
+    block both reach stdout.
+    """
+    repo = root / "repo"
+    transcripts = repo / ".git" / "aelfrice" / "transcripts"
+    transcripts.mkdir(parents=True)
+    home = root / "home"
+    home.mkdir()
+    db = root / "memory.db"
+    session = _belief("S1sess", "session note about session_id propagation",
+                      LOCK_NONE)
+    session.session_id = "s1"
+    store = MemoryStore(str(db))
+    try:
+        for b in (
+            _belief("L1lock", "user prefers uv over pip", LOCK_USER),
+            session,
+            _belief("F1gen", "BM25 ranks results by frequency and rarity",
+                    LOCK_NONE),
+        ):
+            store.insert_belief(b)
+    finally:
+        store.close()
+    (repo / ".aelfrice.toml").write_text(
+        '[rebuilder]\ntrigger_mode = "threshold"\n', encoding="utf-8",
+    )
+    (transcripts / "turns.jsonl").write_text(
+        "\n".join(json.dumps({"session_id": "s1", **turn}) for turn in (
+            {"role": "user",
+             "text": "How does session_id propagate through ingest?"},
+            {"role": "assistant",
+             "text": "session_id is plumbed end-to-end via ingest_turn."},
+        )) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.setenv("AELFRICE_USER_DB", str(root / "user" / "memory.db"))
+    monkeypatch.setenv("AELFRICE_TRANSCRIPTS_DIR", str(transcripts))
+    for name in _SUMMARY_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    payload = json.dumps({
+        "session_id": "s1", "cwd": str(repo), "source": "compact",
+        "hook_event_name": "SessionStart",
+    })
+    sout = io.StringIO()
+    rc = session_start(
+        stdin=io.StringIO(payload), stdout=sout, stderr=io.StringIO(),
+        host="codex",
+    )
+    assert rc == 0
+    return sout.getvalue()
+
+
+@pytest.mark.timeout(60)
+def test_a_compact_fire_counts_the_rebuild_block_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rebuild block shares the fire's stdout with the baseline, so the
+    line counts every distinct belief either block shows the model."""
+    doc = json.loads(_fire_compact(
+        tmp_path, monkeypatch, env={ENV_HOOK_SUMMARY_LINE: "1"},
+    ))
+    context = doc["hookSpecificOutput"]["additionalContext"]
+    assert "<aelfrice-rebuild>" in context
+    assert _context_counts(context) == (2, 1)
+    assert doc["systemMessage"] == "aelfrice: 2 beliefs injected (1 locked)"
 
 
 @pytest.mark.timeout(120)

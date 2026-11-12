@@ -1185,9 +1185,12 @@ which Codex shows as a warning:
 aelfrice: 37 beliefs injected (37 locked)
 ```
 
-The two numbers are the ones the hook's audit row records: the beliefs in the
-baseline block, and how many of them you locked. When the store has nothing to
-inject, the line reads `aelfrice: ran, nothing injected`.
+The first number counts the distinct beliefs the hook gave the model, and the
+second counts how many of them you locked. On a fresh session those are the
+beliefs in the baseline block, the ones the hook's audit row records. After
+Codex compacts the context, the hook also writes a rebuild block, and the line
+counts its beliefs too. A belief that both blocks show counts once. When the
+store has nothing to inject, the line reads `aelfrice: ran, nothing injected`.
 
 The hook knows it runs under Codex from the `--host codex` argument that
 `aelf setup --host codex` adds to the SessionStart command. A `hooks.json`

@@ -35,7 +35,7 @@ import time
 import tomllib
 import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime, timezone
 from pathlib import Path
@@ -6987,13 +6987,31 @@ def _spawn_sidecar_warm() -> bool:
 class _SessionStartTally:
     """What one SessionStart fire injected, for the summary line (#1812).
 
-    The counts are the ones the fire's audit row records: the baseline
-    beliefs shown verbatim, and how many of them are user locks.
+    `injected` maps each belief id the fire wrote to stdout to whether it
+    is a user lock. It covers the baseline block (the beliefs the audit
+    row records) and, on a post-compaction fire, the rebuild block written
+    after it. A belief both blocks show counts once.
     """
 
     cwd: str | None = None
-    n_beliefs: int = 0
-    n_locked: int = 0
+    injected: dict[str, bool] = field(default_factory=dict[str, bool])
+
+    def note(self, belief_id: str, locked: bool) -> None:
+        """Record one belief the fire showed the model."""
+        self.injected[belief_id] = self.injected.get(belief_id, False) or locked
+
+    def note_block(self, block: str) -> None:
+        """Record every whole `<belief>` element in a block written out."""
+        for m in _BELIEF_ELEMENT_RE.finditer(block):
+            self.note(m.group("id"), _element_is_locked(m.group("attrs")))
+
+    @property
+    def n_beliefs(self) -> int:
+        return len(self.injected)
+
+    @property
+    def n_locked(self) -> int:
+        return sum(self.injected.values())
 
 
 _SESSION_START_EVENT: Final[str] = "SessionStart"
@@ -7203,10 +7221,8 @@ def _session_start(
             # verbatim. Only reachable once the bytes are written.
             _begin_injection_epoch(session_id, hits)
             if tally is not None:
-                tally.n_beliefs = len(hits)
-                tally.n_locked = sum(
-                    1 for h in hits if h.lock_level == LOCK_USER
-                )
+                for h in hits:
+                    tally.note(h.id, h.lock_level == LOCK_USER)
             # #280 mitigation 3: per-turn audit of the rendered block.
             # #321 additive fields: beliefs[], latency_ms, tokens.
             _write_hook_audit_record(
@@ -7245,6 +7261,8 @@ def _session_start(
                     if sep:
                         sout.write(sep)
                     sout.write(rebuild_block)
+                    if tally is not None:
+                        tally.note_block(rebuild_block)
     except ImportError as exc:
         # #1527: the retrieval subtree resolves through `_lazy` and a few
         # function-scope imports, so a partial install no longer trips the
