@@ -705,6 +705,34 @@ def test_doctor_faults_a_command_not_on_disk(gdir: Path, tmp_path: Path) -> None
     assert any("not present on disk" in f for f in report.faults())
 
 
+def test_doctor_faults_a_bare_command_not_on_path(
+    gdir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup writes the bare name when it can't resolve a path (#928).
+    Killed by: skipping the PATH lookup for a bare program."""
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    _install(gdir / "settings.json", "aelf-gemini-hook")
+    report = hgm.doctor_gemini(gdir)
+    assert report.owned_handler_count == 4
+    assert report.unresolved_commands == ["aelf-gemini-hook"]
+    assert any("not on PATH" in f for f in report.faults())
+
+
+def test_doctor_accepts_a_bare_command_on_path(
+    gdir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bindir = tmp_path / "bin"
+    exe = bindir / "aelf-gemini-hook"
+    exe.parent.mkdir(exist_ok=True)
+    exe.write_text("", encoding="utf-8")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir))
+    _install(gdir / "settings.json", "aelf-gemini-hook")
+    report = hgm.doctor_gemini(gdir)
+    assert report.unresolved_commands == []
+    assert report.faults() == []
+
+
 def test_doctor_faults_an_unquoted_spaced_command(gdir: Path, tmp_path: Path) -> None:
     """Killed by: accepting a command because some rejoined reading of it
     exists, when the shell splits it at the space."""

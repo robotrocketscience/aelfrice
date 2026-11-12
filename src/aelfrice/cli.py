@@ -6582,7 +6582,8 @@ def _cmd_doctor_gemini(
     """`aelf doctor --host gemini`: scan Gemini's user settings (#1812).
 
     Exit 1 on wiring that is installed and broken: a hook command not on
-    disk or not quoted for Gemini's shell, a partly installed hook set,
+    disk, a bare one not on PATH, or one not quoted for the shell, a
+    partly installed hook set,
     hooks turned off in settings.json, a settings.json that can't be read
     as JSON but names the hook script, a generated command that differs
     from what this build writes or that this build no longer ships, or an

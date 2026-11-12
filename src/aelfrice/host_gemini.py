@@ -54,6 +54,7 @@ from aelfrice.launcher import (
     launcher_key,
     owned_keys,
     program_exists,
+    which_on_path,
 )
 from aelfrice.setup import (
     GEMINI_HOOK_SCRIPT_NAME,
@@ -846,6 +847,8 @@ class GeminiDoctorReport:
     owned_handler_count: int = 0
     missing_events: list[str] = field(default_factory=list[str])
     stale_commands: list[str] = field(default_factory=list[str])
+    #: Bare hook commands that don't resolve on PATH.
+    unresolved_commands: list[str] = field(default_factory=list[str])
     unquoted_commands: list[str] = field(default_factory=list[str])
     hooks_turned_off_by: list[str] = field(default_factory=list[str])
     disabled_hook_names: list[str] = field(default_factory=list[str])
@@ -872,6 +875,14 @@ class GeminiDoctorReport:
             reasons.append(
                 "hook command(s) configured but not present on disk: "
                 + ", ".join(self.stale_commands),
+            )
+        if self.unresolved_commands:
+            reasons.append(
+                "hook command(s) not on PATH, so Gemini can't run "
+                "them: " + ", ".join(self.unresolved_commands)
+                + f"; put the directory that holds {GEMINI_HOOK_SCRIPT_NAME} "
+                "on PATH, or re-run `aelf setup --host gemini` from an "
+                "install outside a .claude/worktrees venv",
             )
         if self.unquoted_commands:
             reasons.append(
@@ -904,11 +915,24 @@ def _setting(doc: Mapping[str, object], section: str, key: str) -> object:
 def _check_command(
     report: GeminiDoctorReport, cmd: str, *, windows: bool | None,
 ) -> None:
-    """File `cmd` as stale or unquoted when Gemini's shell can't run it."""
-    if cmd in report.stale_commands or cmd in report.unquoted_commands:
+    """File `cmd` as stale, unresolved, or unquoted when Gemini's shell
+    can't run it."""
+    if cmd in (
+        *report.stale_commands, *report.unresolved_commands,
+        *report.unquoted_commands,
+    ):
         return
-    exe = Path(shell_program(cmd, windows=windows))
-    if not exe.is_absolute() or exe.is_file():
+    program = shell_program(cmd, windows=windows)
+    if not program:
+        return
+    exe = Path(program)
+    if not exe.is_absolute():
+        # Setup writes the bare name when it resolves no path (#928), and
+        # the shell then looks the name up on PATH.
+        if which_on_path(program) is None:
+            report.unresolved_commands.append(cmd)
+        return
+    if exe.is_file():
         return
     if program_exists(cmd, windows=windows):
         # The file is there, at a path the shell splits at a space.
@@ -989,6 +1013,8 @@ def doctor_gemini(
         )
     for cmd in report.stale_commands:
         report.warnings.append(f"hook command not found on disk: {cmd}")
+    for cmd in report.unresolved_commands:
+        report.warnings.append(f"hook command not found on PATH: {cmd}")
     if report.disabled_hook_names:
         report.warnings.append(
             "aelfrice hooks turned off in hooksConfig.disabled: "
