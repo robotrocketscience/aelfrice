@@ -2159,7 +2159,8 @@ def doctor_codex(
     found_keys: dict[str, set[str]] = {}
     # The values each handler of a program runs on, per event (#1812).
     runs: dict[tuple[str, str], list[frozenset[str]]] = {}
-    maybe: dict[tuple[str, str], list[str]] = {}
+    # The values and the command of each handler that may run a program.
+    maybe: dict[tuple[str, str], list[tuple[frozenset[str], str]]] = {}
     for event, groups in hooks_map.items():
         if not isinstance(groups, list):
             continue
@@ -2187,9 +2188,10 @@ def doctor_codex(
                     runs.setdefault((event, direct), []).append(values)
                 for key in _wrapped_owned_keys(other, windows=windows):
                     if key != direct:
-                        maybe.setdefault((event, key), []).append(
+                        maybe.setdefault((event, key), []).append((
+                            values,
                             str(cast(dict[str, object], other)["command"]),
-                        )
+                        ))
             # #1412: count per handler. Gating on a fully-owned group made
             # an aelfrice handler sharing a group with a foreign one
             # invisible to doctor — the same blind spot that let setup
@@ -2224,10 +2226,15 @@ def doctor_codex(
         for (event, key), value_sets in sorted(runs.items())
         if (count := _most_runs(event, value_sets)) > 1
     ]
-    for (event, key), commands in sorted(maybe.items()):
-        if _most_runs(event, runs.get((event, key), [])) + len(commands) < 2:
-            continue
-        for cmd in commands:
+    for (event, key), wrapped in sorted(maybe.items()):
+        # #1812: a wrapper gets a warning only when some fire that runs it
+        # also runs another handler of the program, the rule the failure
+        # above follows.
+        direct = runs.get((event, key), [])
+        fires = _fires(event, direct + [values for values, _cmd in wrapped])
+        for index, (_values, cmd) in enumerate(wrapped, start=len(direct)):
+            if not any(index in fire and len(fire) > 1 for fire in fires):
+                continue
             warning = (
                 f"{event} handler may also run {key}: doctor found it in a "
                 "shell script or an argument and can't tell whether the "
