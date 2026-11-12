@@ -456,7 +456,7 @@ _CODEX_HOOKS = {
                 "matcher": "startup|resume|clear|compact",
                 "hooks": [
                     _codex_handler(
-                        "aelf-session-start-hook",
+                        "aelf-session-start-hook --host codex",
                         context_limit=9500,
                     ),
                 ],
