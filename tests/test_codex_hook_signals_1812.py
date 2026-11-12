@@ -225,6 +225,58 @@ def test_doctor_still_faults_a_tampered_session_start_handler(
     assert "SessionStart" in out
 
 
+def _add_session_start_handler(hooks: Path, command: str) -> None:
+    """Add one SessionStart handler beside setup's own, in its group."""
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["SessionStart"][0]["hooks"].insert(
+        0, {"type": "command", "command": command, "timeout": 30},
+    )
+    hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("second", ["wrapper", "copy"])
+def test_doctor_faults_a_session_start_hook_that_runs_twice(
+    tmp_path: Path, second: str,
+) -> None:
+    """Setup keeps a wrapper it doesn't own and adds its own handler next to
+    it, and Codex then injects the baseline twice. A duplicated owned
+    handler does the same."""
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    hooks = codex_dir / "hooks.json"
+    install_codex_hooks(hooks)
+    install_codex_skills(tmp_path / "skills")
+    ours = str(json.loads(hooks.read_text(encoding="utf-8"))
+               ["hooks"]["SessionStart"][0]["hooks"][0]["command"])
+    program = ours.removesuffix(" --host codex")
+    _add_session_start_handler(
+        hooks,
+        f"/usr/bin/python3 /x/aelf-visible.py SessionStart {program}"
+        if second == "wrapper" else ours,
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_ignores_a_foreign_handler_that_runs_no_aelfrice_program(
+    tmp_path: Path,
+) -> None:
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    hooks = codex_dir / "hooks.json"
+    install_codex_hooks(hooks)
+    install_codex_skills(tmp_path / "skills")
+    _add_session_start_handler(
+        hooks, "/usr/bin/python3 /x/other-hook.py SessionStart --verbose",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+
+
 @pytest.mark.timeout(60)
 def test_doctor_passes_a_hooks_json_written_before_this_build(
     tmp_path: Path,
