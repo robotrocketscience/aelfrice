@@ -1411,7 +1411,9 @@ class CodexDoctorReport:
     stale_commands: list[str] = field(default_factory=list[str])
     #: (event, program, count) for each aelfrice program that more than one
     #: handler in one event runs as its command's first word, either as its
-    #: own handler or after a prefix word such as `env` (#1812).
+    #: own handler or after a prefix word such as `env` (#1812). The count
+    #: is for one fire, so handlers whose matchers share no value, such as
+    #: a SessionStart `startup` group and a `resume` group, don't add up.
     duplicate_runs: list[tuple[str, str, int]] = field(
         default_factory=list[tuple[str, str, int]],
     )
@@ -1875,6 +1877,72 @@ def _wrapped_owned_keys(
     return found
 
 
+#: The values a group's `matcher` is tested against, for each event whose
+#: values the Codex docs list (https://developers.openai.com/codex/hooks,
+#: "Matcher patterns"): SessionStart matches its start source, and
+#: PreCompact and PostCompact match their trigger. Any other event has no
+#: entry: the tool events match an open set of tool names, and Codex
+#: ignores the matcher on UserPromptSubmit and Stop, so doctor counts
+#: every handler in such an event as running on every fire.
+_MATCHER_VALUES: Final[dict[str, tuple[str, ...]]] = {
+    "SessionStart": ("startup", "resume", "clear", "compact", "fork"),
+    "PreCompact": ("manual", "auto"),
+    "PostCompact": ("manual", "auto"),
+}
+#: The one value that stands for every fire of an event not in
+#: `_MATCHER_VALUES`.
+_EVERY_FIRE: Final[frozenset[str]] = frozenset({""})
+#: A matcher of only these characters is a list of exact names to Codex.
+_EXACT_MATCHER: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_|]+")
+
+
+def _matched_values(event: str, group: object) -> frozenset[str]:
+    """The values of `event` whose fires run a matcher group's handlers.
+
+    This follows Codex's matcher (codex-rs/hooks/src/engine/matcher.rs in
+    openai/codex; the docs at https://developers.openai.com/codex/hooks say
+    only that `matcher` is a regex string, and that `"*"`, `""`, or no
+    `matcher` matches every occurrence). A matcher of only letters, digits,
+    `_`, and `|` lists exact values, so `startup|resume` matches those two
+    and `start` matches none. Any other matcher is a regex that matches a
+    value when it matches anywhere in it, so `^res` matches `resume`.
+    Doctor compiles that regex with Python's `re`, whose syntax differs
+    from Rust's `regex` in places. A matcher `re` can't compile, or one
+    that isn't a string, is taken to match every value, so a pattern
+    doctor can't read never hides a duplicate run.
+    """
+    values = _MATCHER_VALUES.get(event)
+    if values is None:
+        return _EVERY_FIRE
+    matcher = (
+        cast(dict[str, object], group).get("matcher")
+        if isinstance(group, dict) else None
+    )
+    if not isinstance(matcher, str) or matcher in ("", "*"):
+        return frozenset(values)
+    if _EXACT_MATCHER.fullmatch(matcher):
+        return frozenset(values) & frozenset(matcher.split("|"))
+    try:
+        pattern = re.compile(matcher)
+    except re.error:
+        return frozenset(values)
+    return frozenset(v for v in values if pattern.search(v))
+
+
+def _most_runs(value_sets: list[frozenset[str]]) -> int:
+    """How many times one fire runs a program, at the value that runs it
+    most.
+
+    Each set holds the values one handler of the program runs on, so two
+    handlers run on the same fire only when their sets share a value.
+    """
+    counts: dict[str, int] = {}
+    for values in value_sets:
+        for value in values:
+            counts[value] = counts.get(value, 0) + 1
+    return max(counts.values(), default=0)
+
+
 def _program_path(cmd: str, key: str, *, windows: bool | None = None) -> str:
     """The program path of an owned handler's command, without arguments.
 
@@ -1948,12 +2016,16 @@ def doctor_codex(
     expected_events = set(desired.keys())
     covered: set[str] = set()
     found_keys: dict[str, set[str]] = {}
-    runs: dict[tuple[str, str], int] = {}
+    # The values each handler of a program runs on, per event (#1812).
+    runs: dict[tuple[str, str], list[frozenset[str]]] = {}
     maybe: dict[tuple[str, str], list[str]] = {}
     for event, groups in hooks_map.items():
         if not isinstance(groups, list):
             continue
         for group in cast(list[object], groups):
+            # #1812: handlers whose matchers share no value never run on
+            # the same fire, so they don't count as duplicate runs.
+            values = _matched_values(event, group)
             # #1812: a foreign handler that runs an aelfrice program as its
             # first word counts toward duplicate runs. One that names it
             # only in a shell script or an argument may run it, so doctor
@@ -1963,7 +2035,7 @@ def doctor_codex(
                     continue
                 direct = _direct_owned_key(other, windows=windows)
                 if direct:
-                    runs[(event, direct)] = runs.get((event, direct), 0) + 1
+                    runs.setdefault((event, direct), []).append(values)
                 for key in _wrapped_owned_keys(other, windows=windows):
                     if key != direct:
                         maybe.setdefault((event, key), []).append(
@@ -1987,7 +2059,7 @@ def doctor_codex(
                         or command_launcher_key(cmd, windows=windows)
                     )
                     found_keys.setdefault(event, set()).add(own_key)
-                    runs[(event, own_key)] = runs.get((event, own_key), 0) + 1
+                    runs.setdefault((event, own_key), []).append(values)
                     exe = Path(program_token(cmd, windows=windows))
                     path = _program_path(cmd, own_key, windows=windows)
                     if (
@@ -1999,11 +2071,11 @@ def doctor_codex(
     report.missing_events = sorted(expected_events - covered)
     report.duplicate_runs = [
         (event, key, count)
-        for (event, key), count in sorted(runs.items())
-        if count > 1
+        for (event, key), value_sets in sorted(runs.items())
+        if (count := _most_runs(value_sets)) > 1
     ]
     for (event, key), commands in sorted(maybe.items()):
-        if runs.get((event, key), 0) + len(commands) < 2:
+        if _most_runs(runs.get((event, key), [])) + len(commands) < 2:
             continue
         for cmd in commands:
             warning = (
