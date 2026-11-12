@@ -265,6 +265,11 @@ _WRAPPERS = {
     ),
     "sh -c runs $0": "sh -c 'exec \"$0\" --host codex' {p}",
     "bash -c runs $@": "bash -c '\"$@\"' _ {p} --host codex",
+    "sh -c printf $(...)": "sh -c 'printf \"%s\" \"$({p} --host codex)\"'",
+    "echo $(...)": "echo \"$({p} --host codex)\"",
+    "sh -c backquotes": "sh -c 'echo `{p} --host codex`'",
+    "printf into sh": "printf '%s' {p} | sh",
+    "echo into xargs": "echo {p} | xargs -I{{}} sh -c '{{}} --host codex'",
 }
 
 
@@ -310,6 +315,8 @@ _NOT_RUNNING = {
     "other hook": "/usr/bin/python3 /x/other-hook.py SessionStart --verbose",
     "echo": "echo aelf-session-start-hook",
     "sh -c printf": "sh -c 'printf \"%s\\n\" {p}'",
+    "echo or true": "echo {p} || true",
+    "printf into a file": "printf '%s\\n' {p} > /dev/null",
 }
 
 
