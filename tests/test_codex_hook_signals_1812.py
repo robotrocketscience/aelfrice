@@ -286,13 +286,24 @@ _DIRECT = {
     "env time -o FILE": "env time -o /dev/null {p} --host codex",
     "exec time -o FILE": "exec time -o /dev/null {p} --host codex",
     "nohup time -o FILE": "nohup time -o /dev/null {p} --host codex",
-    # A shell reads no quoted or escaped word as its reserved `time`, and
-    # bash none after an assignment, so these are the `time` program.
+    # A shell reads no quoted or escaped word as its reserved `time`, so
+    # these are the `time` program, after an assignment too.
     "escaped time -o FILE": "\\time -o /dev/null {p} --host codex",
     "single-quoted time -o FILE": "'time' -o /dev/null {p} --host codex",
     "double-quoted time -o FILE": '"time" -o /dev/null {p} --host codex',
     "partly quoted time -o FILE": "ti'me' -o /dev/null {p} --host codex",
-    "assignment time -o FILE": "X=1 time -o /dev/null {p} --host codex",
+    "assignment quoted time -o FILE": (
+        "X=1 'time' -o /dev/null {p} --host codex"
+    ),
+    "assignment escaped time -o FILE": (
+        "X=1 \\time -o /dev/null {p} --host codex"
+    ),
+    "assignment /usr/bin/time -o FILE": (
+        "X=1 /usr/bin/time -o /dev/null {p} --host codex"
+    ),
+    "assignment nice time -o FILE": (
+        "X=1 nice time -o /dev/null {p} --host codex"
+    ),
     # bash 5 reads the second `time` as its reserved word too, bash 3.2
     # and zsh as the program, and each of them runs the hook.
     "second time": "time time {p} --host codex",
@@ -415,6 +426,13 @@ _WRAPPERS = {
     # bash 3.2 runs the `time` program after `!`. bash 5 and zsh read the
     # first `time` as the reserved word, and bash 5 the second too.
     "! time time -o FILE": "! time time -o /dev/null {p} --host codex",
+    # bash runs the `time` program after an assignment. zsh 5.9 stops with
+    # a parse error at an unquoted `time` there and runs nothing.
+    "assignment time": "X=1 time {p} --host codex",
+    "assignment time -o FILE": "X=1 time -o /dev/null {p} --host codex",
+    "assignment time -p": "X=1 time -p {p} --host codex",
+    "! assignment time -o FILE": "! X=1 time -o /dev/null {p} --host codex",
+    "time assignment time": "time X=1 time {p} --host codex",
 }
 
 
