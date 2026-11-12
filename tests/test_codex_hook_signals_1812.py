@@ -447,15 +447,60 @@ def _add_group(
     hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
 
+def _narrow_setup_matcher(hooks: Path, matcher: str) -> None:
+    """Give setup's SessionStart group, the first one, this matcher."""
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["SessionStart"][0]["matcher"] = matcher
+    hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+# The SessionStart matcher that releases before this one wrote.
+_OLD_SESSION_START_MATCHER = "startup|resume|clear|compact"
+
+
+def _session_start_groups(hooks: Path) -> list[dict[str, object]]:
+    return json.loads(hooks.read_text(encoding="utf-8"))["hooks"][
+        "SessionStart"
+    ]
+
+
+@pytest.mark.timeout(60)
+def test_setup_session_start_matcher_lists_every_source(
+    tmp_path: Path,
+) -> None:
+    """A forked thread starts with source `fork` and gets the baseline."""
+    _codex_dir, hooks, _program = _installed(tmp_path)
+    [group] = _session_start_groups(hooks)
+    assert group["matcher"] == "startup|resume|clear|compact|fork"
+
+
+@pytest.mark.timeout(60)
+def test_setup_rerun_moves_an_earlier_session_start_group_to_fork(
+    tmp_path: Path,
+) -> None:
+    _codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    _narrow_setup_matcher(hooks, _OLD_SESSION_START_MATCHER)
+    result = install_codex_hooks(hooks)
+    assert result.error is None
+    assert result.changed
+    groups = _session_start_groups(hooks)
+    assert [g["matcher"] for g in groups] == [
+        "startup|resume|clear|compact|fork",
+    ]
+    assert [[h["command"] for h in g["hooks"]] for g in groups] == [[ours]]
+
+
 def _first_command(hooks: Path, event: str) -> str:
     doc = json.loads(hooks.read_text(encoding="utf-8"))
     return str(doc["hooks"][event][0]["hooks"][0]["command"])
 
 
-# A second SessionStart group beside setup's, whose matcher is
-# `startup|resume|clear|compact`. `{p}` is the program path and `{ours}`
-# setup's own command. Codex reads a matcher of letters and `|` as exact
-# names and any other matcher as a regex that can match part of a source.
+# A second SessionStart group beside setup's. `{p}` is the program path and
+# `{ours}` setup's own command. Codex reads a matcher of letters and `|` as
+# exact names and any other matcher as a regex that can match part of a
+# source. Setup's matcher lists every source, so the disjoint cases narrow
+# it to `startup|resume` first, as a user who edits it might.
 _DISJOINT_SESSION_START = {
     "env under fork": ("/usr/bin/env {p}", "fork"),
     "copy under fork": ("{ours}", "fork"),
@@ -464,6 +509,10 @@ _DISJOINT_SESSION_START = {
 }
 _OVERLAPPING_SESSION_START = {
     "env under resume": ("/usr/bin/env {p}", "resume"),
+    # Setup's matcher lists `fork`, so a forked thread runs both.
+    "env under fork": ("/usr/bin/env {p}", "fork"),
+    "copy under fork": ("{ours}", "fork"),
+    "copy under ^fork$": ("{ours}", "^fork$"),
     "copy under ^res": ("{ours}", "^res"),
     "copy under *": ("{ours}", "*"),
     "copy under empty": ("{ours}", ""),
@@ -498,6 +547,7 @@ def test_doctor_passes_a_second_run_under_a_disjoint_matcher(
 ) -> None:
     """No SessionStart source runs both handlers, so neither runs twice."""
     codex_dir, hooks, program = _installed(tmp_path)
+    _narrow_setup_matcher(hooks, "startup|resume")
     command, matcher = _DISJOINT_SESSION_START[shape]
     _add_group(
         hooks, "SessionStart",
@@ -709,14 +759,14 @@ def test_doctor_counts_runs_on_one_source_not_across_sources(
 @pytest.mark.timeout(60)
 def test_doctor_faults_two_runs_on_a_forked_session(tmp_path: Path) -> None:
     """Codex also starts a session with source `fork`, which setup's
-    matcher leaves out."""
+    matcher lists, so a fork fire runs setup's handler and both copies."""
     codex_dir, hooks, _program = _installed(tmp_path)
     ours = _session_start_command(hooks)
     _add_group(hooks, "SessionStart", ours, "fork")
     _add_group(hooks, "SessionStart", ours, "fork")
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 1, out
-    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+    assert "SessionStart runs aelf-session-start-hook 3 times" in out
 
 
 @pytest.mark.timeout(60)
@@ -897,11 +947,14 @@ def test_doctor_warns_and_passes_a_handler_that_checks_for_the_program(
 # command. The wrapper gets a warning only when one fire runs it and
 # another handler of the program.
 _WRAPPER_MATCHERS = {
-    "sh -c under fork": ("SessionStart", "fork", "sh -c '{p}'", False),
+    # Setup's matcher lists `fork`.
+    "sh -c under fork": ("SessionStart", "fork", "sh -c '{p}'", True),
     "python under fork": (
-        "SessionStart", "fork", "/usr/bin/python3 w.py {p}", False,
+        "SessionStart", "fork", "/usr/bin/python3 w.py {p}", True,
     ),
-    "sh -c under ^fork$": ("SessionStart", "^fork$", "sh -c '{p}'", False),
+    "sh -c under ^fork$": ("SessionStart", "^fork$", "sh -c '{p}'", True),
+    # `start` lists one exact name, and no source is `start`.
+    "sh -c under start": ("SessionStart", "start", "sh -c '{p}'", False),
     "sh -c under resume": ("SessionStart", "resume", "sh -c '{p}'", True),
     "sh -c under ^res": ("SessionStart", "^res", "sh -c '{p}'", True),
     "sh -c under WebSearch": (
@@ -943,9 +996,10 @@ def test_doctor_warns_about_a_wrapper_only_where_a_fire_runs_it_twice(
 def test_doctor_warns_about_two_wrappers_under_one_disjoint_matcher(
     tmp_path: Path,
 ) -> None:
-    """A `fork` fire runs both wrappers, though setup's handler doesn't run
-    on it."""
+    """A `fork` fire runs both wrappers, though setup's handler, narrowed
+    to `startup|resume`, doesn't run on it."""
     codex_dir, hooks, program = _installed(tmp_path)
+    _narrow_setup_matcher(hooks, "startup|resume")
     first, second = f"sh -c '{program}'", f"bash -c '{program}'"
     _add_group(hooks, "SessionStart", first, "fork")
     _add_group(hooks, "SessionStart", second, "fork")
@@ -959,9 +1013,11 @@ def test_doctor_warns_about_two_wrappers_under_one_disjoint_matcher(
 def test_doctor_warns_about_the_overlapping_wrapper_and_not_the_disjoint_one(
     tmp_path: Path,
 ) -> None:
-    """A `resume` fire runs setup's handler and one wrapper; no fire runs
-    the `fork` wrapper beside another handler."""
+    """A `resume` fire runs setup's handler and one wrapper. With setup's
+    matcher narrowed to `startup|resume`, no fire runs the `fork` wrapper
+    beside another handler."""
     codex_dir, hooks, program = _installed(tmp_path)
+    _narrow_setup_matcher(hooks, "startup|resume")
     overlapping, disjoint = f"sh -c '{program}'", f"bash -c '{program}'"
     _add_group(hooks, "SessionStart", overlapping, "resume")
     _add_group(hooks, "SessionStart", disjoint, "fork")

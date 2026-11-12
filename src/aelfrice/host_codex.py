@@ -157,7 +157,10 @@ def resolve_codex_home() -> Path:
 # on fresh sessions and the rebuild block fires post-compaction (#1054:
 # SessionStart(source=="compact") is Codex's only compaction-injection
 # channel — PreCompact/PostCompact stdout is ignored by the harness).
-_SESSION_START_MATCHER: Final[str] = "startup|resume|clear|compact"
+# #1812: `fork` is the source of a forked thread, which gets the baseline
+# too. Setup drops the group that holds its own handler and writes this
+# one, so a rerun moves an earlier install to it.
+_SESSION_START_MATCHER: Final[str] = "startup|resume|clear|compact|fork"
 
 # Basenames owned by aelfrice; setup replaces exactly these on re-run and
 # uninstall removes exactly these. Mirrors the manifest-ownership posture
