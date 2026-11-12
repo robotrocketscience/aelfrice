@@ -30,6 +30,7 @@ from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT
 from aelfrice.hook_summary import ENV_HOOK_SUMMARY_LINE
 from aelfrice.host_codex import (
     CODEX_ADDITIONAL_CONTEXT_LIMIT,
+    _wrapped_owned_keys,
     install_codex_hooks,
     install_codex_skills,
 )
@@ -273,6 +274,8 @@ _WRAPPERS = {
     "timeout sh -c": "timeout 30 sh -c '{p} --host codex | cat'",
     "nice bash -c": "nice -n 5 bash -c '{p} --host codex | cat'",
     "env -i sh -c": "env -i sh -c '{p} --host codex | cat'",
+    "python one argument": "/usr/bin/python3 /x/w.py '{p} --host codex'",
+    "env -S": "/usr/bin/env -S '{p} --host codex'",
 }
 
 
@@ -301,6 +304,24 @@ def test_doctor_faults_setup_run_over_a_session_start_wrapper(
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 1, out
     assert "SessionStart runs aelf-session-start-hook 2 times" in out
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'bash -c "C:\\bin\\aelf-session-start-hook.exe --host codex"',
+        'cmd /c "C:\\bin\\aelf-session-start-hook.exe --host codex"',
+    ],
+)
+def test_a_windows_wrapper_given_the_command_as_one_argument_counts(
+    command: str,
+) -> None:
+    """Windows doesn't read the shell script, but the argument's program
+    still counts."""
+    handler = {"type": "command", "command": command}
+    assert _wrapped_owned_keys(handler, windows=True) == {
+        "aelf-session-start-hook",
+    }
 
 
 @pytest.mark.timeout(60)

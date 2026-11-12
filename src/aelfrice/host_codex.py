@@ -1664,6 +1664,22 @@ def _shell_script(args: list[str]) -> tuple[str, list[str]] | None:
     return None
 
 
+def _word_program_key(
+    word: str, owned: frozenset[str], *, windows: bool,
+) -> str:
+    """The key of the program a word names, or of the first word in it.
+
+    A wrapper can take a whole command as one word, as in `python3 w.py
+    '<program> --host codex'` or `env -S '<program> --host codex'`, so a
+    word whose own key isn't owned is split and its first word is tried.
+    """
+    key = launcher_key(word, windows=windows)
+    if key in owned:
+        return key
+    inner = command_tokens(word, windows=windows)
+    return launcher_key(inner[0], windows=windows) if inner else ""
+
+
 def _wrapped_owned_keys(
     handler: object, *, windows: bool | None = None,
 ) -> set[str]:
@@ -1676,9 +1692,10 @@ def _wrapped_owned_keys(
 
     * as its program after any `VAR=value` words and prefix words such as
       `env` or `exec`, as in `/usr/bin/env <bin>/aelf-session-start-hook`;
-    * as an argument, since a wrapper takes the program it runs as one,
-      unless the command only prints its arguments (`echo`, `printf`) and
-      no pipe sends them to another command, as `echo PROGRAM | sh` does;
+    * as an argument, or the first word of one, since a wrapper takes the
+      program it runs as an argument, unless the command only prints its
+      arguments (`echo`, `printf`) and no pipe sends them to another
+      command, as `echo PROGRAM | sh` does;
     * inside a command substitution, as in `echo "$(PROGRAM)"`, which is
       read the same way and is POSIX only;
     * inside the script of a shell's `-c` option, such as `sh -c
@@ -1724,8 +1741,9 @@ def _wrapped_owned_keys(
                 continue
             head = launcher_key(simple[i], windows=win)
             args = simple[i + 1:]
-            if head in owned:
-                found.add(head)
+            program = _word_program_key(simple[i], owned, windows=win)
+            if program in owned:
+                found.add(program)
                 continue
             if head in _PRINTERS and not piped:
                 continue
@@ -1755,7 +1773,7 @@ def _wrapped_owned_keys(
                     args = args[:at]
             found.update(
                 key for arg in args
-                if (key := launcher_key(arg, windows=win)) in owned
+                if (key := _word_program_key(arg, owned, windows=win)) in owned
             )
     return found
 
