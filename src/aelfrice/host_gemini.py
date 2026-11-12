@@ -405,7 +405,12 @@ def _plan_remove(
 
 
 def _read_snapshot(path: Path) -> tuple[str | None, str]:
-    """`(text, sha256)` from one read; `(None, "")` when absent."""
+    """`(text, sha256)` from one read; `(None, "")` when absent.
+
+    Raises `OSError` when the path can't be read, for example a directory,
+    a file without read permission, or a parent that is not a directory,
+    and `UnicodeDecodeError` when the bytes are not UTF-8.
+    """
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
@@ -484,7 +489,14 @@ def _commit(path: Path, plan: _Plan) -> GeminiSettingsResult:
             settings_lock_anchor(path), timeout=_LOCK_TIMEOUT,
         ):
             for _ in range(_COMMIT_ATTEMPTS):
-                text, fingerprint = _read_snapshot(path)
+                try:
+                    text, fingerprint = _read_snapshot(path)
+                except (OSError, UnicodeDecodeError) as exc:
+                    return GeminiSettingsResult(
+                        path=path, changed=False,
+                        error=f"could not read {path} ({exc}); nothing was "
+                              "changed",
+                    )
                 serialized, result = plan(text)
                 if serialized is None:
                     return result
@@ -956,9 +968,13 @@ def doctor_gemini(
     if report.settings_present:
         text = ""
         try:
-            text = path.read_text(encoding="utf-8")
-            parsed: object = json.loads(text)
-        except (OSError, json.JSONDecodeError) as exc:
+            raw = path.read_bytes()
+            # Kept readable for the hook-name check below when the bytes
+            # are not UTF-8.
+            text = raw.decode("utf-8", errors="replace")
+            parsed: object = json.loads(raw.decode("utf-8"))
+        except (OSError, ValueError) as exc:
+            # ValueError covers JSONDecodeError and UnicodeDecodeError.
             report.parse_error = str(exc)
         else:
             if isinstance(parsed, dict):

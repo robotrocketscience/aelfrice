@@ -405,6 +405,83 @@ def test_remove_deletes_the_file_setup_created(gdir: Path, cmd: str) -> None:
     assert not path.exists()
 
 
+def _not_utf8(path: Path) -> bytes:
+    raw = b'{"theme": "\xff", "x": "aelf-gemini-hook"}\n'
+    path.write_bytes(raw)
+    return raw
+
+
+def test_install_reports_a_settings_file_that_is_not_utf8(
+    gdir: Path, cmd: str,
+) -> None:
+    """Killed by: decoding outside the error path, which raised."""
+    path = gdir / "settings.json"
+    raw = _not_utf8(path)
+    result = _install(path, cmd)
+    assert result.error is not None and "could not read" in result.error
+    assert path.read_bytes() == raw
+
+
+def test_remove_reports_a_settings_file_that_is_not_utf8(gdir: Path) -> None:
+    path = gdir / "settings.json"
+    raw = _not_utf8(path)
+    result = hgm.remove_gemini_hooks(path)
+    assert result.error is not None and "could not read" in result.error
+    assert path.read_bytes() == raw
+
+
+def test_install_reports_a_settings_path_that_is_a_directory(
+    gdir: Path, cmd: str,
+) -> None:
+    path = gdir / "settings.json"
+    path.mkdir()
+    result = _install(path, cmd)
+    assert result.error is not None and "could not read" in result.error
+    assert path.is_dir()
+
+
+def test_install_reports_a_gemini_dir_that_is_a_file(
+    tmp_path: Path, cmd: str,
+) -> None:
+    gfile = tmp_path / "home" / ".gemini"
+    gfile.parent.mkdir(parents=True)
+    gfile.write_text("x", encoding="utf-8")
+    result = _install(gfile / "settings.json", cmd)
+    assert result.error is not None and "could not read" in result.error
+    assert gfile.read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="mode 000 does not stop root or Windows from reading",
+)
+def test_install_reports_an_unreadable_settings_file(
+    gdir: Path, cmd: str,
+) -> None:
+    path = gdir / "settings.json"
+    path.write_text("{}\n", encoding="utf-8")
+    path.chmod(0)
+    try:
+        result = _install(path, cmd)
+    finally:
+        path.chmod(0o600)
+    assert result.error is not None and "could not read" in result.error
+    assert path.read_text(encoding="utf-8") == "{}\n"
+
+
+def test_doctor_reports_a_settings_file_that_is_not_utf8(
+    gdir: Path,
+) -> None:
+    """Doctor reports and never raises. Killed by: catching only OSError
+    and JSONDecodeError."""
+    _not_utf8(gdir / "settings.json")
+    report = hgm.doctor_gemini(gdir)
+    assert report.settings_present and not report.settings_valid
+    assert report.parse_error is not None
+    assert report.unparseable_names_hook
+    assert report.faults()
+
+
 def test_remove_without_a_file_creates_nothing(tmp_path: Path) -> None:
     gdir = tmp_path / "absent" / ".gemini"
     result = hgm.remove_gemini_hooks(gdir / "settings.json")
