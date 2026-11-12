@@ -1882,22 +1882,26 @@ def _program_index(
     are bash 3.2's. The last item is True when another shell reads another
     program or other arguments, as zsh does with `time -p PROGRAM`, which
     runs `-p`, and bash 5 does with `time time -o FILE PROGRAM`, which
-    runs `-o`.
+    runs `-o`, or when one shell rejects the command, as zsh does `X=1
+    time PROGRAM`.
     """
     readings = [
         _shell_program_index(simple, shell, windows=windows)
         for shell in _TIME_SHELLS
     ]
-    words, i = readings[0]
-    differ = any(other[j:] != words[i:] for other, j in readings[1:])
+    words, i = next(
+        (r for r in readings if r is not None), (simple, len(simple)),
+    )
+    differ = any(r is None or r[0][r[1]:] != words[i:] for r in readings)
     return words, i, differ
 
 
 def _shell_program_index(
     simple: list[str], shell: str, *, windows: bool,
-) -> tuple[list[str], int]:
+) -> tuple[list[str], int] | None:
     """A simple command's words and the index of its program word, as one
-    shell in `_TIME_SHELLS` reads them.
+    shell in `_TIME_SHELLS` reads them, or None when the shell rejects the
+    command and runs nothing.
 
     Skips `VAR=value` words, and prefix words such as `env` or `exec` with
     the options after them and their operands, as in `env -i PROGRAM` or
@@ -1911,7 +1915,10 @@ def _shell_program_index(
     After it, bash 3.2 skips one `-p`, bash 5 skips a `-p`, a `--`, or
     `-p --`, as the `timespec` rule in bash 5.2's parse.y reads them, and
     zsh skips nothing. Any other `time` word is the `time` program, which
-    takes the `-o FILE` operand.
+    takes the `-o FILE` operand. zsh 5.9 reads an unquoted `time` that is
+    no path and follows a `VAR=value` word in command position, as in
+    `X=1 time PROGRAM`, as its reserved word and stops with `parse error
+    near 'time'`, so the result for zsh is None there.
     """
     words = simple
     i = 0
@@ -1928,6 +1935,11 @@ def _shell_program_index(
         prefix = launcher_key(words[i], windows=windows)
         if prefix not in _PREFIX_WORDS:
             break
+        if (
+            shell == "zsh" and prefix == "time" and before == "="
+            and _unquoted_time(words[i], windows=windows)
+        ):
+            return None
         if prefix == "time" and _reserved_time(
             words[i], before, shell, windows=windows,
         ):
@@ -1959,7 +1971,7 @@ def _reserved_time(
     3.2 runs the program. At the start and after the other reserved
     words, such as `{` or `if`, every shell reads the reserved word.
     """
-    if isinstance(word, _QuotedWord) or _names_a_path(word, windows=windows):
+    if not _unquoted_time(word, windows=windows):
         return False
     if before == "=" or before in _PROGRAM_RUNNERS:
         return False
@@ -1968,6 +1980,14 @@ def _reserved_time(
     if before == "!":
         return shell != "bash 3.2"
     return True
+
+
+def _unquoted_time(word: str, *, windows: bool) -> bool:
+    """True when a `time` word is neither quoted nor escaped nor a path,
+    so a shell can read it as its reserved word."""
+    return not (
+        isinstance(word, _QuotedWord) or _names_a_path(word, windows=windows)
+    )
 
 
 def _names_a_path(word: str, *, windows: bool) -> bool:
