@@ -161,6 +161,12 @@ def resolve_codex_home() -> Path:
 # too. Setup drops the group that holds its own handler and writes this
 # one, so a rerun moves an earlier install to it.
 _SESSION_START_MATCHER: Final[str] = "startup|resume|clear|compact|fork"
+#: The SessionStart matcher that earlier releases wrote, which leaves out
+#: `fork`. Doctor reports a group with it that holds an aelfrice handler as
+#: a stale install, which a setup rerun fixes (#1812).
+_STALE_SESSION_START_MATCHERS: Final[frozenset[str]] = frozenset(
+    {"startup|resume|clear|compact"},
+)
 
 # Basenames owned by aelfrice; setup replaces exactly these on re-run and
 # uninstall removes exactly these. Mirrors the manifest-ownership posture
@@ -1428,6 +1434,10 @@ class CodexDoctorReport:
     missing_events: list[str] = field(default_factory=list[str])
     missing_handlers: list[str] = field(default_factory=list[str])
     stale_commands: list[str] = field(default_factory=list[str])
+    #: Matchers of the SessionStart groups that hold an aelfrice handler
+    #: under the matcher an earlier release wrote, which leaves out `fork`
+    #: (#1812).
+    stale_matchers: list[str] = field(default_factory=list[str])
     #: (event, program, count) for each aelfrice program that more than one
     #: handler in one event runs as its command's first word, either as its
     #: own handler or after a prefix word such as `env` (#1812). The count
@@ -1475,6 +1485,13 @@ class CodexDoctorReport:
             reasons.append(
                 "hook command(s) configured but not present on disk: "
                 + ", ".join(self.stale_commands),
+            )
+        for matcher in self.stale_matchers:
+            reasons.append(
+                f"SessionStart runs aelfrice under the matcher {matcher!r} "
+                "that an earlier release wrote, which leaves out `fork`, so "
+                "a forked thread gets no baseline; run `aelf setup --host "
+                "codex` again",
             )
         if self.missing_events:
             reasons.append(
@@ -2726,6 +2743,14 @@ def doctor_codex(
             if not owned:
                 continue
             covered.add(event)
+            matcher = cast(dict[str, object], group).get("matcher")
+            if (
+                event == "SessionStart"
+                and isinstance(matcher, str)
+                and matcher in _STALE_SESSION_START_MATCHERS
+                and matcher not in report.stale_matchers
+            ):
+                report.stale_matchers.append(str(matcher))
             for handler in owned:
                 report.owned_handler_count += 1
                 hd = cast(dict[str, object], handler)

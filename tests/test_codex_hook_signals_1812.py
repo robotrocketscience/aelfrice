@@ -491,6 +491,53 @@ def test_setup_rerun_moves_an_earlier_session_start_group_to_fork(
     assert [[h["command"] for h in g["hooks"]] for g in groups] == [[ours]]
 
 
+_STALE_MATCHER_FAULT = (
+    "SessionStart runs aelfrice under the matcher "
+    "'startup|resume|clear|compact' that an earlier release wrote"
+)
+
+
+@pytest.mark.timeout(60)
+def test_doctor_faults_the_earlier_session_start_matcher_until_setup_reruns(
+    tmp_path: Path,
+) -> None:
+    codex_dir, hooks, _program = _installed(tmp_path)
+    _narrow_setup_matcher(hooks, _OLD_SESSION_START_MATCHER)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert _STALE_MATCHER_FAULT in out, out
+    assert "run `aelf setup --host codex` again" in out, out
+    install_codex_hooks(hooks)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "earlier release" not in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_passes_a_foreign_group_under_the_earlier_matcher(
+    tmp_path: Path,
+) -> None:
+    """Only a group that holds an aelfrice handler is a stale install."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    _add_group(hooks, "SessionStart", _UNRELATED, _OLD_SESSION_START_MATCHER)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "earlier release" not in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_the_earlier_matcher_as_stale_in_session_start_only(
+    tmp_path: Path,
+) -> None:
+    codex_dir, hooks, _program = _installed(tmp_path)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["PreCompact"][0]["matcher"] = _OLD_SESSION_START_MATCHER
+    hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "earlier release" not in out, out
+
+
 def _first_command(hooks: Path, event: str) -> str:
     doc = json.loads(hooks.read_text(encoding="utf-8"))
     return str(doc["hooks"][event][0]["hooks"][0]["command"])
