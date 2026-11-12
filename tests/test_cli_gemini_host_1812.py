@@ -22,7 +22,6 @@ import aelfrice.cli as cli
 import aelfrice.host_gemini as host_gemini
 import aelfrice.setup as setup_mod
 from aelfrice import launcher
-from aelfrice.cli import build_parser, host_inapplicable_options, main
 
 pytestmark = pytest.mark.timeout(60)
 
@@ -100,7 +99,7 @@ def sb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Sandbox:
 
 def _run(argv: list[str], sb: Sandbox) -> tuple[int, list[str]]:
     out = io.StringIO()
-    rc = main(argv, out)
+    rc = cli.main(argv, out)
     text = out.getvalue().replace(str(sb.root), "<TMP>").replace("\\", "/")
     return rc, text.splitlines()
 
@@ -423,19 +422,19 @@ def test_an_inapplicable_option_exits_2_before_any_write(
 
 
 def test_the_applicable_sets_partition_the_parser() -> None:
-    parser = build_parser()
+    parser = cli.build_parser()
     for cmd, applicable in (("setup", {"host", "force"}), ("unsetup", {"host"})):
         sub = cli._subcommand_parser(parser, cmd)  # noqa: SLF001
         assert sub is not None
         every = set(cli._option_dests(sub))  # noqa: SLF001
-        assert set(host_inapplicable_options(parser, cmd, "gemini")) == (
+        assert set(cli.host_inapplicable_options(parser, cmd, "gemini")) == (
             every - applicable
         )
 
 
 def test_the_claude_host_has_no_inapplicable_options() -> None:
-    parser = build_parser()
-    assert host_inapplicable_options(parser, "setup", "claude") == {}
+    parser = cli.build_parser()
+    assert cli.host_inapplicable_options(parser, "setup", "claude") == {}
 
 
 @pytest.mark.source_scan
@@ -454,12 +453,12 @@ def _normalize(block: str) -> str:
 def test_generated_commands_never_instruct_a_refused_option_unqualified() -> None:
     """A refused option named in a command prompt is marked as another
     host's guidance, as the codex skills are (#1429)."""
-    parser = build_parser()
+    parser = cli.build_parser()
     refused: set[str] = set()
     for cmd in ("setup", "unsetup"):
         sub = cli._subcommand_parser(parser, cmd)  # noqa: SLF001
         assert sub is not None
-        dests = set(host_inapplicable_options(parser, cmd, "gemini"))
+        dests = set(cli.host_inapplicable_options(parser, cmd, "gemini"))
         for action in sub._actions:  # noqa: SLF001
             if action.dest in dests:
                 refused.update(action.option_strings)
