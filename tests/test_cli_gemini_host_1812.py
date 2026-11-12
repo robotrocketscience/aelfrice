@@ -257,13 +257,14 @@ def test_unsetup_removes_exactly_what_setup_added(sb: Sandbox) -> None:
     assert sb.codex_hooks.read_bytes() == other["codex"]
 
 
-def test_setup_then_uninstall_leaves_the_gemini_dir_as_it_was(sb: Sandbox) -> None:
-    """Killed by: leaving `{}`, a lock file, or an empty commands dir."""
+def test_setup_then_uninstall_leaves_only_an_empty_settings_file(sb: Sandbox) -> None:
+    """Killed by: leaving a lock file or an empty commands dir."""
     rc = _run(["setup", "--host", "gemini"], sb)[0]
     assert rc == 0
     rc = _run(["uninstall", "--keep-db", "--host", "gemini"], sb)[0]
     assert rc == 0
-    assert list(sb.gemini.iterdir()) == []
+    assert [p.name for p in sb.gemini.iterdir()] == ["settings.json"]
+    assert json.loads((sb.gemini / "settings.json").read_text(encoding="utf-8")) == {}
 
 
 def test_unsetup_on_a_machine_without_gemini_creates_nothing(
@@ -290,7 +291,7 @@ def test_uninstall_tears_down_the_named_host_only(sb: Sandbox) -> None:
         "hook cleanup ran on the gemini host; no Claude settings.json was "
         "touched (re-run without `--host` to clean the Claude host too)."
     ) in lines
-    assert not sb.settings.exists()
+    assert _read(sb.settings) == {}
     assert not sb.commands.exists()
     assert sb.claude_settings.read_bytes() == other["claude"]
     assert sb.codex_hooks.read_bytes() == other["codex"]

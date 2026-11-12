@@ -25,6 +25,7 @@ which this JSON reader cannot parse, so such a file is refused too.
 Writes take an advisory lock kept in the temporary directory, so no lock
 file is left in Gemini's directory, re-check a content hash before
 committing, and replace the file atomically.
+Unsetup keeps the settings file, as `{}` when nothing else is left.
 Generated commands carry a marker line, and only files with the marker
 are replaced or removed.
 """
@@ -359,8 +360,8 @@ def _plan_remove(
 
     An unparseable file is reported and left alone. An event that loses
     its last group is dropped, and so is a `hooks` object that this
-    leaves empty. A document left as `{}`, which is what setup writes
-    where there was no file, plans as `""`: remove the file.
+    leaves empty. The file itself is kept, as `{}` when nothing else is
+    left: nothing records whether setup created it or the user had it.
     """
     if text is None:
         return None, GeminiSettingsResult(path=path, changed=False)
@@ -399,7 +400,7 @@ def _plan_remove(
         return None, GeminiSettingsResult(path=path, changed=False)
     if not hooks_map:
         del doc["hooks"]
-    return _serialize(doc, text) if doc else "", GeminiSettingsResult(
+    return _serialize(doc, text), GeminiSettingsResult(
         path=path, changed=True, events=sorted(removed),
     )
 
@@ -426,15 +427,9 @@ def _fingerprint(path: Path) -> str:
 
 
 def _atomic_replace(path: Path, text: str, expected: str) -> bool:
-    """Replace `path` with `text` iff it still hashes to `expected`.
-
-    An empty `text` removes `path` instead.
-    """
+    """Replace `path` with `text` iff it still hashes to `expected`."""
     if _fingerprint(path) != expected:
         return False
-    if not text:
-        path.unlink()
-        return True
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         prefix=path.name + ".", suffix=".tmp", dir=str(path.parent),

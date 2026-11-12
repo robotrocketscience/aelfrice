@@ -396,13 +396,25 @@ def test_the_lock_is_held_across_the_read_modify_write(
     assert observed and all(observed)
 
 
-def test_remove_deletes_the_file_setup_created(gdir: Path, cmd: str) -> None:
-    """Killed by: leaving `{}` where there was no settings.json."""
+@pytest.mark.parametrize(
+    "before",
+    [None, "{}\n", '{\n  "hooks": {}\n}\n',
+     '{\n  "hooks": {\n    "PreCompress": []\n  }\n}\n'],
+    ids=["no-file", "empty-object", "empty-hooks", "empty-event-list"],
+)
+def test_remove_never_deletes_the_settings_file(
+    gdir: Path, cmd: str, before: str | None,
+) -> None:
+    """Unsetup can't tell a file setup created from one the user already
+    had, so it keeps the file. Killed by: unlinking a file left as `{}`."""
     path = gdir / "settings.json"
+    if before is not None:
+        path.write_text(before, encoding="utf-8")
     _install(path, cmd)
     result = hgm.remove_gemini_hooks(path)
     assert (result.changed, result.error) == (True, None)
-    assert not path.exists()
+    assert path.is_file()
+    assert _read(path) == {}
 
 
 def _not_utf8(path: Path) -> bytes:
