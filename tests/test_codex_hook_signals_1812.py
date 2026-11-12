@@ -287,14 +287,17 @@ _DIRECT = {
     "exec time -o FILE": "exec time -o /dev/null {p} --host codex",
     "nohup time -o FILE": "nohup time -o /dev/null {p} --host codex",
     # A shell reads no quoted or escaped word as its reserved `time`, and
-    # none after an assignment or after its own `time`, so these are the
-    # `time` program.
+    # bash none after an assignment, so these are the `time` program.
     "escaped time -o FILE": "\\time -o /dev/null {p} --host codex",
     "single-quoted time -o FILE": "'time' -o /dev/null {p} --host codex",
     "double-quoted time -o FILE": '"time" -o /dev/null {p} --host codex',
     "partly quoted time -o FILE": "ti'me' -o /dev/null {p} --host codex",
     "assignment time -o FILE": "X=1 time -o /dev/null {p} --host codex",
-    "second time -o FILE": "time time -o /dev/null {p} --host codex",
+    # bash 5 reads the second `time` as its reserved word too, bash 3.2
+    # and zsh as the program, and each of them runs the hook.
+    "second time": "time time {p} --host codex",
+    "second time -p": "time time -p {p} --host codex",
+    "second time --": "time time -- {p} --host codex",
     # `timeout` takes a duration, and its `-s` and `-k` options and `nice
     # -n` take an operand, before the program.
     "timeout DURATION": "timeout 30 {p} --host codex",
@@ -404,6 +407,14 @@ _WRAPPERS = {
     # bash and sh read `-p` as the shell's `time` option and run the hook.
     # zsh, the default macOS `$SHELL`, runs `-p` as the program instead.
     "bare time -p": "time -p {p} --host codex",
+    # bash 3.2 and zsh run the second `time` as the program, which takes
+    # `-o FILE` and runs the hook. bash 5 reads it as its reserved word
+    # and runs `-o`.
+    "second time -o FILE": "time time -o /dev/null {p} --host codex",
+    "third time -o FILE": "time time time -o /dev/null {p} --host codex",
+    # bash 3.2 runs the `time` program after `!`. bash 5 and zsh read the
+    # first `time` as the reserved word, and bash 5 the second too.
+    "! time time -o FILE": "! time time -o /dev/null {p} --host codex",
 }
 
 
