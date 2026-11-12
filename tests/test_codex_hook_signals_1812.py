@@ -256,6 +256,10 @@ def _installed(tmp_path: Path) -> tuple[Path, Path, str]:
 # the program path.
 _DIRECT = {
     "env": "/usr/bin/env {p}",
+    # The flag after a prefix word is skipped, so the program is the first
+    # word.
+    "env -i": "/usr/bin/env -i {p} --host codex",
+    "assignment": "AELFRICE_HOOK_SUMMARY_LINE=1 {p} --host codex",
 }
 
 
@@ -331,6 +335,8 @@ _WRAPPERS = {
     "bash -o -c after cd": "/bin/bash -o pipefail -c 'cd /tmp && {p} | cat'",
     "timeout sh -c after cd": "timeout 30 sh -c 'cd /tmp && {p} | cat'",
     "sh -c -- runs $0": "sh -c -- 'exec \"$0\" --host codex' {p}",
+    # Only the first command's first word is a direct run.
+    "after cd": "cd /tmp && {p} --host codex",
 }
 
 
@@ -417,6 +423,28 @@ def test_doctor_ignores_a_foreign_handler_that_runs_no_aelfrice_program(
     assert rc == 0, out
     assert "times" not in out
     assert "may also run" not in out
+
+
+# Each foreign handler only checks that the program is there, but the
+# script scan reads the program as one the handler runs.
+_CHECKS = {
+    "command -v": "sh -c 'command -v {p} >/dev/null || exit 1'",
+    "test -x": "sh -c 'test -x {p} || echo missing'",
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_CHECKS))
+def test_doctor_warns_and_passes_a_handler_that_checks_for_the_program(
+    tmp_path: Path, shape: str,
+) -> None:
+    codex_dir, hooks, program = _installed(tmp_path)
+    check = _CHECKS[shape].format(p=program)
+    _set_session_start_commands(hooks, check, _session_start_command(hooks))
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    assert _warning_for(out, check) is not None, out
 
 
 @pytest.mark.timeout(60)
