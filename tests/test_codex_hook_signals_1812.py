@@ -404,6 +404,150 @@ def test_doctor_faults_a_copied_session_start_handler(tmp_path: Path) -> None:
     assert "SessionStart runs aelf-session-start-hook 2 times" in out
 
 
+def _add_group(
+    hooks: Path, event: str, command: str, matcher: object = None,
+) -> None:
+    """Append a matcher group with one handler; None leaves out `matcher`."""
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    group: dict[str, object] = {
+        "hooks": [{"type": "command", "command": command}],
+    }
+    if matcher is not None:
+        group["matcher"] = matcher
+    doc["hooks"][event].append(group)
+    hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+def _first_command(hooks: Path, event: str) -> str:
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    return str(doc["hooks"][event][0]["hooks"][0]["command"])
+
+
+# A second SessionStart group beside setup's, whose matcher is
+# `startup|resume|clear|compact`. `{p}` is the program path and `{ours}`
+# setup's own command. Codex reads a matcher of letters and `|` as exact
+# names and any other matcher as a regex that can match part of a source.
+_DISJOINT_SESSION_START = {
+    "env under fork": ("/usr/bin/env {p}", "fork"),
+    "copy under fork": ("{ours}", "fork"),
+    "copy under start": ("{ours}", "start"),
+    "copy under ^fork$": ("{ours}", "^fork$"),
+}
+_OVERLAPPING_SESSION_START = {
+    "env under resume": ("/usr/bin/env {p}", "resume"),
+    "copy under ^res": ("{ours}", "^res"),
+    "copy under *": ("{ours}", "*"),
+    "copy under empty": ("{ours}", ""),
+    "copy under an unreadable regex": ("{ours}", "("),
+    "copy under a number": ("{ours}", 5),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_DISJOINT_SESSION_START))
+def test_doctor_passes_a_second_run_under_a_disjoint_matcher(
+    tmp_path: Path, shape: str,
+) -> None:
+    """No SessionStart source runs both handlers, so neither runs twice."""
+    codex_dir, hooks, program = _installed(tmp_path)
+    command, matcher = _DISJOINT_SESSION_START[shape]
+    _add_group(
+        hooks, "SessionStart",
+        command.format(p=program, ours=_session_start_command(hooks)),
+        matcher,
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_OVERLAPPING_SESSION_START))
+def test_doctor_faults_a_second_run_under_an_overlapping_matcher(
+    tmp_path: Path, shape: str,
+) -> None:
+    codex_dir, hooks, program = _installed(tmp_path)
+    command, matcher = _OVERLAPPING_SESSION_START[shape]
+    _add_group(
+        hooks, "SessionStart",
+        command.format(p=program, ours=_session_start_command(hooks)),
+        matcher,
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_counts_runs_on_one_source_not_across_sources(
+    tmp_path: Path,
+) -> None:
+    """Three handlers, but no source runs more than two of them."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    _add_group(hooks, "SessionStart", ours, "startup")
+    _add_group(hooks, "SessionStart", ours, "resume")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_faults_two_runs_on_a_forked_session(tmp_path: Path) -> None:
+    """Codex also starts a session with source `fork`, which setup's
+    matcher leaves out."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    _add_group(hooks, "SessionStart", ours, "fork")
+    _add_group(hooks, "SessionStart", ours, "fork")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("ours_matcher", "copy_matcher", "rc"),
+    [("auto", "manual", 0), (None, "manual", 1), ("auto", "auto", 1)],
+)
+def test_doctor_reads_the_compaction_trigger_matcher(
+    tmp_path: Path, ours_matcher: str | None, copy_matcher: str, rc: int,
+) -> None:
+    """PreCompact matches its trigger, `manual` or `auto`."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    if ours_matcher is not None:
+        doc["hooks"]["PreCompact"][0]["matcher"] = ours_matcher
+    hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    _add_group(
+        hooks, "PreCompact", _first_command(hooks, "PreCompact"), copy_matcher,
+    )
+    got, out = _doctor(codex_dir, tmp_path / "skills")
+    assert got == rc, out
+    assert ("PreCompact runs aelf-transcript-logger 2 times" in out) == bool(rc)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("event", "matcher"),
+    [
+        # Tool names are an open set, so doctor counts every handler.
+        ("PreToolUse", "WebSearch"),
+        # Codex ignores a matcher on Stop.
+        ("Stop", "never"),
+    ],
+)
+def test_doctor_counts_every_handler_where_it_reads_no_matcher(
+    tmp_path: Path, event: str, matcher: str,
+) -> None:
+    codex_dir, hooks, _program = _installed(tmp_path)
+    command = _first_command(hooks, event)
+    _add_group(hooks, event, command, matcher)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert f"{event} runs {command_launcher_key(command)} 2 times" in out
+
+
 # Each foreign handler names the program without running it, or runs none.
 _NOT_RUNNING = {
     "other hook": "/usr/bin/python3 /x/other-hook.py SessionStart --verbose",
