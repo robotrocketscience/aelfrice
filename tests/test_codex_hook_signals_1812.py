@@ -467,6 +467,32 @@ def test_doctor_warns_about_setup_run_over_a_session_start_wrapper(
     assert _warning_for(out, wrapper) is not None, out
 
 
+# Setup reads each of these handlers as its own, because the program is
+# the first word, but none is a shape doctor recognizes as a run.
+_OWNED_NOT_DIRECT = {
+    "piped": "{p} --host codex | cat",
+    "redirected": "{p} --host codex > /dev/null",
+    # No shell runs anything for this one, since `if` opens no command.
+    "syntax error after": "{p} --host codex; if",
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_OWNED_NOT_DIRECT))
+def test_doctor_warns_about_an_owned_handler_it_does_not_recognize(
+    tmp_path: Path, shape: str,
+) -> None:
+    """A copy of setup's handler counts as a run only in a recognized shape,
+    the rule a foreign handler follows."""
+    codex_dir, hooks, program = _installed(tmp_path)
+    copy = _OWNED_NOT_DIRECT[shape].format(p=program)
+    _set_session_start_commands(hooks, _session_start_command(hooks), copy)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    assert _warning_for(out, copy) is not None, out
+
+
 @pytest.mark.parametrize(
     "command",
     [
