@@ -1557,9 +1557,11 @@ _PREFIX_WORDS: Final[frozenset[str]] = frozenset({
 _PRINTERS: Final[frozenset[str]] = frozenset({"echo", "printf"})
 #: Characters of the shell operators that end one simple command.
 _COMMAND_SEPARATORS: Final[frozenset[str]] = frozenset(";&|()\n")
+#: The operators that send one command's output to the next command.
+_PIPES: Final[frozenset[str]] = frozenset({"|", "|&"})
 _ASSIGNMENT: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
-#: How many `sh -c` scripts deep the scan reads. Each level is one quoted
-#: script inside another; real wrappers use one.
+#: How many scripts deep the scan reads. Each level is one `sh -c` script
+#: or command substitution inside another; real wrappers use one.
 _MAX_SHELL_DEPTH: Final[int] = 4
 
 
@@ -1579,15 +1581,59 @@ def _script_words(script: str) -> list[str]:
         return []
 
 
-def _simple_commands(words: list[str]) -> list[list[str]]:
-    """Split words at shell operators such as `|`, `;` and `&&`."""
-    commands: list[list[str]] = [[]]
+def _simple_commands(words: list[str]) -> list[tuple[list[str], bool]]:
+    """Split words at shell operators such as `|`, `;` and `&&`.
+
+    Each command comes with True when a pipe sends its output to the next
+    command, as in `echo PROGRAM | sh`.
+    """
+    commands: list[tuple[list[str], bool]] = []
+    current: list[str] = []
     for word in words:
         if set(word) <= _COMMAND_SEPARATORS:
-            commands.append([])
+            if current:
+                commands.append((current, word in _PIPES))
+            current = []
         else:
-            commands[-1].append(word)
-    return [c for c in commands if c]
+            current.append(word)
+    if current:
+        commands.append((current, False))
+    return commands
+
+
+def _substitutions(text: str) -> list[str]:
+    """The scripts of the command substitutions in a command's text.
+
+    Finds `$(...)` and backquoted scripts in any word, such as `printf "%s"
+    "$(PROGRAM)"`. Quotes are not read, so a substitution inside single
+    quotes, which a shell prints and doesn't run, also counts. A nested
+    substitution stays in its outer script, which the caller scans again.
+    """
+    found: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] == "`":
+            end = text.find("`", i + 1)
+            if end < 0:
+                break
+            found.append(text[i + 1:end])
+            i = end + 1
+        elif text.startswith("$(", i):
+            depth = 0
+            j = i + 1
+            while j < len(text):
+                if text[j] == "(":
+                    depth += 1
+                elif text[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            found.append(text[i + 2:j])
+            i = j + 1
+        else:
+            i += 1
+    return found
 
 
 def _shell_script(args: list[str]) -> tuple[str, list[str]] | None:
@@ -1631,7 +1677,10 @@ def _wrapped_owned_keys(
     * as its program after any `VAR=value` words and prefix words such as
       `env` or `exec`, as in `/usr/bin/env <bin>/aelf-session-start-hook`;
     * as an argument, since a wrapper takes the program it runs as one,
-      unless the command only prints its arguments (`echo`, `printf`);
+      unless the command only prints its arguments (`echo`, `printf`) and
+      no pipe sends them to another command, as `echo PROGRAM | sh` does;
+    * inside a command substitution, as in `echo "$(PROGRAM)"`, which is
+      read the same way and is POSIX only;
     * inside the script of a shell's `-c` option, such as `sh -c
       '<bin>/aelf-session-start-hook | cat'`, which is read the same way,
       or as an argument after that script, such as `sh -c 'exec "$0"'
@@ -1646,12 +1695,19 @@ def _wrapped_owned_keys(
     win = os.name == "nt" if windows is None else windows
     owned = owned_keys(_OWNED_BASENAMES, windows=win)
     found: set[str] = set()
-    pending: list[tuple[list[str], int]] = [
-        (command_tokens(cmd, windows=win), 0),
+    # Each entry is a command's text, its words, and how many scripts deep
+    # it is.
+    pending: list[tuple[str, list[str], int]] = [
+        (cmd, command_tokens(cmd, windows=win), 0),
     ]
     while pending:
-        words, depth = pending.pop()
-        for simple in _simple_commands(words):
+        text, words, depth = pending.pop()
+        if not win and depth < _MAX_SHELL_DEPTH:
+            pending.extend(
+                (inner, _script_words(inner), depth + 1)
+                for inner in _substitutions(text)
+            )
+        for simple, piped in _simple_commands(words):
             i = 0
             while i < len(simple):
                 key = launcher_key(simple[i], windows=win)
@@ -1670,7 +1726,7 @@ def _wrapped_owned_keys(
             if head in owned:
                 found.add(head)
                 continue
-            if head in _PRINTERS:
+            if head in _PRINTERS and not piped:
                 continue
             shell = (
                 _shell_script(args)
@@ -1679,7 +1735,9 @@ def _wrapped_owned_keys(
             if shell is not None:
                 script, args = shell
                 if depth < _MAX_SHELL_DEPTH:
-                    pending.append((_script_words(script), depth + 1))
+                    pending.append(
+                        (script, _script_words(script), depth + 1),
+                    )
             found.update(
                 key for arg in args
                 if (key := launcher_key(arg, windows=win)) in owned
