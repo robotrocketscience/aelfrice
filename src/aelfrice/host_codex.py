@@ -2461,26 +2461,52 @@ def _rust_regex_rejects(pattern: str) -> bool:
     return False
 
 
-def _codex_skips_matcher(pattern: str) -> bool:
-    """True when Codex can't compile a regex matcher, so it skips the group.
+def _python_regex(pattern: str) -> re.Pattern[str] | None:
+    """A matcher compiled with Python's `re`, or None when `re` rejects it.
 
-    Codex compiles a matcher that isn't empty, `*`, or a list of exact
-    names with Rust's `regex` crate (`HookMatcher::new` in
-    codex-rs/hooks/src/engine/matcher.rs at openai/codex@c0cc9fc82). When
-    that fails, `append_matcher_groups` in
-    codex-rs/hooks/src/engine/discovery.rs logs "invalid matcher" and goes
-    on to the next group, so none of the group's handlers run. Doctor
-    takes a pattern as one Codex skips when Python's `re` can't compile it
-    or when it uses syntax Rust's `regex` rejects.
+    Rust's `regex` compiles some patterns that `re` rejects, such as
+    `(?<name>...)`, `\\p{L}`, and `(?i)` after the start of a pattern.
     """
     with warnings.catch_warnings():
         # `[[:alpha:]]` compiles with a FutureWarning about nested sets.
         warnings.simplefilter("ignore")
         try:
-            re.compile(pattern)
+            return re.compile(pattern)
         except re.error:
-            return True
-    return _rust_regex_rejects(pattern)
+            return None
+
+
+def _regex_matcher(event: str, group: object) -> str | None:
+    """A group's matcher when Codex reads it as a regex, or None.
+
+    Codex reads the matcher on the events in `_MATCHER_EVENTS` only. An
+    empty matcher, `*`, and a list of exact names aren't regexes.
+    """
+    if event not in _MATCHER_EVENTS or not isinstance(group, dict):
+        return None
+    matcher = cast(dict[str, object], group).get("matcher")
+    if (
+        not isinstance(matcher, str) or matcher in ("", "*")
+        or _EXACT_MATCHER.fullmatch(matcher) is not None
+    ):
+        return None
+    return matcher
+
+
+def _unread_matcher(event: str, group: object) -> str | None:
+    """A group's matcher when doctor can't read it and so counts the group
+    as matching every fire, or None.
+
+    That is a regex that Rust's `regex` compiles and Python's `re`
+    rejects, in an event whose values doctor lists (`_MATCHER_VALUES`).
+    """
+    matcher = _regex_matcher(event, group)
+    if (
+        matcher is None or event not in _MATCHER_VALUES
+        or _rust_regex_rejects(matcher)
+    ):
+        return None
+    return matcher if _python_regex(matcher) is None else None
 
 
 def _matched_values(event: str, group: object) -> frozenset[str] | None:
@@ -2493,11 +2519,16 @@ def _matched_values(event: str, group: object) -> frozenset[str] | None:
     `_`, and `|` lists exact values, so `startup|resume` matches those two
     and `start` matches none. Any other matcher is a regex that matches a
     value when it matches anywhere in it, so `^res` matches `resume`.
-    Doctor compiles that regex with Python's `re`, whose syntax differs
-    from Rust's `regex` in places. None when Codex skips the group because
-    it can't compile the matcher (`_codex_skips_matcher`). A matcher that
-    isn't a string is taken to match every value, so a pattern doctor
-    can't read never hides a duplicate run.
+
+    Codex compiles a regex matcher with Rust's `regex` crate
+    (`HookMatcher::new` in codex-rs/hooks/src/engine/matcher.rs at
+    openai/codex@c0cc9fc82). When that fails, `append_matcher_groups` in
+    codex-rs/hooks/src/engine/discovery.rs logs "invalid matcher" and goes
+    on to the next group, so none of the group's handlers run. This is None
+    for such a group, which `_rust_regex_rejects` finds. Doctor matches the
+    values with Python's `re`, and a regex that `re` rejects counts as
+    matching every value (`_unread_matcher`), as does a matcher that isn't
+    a string, so a pattern doctor can't read never hides a duplicate run.
     """
     if event not in _MATCHER_EVENTS:
         return _EVERY_FIRE
@@ -2508,7 +2539,7 @@ def _matched_values(event: str, group: object) -> frozenset[str] | None:
     if not isinstance(matcher, str) or matcher in ("", "*"):
         return frozenset(_MATCHER_VALUES.get(event, _EVERY_FIRE))
     exact = _EXACT_MATCHER.fullmatch(matcher) is not None
-    if not exact and _codex_skips_matcher(matcher):
+    if not exact and _rust_regex_rejects(matcher):
         return None
     if exact and event in _TOOL_EVENTS:
         return frozenset(name for name in matcher.split("|") if name)
@@ -2517,8 +2548,20 @@ def _matched_values(event: str, group: object) -> frozenset[str] | None:
         return _EVERY_FIRE
     if exact:
         return frozenset(values) & frozenset(matcher.split("|"))
-    pattern = re.compile(matcher)
+    pattern = _python_regex(matcher)
+    if pattern is None:
+        return frozenset(values)
     return frozenset(v for v in values if pattern.search(v))
+
+
+def _group_counts(group: object, *, windows: bool | None = None) -> bool:
+    """True when a group holds an aelfrice handler, or a foreign handler
+    that doctor counts as a run of an aelfrice program or warns about."""
+    return any(
+        _handler_is_owned(handler, windows=windows)
+        or _wrapped_owned_keys(handler, windows=windows)
+        for handler in _handlers_in(group)
+    )
 
 
 def _fires(event: str, value_sets: list[frozenset[str]]) -> list[frozenset[int]]:
@@ -2640,12 +2683,21 @@ def doctor_codex(
             # groups under `Bash` and under `WebSearch`, never run on the
             # same fire, so they don't count as duplicate runs.
             values = _matched_values(event, group)
-            if values is None:
+            # #1812: name a skipped or unread matcher only where it changes
+            # what doctor counts.
+            if values is None and _group_counts(group, windows=windows):
                 matcher = cast(dict[str, object], group).get("matcher")
                 report.warnings.append(
                     f"{event} group with matcher {matcher!r} never runs: "
                     "Codex logs \"invalid matcher\" for it and skips the "
                     "group, so doctor doesn't count its handlers as runs",
+                )
+            unread = _unread_matcher(event, group)
+            if unread is not None and _group_counts(group, windows=windows):
+                report.warnings.append(
+                    f"{event} group with matcher {unread!r}: doctor can't "
+                    "read this matcher and counted it as matching every "
+                    "fire",
                 )
             # #1812: a foreign handler that runs an aelfrice program as its
             # first word counts toward duplicate runs. One that names it

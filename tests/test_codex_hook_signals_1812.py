@@ -553,6 +553,62 @@ def test_doctor_skips_a_wrapper_under_a_matcher_codex_cannot_compile(
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert "may also run" not in out
+    assert "never runs" in out, out
+
+
+# A foreign handler that runs no aelfrice program and that doctor doesn't
+# warn about, so a note about its group's matcher would be noise.
+_UNRELATED = "/usr/bin/python3 /x/other-hook.py SessionStart"
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("matcher", ["(?=resume)", "(?<s>resume)"])
+def test_doctor_says_nothing_about_an_unrelated_group_matcher(
+    tmp_path: Path, matcher: str,
+) -> None:
+    codex_dir, hooks, _program = _installed(tmp_path)
+    _add_group(hooks, "SessionStart", _UNRELATED, matcher)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert repr(matcher) not in out, out
+
+
+# Matchers that Rust's `regex` compiles and Python's `re` rejects. Each
+# matches `resume` in Rust, so Codex runs the copy beside setup's handler.
+_PYTHON_ONLY_MATCHERS = {
+    "named group": "(?<s>resume)",
+    "flag after the start": "^(?i)resume",
+    "swap greed": "(?U)resume",
+    "braced hex escape": r"\x{72}esume",
+    "one-letter class": r"\pL+",
+    "Unicode class": r"\p{L}+",
+    "repeated repetition": "resume|a**",
+    "repeated counted repetition": "resume|x{1,}{2}",
+    # Python reads `\z` from 3.14 on.
+    "end of text": r"^resume\z",
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_PYTHON_ONLY_MATCHERS))
+def test_doctor_counts_a_matcher_it_cannot_read_as_every_fire(
+    tmp_path: Path, shape: str,
+) -> None:
+    """Doctor counts the copy as running on every source and says it
+    can't read the matcher."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    matcher = _PYTHON_ONLY_MATCHERS[shape]
+    _add_group(hooks, "SessionStart", _session_start_command(hooks), matcher)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+    assert "never runs" not in out
+    unread = (
+        f"[warn] SessionStart group with matcher {matcher!r}: doctor can't "
+        "read this matcher and counted it as matching every fire"
+    )
+    python_reads = shape == "end of text" and sys.version_info >= (3, 14)
+    assert (unread in out) is not python_reads, out
 
 
 @pytest.mark.timeout(60)
