@@ -270,6 +270,8 @@ _WRAPPERS = {
     "sh -c backquotes": "sh -c 'echo `{p} --host codex`'",
     "printf into sh": "printf '%s' {p} | sh",
     "echo into xargs": "echo {p} | xargs -I{{}} sh -c '{{}} --host codex'",
+    "timeout sh -c": "timeout 30 sh -c '{p} --host codex | cat'",
+    "nice bash -c": "nice -n 5 bash -c '{p} --host codex | cat'",
 }
 
 

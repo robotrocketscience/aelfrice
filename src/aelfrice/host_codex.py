@@ -1684,8 +1684,9 @@ def _wrapped_owned_keys(
     * inside the script of a shell's `-c` option, such as `sh -c
       '<bin>/aelf-session-start-hook | cat'`, which is read the same way,
       or as an argument after that script, such as `sh -c 'exec "$0"'
-      <bin>/aelf-session-start-hook`. This one is POSIX only, because the
-      Windows splitter keeps single quotes.
+      <bin>/aelf-session-start-hook`. The shell can follow another
+      wrapper, as in `timeout 30 sh -c SCRIPT`. This one is POSIX only,
+      because the Windows splitter keeps single quotes.
     """
     if not isinstance(handler, dict):
         return set()
@@ -1738,6 +1739,20 @@ def _wrapped_owned_keys(
                     pending.append(
                         (script, _script_words(script), depth + 1),
                     )
+            elif not win and head not in _PRINTERS:
+                # A wrapper such as `timeout 30` or `nice -n 5` can start
+                # the shell, so its words from the shell on are a command.
+                at = next(
+                    (
+                        k for k, arg in enumerate(args)
+                        if launcher_key(arg, windows=win) in _SHELLS
+                    ),
+                    None,
+                )
+                if at is not None:
+                    if depth < _MAX_SHELL_DEPTH:
+                        pending.append(("", args[at:], depth + 1))
+                    args = args[:at]
             found.update(
                 key for arg in args
                 if (key := launcher_key(arg, windows=win)) in owned
