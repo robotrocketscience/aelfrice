@@ -1553,6 +1553,15 @@ _PREFIX_WORDS: Final[frozenset[str]] = frozenset({
     "!", "{", "command", "do", "elif", "else", "env", "exec", "if",
     "nohup", "then", "time", "until", "while",
 })
+#: The options of a prefix word that take the next word as their operand,
+#: as in `env -u VAR`, `env --unset VAR`, and `exec -a NAME`: the short
+#: option letters, then the long options.
+_PREFIX_OPERAND_OPTIONS: Final[
+    dict[str, tuple[frozenset[str], frozenset[str]]]
+] = {
+    "env": (frozenset({"u"}), frozenset({"--unset"})),
+    "exec": (frozenset({"a"}), frozenset()),
+}
 #: Programs that print their arguments and run none of them.
 _PRINTERS: Final[frozenset[str]] = frozenset({"echo", "printf"})
 #: Characters of the shell operators that end one simple command.
@@ -1680,23 +1689,47 @@ def _word_program_key(
     return launcher_key(inner[0], windows=windows) if inner else ""
 
 
+def _after_options(simple: list[str], start: int, prefix: str) -> int:
+    """The index of the first word after a prefix word's options.
+
+    An option in `_PREFIX_OPERAND_OPTIONS` takes the next word as its
+    operand, as in `env -u VAR` or `exec -a NAME`, unless the operand is
+    in the same word, as in `env -uVAR` or `env --unset=VAR`.
+    """
+    short, long = _PREFIX_OPERAND_OPTIONS.get(
+        prefix, (frozenset[str](), frozenset[str]()),
+    )
+    i = start
+    while i < len(simple) and simple[i].startswith("-"):
+        word = simple[i]
+        i += 1
+        if word.startswith("--"):
+            if word in long:
+                i += 1
+            continue
+        letters = word[1:]
+        at = next((k for k, ch in enumerate(letters) if ch in short), None)
+        if at is not None and at == len(letters) - 1:
+            i += 1
+    return i
+
+
 def _program_index(simple: list[str], *, windows: bool) -> int:
     """The index of a simple command's program word.
 
     Skips `VAR=value` words, and prefix words such as `env` or `exec` with
-    the flags after them, as in `env -i PROGRAM`. Equals `len(simple)`
-    when no word is left.
+    the options after them and their operands, as in `env -i PROGRAM` or
+    `env -u VAR PROGRAM`. Equals `len(simple)` when no word is left.
     """
     i = 0
     while i < len(simple):
         if _ASSIGNMENT.match(simple[i]):
             i += 1
-        elif launcher_key(simple[i], windows=windows) in _PREFIX_WORDS:
-            i += 1
-            while i < len(simple) and simple[i].startswith("-"):
-                i += 1
-        else:
+            continue
+        prefix = launcher_key(simple[i], windows=windows)
+        if prefix not in _PREFIX_WORDS:
             break
+        i = _after_options(simple, i + 1, prefix)
     return i
 
 

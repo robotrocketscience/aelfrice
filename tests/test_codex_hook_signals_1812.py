@@ -262,6 +262,14 @@ _DIRECT = {
     "assignment": "AELFRICE_HOOK_SUMMARY_LINE=1 {p} --host codex",
     # `-p` sets a default PATH and still runs the program.
     "command -p": "command -p {p} --host codex",
+    # The option's operand is read with it, so the program comes next.
+    "env -u VAR": "/usr/bin/env -u FOO {p} --host codex",
+    "env -iu VAR": "env -iu FOO {p} --host codex",
+    "env --unset VAR": "env --unset FOO {p} --host codex",
+    "exec -a NAME": "exec -a aelf {p} --host codex",
+    # The operand is in the option's own word.
+    "env -uVAR": "env -uFOO {p} --host codex",
+    "env --unset=VAR": "env --unset=FOO {p} --host codex",
 }
 
 
@@ -407,6 +415,8 @@ _NOT_RUNNING = {
     "env -i echo": "env -i echo {p}",
     # The assignment is skipped, so echo is the program.
     "assignment echo": "AELFRICE_HOOK_SUMMARY_LINE=1 echo {p}",
+    # The option's operand is skipped, so echo is the program.
+    "exec -a echo": "exec -a name echo {p}",
 }
 
 
