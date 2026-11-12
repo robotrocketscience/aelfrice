@@ -39,7 +39,6 @@ established in #1054/#1052 triage:
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 import re
@@ -1593,17 +1592,10 @@ _PREFIX_WORDS: Final[frozenset[str]] = frozenset({
     "nice", "nohup", "then", "time", "timeout", "until", "while",
 })
 #: The prefix words that find the program after them on `PATH` and run it,
-#: so a `time` after one is the `time` program, not the shell's own.
+#: so a `VAR=value` word after one other than `env` is the program.
 _PROGRAM_RUNNERS: Final[frozenset[str]] = frozenset(
     {"command", "env", "exec", "nice", "nohup", "time", "timeout"},
 )
-#: The shells whose reading of a `time` word doctor compares (#1812):
-#: bash 3.2, which is `/bin/bash` on macOS, bash 5, and zsh, the default
-#: `$SHELL` on macOS. Codex runs a hook as `$SHELL -lc COMMAND`.
-_TIME_SHELLS: Final[tuple[str, ...]] = ("bash 3.2", "bash 5", "zsh")
-#: What `_shell_program_index` records as the word before after the
-#: shell's reserved `time` and its options, which no prefix word spells.
-_RESERVED_TIME: Final[str] = "time keyword"
 #: The options of a prefix word that take the next word as their operand,
 #: as in `env -u VAR`, `env -C DIR`, `exec -a NAME`, and `/usr/bin/time -o
 #: FILE`: the short option letters, then the long options. GNU env takes
@@ -1646,50 +1638,6 @@ _ASSIGNMENT: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 #: How many scripts deep the scan reads. Each level is one `sh -c` script
 #: or command substitution inside another; real wrappers use one.
 _MAX_SHELL_DEPTH: Final[int] = 4
-
-
-class _QuotedWord(str):
-    """A command word written with a quote or a backslash in it, such as
-    `'time'` or `\\time`. A shell reads no such word as a reserved word, so
-    a quoted `time` is the `time` program (#1812)."""
-
-    __slots__ = ()
-
-
-#: The characters that quote or escape part of a POSIX shell word.
-_QUOTING: Final[frozenset[str]] = frozenset("'\"\\")
-
-
-def _command_words(cmd: str, *, windows: bool) -> list[str]:
-    """`command_tokens(cmd)`, with each quoted POSIX word a `_QuotedWord`.
-
-    The POSIX words equal `shlex.split(cmd)`. A word is quoted when its
-    text holds a quote or a backslash. Its text runs from where the
-    lexer's input stood before the word to where it stands after, and the
-    lexer reads no further than the whitespace that ends the word. The
-    Windows splitter is unchanged, since no Windows shell has a `time`
-    reserved word. Only the first word of a direct run needs the mark, so
-    the words of an `sh -c` script, which only ever get a warning, carry
-    none.
-    """
-    if windows:
-        return command_tokens(cmd, windows=True)
-    text = cmd.strip()
-    stream = io.StringIO(text)
-    lexer = shlex.shlex(stream, posix=True)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    words: list[str] = []
-    try:
-        while True:
-            start = stream.tell()
-            word = lexer.get_token()
-            if word is None:
-                return words
-            quoted = not _QUOTING.isdisjoint(text[start:stream.tell()])
-            words.append(_QuotedWord(word) if quoted else word)
-    except ValueError:
-        return []
 
 
 def _script_words(script: str) -> list[str]:
@@ -1874,167 +1822,304 @@ def _after_options(
 
 def _program_index(
     simple: list[str], *, windows: bool,
-) -> tuple[list[str], int, bool]:
-    """A simple command's words, the index of its program word, and True
-    when the shells in `_TIME_SHELLS` don't all run the same program.
-
-    Each shell's reading is `_shell_program_index`. The words and index
-    are bash 3.2's. The last item is True when another shell reads another
-    program or other arguments, as zsh does with `time -p PROGRAM`, which
-    runs `-p`, and bash 5 does with `time time -o FILE PROGRAM`, which
-    runs `-o`, or when one shell rejects the command, as zsh does `X=1
-    time PROGRAM`.
-    """
-    readings = [
-        _shell_program_index(simple, shell, windows=windows)
-        for shell in _TIME_SHELLS
-    ]
-    words, i = next(
-        (r for r in readings if r is not None), (simple, len(simple)),
-    )
-    differ = any(r is None or r[0][r[1]:] != words[i:] for r in readings)
-    return words, i, differ
-
-
-def _shell_program_index(
-    simple: list[str], shell: str, *, windows: bool,
-) -> tuple[list[str], int] | None:
-    """A simple command's words and the index of its program word, as one
-    shell in `_TIME_SHELLS` reads them, or None when the shell rejects the
-    command and runs nothing.
+) -> tuple[list[str], int]:
+    """A simple command's words and the index of its program word, for the
+    warning scan (`_wrapped_owned_keys`).
 
     Skips `VAR=value` words, and prefix words such as `env` or `exec` with
-    the options after them and their operands, as in `env -i PROGRAM` or
-    `env -u VAR PROGRAM`, and with the words in `_PREFIX_OPERANDS`, as in
-    `timeout -s KILL 30 PROGRAM`. The words are `simple` with the string of each
-    `env -S STRING` split in its place (`_after_options`). The index equals
-    the number of words when no word is left.
+    the options after them and their operands, as in `env -u VAR PROGRAM`,
+    and with the words in `_PREFIX_OPERANDS`, as in `timeout -s KILL 30
+    PROGRAM`. The words are `simple` with the string of each `env -S
+    STRING` split in its place (`_after_options`). The index equals the
+    number of words when no word is left. A `VAR=value` word after a prefix
+    word other than `env` is the program, as in `nice X=1 PROGRAM`.
 
-    A shell reads `VAR=value` words as assignments only before the
-    command's program, and `env` reads them as its own operands. The other
-    words in `_PROGRAM_RUNNERS`, such as `nice` and `timeout`, run their
-    first operand, so in `nice X=1 PROGRAM` the program is `X=1`, which
-    every shell in `_TIME_SHELLS` fails to find.
-
-    A `time` word the shell reads as its reserved word (`_reserved_time`)
-    takes no operand, so `time -o FILE PROGRAM` runs a program named `-o`.
-    After it, bash 3.2 skips one `-p`, bash 5 skips a `-p`, a `--`, or
-    `-p --`, as the `timespec` rule in bash 5.2's parse.y reads them, and
-    zsh skips nothing. Any other `time` word is the `time` program, which
-    takes the `-o FILE` operand. zsh 5.9 reads an unquoted `time` that is
-    no path and follows a `VAR=value` word in command position, as in
-    `X=1 time PROGRAM`, as its reserved word and stops with `parse error
-    near 'time'`, so the result for zsh is None there.
+    The index only decides where the scan starts to look. The scan reads
+    every word from there on, so a shell that reads the command another
+    way, as zsh 5.9 does `time -p PROGRAM`, doesn't hide the program.
     """
     words = simple
     i = 0
-    # The word before, as the shell reads it: '' at the start, '=' after
-    # a `VAR=value` word in command position, `_RESERVED_TIME`, or the
-    # last prefix word.
     before = ""
     while i < len(words):
         if _ASSIGNMENT.match(words[i]):
             if before in _PROGRAM_RUNNERS and before != "env":
                 break
             i += 1
-            if before != "env":
-                before = "="
             continue
         prefix = launcher_key(words[i], windows=windows)
         if prefix not in _PREFIX_WORDS:
             break
-        if (
-            shell == "zsh" and prefix == "time" and before == "="
-            and _unquoted_time(words[i], windows=windows)
-        ):
-            return None
-        if prefix == "time" and _reserved_time(
-            words[i], before, shell, windows=windows,
-        ):
-            i += 1
-            if shell != "zsh" and i < len(words) and words[i] == "-p":
-                i += 1
-            if shell == "bash 5" and i < len(words) and words[i] == "--":
-                i += 1
-            before = _RESERVED_TIME
-            continue
         words, i = _after_options(words, i + 1, prefix)
         i = min(len(words), i + _PREFIX_OPERANDS.get(prefix, 0))
         before = prefix
     return words, i
 
 
-def _reserved_time(
-    word: str, before: str, shell: str, *, windows: bool,
-) -> bool:
-    """True when `shell` reads a `time` word as its reserved word.
+class _Word:
+    """One word of a command that `_closed_words` accepts.
 
-    `before` is the word before, as `_shell_program_index` records it. No
-    shell reads a quoted or escaped word, a path, a word after a
-    `VAR=value` word, or a word after a prefix word in `_PROGRAM_RUNNERS`
-    such as `env` as the reserved word. After the reserved `time`, bash 5
-    reads another `time` as the reserved word (`time_command_acceptable`
-    in bash 5.2's parse.y), where bash 3.2 and zsh run the `time`
-    program. After `!`, bash 5 and zsh read the reserved word and bash
-    3.2 runs the program. At the start and after the other reserved
-    words, such as `{` or `if`, every shell reads the reserved word.
+    `value` is the word once the shell removes its quotes, and `quoted` is
+    True when the word holds a quote or a backslash. `assigns` is the
+    variable a `VAR=value` word sets, or '' when the word sets none. The
+    name and the `=` must be unquoted, so `'X=1'`, `"X=1"`, and `X'=1'`
+    are command names.
     """
-    if not _unquoted_time(word, windows=windows):
-        return False
-    if before == "=" or before in _PROGRAM_RUNNERS:
-        return False
-    if before == _RESERVED_TIME:
-        return shell == "bash 5"
-    if before == "!":
-        return shell != "bash 3.2"
-    return True
+
+    __slots__ = ("assigns", "quoted", "value")
+
+    def __init__(self, value: str, *, quoted: bool, assigns: str) -> None:
+        self.value = value
+        self.quoted = quoted
+        self.assigns = assigns
+
+    def plain(self, *texts: str) -> bool:
+        """True when the word is one of `texts`, written with no quote."""
+        return not self.quoted and self.value in texts
 
 
-def _unquoted_time(word: str, *, windows: bool) -> bool:
-    """True when a `time` word is neither quoted nor escaped nor a path,
-    so a shell can read it as its reserved word."""
-    return not (
-        isinstance(word, _QuotedWord) or _names_a_path(word, windows=windows)
-    )
+#: The characters an unquoted word of a direct run may hold (#1812). Each
+#: one is literal in bash 3.2, bash 5.2, and zsh 5.9. The others start an
+#: operator, an expansion, a glob, or a comment, so `_closed_words` gives
+#: up on a command that holds one.
+_CLOSED_CHARS: Final[frozenset[str]] = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    "_-./:,+@%=",
+)
+#: The characters that a double-quoted part of such a word may not hold,
+#: because each one is special inside double quotes.
+_DOUBLE_QUOTE_SPECIALS: Final[frozenset[str]] = frozenset("$`\\!")
+_IDENTIFIER: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+#: The operands `nice -n` and `timeout` take in a direct run.
+_NICE_ADJUSTMENT: Final[re.Pattern[str]] = re.compile(r"-?[0-9]+")
+_DURATION: Final[re.Pattern[str]] = re.compile(r"[0-9]+(\.[0-9]+)?[smhd]?")
+#: The programs a direct run can start the aelfrice program through. Each
+#: runs its operand with `execvp`, so it finds a bare name on `PATH`.
+_DIRECT_RUNNERS: Final[frozenset[str]] = frozenset(
+    {"env", "nice", "nohup", "time", "timeout"},
+)
 
 
-def _names_a_path(word: str, *, windows: bool) -> bool:
-    """True when a command word is a path, such as `/usr/bin/time` or
-    `bin/time`, which the shell runs as a program."""
-    return "/" in word or (windows and "\\" in word)
+def _closed_words(cmd: str) -> list[_Word] | None:
+    """A POSIX command's words, or None when it isn't one simple command
+    of plain words.
 
-
-def _looks_up(simple: list[str], end: int, *, windows: bool) -> bool:
-    """True when a `command` word before `end` has `-v` or `-V` as an option.
-
-    `command -v` and `command -V` print what the program is and don't run
-    it. The letter can follow another option or share a word with one, as
-    in `command -p -v PROGRAM` or `command -pv PROGRAM`.
+    A word is a run of `_CLOSED_CHARS`, single-quoted text, double-quoted
+    text without `_DOUBLE_QUOTE_SPECIALS`, and backslash-escaped
+    characters, with spaces or tabs between words. An unquoted word can't
+    start with `=`, which zsh expands to a program's path. Any other
+    character, a newline, an unclosed quote, or a command of no words
+    gives None.
     """
-    for j in range(end):
-        if launcher_key(simple[j], windows=windows) != "command":
+    words: list[_Word] = []
+    i, n = 0, len(cmd)
+    while i < n:
+        if cmd[i] in " \t":
+            i += 1
             continue
-        k = j + 1
-        while (
-            k < end and simple[k].startswith("-")
-            and not simple[k].startswith("--")
-        ):
-            if set(simple[k][1:]) & {"v", "V"}:
-                return True
-            k += 1
-    return False
+        value: list[str] = []
+        quoted = False
+        assigns = ""
+        while i < n and cmd[i] not in " \t":
+            ch = cmd[i]
+            if ch == "'":
+                end = cmd.find("'", i + 1)
+                if end < 0:
+                    return None
+                value.append(cmd[i + 1:end])
+                quoted, i = True, end + 1
+            elif ch == '"':
+                end = cmd.find('"', i + 1)
+                if end < 0:
+                    return None
+                part = cmd[i + 1:end]
+                if not _DOUBLE_QUOTE_SPECIALS.isdisjoint(part):
+                    return None
+                value.append(part)
+                quoted, i = True, end + 1
+            elif ch == "\\":
+                if i + 1 >= n or cmd[i + 1] == "\n":
+                    return None
+                value.append(cmd[i + 1])
+                quoted, i = True, i + 2
+            elif ch not in _CLOSED_CHARS or (ch == "=" and not value):
+                return None
+            else:
+                # Only the first `=` can end a name: the text before a
+                # later one holds an `=`, which no name does.
+                if ch == "=" and not quoted:
+                    name = "".join(value)
+                    if _IDENTIFIER.fullmatch(name):
+                        assigns = name
+                value.append(ch)
+                i += 1
+        words.append(_Word("".join(value), quoted=quoted, assigns=assigns))
+    return words or None
+
+
+def _runner_name(word: _Word, *, windows: bool) -> str:
+    """The name in `_DIRECT_RUNNERS` a word starts, or ''.
+
+    The word can be the bare name or an absolute path to it, such as
+    `/usr/bin/env`. A quoted `time` counts, since no shell reads a quoted
+    word as its reserved `time`. A bare, unquoted `time` is the caller's
+    to read.
+    """
+    name = launcher_key(word.value, windows=windows)
+    if name not in _DIRECT_RUNNERS:
+        return ""
+    if word.value == name or word.value.startswith("/"):
+        return name
+    return ""
+
+
+def _direct_run_key(cmd: str, *, windows: bool) -> str:
+    """The owned program a command runs in every shell doctor reads, or ''.
+
+    The command must be one of these shapes, and any other command gives
+    '' (#1812):
+
+    * `[time] [VAR=value ...] [RUNNER ...] PROGRAM [ARG ...]`, where
+      `time` is the shell's own `time`, unquoted and first;
+    * each RUNNER is `exec` or `exec -a NAME`, or `command`, either one
+      only before every other runner, or `env` with any of `-u NAME`, `-S
+      STRING`, and `VAR=value`, `nice` or `nice -n N`, `nohup`, `timeout
+      DURATION`, or the `time` program with an optional `-p`;
+    * the `time` program is `/usr/bin/time` or any absolute path to
+      `time`, a quoted or escaped `time`, or a bare `time` after the
+      shell's own `time` or after another runner;
+    * PROGRAM is an aelfrice program as an absolute path or a bare name,
+      quoted or not, and a bare name only when no word sets or unsets
+      `PATH`.
+
+    Each word is a plain word that `_closed_words` reads, and `env -S`
+    takes a string of plain words. On Windows the shape is the program
+    alone, with its arguments and none of the `cmd.exe` operators.
+
+    bash 3.2, bash 5.2, and zsh 5.9 run the program for every command of
+    these shapes. The enumerated probe in the #1812 gate runs each shape
+    of up to five words in the three shells. The shapes leave out `!`, a
+    compound command such as `{ ...; }` or `if`, a `VAR=value` word
+    before a bare `time`, `time -p` after the shell's own `time`, and the
+    `time` program's `-o FILE`, because one of the three shells reads
+    each of them another way.
+    """
+    owned = owned_keys(_OWNED_BASENAMES, windows=windows)
+    if windows:
+        if not _WINDOWS_OPERATORS.isdisjoint(cmd):
+            return ""
+        tokens = command_tokens(cmd, windows=True)
+        key = launcher_key(tokens[0], windows=True) if tokens else ""
+        return key if key in owned else ""
+    words = _closed_words(cmd)
+    if words is None:
+        return ""
+    i = 0
+    path_set = False
+    after = ""
+    if words[0].plain("time"):
+        i, after = 1, "time"
+    while i < len(words) and words[i].assigns:
+        path_set = path_set or words[i].assigns == "PATH"
+        i, after = i + 1, "="
+    builtin_ok = True
+    while i < len(words):
+        word = words[i]
+        if builtin_ok and word.plain("exec", "command"):
+            i += 1
+            if (
+                word.value == "exec" and i + 1 < len(words)
+                and words[i].plain("-a")
+            ):
+                i += 2
+            builtin_ok, after = False, word.value
+            continue
+        if word.plain("time"):
+            if after == "=":
+                return ""
+            runner = "time"
+        else:
+            runner = _runner_name(word, windows=windows)
+        if not runner:
+            break
+        i += 1
+        builtin_ok, after = False, runner
+        if runner == "env":
+            while i < len(words):
+                if words[i].assigns:
+                    path_set = path_set or words[i].assigns == "PATH"
+                    i += 1
+                elif words[i].plain("-u") and i + 1 < len(words):
+                    name = words[i + 1].value
+                    if not _IDENTIFIER.fullmatch(name):
+                        return ""
+                    path_set = path_set or name == "PATH"
+                    i += 2
+                elif words[i].plain("-S") and i + 1 < len(words):
+                    split = _env_split_words(words[i + 1].value)
+                    if split is None:
+                        return ""
+                    words = [*words[:i], *split, *words[i + 2:]]
+                else:
+                    break
+        elif runner == "nice":
+            if (
+                i + 1 < len(words) and words[i].plain("-n")
+                and _NICE_ADJUSTMENT.fullmatch(words[i + 1].value)
+            ):
+                i += 2
+        elif runner == "timeout":
+            if i >= len(words) or not _DURATION.fullmatch(words[i].value):
+                return ""
+            i += 1
+        elif runner == "time" and i < len(words) and words[i].plain("-p"):
+            i += 1
+    if i >= len(words):
+        return ""
+    program = words[i].value
+    key = launcher_key(program, windows=False)
+    if key not in owned:
+        return ""
+    if "/" in program and not program.startswith("/"):
+        return ""
+    if "/" not in program and path_set:
+        return ""
+    return key
+
+
+#: The `cmd.exe` characters that start an operator, an escape, or a
+#: variable, which a direct run on Windows can't hold.
+_WINDOWS_OPERATORS: Final[frozenset[str]] = frozenset("&|<>^%()!\r\n")
+
+
+def _env_split_words(text: str) -> list[_Word] | None:
+    """The words `env -S STRING` splits STRING into, when each is plain.
+
+    GNU and BSD `env` split the string at spaces and tabs, and read quotes,
+    backslashes, `$`, and `#` in it, so a string that holds any character
+    outside `_CLOSED_CHARS` but spaces and tabs gives None, as does a
+    string of no words.
+    """
+    parts = text.split()
+    if not parts or any(
+        not set(part) <= _CLOSED_CHARS or part.startswith("=")
+        for part in parts
+    ):
+        return None
+    words: list[_Word] = []
+    for part in parts:
+        name, equals, _value = part.partition("=")
+        assigns = name if equals and _IDENTIFIER.fullmatch(name) else ""
+        words.append(_Word(part, quoted=False, assigns=assigns))
+    return words
 
 
 def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
     """The owned program a foreign handler runs as its first word, or ''.
 
-    The program is the word after any `VAR=value` words and prefix words,
-    as in `/usr/bin/env <bin>/aelf-session-start-hook`, in the command's
-    first simple command. Such a handler certainly runs the program, so
-    doctor counts it toward a duplicate run (#1812). `command` with a `-v`
-    or `-V` option only looks the program up, so it doesn't count. Nor
-    does a program that one shell in `_TIME_SHELLS` doesn't run, as zsh
-    doesn't after `time -p`, so doctor warns about it
+    Doctor counts such a handler toward a duplicate run (#1812), so the
+    command must be one of the shapes `_direct_run_key` reads. Any other
+    handler that names an owned program gets the warning
     (`_wrapped_owned_keys`).
     """
     if not isinstance(handler, dict):
@@ -2043,16 +2128,7 @@ def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
     if not isinstance(cmd, str):
         return ""
     win = os.name == "nt" if windows is None else windows
-    commands = _simple_commands(_command_words(cmd, windows=win))
-    if not commands:
-        return ""
-    simple, i, shells_differ = _program_index(commands[0][0], windows=win)
-    if i >= len(simple) or shells_differ:
-        return ""
-    if _looks_up(simple, i, windows=win):
-        return ""
-    key = launcher_key(simple[i], windows=win)
-    return key if key in owned_keys(_OWNED_BASENAMES, windows=win) else ""
+    return _direct_run_key(cmd.strip(), windows=win)
 
 
 def _wrapped_owned_keys(
@@ -2096,7 +2172,7 @@ def _wrapped_owned_keys(
     # Each entry is a command's text, its words, and how many scripts deep
     # it is.
     pending: list[tuple[str, list[str], int]] = [
-        (cmd, _command_words(cmd, windows=win), 0),
+        (cmd, command_tokens(cmd, windows=win), 0),
     ]
     while pending:
         text, words, depth = pending.pop()
@@ -2106,7 +2182,7 @@ def _wrapped_owned_keys(
                 for inner in _substitutions(text)
             )
         for command, piped in _simple_commands(words):
-            simple, i, _shells_differ = _program_index(command, windows=win)
+            simple, i = _program_index(command, windows=win)
             if i >= len(simple):
                 continue
             head = launcher_key(simple[i], windows=win)
@@ -2934,10 +3010,10 @@ def doctor_codex(
             if not any(index in fire and len(fire) > 1 for fire in fires):
                 continue
             warning = (
-                f"{event} handler may also run {key}: doctor found it in a "
-                "shell script or an argument and can't tell whether the "
-                "handler runs it. If it does, keep the handler `aelf setup "
-                f"--host codex` wrote and delete this one: {cmd}"
+                f"{event} handler may also run {key}: doctor doesn't "
+                "recognize the shape of its command as a run and can't tell "
+                "whether the handler runs it. If it does, keep the handler "
+                f"`aelf setup --host codex` wrote and delete this one: {cmd}"
             )
             if warning not in report.warnings:
                 report.warnings.append(warning)
