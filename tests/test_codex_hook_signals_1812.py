@@ -766,6 +766,85 @@ def test_doctor_warns_and_passes_a_handler_that_checks_for_the_program(
     assert _warning_for(out, check) is not None, out
 
 
+# A wrapper in its own group beside setup's handlers. `{p}` is the
+# session-start program path and `{search}` setup's PreToolUse search-tool
+# command. The wrapper gets a warning only when one fire runs it and
+# another handler of the program.
+_WRAPPER_MATCHERS = {
+    "sh -c under fork": ("SessionStart", "fork", "sh -c '{p}'", False),
+    "python under fork": (
+        "SessionStart", "fork", "/usr/bin/python3 w.py {p}", False,
+    ),
+    "sh -c under ^fork$": ("SessionStart", "^fork$", "sh -c '{p}'", False),
+    "sh -c under resume": ("SessionStart", "resume", "sh -c '{p}'", True),
+    "sh -c under ^res": ("SessionStart", "^res", "sh -c '{p}'", True),
+    "sh -c under WebSearch": (
+        "PreToolUse", "WebSearch", "sh -c '{search}'", False,
+    ),
+    "sh -c under Bash": ("PreToolUse", "Bash", "sh -c '{search}'", True),
+    "sh -c under ^Web": ("PreToolUse", "^Web", "sh -c '{search}'", True),
+    # No handler of the program runs in PreCompact.
+    "lone sh -c in PreCompact": ("PreCompact", None, "sh -c '{p}'", False),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_WRAPPER_MATCHERS))
+def test_doctor_warns_about_a_wrapper_only_where_a_fire_runs_it_twice(
+    tmp_path: Path, shape: str,
+) -> None:
+    codex_dir, hooks, program = _installed(tmp_path)
+    event, matcher, template, warns = _WRAPPER_MATCHERS[shape]
+    wrapper = template.format(
+        p=program, search=_first_command(hooks, "PreToolUse"),
+    )
+    _add_group(hooks, event, wrapper, matcher)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    line = next(
+        (
+            ln for ln in out.splitlines()
+            if ln.startswith(f"[warn] {event} handler may also run ")
+            and ln.endswith(f"delete this one: {wrapper}")
+        ),
+        None,
+    )
+    assert (line is not None) == warns, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_warns_about_two_wrappers_under_one_disjoint_matcher(
+    tmp_path: Path,
+) -> None:
+    """A `fork` fire runs both wrappers, though setup's handler doesn't run
+    on it."""
+    codex_dir, hooks, program = _installed(tmp_path)
+    first, second = f"sh -c '{program}'", f"bash -c '{program}'"
+    _add_group(hooks, "SessionStart", first, "fork")
+    _add_group(hooks, "SessionStart", second, "fork")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert _warning_for(out, first) is not None, out
+    assert _warning_for(out, second) is not None, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_warns_about_the_overlapping_wrapper_and_not_the_disjoint_one(
+    tmp_path: Path,
+) -> None:
+    """A `resume` fire runs setup's handler and one wrapper; no fire runs
+    the `fork` wrapper beside another handler."""
+    codex_dir, hooks, program = _installed(tmp_path)
+    overlapping, disjoint = f"sh -c '{program}'", f"bash -c '{program}'"
+    _add_group(hooks, "SessionStart", overlapping, "resume")
+    _add_group(hooks, "SessionStart", disjoint, "fork")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert _warning_for(out, overlapping) is not None, out
+    assert _warning_for(out, disjoint) is None, out
+
+
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("folder", ["gone", "first last"])
 def test_doctor_names_a_missing_program_without_its_arguments(
