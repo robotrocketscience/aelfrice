@@ -52,6 +52,8 @@ from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT
 from aelfrice.launcher import (
     command_launcher_key,
     command_program_keys,
+    command_tokens,
+    launcher_key,
     owned_keys,
     program_exists,
     program_token,
@@ -357,18 +359,22 @@ def _handler_is_owned(handler: object, *, windows: bool | None = None) -> bool:
     return any(k in owned for k in _command_keys(handler, windows=windows))
 
 
+def _handlers_in(group: object) -> list[object]:
+    """Every handler inside a matcher group, in file order."""
+    if not isinstance(group, dict):
+        return []
+    handlers = cast(dict[str, object], group).get("hooks")
+    if not isinstance(handlers, list):
+        return []
+    return list(cast(list[object], handlers))
+
+
 def _owned_handlers_in(
     group: object, *, windows: bool | None = None,
 ) -> list[object]:
     """Every aelfrice handler inside a matcher group, in file order."""
-    if not isinstance(group, dict):
-        return []
-    gd = cast(dict[str, object], group)
-    handlers = gd.get("hooks")
-    if not isinstance(handlers, list):
-        return []
     return [
-        h for h in cast(list[object], handlers)
+        h for h in _handlers_in(group)
         if _handler_is_owned(h, windows=windows)
     ]
 
@@ -1401,6 +1407,12 @@ class CodexDoctorReport:
     missing_events: list[str] = field(default_factory=list[str])
     missing_handlers: list[str] = field(default_factory=list[str])
     stale_commands: list[str] = field(default_factory=list[str])
+    #: (event, program, count) for each aelfrice program that more than one
+    #: handler in one event runs, either as its own handler or as an
+    #: argument to a foreign one such as a wrapper script (#1812).
+    duplicate_runs: list[tuple[str, str, int]] = field(
+        default_factory=list[tuple[str, str, int]],
+    )
     feature_flag_on: bool | None = None
     #: Approved ``[hooks.state]`` entries on this host — **all** of them,
     #: not only ours (#1486). The keys are positional digests with no path
@@ -1450,6 +1462,12 @@ class CodexDoctorReport:
             reasons.append(
                 "aelfrice handlers are missing from events that are "
                 "otherwise installed: " + ", ".join(self.missing_handlers),
+            )
+        for event, program, count in self.duplicate_runs:
+            reasons.append(
+                f"{event} runs {program} {count} times, once per handler; "
+                "keep the handler `aelf setup --host codex` wrote and "
+                "delete the others, such as a wrapper script",
             )
         if self.feature_flag_on is False:
             reasons.append(
@@ -1523,6 +1541,28 @@ def orphaned_codex_skills(dest_dir: Path | None = None) -> list[str]:
     ]
 
 
+def _wrapped_owned_keys(
+    handler: object, *, windows: bool | None = None,
+) -> set[str]:
+    """Owned programs a foreign handler's command passes as arguments.
+
+    A wrapper such as `python3 aelf-visible.py SessionStart
+    <bin>/aelf-session-start-hook` is not ours by its program, so setup
+    keeps it and adds its own handler beside it (#1812). Its arguments
+    still name the aelfrice program it runs.
+    """
+    if not isinstance(handler, dict):
+        return set()
+    cmd = cast(dict[str, object], handler).get("command")
+    if not isinstance(cmd, str):
+        return set()
+    owned = owned_keys(_OWNED_BASENAMES, windows=windows)
+    return {
+        key for tok in command_tokens(cmd, windows=windows)
+        if (key := launcher_key(tok, windows=windows)) in owned
+    }
+
+
 def doctor_codex(
     codex_dir: Path | None = None, *, windows: bool | None = None,
 ) -> CodexDoctorReport:
@@ -1580,10 +1620,17 @@ def doctor_codex(
     expected_events = set(desired.keys())
     covered: set[str] = set()
     found_keys: dict[str, set[str]] = {}
+    runs: dict[tuple[str, str], int] = {}
     for event, groups in hooks_map.items():
         if not isinstance(groups, list):
             continue
         for group in cast(list[object], groups):
+            # #1812: a foreign handler that runs an aelfrice program as an
+            # argument still runs it, so it counts toward duplicate runs.
+            for other in _handlers_in(group):
+                if not _handler_is_owned(other, windows=windows):
+                    for key in _wrapped_owned_keys(other, windows=windows):
+                        runs[(event, key)] = runs.get((event, key), 0) + 1
             # #1412: count per handler. Gating on a fully-owned group made
             # an aelfrice handler sharing a group with a foreign one
             # invisible to doctor — the same blind spot that let setup
@@ -1597,10 +1644,12 @@ def doctor_codex(
                 hd = cast(dict[str, object], handler)
                 cmd = hd.get("command")
                 if isinstance(cmd, str):
-                    found_keys.setdefault(event, set()).add(
+                    own_key = (
                         _owned_command_key(cmd, windows=windows)
-                        or command_launcher_key(cmd, windows=windows),
+                        or command_launcher_key(cmd, windows=windows)
                     )
+                    found_keys.setdefault(event, set()).add(own_key)
+                    runs[(event, own_key)] = runs.get((event, own_key), 0) + 1
                     exe = Path(program_token(cmd, windows=windows))
                     if (
                         exe.is_absolute()
@@ -1609,6 +1658,11 @@ def doctor_codex(
                     ):
                         report.stale_commands.append(cmd)
     report.missing_events = sorted(expected_events - covered)
+    report.duplicate_runs = [
+        (event, key, count)
+        for (event, key), count in sorted(runs.items())
+        if count > 1
+    ]
     report.missing_handlers = sorted(
         f"{event}:{key}"
         for event in sorted(expected_keys)

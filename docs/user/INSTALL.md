@@ -96,7 +96,7 @@ If you set up Codex with an earlier release, run `aelf setup --host codex` again
 
 ##### Move off a SessionStart wrapper
 
-Some setups replace the SessionStart handler with a wrapper script that runs `aelf-session-start-hook` and adds a `systemMessage`. The summary line makes that wrapper unnecessary. Setup decides which handlers it owns by the program each command runs, so it treats a wrapper started by `python3` as one of your own handlers, keeps it, and adds its own SessionStart handler next to it. Codex then runs the session-start hook twice and injects the baseline twice.
+Some setups replace the SessionStart handler with a wrapper script that runs `aelf-session-start-hook` and adds a `systemMessage`. The summary line makes that wrapper unnecessary. Setup decides which handlers it owns by the program each command runs, so it treats a wrapper started by `python3` as one of your own handlers, keeps it, and adds its own SessionStart handler next to it. Codex then runs the session-start hook twice and injects the baseline twice. `aelf doctor --host codex` reports this state as a failure and exits 1: it names each event where more than one handler runs the same aelfrice program, either directly or as an argument to a wrapper.
 
 To move off the wrapper:
 
@@ -105,7 +105,7 @@ To move off the wrapper:
 3. In `$CODEX_HOME/hooks.json`, under `SessionStart`, delete the handler whose `command` runs the wrapper. Keep the handler whose command ends in `aelf-session-start-hook --host codex`.
 4. Delete the wrapper script.
 5. Open `/hooks` in a Codex session and approve the changed entries.
-6. Run `aelf doctor --host codex` to confirm the wiring, then start a session and check for the `aelfrice:` line.
+6. Run `aelf doctor --host codex` to confirm the wiring. It exits 0 when only one SessionStart handler runs `aelf-session-start-hook`. Then start a session and check for the `aelfrice:` line.
 
 #### `$CODEX_HOME` (unreleased)
 
