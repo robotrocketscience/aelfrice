@@ -1590,18 +1590,22 @@ def _simple_commands(words: list[str]) -> list[list[str]]:
     return [c for c in commands if c]
 
 
-def _shell_script(args: list[str]) -> str | None:
-    """The script a shell runs for its `-c` option, None without one.
+def _shell_script(args: list[str]) -> tuple[str, list[str]] | None:
+    """The script a shell runs for its `-c` option and the words after it.
 
-    Covers `sh -c SCRIPT`, combined flags such as `bash -lc SCRIPT`, and
-    options before it such as `bash -o pipefail -c SCRIPT`.
+    None without a `-c` option. Covers `sh -c SCRIPT`, combined flags such
+    as `bash -lc SCRIPT`, and options before it such as `bash -o pipefail
+    -c SCRIPT`. The words after the script are its `$0` and `$@`, which
+    the script can run, as in `sh -c 'exec "$0"' PROGRAM`.
     """
     has_c = False
     i = 0
     while i < len(args):
         arg = args[i]
         if arg == "--":
-            return args[i + 1] if has_c and i + 1 < len(args) else None
+            if has_c and i + 1 < len(args):
+                return args[i + 1], args[i + 2:]
+            return None
         if arg in ("-o", "+o", "-O", "+O"):
             i += 2
             continue
@@ -1610,7 +1614,7 @@ def _shell_script(args: list[str]) -> str | None:
                 has_c = True
             i += 1
             continue
-        return arg if has_c else None
+        return (arg, args[i + 1:]) if has_c else None
     return None
 
 
@@ -1629,9 +1633,10 @@ def _wrapped_owned_keys(
     * as an argument, since a wrapper takes the program it runs as one,
       unless the command only prints its arguments (`echo`, `printf`);
     * inside the script of a shell's `-c` option, such as `sh -c
-      '<bin>/aelf-session-start-hook | cat'`, which is read the same way.
-      This one is POSIX only, because the Windows splitter keeps single
-      quotes.
+      '<bin>/aelf-session-start-hook | cat'`, which is read the same way,
+      or as an argument after that script, such as `sh -c 'exec "$0"'
+      <bin>/aelf-session-start-hook`. This one is POSIX only, because the
+      Windows splitter keeps single quotes.
     """
     if not isinstance(handler, dict):
         return set()
@@ -1667,14 +1672,14 @@ def _wrapped_owned_keys(
                 continue
             if head in _PRINTERS:
                 continue
-            script = (
+            shell = (
                 _shell_script(args)
                 if head in _SHELLS and not win else None
             )
-            if script is not None:
+            if shell is not None:
+                script, args = shell
                 if depth < _MAX_SHELL_DEPTH:
                     pending.append((_script_words(script), depth + 1))
-                continue
             found.update(
                 key for arg in args
                 if (key := launcher_key(arg, windows=win)) in owned

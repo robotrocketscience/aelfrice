@@ -263,6 +263,8 @@ _WRAPPERS = {
         "/usr/bin/env AELFRICE_HOOK_SUMMARY_LINE=1 "
         "bash -c '{p} --host codex'"
     ),
+    "sh -c runs $0": "sh -c 'exec \"$0\" --host codex' {p}",
+    "bash -c runs $@": "bash -c '\"$@\"' _ {p} --host codex",
 }
 
 
