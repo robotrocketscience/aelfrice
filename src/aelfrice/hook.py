@@ -61,8 +61,6 @@ from aelfrice.config_discovery import (
     discover_config,
 )
 from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT, lock_overflow_line
-# A leaf (it imports only `typing`), so it cannot be the import that fails.
-from aelfrice.hosts import CODEX_HOST, DEFAULT_HOST
 # #1631: the escapers moved to the leaf `hook_payload`, so the search hook
 # and `provenance_render` can share them without importing this module.
 # `_escape_for_hook_block` is bound under its old name for the call sites
@@ -7006,7 +7004,7 @@ def session_start(
     stdin: IO[str] | None = None,
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
-    host: str = DEFAULT_HOST,
+    host: str | None = None,
 ) -> int:
     """Run the SessionStart hook for `host`. Always returns 0.
 
@@ -7017,7 +7015,13 @@ def session_start(
     `hookSpecificOutput.additionalContext` carries it for the model and
     `systemMessage` carries one line for the user, which Codex shows and
     plain stdout never is (`aelfrice.hook_summary`).
+
+    `host` None is the default host. `aelfrice.hosts` is imported here,
+    not at module scope, because every process that imports this module
+    pays for each module it loads (#1527 pins the count).
     """
+    from aelfrice.hosts import CODEX_HOST  # noqa: PLC0415
+
     if host != CODEX_HOST:
         return _session_start(stdin=stdin, stdout=stdout, stderr=stderr)
     sout = stdout if stdout is not None else sys.stdout
@@ -9493,7 +9497,7 @@ def _host_from_argv(argv: Sequence[str]) -> str:
     unknown host included, reads as the default host: a hook must never
     fail on its own arguments.
     """
-    from aelfrice.hosts import SUPPORTED_HOSTS  # noqa: PLC0415
+    from aelfrice.hosts import DEFAULT_HOST, SUPPORTED_HOSTS  # noqa: PLC0415
 
     args = list(argv)
     for i, arg in enumerate(args):
