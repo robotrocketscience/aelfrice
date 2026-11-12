@@ -95,6 +95,15 @@ def test_the_unbound_default_survives_into_the_hooks_transaction(
     from aelfrice import host_codex, launcher
 
     frozen = host_codex.desired_codex_hooks("user")
+
+    def frozen_hooks(
+        scope: str = "user", *, status_message: str | None = None,
+    ) -> dict[str, list[dict[str, object]]]:
+        # The real signature, so the stub breaks when a call site passes
+        # an argument the real function doesn't take.
+        assert (scope, status_message) == ("user", None)
+        return frozen
+
     hooks_path = tmp_path / "hooks.json"
     owned = json.dumps({"hooks": {"UserPromptSubmit": [
         {"hooks": [{"type": "command", "command": WIN_PATH}]},
@@ -102,9 +111,7 @@ def test_the_unbound_default_survives_into_the_hooks_transaction(
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(os, "name", "nt")
-        mp.setattr(
-            host_codex, "desired_codex_hooks", lambda scope="user": frozen,
-        )
+        mp.setattr(host_codex, "desired_codex_hooks", frozen_hooks)
         serialized, _ = host_codex._plan_install(
             owned, "user", False, hooks_path,
         )
