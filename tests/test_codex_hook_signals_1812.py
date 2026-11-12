@@ -496,6 +496,88 @@ def test_a_compact_fire_counts_the_rebuild_block_too(
     assert doc["systemMessage"] == "aelfrice: 2 beliefs injected (1 locked)"
 
 
+@pytest.mark.timeout(60)
+def test_a_store_the_hook_cannot_read_says_the_hook_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed fire must not print the empty-store line, which tells the
+    user the store has nothing to inject."""
+    home = tmp_path / "home"
+    home.mkdir()
+    db = tmp_path / "memory.db"
+    db.write_bytes(b"not a sqlite database " * 20)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.setenv("AELFRICE_USER_DB", str(tmp_path / "user" / "memory.db"))
+    monkeypatch.setenv(ENV_HOOK_SUMMARY_LINE, "1")
+    monkeypatch.setenv("AELFRICE_SESSIONSTART_RECAP", "0")
+    payload = json.dumps({
+        "session_id": "s", "cwd": str(tmp_path),
+        "hook_event_name": "SessionStart", "source": "startup",
+    })
+    sout = io.StringIO()
+    serr = io.StringIO()
+    rc = session_start(
+        stdin=io.StringIO(payload), stdout=sout, stderr=serr, host="codex",
+    )
+    assert rc == 0
+    assert "DatabaseError" in serr.getvalue()
+    assert json.loads(sout.getvalue()) == {
+        "systemMessage": "aelfrice: hook failed (DatabaseError)",
+    }
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("where", ["eager-guard", "lazy-import"])
+def test_an_incomplete_install_says_the_hook_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str,
+) -> None:
+    """Both #1527 install-incomplete paths count as a failed fire."""
+    import aelfrice.hook as hook_mod
+
+    missing = ImportError("No module named 'numpy'", name="numpy")
+    if where == "eager-guard":
+        monkeypatch.setattr(hook_mod, "_IMPORTS_OK", False)
+        monkeypatch.setattr(hook_mod, "_IMPORT_ERR", missing)
+    else:
+        def raise_missing() -> object:
+            raise missing
+
+        monkeypatch.setattr(
+            hook_mod, "_retrieve_baseline_with_block", raise_missing,
+        )
+    raw = _fire(
+        tmp_path / "t", monkeypatch, host="codex",
+        env={ENV_HOOK_SUMMARY_LINE: "1", "AELFRICE_SESSIONSTART_RECAP": "0"},
+    )
+    assert json.loads(raw) == {
+        "systemMessage": "aelfrice: hook failed (ImportError)",
+    }
+
+
+@pytest.mark.timeout(60)
+def test_a_fire_that_fails_after_injecting_says_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The baseline reached the model, so the line keeps its count, and the
+    failed rebuild still shows."""
+    import aelfrice.hook as hook_mod
+
+    def boom(_payload: dict[str, object]) -> str:
+        raise RuntimeError("rebuild broke")
+
+    monkeypatch.setattr(hook_mod, "_build_rebuild_block_from_payload", boom)
+    doc = json.loads(_fire_compact(
+        tmp_path, monkeypatch, env={ENV_HOOK_SUMMARY_LINE: "1"},
+    ))
+    assert _context_counts(doc["hookSpecificOutput"]["additionalContext"]) == (
+        1, 1,
+    )
+    assert doc["systemMessage"] == (
+        "aelfrice: 1 belief injected (1 locked); hook failed (RuntimeError)"
+    )
+
+
 @pytest.mark.timeout(120)
 def test_console_entry_reads_the_host_argument(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
