@@ -323,6 +323,16 @@ _DIRECT = {
     "nice -n ADJUSTMENT": "nice -n 5 {p} --host codex",
     "nice --adjustment ADJUSTMENT": "nice --adjustment 5 {p} --host codex",
     "nice time -o FILE": "nice time -o /dev/null {p} --host codex",
+    # env reads an assignment as its operand, and the shell's own `time`
+    # and `!` take one before the program.
+    "env assignment": "env X=1 {p} --host codex",
+    "env -u VAR assignment": "env -u FOO X=1 {p} --host codex",
+    "nice env assignment": "nice env X=1 {p} --host codex",
+    "env assignment time -o FILE": (
+        "env X=1 time -o /dev/null {p} --host codex"
+    ),
+    "time assignment": "time X=1 {p} --host codex",
+    "! assignment": "! X=1 {p} --host codex",
     # env splits the string into its own arguments, so the program can be
     # in it.
     "env -S": "/usr/bin/env -S '{p} --host codex'",
@@ -433,6 +443,19 @@ _WRAPPERS = {
     "assignment time -p": "X=1 time -p {p} --host codex",
     "! assignment time -o FILE": "! X=1 time -o /dev/null {p} --host codex",
     "time assignment time": "time X=1 time {p} --host codex",
+    # nice, nohup, timeout, command, exec, and the `time` program run
+    # their first operand, so each shell runs a program named `X=1`.
+    "nice assignment": "nice X=1 {p} --host codex",
+    "nice -n assignment": "nice -n 5 X=1 {p} --host codex",
+    "nohup assignment": "nohup X=1 {p} --host codex",
+    "timeout assignment": "timeout 30 X=1 {p} --host codex",
+    "command assignment": "command X=1 {p} --host codex",
+    "exec assignment": "exec X=1 {p} --host codex",
+    "time program assignment": "\\time X=1 {p} --host codex",
+    "env nice assignment": "env nice X=1 {p} --host codex",
+    # bash 3.2 runs the `time` program after `!`, so `X=1` is the program
+    # there. bash 5 and zsh read the reserved `time` and run the hook.
+    "! time assignment": "! time X=1 {p} --host codex",
 }
 
 
