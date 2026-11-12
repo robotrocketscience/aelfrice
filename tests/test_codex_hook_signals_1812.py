@@ -421,12 +421,13 @@ _WRAPPERS = {
     "sh -c -- runs $0": "sh -c -- 'exec \"$0\" --host codex' {p}",
     # Only the first command's first word is a direct run.
     "after cd": "cd /tmp && {p} --host codex",
-    # The shell's own `time` takes no `-o`, so bash, zsh, and sh run `-o`
-    # as the program and never run the hook.
+    # The shell's own `time` takes no `-o`, so bash 3.2, bash 5.2, and
+    # zsh 5.9 run `-o` as the program and never run the hook. dash and
+    # bash 5.2 with --posix run the `time` program, which runs it.
     "bare time -o FILE": "time -o /dev/null {p} --host codex",
     "bare time -p -o FILE": "time -p -o /dev/null {p} --host codex",
-    # bash and sh read `-p` as the shell's `time` option and run the hook.
-    # zsh, the default macOS `$SHELL`, runs `-p` as the program instead.
+    # bash 3.2 and 5.2 read `-p` as the shell's `time` option and run the
+    # hook. zsh 5.9, the default macOS `$SHELL`, runs `-p` as the program.
     "bare time -p": "time -p {p} --host codex",
     # bash 3.2 and zsh run the second `time` as the program, which takes
     # `-o FILE` and runs the hook. bash 5 reads it as its reserved word
