@@ -784,6 +784,25 @@ def test_a_user_command_is_never_overwritten_or_removed(gdir: Path) -> None:
     assert sorted(p.name for p in target.iterdir()) == ["mine.toml", "search.toml"]
 
 
+@_needs_symlinks
+def test_a_symlinked_commands_dir_is_written_through_and_kept(
+    gdir: Path, tmp_path: Path,
+) -> None:
+    """Killed by: unlinking a symlinked `commands/aelf` on remove."""
+    real = tmp_path / "dotfiles" / "aelf-commands"
+    real.mkdir(parents=True)
+    link = gdir / "commands" / "aelf"
+    link.parent.mkdir()
+    link.symlink_to(real)
+    written = hgm.install_gemini_commands(gdir).written
+    assert sorted(p.name for p in real.iterdir()) == sorted(written)
+    assert sorted(written) == sorted(hgm.bundled_gemini_commands())
+    hgm.remove_gemini_commands(gdir)
+    assert link.is_symlink()
+    assert real.is_dir()
+    assert list(real.iterdir()) == []
+
+
 def test_orphans_and_edits_are_reported_and_pruned(gdir: Path) -> None:
     target = gdir / "commands" / "aelf"
     hgm.install_gemini_commands(gdir)
