@@ -348,6 +348,11 @@ max_candidate_pairs = 5000
 # it off the block is byte-identical to the pre-#1326 output, including
 # the validated framing header. AELFRICE_PROVENANCE_RENDER overrides.
 provenance_render = false
+# #1812. Codex host only. Show one line in the Codex UI after the
+# SessionStart hook runs, such as "aelfrice: 37 beliefs injected
+# (37 locked)". Default-OFF: with it off, the hook's stdout is unchanged.
+# AELFRICE_HOOK_SUMMARY_LINE overrides.
+summary_line = false
 
 [rebuilder]
 # v1.7+ / #291. Selects the query-rewriting stack used by the context
@@ -1163,6 +1168,41 @@ The default of off is important. The framing header is validated wording
 `AELFRICE_PROVENANCE_RENDER` (`1`/`true`/`yes`/`on` against `0`/`false`/`no`/
 `off`) overrides the file. A value of the wrong type, or a malformed value,
 degrades to off and writes a trace to stderr. Neither one raises.
+
+## `[hook] summary_line` (unreleased)
+
+This key shows a one-line summary in the Codex UI each time the SessionStart
+hook runs (#1812). It has no effect on the `claude` host, whose status line
+already shows that aelfrice is running.
+
+Codex adds the plain text that a hook prints to the model's context, and it
+doesn't show that text to you. With this key on, the SessionStart hook prints
+JSON instead. The `hookSpecificOutput.additionalContext` field carries the same
+text the model got before, and the `systemMessage` field carries one line,
+which Codex shows as a warning:
+
+```text
+aelfrice: 37 beliefs injected (37 locked)
+```
+
+The two numbers are the ones the hook's audit row records: the beliefs in the
+baseline block, and how many of them you locked. When the store has nothing to
+inject, the line reads `aelfrice: ran, nothing injected`.
+
+The hook knows it runs under Codex from the `--host codex` argument that
+`aelf setup --host codex` adds to the SessionStart command. A `hooks.json`
+written by an earlier release has no such argument, so run
+`aelf setup --host codex` again, then approve the changed entries with
+`/hooks` in a Codex session.
+
+The default of off is important: with the key off, the hook's stdout is byte
+for byte what it was before this key existed. `AELFRICE_HOOK_SUMMARY_LINE`
+(`1`/`true`/`yes`/`on` against `0`/`false`/`no`/`off`) overrides the file.
+A Codex handler has no field for environment variables
+([Codex hooks](https://developers.openai.com/codex/hooks)), so the variable
+takes effect only when it's in the environment Codex starts the hook with. The
+hook looks for this file from the session's working directory up. A value of
+the wrong type counts as off, and the hook never fails on it.
 
 ## `[implicit_feedback]` (v1.6.0+)
 
