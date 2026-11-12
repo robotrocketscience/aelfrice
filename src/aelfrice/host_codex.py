@@ -1597,6 +1597,13 @@ _PREFIX_WORDS: Final[frozenset[str]] = frozenset({
 _PROGRAM_RUNNERS: Final[frozenset[str]] = frozenset(
     {"command", "env", "exec", "nice", "nohup", "time", "timeout"},
 )
+#: The shells whose reading of a `time` word doctor compares (#1812):
+#: bash 3.2, which is `/bin/bash` on macOS, bash 5, and zsh, the default
+#: `$SHELL` on macOS. Codex runs a hook as `$SHELL -lc COMMAND`.
+_TIME_SHELLS: Final[tuple[str, ...]] = ("bash 3.2", "bash 5", "zsh")
+#: What `_shell_program_index` records as the word before after the
+#: shell's reserved `time` and its options, which no prefix word spells.
+_RESERVED_TIME: Final[str] = "time keyword"
 #: The options of a prefix word that take the next word as their operand,
 #: as in `env -u VAR`, `env -C DIR`, `exec -a NAME`, and `/usr/bin/time -o
 #: FILE`: the short option letters, then the long options. GNU env takes
@@ -1869,7 +1876,28 @@ def _program_index(
     simple: list[str], *, windows: bool,
 ) -> tuple[list[str], int, bool]:
     """A simple command's words, the index of its program word, and True
-    when zsh reads another word as the program.
+    when the shells in `_TIME_SHELLS` don't all run the same program.
+
+    Each shell's reading is `_shell_program_index`. The words and index
+    are bash 3.2's. The last item is True when another shell reads another
+    program or other arguments, as zsh does with `time -p PROGRAM`, which
+    runs `-p`, and bash 5 does with `time time -o FILE PROGRAM`, which
+    runs `-o`.
+    """
+    readings = [
+        _shell_program_index(simple, shell, windows=windows)
+        for shell in _TIME_SHELLS
+    ]
+    words, i = readings[0]
+    differ = any(other[j:] != words[i:] for other, j in readings[1:])
+    return words, i, differ
+
+
+def _shell_program_index(
+    simple: list[str], shell: str, *, windows: bool,
+) -> tuple[list[str], int]:
+    """A simple command's words and the index of its program word, as one
+    shell in `_TIME_SHELLS` reads them.
 
     Skips `VAR=value` words, and prefix words such as `env` or `exec` with
     the options after them and their operands, as in `env -i PROGRAM` or
@@ -1878,49 +1906,68 @@ def _program_index(
     `env -S STRING` split in its place (`_after_options`). The index equals
     the number of words when no word is left.
 
-    A `time` word is the shell's reserved word, which takes no operand,
-    when it is unquoted and unescaped, isn't a path, and follows no
-    `VAR=value` word, no other `time`, and no word in `_PROGRAM_RUNNERS`
-    such as `env`. Codex runs a hook as `$SHELL -lc COMMAND`, and bash,
-    zsh, and sh read `time -o FILE PROGRAM` as running a program named
-    `-o`. Doctor skips a `-p` after the reserved word, the one option bash
-    and sh read there. zsh, the default `$SHELL` on macOS, reads `-p` as
-    the program, so the last item is True after such a `-p`. Any other
-    `time` word, such as `/usr/bin/time`, `\\time`, `'time'`, the `time`
-    in `X=1 time`, or the second `time` in `time time`, is the `time`
-    program, which takes the `-o FILE` operand.
+    A `time` word the shell reads as its reserved word (`_reserved_time`)
+    takes no operand, so `time -o FILE PROGRAM` runs a program named `-o`.
+    After it, bash 3.2 skips one `-p`, bash 5 skips a `-p`, a `--`, or
+    `-p --`, as the `timespec` rule in bash 5.2's parse.y reads them, and
+    zsh skips nothing. Any other `time` word is the `time` program, which
+    takes the `-o FILE` operand.
     """
     words = simple
     i = 0
-    after_runner = False
-    zsh_differs = False
-    # False once a `VAR=value` word or a reserved `time` has come before.
-    reserved_position = True
+    # The word before, as the shell reads it: '' at the start, '=' after
+    # a `VAR=value` word in command position, `_RESERVED_TIME`, or the
+    # last prefix word.
+    before = ""
     while i < len(words):
         if _ASSIGNMENT.match(words[i]):
             i += 1
-            reserved_position = False
+            if before not in _PROGRAM_RUNNERS:
+                before = "="
             continue
         prefix = launcher_key(words[i], windows=windows)
         if prefix not in _PREFIX_WORDS:
             break
-        if (
-            prefix == "time"
-            and reserved_position
-            and not after_runner
-            and not isinstance(words[i], _QuotedWord)
-            and not _names_a_path(words[i], windows=windows)
+        if prefix == "time" and _reserved_time(
+            words[i], before, shell, windows=windows,
         ):
             i += 1
-            while i < len(words) and words[i] == "-p":
+            if shell != "zsh" and i < len(words) and words[i] == "-p":
                 i += 1
-                zsh_differs = True
-            reserved_position = False
+            if shell == "bash 5" and i < len(words) and words[i] == "--":
+                i += 1
+            before = _RESERVED_TIME
             continue
         words, i = _after_options(words, i + 1, prefix)
         i = min(len(words), i + _PREFIX_OPERANDS.get(prefix, 0))
-        after_runner = prefix in _PROGRAM_RUNNERS
-    return words, i, zsh_differs
+        before = prefix
+    return words, i
+
+
+def _reserved_time(
+    word: str, before: str, shell: str, *, windows: bool,
+) -> bool:
+    """True when `shell` reads a `time` word as its reserved word.
+
+    `before` is the word before, as `_shell_program_index` records it. No
+    shell reads a quoted or escaped word, a path, a word after a
+    `VAR=value` word, or a word after a prefix word in `_PROGRAM_RUNNERS`
+    such as `env` as the reserved word. After the reserved `time`, bash 5
+    reads another `time` as the reserved word (`time_command_acceptable`
+    in bash 5.2's parse.y), where bash 3.2 and zsh run the `time`
+    program. After `!`, bash 5 and zsh read the reserved word and bash
+    3.2 runs the program. At the start and after the other reserved
+    words, such as `{` or `if`, every shell reads the reserved word.
+    """
+    if isinstance(word, _QuotedWord) or _names_a_path(word, windows=windows):
+        return False
+    if before == "=" or before in _PROGRAM_RUNNERS:
+        return False
+    if before == _RESERVED_TIME:
+        return shell == "bash 5"
+    if before == "!":
+        return shell != "bash 3.2"
+    return True
 
 
 def _names_a_path(word: str, *, windows: bool) -> bool:
@@ -1958,8 +2005,9 @@ def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
     first simple command. Such a handler certainly runs the program, so
     doctor counts it toward a duplicate run (#1812). `command` with a `-v`
     or `-V` option only looks the program up, so it doesn't count. Nor
-    does a program after `time -p`, which zsh doesn't run, so doctor warns
-    about it (`_wrapped_owned_keys`).
+    does a program that one shell in `_TIME_SHELLS` doesn't run, as zsh
+    doesn't after `time -p`, so doctor warns about it
+    (`_wrapped_owned_keys`).
     """
     if not isinstance(handler, dict):
         return ""
@@ -1970,8 +2018,8 @@ def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
     commands = _simple_commands(_command_words(cmd, windows=win))
     if not commands:
         return ""
-    simple, i, zsh_differs = _program_index(commands[0][0], windows=win)
-    if i >= len(simple) or zsh_differs:
+    simple, i, shells_differ = _program_index(commands[0][0], windows=win)
+    if i >= len(simple) or shells_differ:
         return ""
     if _looks_up(simple, i, windows=win):
         return ""
@@ -2030,7 +2078,7 @@ def _wrapped_owned_keys(
                 for inner in _substitutions(text)
             )
         for command, piped in _simple_commands(words):
-            simple, i, _zsh_differs = _program_index(command, windows=win)
+            simple, i, _shells_differ = _program_index(command, windows=win)
             if i >= len(simple):
                 continue
             head = launcher_key(simple[i], windows=win)
