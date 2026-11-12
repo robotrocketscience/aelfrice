@@ -108,11 +108,13 @@ def _is_windows(windows: bool | None) -> bool:
 def gemini_hook_command(program: str, *, windows: bool | None = None) -> str:
     """`program` as a hook command for the shell Gemini runs it under.
 
-    Gemini runs a hook's command string under `bash -c` on macOS and Linux
-    and under PowerShell on Windows, so a path with a space, written bare,
-    runs only the part before the space. A path the shell would split is
-    quoted for that shell: in single quotes on POSIX, and in single quotes
-    after the call operator on Windows. Any other path is written as is.
+    The quoting assumes a POSIX shell on macOS and Linux and PowerShell on
+    Windows. The Gemini 0.68.0 docs show hook scripts for both but don't
+    name the shell that runs the command string. A path with a space,
+    written bare, would run only the part before the space, so a path the
+    shell would split is quoted: in single quotes on POSIX, and in single
+    quotes after the call operator on Windows. Any other path is written
+    as is.
     """
     if not _is_windows(windows):
         return shlex.quote(program)

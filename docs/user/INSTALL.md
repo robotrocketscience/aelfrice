@@ -142,7 +142,7 @@ Restart Gemini CLI after setup so it loads the hooks.
 
 Setup writes two things there, and nothing into your project:
 
-- **Hooks in `settings.json`.** Each hook runs `aelf-gemini-hook` at the absolute path setup resolves on your machine. When setup resolves none, for example because the only copy is in a venv under `.claude/worktrees/` (#928), it writes the bare name, and Gemini then looks it up on `PATH`. Gemini runs a hook command under `bash -c` on macOS and Linux and under PowerShell on Windows, so setup quotes a path that holds a space for that shell. Gemini reads each hook `timeout` in milliseconds.
+- **Hooks in `settings.json`.** Each hook runs `aelf-gemini-hook` at the absolute path setup resolves on your machine. When setup resolves none, for example because the only copy is in a venv under `.claude/worktrees/` (#928), it writes the bare name, and Gemini then looks it up on `PATH`. Setup quotes a path that holds a space so that a POSIX shell, or PowerShell on Windows, reads it as one word. The Gemini 0.68.0 docs show hook scripts for both shells but don't say which shell runs the command string. Gemini reads each hook `timeout` in milliseconds.
 - **Commands under `commands/aelf/`.** Each `/aelf:*` slash command becomes a TOML file that Gemini runs as `/aelf:<name>`, for example `/aelf:search`. aelfrice generates them from the same source as the Claude commands and the Codex skills. A first-line marker, `AELFRICE-GEMINI-COMMAND`, controls replacement and removal, so a command file of your own in that directory is never overwritten or removed.
 
 The hooks map Gemini's events onto the aelfrice handlers:
@@ -151,10 +151,12 @@ The hooks map Gemini's events onto the aelfrice handlers:
 |---|---|---|
 | `SessionStart` | `aelfrice-session-start` | Injects the locked beliefs. |
 | `BeforeAgent` | `aelfrice-prompt` | Injects the retrieval results for the prompt, then logs the turn. |
-| `AfterAgent` | `aelfrice-turn-end` | Logs the reply, then runs the end-of-turn lock prompt. |
-| `PreCompress` | `aelfrice-pre-compress` | Rotates the turn log and ingests it. |
+| `AfterAgent` | `aelfrice-turn-end` | Logs the reply, then runs the end-of-turn lock prompt. It never returns a `deny` decision, so it never makes Gemini retry the turn. |
+| `PreCompress` | `aelfrice-pre-compress` | Rotates the turn log and ingests it. Gemini fires `PreCompress` asynchronously, so the rotation can still be running when compression starts. |
 
-To turn one hook off, run `/hooks disable <hook name>` in Gemini, for example `/hooks disable aelfrice-pre-compress`. Gemini escapes `<` and `>` in the injected text, so tags such as `<aelfrice-memory>` reach the model as `&lt;aelfrice-memory&gt;`.
+To turn one hook off, run `/hooks disable <hook name>` in Gemini, for example `/hooks disable aelfrice-pre-compress`.
+
+The installed Gemini CLI 0.68.0 wraps hook context in a `<hook_context>` block, and when hooks are on, its system prompt tells the model to treat that block as read-only data, not as instructions, and to follow its own system instructions where the two conflict. The 0.68.0 docs don't describe this. Your locked beliefs therefore reach a Gemini session as context. For a rule that Gemini must treat as an instruction, also put it in a `GEMINI.md` file, which Gemini reads as instructional context. aelfrice never writes `GEMINI.md`.
 
 Gemini has no event after compression, and no aelfrice hook acts on Gemini's tool calls. Gemini 0.68.0 saves memories by editing `GEMINI.md` with its file tools and has no `save_memory` tool, so aelfrice doesn't copy them into the store. The search, issue-duplicate, and commit hooks of the Claude host therefore have no Gemini counterpart yet. The Stop hook's core-gate follow-up turn and its background labeler don't run on Gemini either.
 

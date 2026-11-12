@@ -26,9 +26,11 @@ Output. Gemini parses stdout as JSON on exit 0 and shows any other stdout
 to the user instead of the model, so the handlers' stdout is captured and
 the script prints exactly one JSON object: `hookSpecificOutput` with
 `additionalContext` on `SessionStart` and `BeforeAgent` when a handler
-produced context, and `{}` otherwise. Gemini escapes `<` and `>` in that
-text before the model sees it. The exit code is always 0, so no aelfrice
-failure blocks a turn.
+produced context, and `{}` otherwise. The installed Gemini CLI 0.68.0
+wraps that text in `<hook_context>` and tells the model to treat it as
+read-only data, which its docs don't describe. The exit code is always 0
+and no `decision` is ever printed, so no aelfrice failure blocks a turn
+and `AfterAgent` never makes Gemini retry one.
 
 Host. The script sets `AELFRICE_HOST=gemini` in its own process for the
 duration of the call, and the Stop hook reads it to skip the paths that
