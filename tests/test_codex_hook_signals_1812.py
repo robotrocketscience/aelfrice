@@ -429,6 +429,9 @@ def test_doctor_ignores_a_foreign_handler_that_runs_no_aelfrice_program(
 # script scan reads the program as one the handler runs.
 _CHECKS = {
     "command -v": "sh -c 'command -v {p} >/dev/null || exit 1'",
+    # `command` is a prefix word, but `-v` only looks the program up.
+    "top-level command -v": "command -v {p} >/dev/null",
+    "top-level command -V": "command -V {p}",
     "test -x": "sh -c 'test -x {p} || echo missing'",
 }
 
