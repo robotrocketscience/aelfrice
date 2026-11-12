@@ -5,8 +5,9 @@ Codex user can't see that aelfrice ran. This build closes three gaps:
 
 * `aelf setup --host codex --status-message TEXT` writes the Codex
   `statusMessage` handler field instead of refusing the option (#1429).
-* `additionalContextLimit` on the SessionStart and UserPromptSubmit
-  handlers, so Codex doesn't cut aelfrice's block to a preview.
+* `additionalContextLimit` on the SessionStart, UserPromptSubmit, and
+  PreToolUse search-tool handlers, so Codex doesn't cut aelfrice's block
+  to a preview.
 * `[hook] summary_line` / `AELFRICE_HOOK_SUMMARY_LINE`: with it on, the
   Codex SessionStart hook prints JSON carrying the same context plus a
   `systemMessage` for the user. With it off, stdout doesn't change.
@@ -128,11 +129,11 @@ def test_a_rerun_without_the_option_drops_the_field(
 
 
 @pytest.mark.timeout(60)
-def test_context_limit_is_on_the_two_context_handlers_only(
+def test_context_limit_is_on_the_three_context_handlers_only(
     codex_home: Path,
 ) -> None:
-    """Codex reads the field on SessionStart and UserPromptSubmit and warns
-    on any other event, and only these two handlers write context."""
+    """Only these handlers return `additionalContext`, and Codex reads the
+    field on their events, PreToolUse among them."""
     install_codex_hooks(codex_home / "hooks.json")
     limited = sorted(
         (event, _key(h), h["additionalContextLimit"])
@@ -140,6 +141,7 @@ def test_context_limit_is_on_the_two_context_handlers_only(
         if "additionalContextLimit" in h
     )
     assert limited == [
+        ("PreToolUse", "aelf-search-tool-hook", HOOK_PAYLOAD_CHAR_LIMIT),
         ("SessionStart", "aelf-session-start-hook", HOOK_PAYLOAD_CHAR_LIMIT),
         ("UserPromptSubmit", "aelf-hook", HOOK_PAYLOAD_CHAR_LIMIT),
     ]
