@@ -472,6 +472,10 @@ _SKIPPED_MATCHERS = {
     "backreference": r"(r)\1?esume",
     "named backreference": "(?P<a>r)(?P=a)?esume",
     "atomic group": "(?>resume)",
+    # Python's `re` reads the `{` and the inner `[` as literals and matches
+    # `resume`, but Rust's `regex` rejects both patterns.
+    "unclosed counted repetition": "resume|x{",
+    "nested class opener": "resume|[[]",
 }
 
 
@@ -566,6 +570,42 @@ def test_doctor_skips_a_tool_group_whose_matcher_codex_cannot_compile(
         (r"x\Z", True),
         (r"[\b]", True),
         ("x{,3}", True),
+        # A `{` always starts a counted repetition in Rust.
+        ("x{", True),
+        ("{", True),
+        ("^{", True),
+        (".{", True),
+        ("x{a}", True),
+        ("x{2,1}", True),
+        ("x{2, }", True),
+        # A `[` in a class opens a nested class.
+        ("[[]", True),
+        ("[[]]", True),
+        ("[a[b]", True),
+        # Errors that Python's `re` shares.
+        ("(", True),
+        ("x)", True),
+        ("[", True),
+        ("[]", True),
+        ("*x", True),
+        ("x|*", True),
+        ("(?i)*", True),
+        ("(?)", True),
+        ("[z-a]", True),
+        (r"[\d-z]", True),
+        (r"\x4", True),
+        (r"\x{}", True),
+        (r"\e", True),
+        ("x{2}", False),
+        ("x{ 2 }", False),
+        ("x{1,}{2}", False),
+        ("x**", False),
+        (r"\b{2}", False),
+        ("[a[b]c]", False),
+        ("[[:alpha:]]", False),
+        ("[[:foo:]]", False),
+        ("[]a]", False),
+        ("[a&&[^b]]", False),
         ("(?i:x)", False),
         ("(?-s)x", False),
         ("(?P<a>x)", False),
