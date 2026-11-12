@@ -1897,14 +1897,28 @@ def _wrapped_owned_keys(
 #: values the Codex docs list (https://developers.openai.com/codex/hooks,
 #: "Matcher patterns"): SessionStart matches its start source, and
 #: PreCompact and PostCompact match their trigger. Any other event has no
-#: entry: the tool events match an open set of tool names, and Codex
-#: ignores the matcher on UserPromptSubmit and Stop, so doctor counts
-#: every handler in such an event as running on every fire.
+#: entry. The tool events match an open set of tool names, which
+#: `_TOOL_EVENTS` covers, and Codex ignores the matcher on
+#: UserPromptSubmit and Stop, so doctor counts every handler in such an
+#: event as running on every fire.
 _MATCHER_VALUES: Final[dict[str, tuple[str, ...]]] = {
     "SessionStart": ("startup", "resume", "clear", "compact", "fork"),
     "PreCompact": ("manual", "auto"),
     "PostCompact": ("manual", "auto"),
 }
+#: The events whose matcher is tested against tool names. Under an exact
+#: matcher a group's values are the names it lists, since any name can be
+#: a tool's.
+_TOOL_EVENTS: Final[frozenset[str]] = frozenset({"PreToolUse", "PostToolUse"})
+#: The names one tool call is matched by, for each tool that carries more
+#: than its own name. Codex tests a matcher against the tool's name and its
+#: matcher aliases (`matcher_inputs` in codex-rs/hooks/src/events/common.rs
+#: at openai/codex@c0cc9fc82), and only `apply_patch` and `spawn_agent`
+#: have aliases (`HookToolName` in codex-rs/core/src/tools/hook_names.rs).
+_TOOL_MATCHER_INPUTS: Final[tuple[frozenset[str], ...]] = (
+    frozenset({"apply_patch", "Write", "Edit"}),
+    frozenset({"spawn_agent", "Agent"}),
+)
 #: The events whose `matcher` Codex reads. Codex ignores the matcher on
 #: the others, so it never compiles one there (`matcher_pattern_for_event`
 #: in codex-rs/hooks/src/events/common.rs at openai/codex@c0cc9fc82).
@@ -2025,6 +2039,8 @@ def _matched_values(event: str, group: object) -> frozenset[str] | None:
     exact = _EXACT_MATCHER.fullmatch(matcher) is not None
     if not exact and _codex_skips_matcher(matcher):
         return None
+    if exact and event in _TOOL_EVENTS:
+        return frozenset(name for name in matcher.split("|") if name)
     values = _MATCHER_VALUES.get(event)
     if values is None:
         return _EVERY_FIRE
@@ -2034,18 +2050,38 @@ def _matched_values(event: str, group: object) -> frozenset[str] | None:
     return frozenset(v for v in values if pattern.search(v))
 
 
-def _most_runs(value_sets: list[frozenset[str]]) -> int:
-    """How many times one fire runs a program, at the value that runs it
-    most.
+def _fires(event: str, value_sets: list[frozenset[str]]) -> list[frozenset[int]]:
+    """The handlers that each fire of `event` runs, as indexes into
+    `value_sets`.
+
+    Each set holds the values one handler runs on (`_matched_values`), and
+    a fire runs a handler when the fire's values and the handler's share
+    one. A fire has one value, except a tool event's: a tool call is
+    matched by the tool's name and its aliases (`_TOOL_MATCHER_INPUTS`), so
+    handlers under `Write` and under `Edit` both run on an `apply_patch`
+    call. In a tool event, a handler under a regex or no matcher counts as
+    running on the same fire as every other handler, because doctor can't
+    list the tool names a regex matches.
+    """
+    if event in _TOOL_EVENTS and _EVERY_FIRE in value_sets:
+        return [frozenset(i for i, values in enumerate(value_sets) if values)]
+    inputs = [frozenset({v}) for v in sorted(set[str]().union(*value_sets))]
+    if event in _TOOL_EVENTS:
+        inputs.extend(_TOOL_MATCHER_INPUTS)
+    return [
+        frozenset(i for i, values in enumerate(value_sets) if values & names)
+        for names in inputs
+    ]
+
+
+def _most_runs(event: str, value_sets: list[frozenset[str]]) -> int:
+    """How many times one fire of `event` runs a program, at the fire that
+    runs it most.
 
     Each set holds the values one handler of the program runs on, so two
-    handlers run on the same fire only when their sets share a value.
+    handlers run on the same fire only when `_fires` puts them on one.
     """
-    counts: dict[str, int] = {}
-    for values in value_sets:
-        for value in values:
-            counts[value] = counts.get(value, 0) + 1
-    return max(counts.values(), default=0)
+    return max((len(fire) for fire in _fires(event, value_sets)), default=0)
 
 
 def _program_path(cmd: str, key: str, *, windows: bool | None = None) -> str:
@@ -2128,8 +2164,9 @@ def doctor_codex(
         if not isinstance(groups, list):
             continue
         for group in cast(list[object], groups):
-            # #1812: handlers whose matchers share no value never run on
-            # the same fire, so they don't count as duplicate runs.
+            # #1812: handlers whose matchers share no value, such as tool
+            # groups under `Bash` and under `WebSearch`, never run on the
+            # same fire, so they don't count as duplicate runs.
             values = _matched_values(event, group)
             if values is None:
                 matcher = cast(dict[str, object], group).get("matcher")
@@ -2185,10 +2222,10 @@ def doctor_codex(
     report.duplicate_runs = [
         (event, key, count)
         for (event, key), value_sets in sorted(runs.items())
-        if (count := _most_runs(value_sets)) > 1
+        if (count := _most_runs(event, value_sets)) > 1
     ]
     for (event, key), commands in sorted(maybe.items()):
-        if _most_runs(runs.get((event, key), [])) + len(commands) < 2:
+        if _most_runs(event, runs.get((event, key), [])) + len(commands) < 2:
             continue
         for cmd in commands:
             warning = (

@@ -623,8 +623,10 @@ def test_doctor_reads_the_compaction_trigger_matcher(
 @pytest.mark.parametrize(
     ("event", "matcher"),
     [
-        # Tool names are an open set, so doctor counts every handler.
-        ("PreToolUse", "WebSearch"),
+        # Doctor can't list the tool names a regex matches, so it counts
+        # every handler.
+        ("PreToolUse", "^Web"),
+        ("PostToolUse", "Web.*"),
         # Codex ignores a matcher on Stop.
         ("Stop", "never"),
     ],
@@ -638,6 +640,68 @@ def test_doctor_counts_every_handler_where_it_reads_no_matcher(
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 1, out
     assert f"{event} runs {command_launcher_key(command)} 2 times" in out
+
+
+# Copies of the event's first handler, each in its own group under one of
+# these matchers, beside setup's `Bash` group. Codex matches an exact tool
+# matcher against the tool's name and its aliases: `apply_patch` is also
+# `Write` and `Edit`, and `spawn_agent` is also `Agent`.
+_TOOL_MATCHERS = {
+    "WebSearch": ("PreToolUse", ["WebSearch"], 0),
+    "Write": ("PostToolUse", ["Write"], 0),
+    "Write and WebSearch": ("PreToolUse", ["Write", "WebSearch"], 0),
+    "Bash|WebSearch": ("PreToolUse", ["Bash|WebSearch"], 2),
+    "Bash": ("PostToolUse", ["Bash"], 2),
+    "Write and Edit": ("PreToolUse", ["Write", "Edit"], 2),
+    "Write and apply_patch": ("PostToolUse", ["Write", "apply_patch"], 2),
+    "Agent and spawn_agent": ("PreToolUse", ["Agent", "spawn_agent"], 2),
+    "Edit|Agent and spawn_agent": (
+        "PreToolUse", ["Edit|Agent", "spawn_agent"], 2,
+    ),
+    # A group under no matcher or `*` counts as running on every fire, so
+    # the copy under `WebSearch` counts as well.
+    "no matcher and WebSearch": ("PreToolUse", [None, "WebSearch"], 3),
+    "* and WebSearch": ("PreToolUse", ["*", "WebSearch"], 3),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_TOOL_MATCHERS))
+def test_doctor_reads_exact_tool_matchers(tmp_path: Path, shape: str) -> None:
+    """The last item is the runs doctor counts, and 0 means it passes."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    event, matchers, runs = _TOOL_MATCHERS[shape]
+    command = _first_command(hooks, event)
+    for matcher in matchers:
+        _add_group(hooks, event, command, matcher)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == (1 if runs else 0), out
+    if runs:
+        key = command_launcher_key(command)
+        assert f"{event} runs {key} {runs} times" in out, out
+    else:
+        assert "times" not in out, out
+
+
+@pytest.mark.timeout(60)
+def test_setup_and_doctor_pass_an_env_search_handler_under_websearch(
+    tmp_path: Path,
+) -> None:
+    """The review's repro: setup keeps the foreign group, and no tool call
+    runs both it and setup's `Bash` group."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    _add_group(
+        hooks, "PreToolUse",
+        f"/usr/bin/env {_first_command(hooks, 'PreToolUse')}", "WebSearch",
+    )
+    install_codex_hooks(hooks)
+    groups = json.loads(hooks.read_text(encoding="utf-8"))["hooks"][
+        "PreToolUse"
+    ]
+    assert [g.get("matcher") for g in groups] == ["WebSearch", "Bash"]
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
 
 
 # Each foreign handler names the program without running it, or runs none.
