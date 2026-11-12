@@ -1192,6 +1192,12 @@ Codex compacts the context, the hook also writes a rebuild block, and the line
 counts its beliefs too. A belief that both blocks show counts once. When the
 store has nothing to inject, the line reads `aelfrice: ran, nothing injected`.
 
+When the hook fails, for example because it can't read the store, the line
+names the error type instead, such as `aelfrice: hook failed (DatabaseError)`,
+and the traceback goes to the hook's stderr. When the hook fails after it
+wrote beliefs, the line keeps their count and adds the failure:
+`aelfrice: 2 beliefs injected (2 locked); hook failed (RuntimeError)`.
+
 The hook knows it runs under Codex from the `--host codex` argument that
 `aelf setup --host codex` adds to the SessionStart command. A `hooks.json`
 written by an earlier release has no such argument, so run

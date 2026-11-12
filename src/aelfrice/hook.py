@@ -6991,10 +6991,15 @@ class _SessionStartTally:
     is a user lock. It covers the baseline block (the beliefs the audit
     row records) and, on a post-compaction fire, the rebuild block written
     after it. A belief both blocks show counts once.
+
+    `failed` names the exception type that cut the fire short, so the
+    line can't tell the user an unreadable store is an empty one. None
+    when the fire ran to the end.
     """
 
     cwd: str | None = None
     injected: dict[str, bool] = field(default_factory=dict[str, bool])
+    failed: str | None = None
 
     def note(self, belief_id: str, locked: bool) -> None:
         """Record one belief the fire showed the model."""
@@ -7056,6 +7061,7 @@ def session_start(
             text = hook_summary.codex_hook_json(
                 _SESSION_START_EVENT, text,
                 n_beliefs=tally.n_beliefs, n_locked=tally.n_locked,
+                failed=tally.failed,
             )
     except Exception:  # non-blocking: fall back to the plain text
         traceback.print_exc(file=serr)
@@ -7121,6 +7127,8 @@ def _session_start(
             recap_line = None
     serr = stderr if stderr is not None else sys.stderr
     if not _IMPORTS_OK:
+        if tally is not None:
+            tally.failed = type(_IMPORT_ERR).__name__
         return _report_incomplete_install(_IMPORT_ERR, serr)
     # #1513: spawn the detached BM25 sidecar warm FIRST, so the child has
     # the whole of this hook's own work plus the user's first typing pause
@@ -7246,9 +7254,11 @@ def _session_start(
         if source == _SESSION_SOURCE_COMPACT:
             try:
                 rebuild_block = _build_rebuild_block_from_payload(payload)
-            except Exception:  # non-blocking: surface but do not fail
+            except Exception as exc:  # non-blocking: surface but do not fail
                 rebuild_block = ""
                 traceback.print_exc(file=serr)
+                if tally is not None:
+                    tally.failed = type(exc).__name__
             if rebuild_block:
                 # #1639: the rebuild block shares the hook's output limit
                 # with the baseline written above, and gets what it left.
@@ -7276,8 +7286,12 @@ def _session_start(
         # optional dependency reachable through a lazy retrieval call (numpy,
         # say) silently delete two unrelated features.
         _ = _report_incomplete_install(exc, serr)
-    except Exception:  # non-blocking: surface but do not fail
+        if tally is not None:
+            tally.failed = type(exc).__name__
+    except Exception as exc:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
+        if tally is not None:
+            tally.failed = type(exc).__name__
     if lock_gap_line:
         try:
             print(lock_gap_line, file=sout)

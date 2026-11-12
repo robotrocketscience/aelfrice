@@ -97,17 +97,34 @@ def is_summary_line_enabled(
     return from_toml if from_toml is not None else False
 
 
-def summary_message(n_beliefs: int, n_locked: int) -> str:
+def summary_message(
+    n_beliefs: int, n_locked: int, *, failed: str | None = None,
+) -> str:
     """The line the user sees, for example `aelfrice: 37 beliefs injected
-    (37 locked)`."""
+    (37 locked)`.
+
+    `failed` is the exception type that cut the fire short, or None. A
+    failed fire never prints the empty-store line: with nothing injected
+    it reads `aelfrice: hook failed (DatabaseError)`, and with beliefs
+    already written it keeps their count and adds the failure.
+    """
+    failure = f"hook failed ({failed})" if failed else ""
     if n_beliefs <= 0:
-        return "aelfrice: ran, nothing injected"
+        return f"aelfrice: {failure}" if failure else (
+            "aelfrice: ran, nothing injected"
+        )
     noun = "belief" if n_beliefs == 1 else "beliefs"
-    return f"aelfrice: {n_beliefs} {noun} injected ({n_locked} locked)"
+    line = f"aelfrice: {n_beliefs} {noun} injected ({n_locked} locked)"
+    return f"{line}; {failure}" if failure else line
 
 
 def codex_hook_json(
-    event: str, context: str, *, n_beliefs: int, n_locked: int,
+    event: str,
+    context: str,
+    *,
+    n_beliefs: int,
+    n_locked: int,
+    failed: str | None = None,
 ) -> str:
     """JSON stdout for a Codex hook: the context plus the summary line.
 
@@ -122,7 +139,7 @@ def codex_hook_json(
             "hookEventName": event,
             "additionalContext": context,
         }
-    out["systemMessage"] = summary_message(n_beliefs, n_locked)
+    out["systemMessage"] = summary_message(n_beliefs, n_locked, failed=failed)
     return json.dumps(out) + "\n"
 
 
