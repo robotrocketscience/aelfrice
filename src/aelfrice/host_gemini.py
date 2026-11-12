@@ -269,9 +269,11 @@ def _serialize(doc: dict[str, object], original: str | None) -> str:
 
     Keeps the indent of the first indented line (none for a one-line
     file), the line ending, the final newline or its absence, and whether
-    non-ASCII characters are escaped. A file in a standard JSON layout so
-    gets its bytes back when unsetup undoes setup. A new file gets two
-    spaces and a final newline.
+    non-ASCII characters are escaped. The spacing after `:` and `,` is
+    `json.dumps`'s, so a compact `{"a":1}` comes back as `{"a": 1}`. A
+    file already in the layout `json.dumps` writes with those traits gets
+    its bytes back when unsetup undoes setup. A new file gets two spaces
+    and a final newline.
     """
     if original is None:
         return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
