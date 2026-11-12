@@ -1910,6 +1910,12 @@ def _shell_program_index(
     `env -S STRING` split in its place (`_after_options`). The index equals
     the number of words when no word is left.
 
+    A shell reads `VAR=value` words as assignments only before the
+    command's program, and `env` reads them as its own operands. The other
+    words in `_PROGRAM_RUNNERS`, such as `nice` and `timeout`, run their
+    first operand, so in `nice X=1 PROGRAM` the program is `X=1`, which
+    every shell in `_TIME_SHELLS` fails to find.
+
     A `time` word the shell reads as its reserved word (`_reserved_time`)
     takes no operand, so `time -o FILE PROGRAM` runs a program named `-o`.
     After it, bash 3.2 skips one `-p`, bash 5 skips a `-p`, a `--`, or
@@ -1928,8 +1934,10 @@ def _shell_program_index(
     before = ""
     while i < len(words):
         if _ASSIGNMENT.match(words[i]):
+            if before in _PROGRAM_RUNNERS and before != "env":
+                break
             i += 1
-            if before not in _PROGRAM_RUNNERS:
+            if before != "env":
                 before = "="
             continue
         prefix = launcher_key(words[i], windows=windows)
