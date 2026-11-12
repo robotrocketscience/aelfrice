@@ -276,6 +276,12 @@ _WRAPPERS = {
     "env -i sh -c": "env -i sh -c '{p} --host codex | cat'",
     "python one argument": "/usr/bin/python3 /x/w.py '{p} --host codex'",
     "env -S": "/usr/bin/env -S '{p} --host codex'",
+    # The script opens with another command, so reading the script is the
+    # only way to find the program.
+    "bash -lc after cd": "bash -lc 'cd /tmp && {p} | cat'",
+    "bash -o -c after cd": "/bin/bash -o pipefail -c 'cd /tmp && {p} | cat'",
+    "timeout sh -c after cd": "timeout 30 sh -c 'cd /tmp && {p} | cat'",
+    "sh -c -- runs $0": "sh -c -- 'exec \"$0\" --host codex' {p}",
 }
 
 
@@ -343,6 +349,8 @@ _NOT_RUNNING = {
     "printf into a file": "printf '%s\\n' {p} > /dev/null",
     # The flag after a prefix word is skipped, so echo is the program.
     "env -i echo": "env -i echo {p}",
+    # The assignment is skipped, so echo is the program.
+    "assignment echo": "AELFRICE_HOOK_SUMMARY_LINE=1 echo {p}",
 }
 
 
