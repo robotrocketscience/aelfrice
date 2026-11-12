@@ -92,7 +92,7 @@ Codex adds the text a hook prints to the model's context and doesn't show it to 
 
 `aelf setup --host codex` also writes `"additionalContextLimit": 9500` on the SessionStart and retrieval handlers. Codex saves hook output over its limit, about 2,500 tokens by default, to a file and gives the model only a preview ([Codex hooks](https://developers.openai.com/codex/hooks)). aelfrice caps each hook's output at 9,500 characters, so a limit of 9,500 tokens keeps the whole block in the model's context.
 
-If you set up Codex with an earlier release, run `aelf setup --host codex` again to get these fields and the `--host codex` argument that the summary line needs. Then open `/hooks` in a Codex session and approve the changed entries, because Codex skips a hook whose definition changed until you approve it again. `aelf doctor --host codex` accepts both the earlier and the new handler shapes.
+If you set up Codex with an earlier release, run `aelf setup --host codex` again to get these fields and the `--host codex` argument that the summary line needs. The same run refreshes the `$aelf-setup` skill, whose text now names `--status-message`. Then open `/hooks` in a Codex session and approve the changed entries, because Codex skips a hook whose definition changed until you approve it again. `aelf doctor --host codex` accepts both the earlier and the new handler shapes, but until you rerun setup it exits 1 and names `aelf-setup` among the installed skills that don't match this build.
 
 ##### Move off a SessionStart wrapper
 
