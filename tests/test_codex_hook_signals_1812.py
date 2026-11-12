@@ -31,6 +31,7 @@ from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT
 from aelfrice.hook_summary import ENV_HOOK_SUMMARY_LINE
 from aelfrice.host_codex import (
     CODEX_ADDITIONAL_CONTEXT_LIMIT,
+    _direct_run_key,
     _rust_regex_rejects,
     _wrapped_owned_keys,
     install_codex_hooks,
@@ -255,92 +256,43 @@ def _installed(tmp_path: Path) -> tuple[Path, Path, str]:
     return codex_dir, hooks, program
 
 
-# Each wrapper runs the session-start program as its first word. `{p}` is
-# the program path.
+# Each wrapper is a shape doctor recognizes as a direct run of the
+# session-start program (`_direct_run_key`), so it counts toward a
+# duplicate run. The enumerated probe in the #1812 gate ran each of these
+# shapes in bash 3.2, bash 5.2, and zsh 5.9, and each shell ran the
+# program. `{p}` is the program path.
 _DIRECT = {
     "env": "/usr/bin/env {p}",
-    # The flag after a prefix word is skipped, so the program is the first
-    # word.
-    "env -i": "/usr/bin/env -i {p} --host codex",
     "assignment": "AELFRICE_HOOK_SUMMARY_LINE=1 {p} --host codex",
-    # `-p` sets a default PATH and still runs the program.
-    "command -p": "command -p {p} --host codex",
-    # The option's operand is read with it, so the program comes next.
+    "two assignments": "X=1 Y=2 {p} --host codex",
     "env -u VAR": "/usr/bin/env -u FOO {p} --host codex",
-    "env -iu VAR": "env -iu FOO {p} --host codex",
-    "env --unset VAR": "env --unset FOO {p} --host codex",
+    "exec": "exec {p} --host codex",
     "exec -a NAME": "exec -a aelf {p} --host codex",
-    # The operand is in the option's own word.
-    "env -uVAR": "env -uFOO {p} --host codex",
-    "env --unset=VAR": "env --unset=FOO {p} --host codex",
-    "env -C DIR": "env -C /tmp {p} --host codex",
-    "env -iC DIR": "env -iC /tmp {p} --host codex",
-    "env --chdir DIR": "env --chdir /tmp {p} --host codex",
-    "env -P PATH": "/usr/bin/env -P /bin {p} --host codex",
-    # Only the `time` program takes `-o FILE`: a path to it, or a `time`
-    # that a prefix word finds on PATH.
-    "/usr/bin/time -o FILE": "/usr/bin/time -o /dev/null {p} --host codex",
-    "relative time -o FILE": "bin/time -o /dev/null {p} --host codex",
-    "time --output FILE": "/usr/bin/time --output /dev/null {p} --host codex",
-    "command time -o FILE": "command time -o /dev/null {p} --host codex",
-    "env time -o FILE": "env time -o /dev/null {p} --host codex",
-    "exec time -o FILE": "exec time -o /dev/null {p} --host codex",
-    "nohup time -o FILE": "nohup time -o /dev/null {p} --host codex",
-    # A shell reads no quoted or escaped word as its reserved `time`, so
-    # these are the `time` program, after an assignment too.
-    "escaped time -o FILE": "\\time -o /dev/null {p} --host codex",
-    "single-quoted time -o FILE": "'time' -o /dev/null {p} --host codex",
-    "double-quoted time -o FILE": '"time" -o /dev/null {p} --host codex',
-    "partly quoted time -o FILE": "ti'me' -o /dev/null {p} --host codex",
-    "assignment quoted time -o FILE": (
-        "X=1 'time' -o /dev/null {p} --host codex"
-    ),
-    "assignment escaped time -o FILE": (
-        "X=1 \\time -o /dev/null {p} --host codex"
-    ),
-    "assignment /usr/bin/time -o FILE": (
-        "X=1 /usr/bin/time -o /dev/null {p} --host codex"
-    ),
-    "assignment nice time -o FILE": (
-        "X=1 nice time -o /dev/null {p} --host codex"
-    ),
-    # bash 5 reads the second `time` as its reserved word too, bash 3.2
-    # and zsh as the program, and each of them runs the hook.
-    "second time": "time time {p} --host codex",
-    "second time -p": "time time -p {p} --host codex",
-    "second time --": "time time -- {p} --host codex",
-    # `timeout` takes a duration, and its `-s` and `-k` options and `nice
-    # -n` take an operand, before the program.
-    "timeout DURATION": "timeout 30 {p} --host codex",
-    "timeout -s SIGNAL": "timeout -s KILL 30 {p} --host codex",
-    "timeout -k DURATION": "timeout -k 5 30 {p} --host codex",
-    "timeout --signal=SIGNAL": "timeout --signal=KILL 30 {p} --host codex",
-    "timeout --kill-after DURATION": (
-        "/usr/bin/timeout --kill-after 5 30 {p} --host codex"
-    ),
-    "timeout time -o FILE": "timeout 30 time -o /dev/null {p} --host codex",
+    "command": "command {p} --host codex",
+    "nohup": "nohup {p} --host codex",
     "nice": "nice {p} --host codex",
     "nice -n ADJUSTMENT": "nice -n 5 {p} --host codex",
-    "nice --adjustment ADJUSTMENT": "nice --adjustment 5 {p} --host codex",
-    "nice time -o FILE": "nice time -o /dev/null {p} --host codex",
-    # env reads an assignment as its operand, and the shell's own `time`
-    # and `!` take one before the program.
+    "timeout DURATION": "timeout 30 {p} --host codex",
+    "time": "time {p} --host codex",
+    "second time": "time time {p} --host codex",
+    # The second `time` takes `-p` in each shell, as its own `time` or as
+    # the `time` program.
+    "second time -p": "time time -p {p} --host codex",
+    "time program -p": "/usr/bin/time -p {p} --host codex",
+    "escaped time program -p": "\\time -p {p} --host codex",
+    "quoted time program -p": "'time' -p {p} --host codex",
+    "env time program -p": "env time -p {p} --host codex",
+    "assignment exec": "X=1 exec {p} --host codex",
+    "assignment nice": "X=1 nice {p} --host codex",
     "env assignment": "env X=1 {p} --host codex",
     "env -u VAR assignment": "env -u FOO X=1 {p} --host codex",
     "nice env assignment": "nice env X=1 {p} --host codex",
-    "env assignment time -o FILE": (
-        "env X=1 time -o /dev/null {p} --host codex"
-    ),
     "time assignment": "time X=1 {p} --host codex",
-    "! assignment": "! X=1 {p} --host codex",
+    "exec nice": "exec nice -n 5 {p} --host codex",
     # env splits the string into its own arguments, so the program can be
     # in it.
     "env -S": "/usr/bin/env -S '{p} --host codex'",
-    "env -S after a flag": "env -i -S '{p} --host codex'",
-    "env -S holding options": "env -S '-i FOO=1 {p} --host codex'",
-    "env -S attached": "env '-S{p} --host codex'",
-    "env --split-string": "env --split-string '{p} --host codex'",
-    "env --split-string=": "env '--split-string={p} --host codex'",
+    "env -S assignment": "env -S 'X=1 {p} --host codex'",
 }
 
 
@@ -385,9 +337,9 @@ def _warning_for(out: str, command: str) -> str | None:
     )
 
 
-# Each wrapper names the session-start program in a shell script or an
-# argument, which doctor can't prove the wrapper runs. `{p}` is the program
-# path.
+# Each wrapper names the session-start program in a way doctor doesn't
+# recognize as a direct run, so the handler gets the warning and doctor
+# doesn't fail. `{p}` is the program path.
 _WRAPPERS = {
     "python": "/usr/bin/python3 /x/aelf-visible.py SessionStart {p}",
     "sh -c": "sh -c '{p} --host codex'",
@@ -419,33 +371,64 @@ _WRAPPERS = {
         "flock /tmp/aelf.lock sh -c 'cd /tmp && {p} | cat'"
     ),
     "sh -c -- runs $0": "sh -c -- 'exec \"$0\" --host codex' {p}",
-    # Only the first command's first word is a direct run.
+    # A direct run is one simple command, so an operator makes the
+    # handler a wrapper.
     "after cd": "cd /tmp && {p} --host codex",
-    # The shell's own `time` takes no `-o`, so bash 3.2, bash 5.2, and
-    # zsh 5.9 run `-o` as the program and never run the hook. dash and
-    # bash 5.2 with --posix run the `time` program, which runs it.
-    "bare time -o FILE": "time -o /dev/null {p} --host codex",
-    "bare time -p -o FILE": "time -p -o /dev/null {p} --host codex",
-    # bash 3.2 and 5.2 read `-p` as the shell's `time` option and run the
-    # hook. zsh 5.9, the default macOS `$SHELL`, runs `-p` as the program.
+    "group with arguments": "{{ {p} --host codex; }}",
+    "if with arguments": "if {p} --host codex; then :; fi",
+    # Doctor doesn't read `!`. bash 3.2, bash 5.2, and zsh 5.9 run no
+    # program for `X=1 !` and `nice !`.
+    "!": "! {p} --host codex",
+    "assignment !": "X=1 ! {p} --host codex",
+    "nice !": "nice ! {p} --host codex",
+    # A quote before the `=` makes the word a command name, so bash 3.2,
+    # bash 5.2, and zsh 5.9 look for a program named `X=1`.
+    "single-quoted assignment": "'X=1' {p} --host codex",
+    "double-quoted assignment": "\"X=1\" {p} --host codex",
+    "partly quoted assignment": "X'=1' {p} --host codex",
+    # bash 3.2 runs the `time` program after `if` and `while`, which runs
+    # a program named `X=1`. bash 5.2 and zsh 5.9 run the hook.
+    "if time assignment": "if time X=1 {p} --host codex; then :; fi",
+    "while time assignment": (
+        "while time X=1 {p} --host codex; do break; done"
+    ),
+    # Doctor doesn't read these options, so a handler that uses one gets
+    # the warning, whether or not the shells run the program.
+    "env -i": "/usr/bin/env -i {p} --host codex",
+    "env -iu VAR": "env -iu FOO {p} --host codex",
+    "env --unset VAR": "env --unset FOO {p} --host codex",
+    "env -uVAR": "env -uFOO {p} --host codex",
+    "env -C DIR": "env -C /tmp {p} --host codex",
+    "env -P PATH": "/usr/bin/env -P /bin {p} --host codex",
+    "env -S after a flag": "env -i -S '{p} --host codex'",
+    "env -S attached": "env '-S{p} --host codex'",
+    "env --split-string": "env --split-string '{p} --host codex'",
+    "command -p": "command -p {p} --host codex",
+    "exec --": "exec -- {p} --host codex",
+    "timeout -s SIGNAL": "timeout -s KILL 30 {p} --host codex",
+    "timeout -k DURATION": "timeout -k 5 30 {p} --host codex",
+    "nice --adjustment ADJUSTMENT": "nice --adjustment 5 {p} --host codex",
+    "/usr/bin/time -o FILE": "/usr/bin/time -o f {p} --host codex",
+    "escaped time -o FILE": "\\time -o f {p} --host codex",
+    "env time -o FILE": "env time -o f {p} --host codex",
+    "second time --": "time time -- {p} --host codex",
+    # The shell's own `time` takes no `-o`, so bash 3.2, bash 5.2, and zsh
+    # 5.9 run `-o` as the program and never run the hook.
+    "bare time -o FILE": "time -o f {p} --host codex",
+    # bash 3.2 and bash 5.2 read `-p` as the shell's `time` option and run
+    # the hook. zsh 5.9 runs `-p` as the program.
     "bare time -p": "time -p {p} --host codex",
-    # bash 3.2 and zsh run the second `time` as the program, which takes
-    # `-o FILE` and runs the hook. bash 5 reads it as its reserved word
-    # and runs `-o`.
-    "second time -o FILE": "time time -o /dev/null {p} --host codex",
-    "third time -o FILE": "time time time -o /dev/null {p} --host codex",
-    # bash 3.2 runs the `time` program after `!`. bash 5 and zsh read the
-    # first `time` as the reserved word, and bash 5 the second too.
-    "! time time -o FILE": "! time time -o /dev/null {p} --host codex",
-    # bash runs the `time` program after an assignment. zsh 5.9 stops with
-    # a parse error at an unquoted `time` there and runs nothing.
+    # bash 3.2 and zsh 5.9 run the second `time` as the `time` program,
+    # which takes `-o FILE` and runs the hook. bash 5.2 runs `-o`.
+    "second time -o FILE": "time time -o f {p} --host codex",
+    # bash 3.2 and bash 5.2 run the `time` program after an assignment.
+    # zsh 5.9 stops at the unquoted `time` with a parse error.
     "assignment time": "X=1 time {p} --host codex",
-    "assignment time -o FILE": "X=1 time -o /dev/null {p} --host codex",
     "assignment time -p": "X=1 time -p {p} --host codex",
-    "! assignment time -o FILE": "! X=1 time -o /dev/null {p} --host codex",
     "time assignment time": "time X=1 time {p} --host codex",
     # nice, nohup, timeout, command, exec, and the `time` program run
-    # their first operand, so each shell runs a program named `X=1`.
+    # their first operand, so bash 3.2, bash 5.2, and zsh 5.9 look for a
+    # program named `X=1`.
     "nice assignment": "nice X=1 {p} --host codex",
     "nice -n assignment": "nice -n 5 X=1 {p} --host codex",
     "nohup assignment": "nohup X=1 {p} --host codex",
@@ -454,9 +437,7 @@ _WRAPPERS = {
     "exec assignment": "exec X=1 {p} --host codex",
     "time program assignment": "\\time X=1 {p} --host codex",
     "env nice assignment": "env nice X=1 {p} --host codex",
-    # bash 3.2 runs the `time` program after `!`, so `X=1` is the program
-    # there. bash 5 and zsh read the reserved `time` and run the hook.
-    "! time assignment": "! time X=1 {p} --host codex",
+    "env -S nice assignment": "env -S 'nice X=1 {p} --host codex'",
 }
 
 
@@ -502,6 +483,113 @@ def test_a_windows_wrapper_given_the_command_as_one_argument_counts(
     assert _wrapped_owned_keys(handler, windows=True) == {
         "aelf-session-start-hook",
     }
+
+
+_HOOK = "aelf-session-start-hook"
+_ABS = f"/opt/aelf/bin/{_HOOK}"
+
+# Commands `_direct_run_key` reads as a direct run, beyond the shapes in
+# `_DIRECT`.
+_DIRECT_RUN_KEYS = {
+    "bare name": f"{_HOOK} --host codex",
+    "quoted program": f"'{_ABS}' --host codex",
+    "escaped program": f"\\{_ABS} --host codex",
+    "quoted assignment value": f"X='a b' {_ABS}",
+    "empty assignment value": f"X= {_ABS}",
+    "PATH with an absolute program": f"PATH=/usr/bin {_ABS}",
+    "env -u PATH with an absolute program": f"env -u PATH {_ABS}",
+    "nice path": f"/usr/bin/nice -n 5 {_ABS}",
+    "negative nice": f"nice -n -5 {_ABS}",
+    "timeout fraction": f"timeout 1.5 {_ABS}",
+    "timeout unit": f"timeout 2m {_ABS}",
+    "time program after reserved time": f"time /usr/bin/time -p {_ABS}",
+    "env -S twice": f"env -S '-S {_ABS}'",
+    "quoted arguments": f"{_ABS} 'a b' \"c d\" e\\ f",
+    "tab between words": f"nice\t{_ABS}",
+    "exec -a NAME": f"exec -a aelf {_ABS}",
+    "second time -p": f"time time -p {_ABS}",
+    "quoted time program -p": f"'time' -p {_ABS}",
+    "env time program": f"env time {_ABS}",
+    "env -S": f"env -S '{_ABS} --host codex'",
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_DIRECT_RUN_KEYS))
+def test_direct_run_key_reads_a_recognized_shape(shape: str) -> None:
+    assert _direct_run_key(_DIRECT_RUN_KEYS[shape], windows=False) == _HOOK
+
+
+# Commands that name the program in a shape `_direct_run_key` doesn't
+# recognize. Doctor warns about each one (`_wrapped_owned_keys`).
+_NOT_DIRECT_RUN = {
+    # A shell looks a bare name up on the `PATH` the command sets.
+    "PATH assignment, bare name": f"PATH=/usr/bin {_HOOK}",
+    "env PATH, bare name": f"env PATH=/usr/bin {_HOOK}",
+    "env -u PATH, bare name": f"env -u PATH {_HOOK}",
+    "relative path": f"bin/{_HOOK}",
+    "glob": f"{_ABS} *.x",
+    "tilde": f"{_ABS} ~x",
+    "leading equals": f"{_ABS} =x",
+    "dollar in double quotes": f'{_ABS} "$HOME"',
+    "backquote": f"{_ABS} `true`",
+    "unclosed quote": f"{_ABS} 'a",
+    "unclosed double quote": f'{_ABS} "a',
+    "trailing backslash": f"{_ABS} \\",
+    "line continuation": f"{_ABS} \\\n--host codex",
+    "newline": f"{_ABS}\ntrue",
+    "comment": f"{_ABS} # c",
+    "empty": "",
+    "nice -n without a number": f"nice -n x {_ABS}",
+    "timeout without a duration": f"timeout {_ABS}",
+    "timeout with a word that isn't a duration": f"timeout x {_ABS}",
+    "exec after exec": f"exec exec {_ABS}",
+    "exec after nice": f"nice exec {_ABS}",
+    "exec after command": f"command exec {_ABS}",
+    "assignment after nice": f"nice X=1 {_ABS}",
+    "assignment time": f"X=1 time {_ABS}",
+    "reserved time -p": f"time -p {_ABS}",
+    "time program -o": f"/usr/bin/time -o f {_ABS}",
+    "relative time program": f"bin/time {_ABS}",
+    "quoted exec": f"'exec' {_ABS}",
+    "quoted -u": f"env '-u' FOO {_ABS}",
+    "env -u with a bad name": f"env -u 1X {_ABS}",
+    "env -u at the end": "env -u",
+    "env -S with a dollar": f"env -S '$X {_ABS}'",
+    "env -S with a dollar after the program": f"env -S '{_ABS} $X'",
+    "env -S with a quote": f"env -S \"'{_ABS}'\"",
+    "env -S empty": f"env -S '' {_ABS}",
+    "env -S at the end": "env -S",
+    "env -S assignment then nice assignment": f"env -S 'X=1 nice X=1 {_ABS}'",
+    "quoted assignment name": f"'X=1' {_ABS}",
+    "escaped assignment name": f"\\X=1 {_ABS}",
+    "assignment name with a dash": f"X-Y=1 {_ABS}",
+    "exec -a without a name": "exec -a",
+    "program missing": "env X=1",
+    "other program": "/usr/bin/true --host codex",
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_NOT_DIRECT_RUN))
+def test_direct_run_key_leaves_out_any_other_shape(shape: str) -> None:
+    assert _direct_run_key(_NOT_DIRECT_RUN[shape], windows=False) == ""
+
+
+@pytest.mark.parametrize(
+    ("command", "key"),
+    [
+        (f"C:\\aelf\\{_HOOK}.exe --host codex", _HOOK),
+        (f'"C:\\Program Files\\aelf\\{_HOOK}.exe" --host codex', _HOOK),
+        (f"C:\\aelf\\{_HOOK}.exe --host codex & echo", ""),
+        (f"C:\\aelf\\{_HOOK}.exe > nul", ""),
+        (f"set X=1 | C:\\aelf\\{_HOOK}.exe", ""),
+        (f"env C:\\aelf\\{_HOOK}.exe", ""),
+        ("", ""),
+    ],
+)
+def test_direct_run_key_on_windows_reads_the_program_alone(
+    command: str, key: str,
+) -> None:
+    assert _direct_run_key(command, windows=True) == key
 
 
 @pytest.mark.timeout(60)
