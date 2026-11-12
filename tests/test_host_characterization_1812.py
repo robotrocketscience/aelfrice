@@ -26,10 +26,8 @@ import pytest
 import aelfrice.auto_install as auto_install
 import aelfrice.cli as cli
 import aelfrice.setup as setup_mod
-from aelfrice.cli import build_parser, main
 from aelfrice.host_codex import _bundled_codex_skills
 from aelfrice.launcher import command_tokens, launcher_key
-from aelfrice.setup import bundled_slash_files
 
 
 @dataclass(frozen=True)
@@ -69,6 +67,8 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Sandbox:
     monkeypatch.setenv("USERPROFILE", str(home))  # Path.home() on Windows
     monkeypatch.setenv("CODEX_HOME", str(home / ".codex"))
     monkeypatch.setenv("AELFRICE_DB", str(home / "memory.db"))
+    # The pinned setup lines expect the opt-out branch of the commit hook.
+    monkeypatch.setenv("AELF_NO_GIT_HOOK_INSTALL", "1")
     dotdir = home / ".aelfrice"
     monkeypatch.setattr(auto_install, "AELFRICE_DOTDIR", dotdir)
     monkeypatch.setattr(
@@ -123,7 +123,7 @@ def _normalize_hooks(doc: dict[str, object]) -> dict[str, object]:
 
 def _run(argv: list[str], sb: Sandbox) -> tuple[int, list[str]]:
     out = io.StringIO()
-    rc = main(argv, out)
+    rc = cli.main(argv, out)
     return rc, _normalize_text(out.getvalue(), sb)
 
 
@@ -132,7 +132,7 @@ def _read_json(path: Path) -> dict[str, object]:
 
 
 def _slash_names() -> list[str]:
-    return sorted(bundled_slash_files())
+    return sorted(setup_mod.bundled_slash_files())
 
 
 def _skill_names() -> list[str]:
@@ -152,7 +152,7 @@ def _codex_setup(sb: Sandbox) -> tuple[int, list[str]]:
 
 @pytest.mark.timeout(60)
 def test_every_host_option_defaults_to_claude() -> None:
-    parser = build_parser(show_advanced=True)
+    parser = cli.build_parser(show_advanced=True)
     seen: dict[str, tuple[object, tuple[str, ...]]] = {}
     for cmd in ("setup", "unsetup", "uninstall", "doctor"):
         sub = cli._subcommand_parser(parser, cmd)
