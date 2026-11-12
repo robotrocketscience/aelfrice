@@ -295,8 +295,6 @@ _DIRECT = {
     "partly quoted time -o FILE": "ti'me' -o /dev/null {p} --host codex",
     "assignment time -o FILE": "X=1 time -o /dev/null {p} --host codex",
     "second time -o FILE": "time time -o /dev/null {p} --host codex",
-    # The shell's own `time` takes `-p` in bash and sh.
-    "time -p": "time -p {p} --host codex",
     # env splits the string into its own arguments, so the program can be
     # in it.
     "env -S": "/usr/bin/env -S '{p} --host codex'",
@@ -385,6 +383,9 @@ _WRAPPERS = {
     # as the program and never run the hook.
     "bare time -o FILE": "time -o /dev/null {p} --host codex",
     "bare time -p -o FILE": "time -p -o /dev/null {p} --host codex",
+    # bash and sh read `-p` as the shell's `time` option and run the hook.
+    # zsh, the default macOS `$SHELL`, runs `-p` as the program instead.
+    "bare time -p": "time -p {p} --host codex",
 }
 
 

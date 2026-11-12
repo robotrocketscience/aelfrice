@@ -1858,8 +1858,9 @@ def _after_options(
 
 def _program_index(
     simple: list[str], *, windows: bool,
-) -> tuple[list[str], int]:
-    """A simple command's words, and the index of its program word.
+) -> tuple[list[str], int, bool]:
+    """A simple command's words, the index of its program word, and True
+    when zsh reads another word as the program.
 
     Skips `VAR=value` words, and prefix words such as `env` or `exec` with
     the options after them and their operands, as in `env -i PROGRAM` or
@@ -1873,7 +1874,8 @@ def _program_index(
     such as `env`. Codex runs a hook as `$SHELL -lc COMMAND`, and bash,
     zsh, and sh read `time -o FILE PROGRAM` as running a program named
     `-o`. Doctor skips a `-p` after the reserved word, the one option bash
-    and sh read there, though zsh reads `-p` as the program. Any other
+    and sh read there. zsh, the default `$SHELL` on macOS, reads `-p` as
+    the program, so the last item is True after such a `-p`. Any other
     `time` word, such as `/usr/bin/time`, `\\time`, `'time'`, the `time`
     in `X=1 time`, or the second `time` in `time time`, is the `time`
     program, which takes the `-o FILE` operand.
@@ -1881,6 +1883,7 @@ def _program_index(
     words = simple
     i = 0
     after_runner = False
+    zsh_differs = False
     # False once a `VAR=value` word or a reserved `time` has come before.
     reserved_position = True
     while i < len(words):
@@ -1901,11 +1904,12 @@ def _program_index(
             i += 1
             while i < len(words) and words[i] == "-p":
                 i += 1
+                zsh_differs = True
             reserved_position = False
             continue
         words, i = _after_options(words, i + 1, prefix)
         after_runner = prefix in _PROGRAM_RUNNERS
-    return words, i
+    return words, i, zsh_differs
 
 
 def _names_a_path(word: str, *, windows: bool) -> bool:
@@ -1942,7 +1946,9 @@ def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
     as in `/usr/bin/env <bin>/aelf-session-start-hook`, in the command's
     first simple command. Such a handler certainly runs the program, so
     doctor counts it toward a duplicate run (#1812). `command` with a `-v`
-    or `-V` option only looks the program up, so it doesn't count.
+    or `-V` option only looks the program up, so it doesn't count. Nor
+    does a program after `time -p`, which zsh doesn't run, so doctor warns
+    about it (`_wrapped_owned_keys`).
     """
     if not isinstance(handler, dict):
         return ""
@@ -1953,8 +1959,8 @@ def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
     commands = _simple_commands(_command_words(cmd, windows=win))
     if not commands:
         return ""
-    simple, i = _program_index(commands[0][0], windows=win)
-    if i >= len(simple):
+    simple, i, zsh_differs = _program_index(commands[0][0], windows=win)
+    if i >= len(simple) or zsh_differs:
         return ""
     if _looks_up(simple, i, windows=win):
         return ""
@@ -2013,7 +2019,7 @@ def _wrapped_owned_keys(
                 for inner in _substitutions(text)
             )
         for command, piped in _simple_commands(words):
-            simple, i = _program_index(command, windows=win)
+            simple, i, _zsh_differs = _program_index(command, windows=win)
             if i >= len(simple):
                 continue
             head = launcher_key(simple[i], windows=win)
