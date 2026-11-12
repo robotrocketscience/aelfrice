@@ -2984,8 +2984,16 @@ def doctor_codex(
                         or command_launcher_key(cmd, windows=windows)
                     )
                     found_keys.setdefault(event, set()).add(own_key)
-                    if values is not None:
+                    # #1812: an aelfrice handler counts as a run only in a
+                    # shape doctor recognizes, the rule a foreign handler
+                    # follows. Doctor warns about any other one.
+                    direct = _direct_owned_key(handler, windows=windows)
+                    if values is not None and direct == own_key:
                         runs.setdefault((event, own_key), []).append(values)
+                    elif values is not None:
+                        maybe.setdefault((event, own_key), []).append(
+                            (values, cmd),
+                        )
                     exe = Path(program_token(cmd, windows=windows))
                     path = _program_path(cmd, own_key, windows=windows)
                     if (
