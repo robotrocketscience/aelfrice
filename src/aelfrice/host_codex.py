@@ -1982,9 +1982,9 @@ def _direct_run_key(cmd: str, *, windows: bool) -> str:
     * `[time] [VAR=value ...] [RUNNER ...] PROGRAM [ARG ...]`, where
       `time` is the shell's own `time`, unquoted and first;
     * each RUNNER is `exec` or `exec -a NAME`, or `command`, either one
-      only before every other runner, or `env` with any of `-u NAME`, `-S
-      STRING`, and `VAR=value`, `nice` or `nice -n N`, `nohup`, `timeout
-      DURATION`, or the `time` program with an optional `-p`;
+      only before every other runner, or `env` with `-u NAME` and `-S
+      STRING` before any `VAR=value`, `nice` or `nice -n N`, `nohup`,
+      `timeout DURATION`, or the `time` program with an optional `-p`;
     * the `time` program is `/usr/bin/time` or any absolute path to
       `time`, a quoted or escaped `time`, or a bare `time` after the
       shell's own `time` or after another runner;
@@ -1997,12 +1997,13 @@ def _direct_run_key(cmd: str, *, windows: bool) -> str:
     alone, with its arguments and none of the `cmd.exe` operators.
 
     bash 3.2, bash 5.2, and zsh 5.9 run the program for every command of
-    these shapes. The enumerated probe in the #1812 gate runs each shape
-    of up to five words in the three shells. The shapes leave out `!`, a
-    compound command such as `{ ...; }` or `if`, a `VAR=value` word
-    before a bare `time`, `time -p` after the shell's own `time`, and the
-    `time` program's `-o FILE`, because one of the three shells reads
-    each of them another way.
+    these shapes. The enumerated probe in the #1812 gate ran every
+    command of up to five of its tokens in the three shells. The shapes
+    leave out some commands that one of the shells reads another way,
+    such as `X=1 time PROGRAM`, which zsh 5.9 rejects, and `time -p
+    PROGRAM`, where zsh 5.9 runs `-p`. They also leave out commands that
+    every shell runs, such as `! PROGRAM`, `{ PROGRAM; }`, and `env -i
+    PROGRAM`, so that doctor fails only on shapes it reads in full.
     """
     owned = owned_keys(_OWNED_BASENAMES, windows=windows)
     if windows:
