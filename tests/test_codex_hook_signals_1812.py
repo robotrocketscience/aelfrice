@@ -303,9 +303,11 @@ def test_doctor_faults_a_copied_session_start_handler(tmp_path: Path) -> None:
     assert "SessionStart runs aelf-session-start-hook 2 times" in out
 
 
-# Each foreign handler runs no aelfrice program.
+# Each foreign handler names the program without running it, or runs none.
 _NOT_RUNNING = {
     "other hook": "/usr/bin/python3 /x/other-hook.py SessionStart --verbose",
+    "echo": "echo aelf-session-start-hook",
+    "sh -c printf": "sh -c 'printf \"%s\\n\" {p}'",
 }
 
 

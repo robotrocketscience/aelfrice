@@ -1553,6 +1553,8 @@ _PREFIX_WORDS: Final[frozenset[str]] = frozenset({
     "!", "{", "command", "do", "elif", "else", "env", "exec", "if",
     "nohup", "then", "time", "until", "while",
 })
+#: Programs that print their arguments and run none of them.
+_PRINTERS: Final[frozenset[str]] = frozenset({"echo", "printf"})
 #: Characters of the shell operators that end one simple command.
 _COMMAND_SEPARATORS: Final[frozenset[str]] = frozenset(";&|()\n")
 _ASSIGNMENT: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
@@ -1624,7 +1626,8 @@ def _wrapped_owned_keys(
 
     * as its program after any `VAR=value` words and prefix words such as
       `env` or `exec`, as in `/usr/bin/env <bin>/aelf-session-start-hook`;
-    * as an argument, since a wrapper takes the program it runs as one;
+    * as an argument, since a wrapper takes the program it runs as one,
+      unless the command only prints its arguments (`echo`, `printf`);
     * inside the script of a shell's `-c` option, such as `sh -c
       '<bin>/aelf-session-start-hook | cat'`, which is read the same way.
       This one is POSIX only, because the Windows splitter keeps single
@@ -1661,6 +1664,8 @@ def _wrapped_owned_keys(
             args = simple[i + 1:]
             if head in owned:
                 found.add(head)
+                continue
+            if head in _PRINTERS:
                 continue
             script = (
                 _shell_script(args)
