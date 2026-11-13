@@ -31,7 +31,7 @@ from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT
 from aelfrice.hook_summary import ENV_HOOK_SUMMARY_LINE
 from aelfrice.host_codex import (
     CODEX_ADDITIONAL_CONTEXT_LIMIT,
-    _direct_run_key,
+    _OWNED_BASENAMES,
     _rust_regex_rejects,
     _wrapped_owned_keys,
     install_codex_hooks,
@@ -256,74 +256,6 @@ def _installed(tmp_path: Path) -> tuple[Path, Path, str]:
     return codex_dir, hooks, program
 
 
-# Each wrapper is a shape doctor recognizes as a direct run of the
-# session-start program (`_direct_run_key`), so it counts toward a
-# duplicate run. The enumerated probe in the #1812 gate ran each of these
-# shapes in bash 3.2, bash 5.2, and zsh 5.9, and each shell ran the
-# program. `{p}` is the program path.
-_DIRECT = {
-    "env": "/usr/bin/env {p}",
-    "assignment": "AELFRICE_HOOK_SUMMARY_LINE=1 {p} --host codex",
-    "two assignments": "X=1 Y=2 {p} --host codex",
-    "env -u VAR": "/usr/bin/env -u FOO {p} --host codex",
-    "exec": "exec {p} --host codex",
-    "exec -a NAME": "exec -a aelf {p} --host codex",
-    "command": "command {p} --host codex",
-    "nohup": "nohup {p} --host codex",
-    "nice": "nice {p} --host codex",
-    "nice -n ADJUSTMENT": "nice -n 5 {p} --host codex",
-    "timeout DURATION": "timeout 30 {p} --host codex",
-    "time": "time {p} --host codex",
-    "second time": "time time {p} --host codex",
-    # The second `time` takes `-p` in each shell, as its own `time` or as
-    # the `time` program.
-    "second time -p": "time time -p {p} --host codex",
-    "time program -p": "/usr/bin/time -p {p} --host codex",
-    "escaped time program -p": "\\time -p {p} --host codex",
-    "quoted time program -p": "'time' -p {p} --host codex",
-    "env time program -p": "env time -p {p} --host codex",
-    "assignment exec": "X=1 exec {p} --host codex",
-    "assignment nice": "X=1 nice {p} --host codex",
-    "env assignment": "env X=1 {p} --host codex",
-    "env -u VAR assignment": "env -u FOO X=1 {p} --host codex",
-    "nice env assignment": "nice env X=1 {p} --host codex",
-    "time assignment": "time X=1 {p} --host codex",
-    "exec nice": "exec nice -n 5 {p} --host codex",
-    # env splits the string into its own arguments, so the program can be
-    # in it.
-    "env -S": "/usr/bin/env -S '{p} --host codex'",
-    "env -S assignment": "env -S 'X=1 {p} --host codex'",
-}
-
-
-@pytest.mark.timeout(60)
-@pytest.mark.parametrize("shape", sorted(_DIRECT))
-def test_doctor_faults_setup_run_over_a_direct_session_start_wrapper(
-    tmp_path: Path, shape: str,
-) -> None:
-    """The state the move-off-a-wrapper steps start from.
-
-    A user replaces setup's SessionStart handler with a wrapper, then runs
-    setup again. Setup doesn't own the wrapper, so it keeps the wrapper's
-    group and adds its own handler in a new group, and Codex injects the
-    baseline twice.
-    """
-    codex_dir, hooks, program = _installed(tmp_path)
-    wrapper = _DIRECT[shape].format(p=program)
-    _set_session_start_commands(hooks, wrapper)
-    install_codex_hooks(hooks)
-    groups = json.loads(hooks.read_text(encoding="utf-8"))["hooks"][
-        "SessionStart"
-    ]
-    assert [[h["command"] for h in g["hooks"]] for g in groups] == [
-        [wrapper], [f"{program} --host codex"],
-    ]
-    rc, out = _doctor(codex_dir, tmp_path / "skills")
-    assert rc == 1, out
-    assert "SessionStart runs aelf-session-start-hook 2 times" in out
-    assert "may also run" not in out
-
-
 def _warning_for(out: str, command: str) -> str | None:
     """The doctor warning line that names `command`, if there is one."""
     return next(
@@ -337,115 +269,110 @@ def _warning_for(out: str, command: str) -> str | None:
     )
 
 
-# Each wrapper names the session-start program in a way doctor doesn't
-# recognize as a direct run, so the handler gets the warning and doctor
-# doesn't fail. `{p}` is the program path.
+# Wrappers that name the session-start program. Setup owns none of them,
+# so it keeps each one and adds its own handler beside it. None is
+# byte-identical to the command setup writes, so doctor warns about each
+# one and exits 0, whether or not a shell runs the program. `{p}` is the
+# program path.
 _WRAPPERS = {
-    "python": "/usr/bin/python3 /x/aelf-visible.py SessionStart {p}",
-    "sh -c": "sh -c '{p} --host codex'",
-    "bash -lc pipe": "bash -lc '{p} | cat'",
-    "sh -c sequence": "sh -c 'echo start; {p}'",
-    "bash -o -c": "/bin/bash -o pipefail -c '{p} | cat'",
-    "env assignment bash -c": (
-        "/usr/bin/env AELFRICE_HOOK_SUMMARY_LINE=1 "
-        "bash -c '{p} --host codex'"
+    '!': '! {p} --host codex',
+    '/usr/bin/time -o FILE': '/usr/bin/time -o f {p} --host codex',
+    'after cd': 'cd /tmp && {p} --host codex',
+    'assignment': 'AELFRICE_HOOK_SUMMARY_LINE=1 {p} --host codex',
+    'assignment !': 'X=1 ! {p} --host codex',
+    'assignment exec': 'X=1 exec {p} --host codex',
+    'assignment nice': 'X=1 nice {p} --host codex',
+    'assignment time': 'X=1 time {p} --host codex',
+    'assignment time -p': 'X=1 time -p {p} --host codex',
+    'bare time -o FILE': 'time -o f {p} --host codex',
+    'bare time -p': 'time -p {p} --host codex',
+    'bash -c runs $@': 'bash -c \'"$@"\' _ {p} --host codex',
+    'bash -lc after cd': "bash -lc 'cd /tmp && {p} | cat'",
+    'bash -lc pipe': "bash -lc '{p} | cat'",
+    'bash -o -c': "/bin/bash -o pipefail -c '{p} | cat'",
+    'bash -o -c after cd': "/bin/bash -o pipefail -c 'cd /tmp && {p} | cat'",
+    'command': 'command {p} --host codex',
+    'command -p': 'command -p {p} --host codex',
+    'command assignment': 'command X=1 {p} --host codex',
+    'double-quoted assignment': '"X=1" {p} --host codex',
+    'echo $(...)': 'echo "$({p} --host codex)"',
+    'echo into xargs': "echo {p} | xargs -I{{}} sh -c '{{}} --host codex'",
+    'env': '/usr/bin/env {p}',
+    'env --split-string': "env --split-string '{p} --host codex'",
+    'env --unset VAR': 'env --unset FOO {p} --host codex',
+    'env -C DIR': 'env -C /tmp {p} --host codex',
+    'env -P PATH': '/usr/bin/env -P /bin {p} --host codex',
+    'env -S': "/usr/bin/env -S '{p} --host codex'",
+    'env -S after a flag': "env -i -S '{p} --host codex'",
+    'env -S assignment': "env -S 'X=1 {p} --host codex'",
+    'env -S attached': "env '-S{p} --host codex'",
+    'env -S nice assignment': "env -S 'nice X=1 {p} --host codex'",
+    'env -i': '/usr/bin/env -i {p} --host codex',
+    'env -i sh -c': "env -i sh -c '{p} --host codex | cat'",
+    'env -iu VAR': 'env -iu FOO {p} --host codex',
+    'env -u VAR': '/usr/bin/env -u FOO {p} --host codex',
+    'env -u VAR assignment': 'env -u FOO X=1 {p} --host codex',
+    'env -uVAR': 'env -uFOO {p} --host codex',
+    'env assignment': 'env X=1 {p} --host codex',
+    'env assignment bash -c': (
+        "/usr/bin/env AELFRICE_HOOK_SUMMARY_LINE=1 bash -c '{p} --host codex'"
     ),
-    "sh -c runs $0": "sh -c 'exec \"$0\" --host codex' {p}",
-    "bash -c runs $@": "bash -c '\"$@\"' _ {p} --host codex",
-    "sh -c printf $(...)": "sh -c 'printf \"%s\" \"$({p} --host codex)\"'",
-    "echo $(...)": "echo \"$({p} --host codex)\"",
-    "sh -c backquotes": "sh -c 'echo `{p} --host codex`'",
-    "printf into sh": "printf '%s' {p} | sh",
-    "echo into xargs": "echo {p} | xargs -I{{}} sh -c '{{}} --host codex'",
-    "timeout sh -c": "timeout 30 sh -c '{p} --host codex | cat'",
-    "nice bash -c": "nice -n 5 bash -c '{p} --host codex | cat'",
-    "env -i sh -c": "env -i sh -c '{p} --host codex | cat'",
-    "python one argument": "/usr/bin/python3 /x/w.py '{p} --host codex'",
-    # The script opens with another command, so reading the script is the
-    # only way to find the program.
-    "bash -lc after cd": "bash -lc 'cd /tmp && {p} | cat'",
-    "bash -o -c after cd": "/bin/bash -o pipefail -c 'cd /tmp && {p} | cat'",
-    "timeout sh -c after cd": "timeout 30 sh -c 'cd /tmp && {p} | cat'",
-    # A wrapper that isn't a prefix word can start the shell too.
-    "flock sh -c after cd": (
-        "flock /tmp/aelf.lock sh -c 'cd /tmp && {p} | cat'"
-    ),
-    "sh -c -- runs $0": "sh -c -- 'exec \"$0\" --host codex' {p}",
-    # A direct run is one simple command, so an operator makes the
-    # handler a wrapper.
-    "after cd": "cd /tmp && {p} --host codex",
-    # A compound command, with or without arguments after the program.
-    # Doctor splits the command at its operators, so the program word in
-    # `{ PROGRAM; }` is `PROGRAM`, not `PROGRAM;`.
-    "group": "{{ {p}; }}",
-    "group with arguments": "{{ {p} --host codex; }}",
-    "if": "if {p}; then :; fi",
-    "if with arguments": "if {p} --host codex; then :; fi",
-    # shlex can't split a command that ends in a backslash, but bash 3.2,
-    # bash 5.2, and zsh 5.9 run the program.
-    "trailing backslash": "{p} --host codex\\",
-    # Doctor doesn't read `!`. bash 3.2, bash 5.2, and zsh 5.9 run no
-    # program for `X=1 !` and `nice !`.
-    "!": "! {p} --host codex",
-    "assignment !": "X=1 ! {p} --host codex",
-    "nice !": "nice ! {p} --host codex",
-    # A quote before the `=` makes the word a command name, so bash 3.2,
-    # bash 5.2, and zsh 5.9 look for a program named `X=1`.
-    "single-quoted assignment": "'X=1' {p} --host codex",
-    "double-quoted assignment": "\"X=1\" {p} --host codex",
-    "partly quoted assignment": "X'=1' {p} --host codex",
-    # bash 3.2 runs the `time` program after `if` and `while`, which runs
-    # a program named `X=1`. bash 5.2 and zsh 5.9 run the hook.
-    "if time assignment": "if time X=1 {p} --host codex; then :; fi",
-    "while time assignment": (
-        "while time X=1 {p} --host codex; do break; done"
-    ),
-    # Doctor doesn't read these options, so a handler that uses one gets
-    # the warning, whether or not the shells run the program.
-    "env -i": "/usr/bin/env -i {p} --host codex",
-    "env -iu VAR": "env -iu FOO {p} --host codex",
-    "env --unset VAR": "env --unset FOO {p} --host codex",
-    "env -uVAR": "env -uFOO {p} --host codex",
-    "env -C DIR": "env -C /tmp {p} --host codex",
-    "env -P PATH": "/usr/bin/env -P /bin {p} --host codex",
-    "env -S after a flag": "env -i -S '{p} --host codex'",
-    "env -S attached": "env '-S{p} --host codex'",
-    "env --split-string": "env --split-string '{p} --host codex'",
-    "command -p": "command -p {p} --host codex",
-    "exec --": "exec -- {p} --host codex",
-    "timeout -s SIGNAL": "timeout -s KILL 30 {p} --host codex",
-    "timeout -k DURATION": "timeout -k 5 30 {p} --host codex",
-    "nice --adjustment ADJUSTMENT": "nice --adjustment 5 {p} --host codex",
-    "/usr/bin/time -o FILE": "/usr/bin/time -o f {p} --host codex",
-    "escaped time -o FILE": "\\time -o f {p} --host codex",
-    "env time -o FILE": "env time -o f {p} --host codex",
-    "second time --": "time time -- {p} --host codex",
-    # The shell's own `time` takes no `-o`, so bash 3.2, bash 5.2, and zsh
-    # 5.9 run `-o` as the program and never run the hook.
-    "bare time -o FILE": "time -o f {p} --host codex",
-    # bash 3.2 and bash 5.2 read `-p` as the shell's `time` option and run
-    # the hook. zsh 5.9 runs `-p` as the program.
-    "bare time -p": "time -p {p} --host codex",
-    # bash 3.2 and zsh 5.9 run the second `time` as the `time` program,
-    # which takes `-o FILE` and runs the hook. bash 5.2 runs `-o`.
-    "second time -o FILE": "time time -o f {p} --host codex",
-    # bash 3.2 and bash 5.2 run the `time` program after an assignment.
-    # zsh 5.9 stops at the unquoted `time` with a parse error.
-    "assignment time": "X=1 time {p} --host codex",
-    "assignment time -p": "X=1 time -p {p} --host codex",
-    "time assignment time": "time X=1 time {p} --host codex",
-    # nice, nohup, timeout, command, exec, and the `time` program run
-    # their first operand, so bash 3.2, bash 5.2, and zsh 5.9 look for a
-    # program named `X=1`.
-    "nice assignment": "nice X=1 {p} --host codex",
-    "nice -n assignment": "nice -n 5 X=1 {p} --host codex",
-    "nohup assignment": "nohup X=1 {p} --host codex",
-    "timeout assignment": "timeout 30 X=1 {p} --host codex",
-    "command assignment": "command X=1 {p} --host codex",
-    "exec assignment": "exec X=1 {p} --host codex",
-    "time program assignment": "\\time X=1 {p} --host codex",
-    "env nice assignment": "env nice X=1 {p} --host codex",
-    "env -S nice assignment": "env -S 'nice X=1 {p} --host codex'",
+    'env nice assignment': 'env nice X=1 {p} --host codex',
+    'env time -o FILE': 'env time -o f {p} --host codex',
+    'env time program -p': 'env time -p {p} --host codex',
+    'escaped time -o FILE': '\\time -o f {p} --host codex',
+    'escaped time program -p': '\\time -p {p} --host codex',
+    'exec': 'exec {p} --host codex',
+    'exec --': 'exec -- {p} --host codex',
+    'exec -a NAME': 'exec -a aelf {p} --host codex',
+    'exec assignment': 'exec X=1 {p} --host codex',
+    'exec nice': 'exec nice -n 5 {p} --host codex',
+    'flock sh -c after cd': "flock /tmp/aelf.lock sh -c 'cd /tmp && {p} | cat'",
+    'group': '{{ {p}; }}',
+    'group with arguments': '{{ {p} --host codex; }}',
+    'if': 'if {p}; then :; fi',
+    'if time assignment': 'if time X=1 {p} --host codex; then :; fi',
+    'if with arguments': 'if {p} --host codex; then :; fi',
+    'nice': 'nice {p} --host codex',
+    'nice !': 'nice ! {p} --host codex',
+    'nice --adjustment ADJUSTMENT': 'nice --adjustment 5 {p} --host codex',
+    'nice -n ADJUSTMENT': 'nice -n 5 {p} --host codex',
+    'nice -n assignment': 'nice -n 5 X=1 {p} --host codex',
+    'nice assignment': 'nice X=1 {p} --host codex',
+    'nice bash -c': "nice -n 5 bash -c '{p} --host codex | cat'",
+    'nice env assignment': 'nice env X=1 {p} --host codex',
+    'nohup': 'nohup {p} --host codex',
+    'nohup assignment': 'nohup X=1 {p} --host codex',
+    'partly quoted assignment': "X'=1' {p} --host codex",
+    'printf into sh': "printf '%s' {p} | sh",
+    'python': '/usr/bin/python3 /x/aelf-visible.py SessionStart {p}',
+    'python one argument': "/usr/bin/python3 /x/w.py '{p} --host codex'",
+    'quoted time program -p': "'time' -p {p} --host codex",
+    'second time': 'time time {p} --host codex',
+    'second time --': 'time time -- {p} --host codex',
+    'second time -o FILE': 'time time -o f {p} --host codex',
+    'second time -p': 'time time -p {p} --host codex',
+    'sh -c': "sh -c '{p} --host codex'",
+    'sh -c -- runs $0': 'sh -c -- \'exec "$0" --host codex\' {p}',
+    'sh -c backquotes': "sh -c 'echo `{p} --host codex`'",
+    'sh -c printf $(...)': 'sh -c \'printf "%s" "$({p} --host codex)"\'',
+    'sh -c runs $0': 'sh -c \'exec "$0" --host codex\' {p}',
+    'sh -c sequence': "sh -c 'echo start; {p}'",
+    'single-quoted assignment': "'X=1' {p} --host codex",
+    'time': 'time {p} --host codex',
+    'time assignment': 'time X=1 {p} --host codex',
+    'time assignment time': 'time X=1 time {p} --host codex',
+    'time program -p': '/usr/bin/time -p {p} --host codex',
+    'time program assignment': '\\time X=1 {p} --host codex',
+    'timeout -k DURATION': 'timeout -k 5 30 {p} --host codex',
+    'timeout -s SIGNAL': 'timeout -s KILL 30 {p} --host codex',
+    'timeout DURATION': 'timeout 30 {p} --host codex',
+    'timeout assignment': 'timeout 30 X=1 {p} --host codex',
+    'timeout sh -c': "timeout 30 sh -c '{p} --host codex | cat'",
+    'timeout sh -c after cd': "timeout 30 sh -c 'cd /tmp && {p} | cat'",
+    'trailing backslash': '{p} --host codex\\',
+    'two assignments': 'X=1 Y=2 {p} --host codex',
+    'while time assignment': 'while time X=1 {p} --host codex; do break; done',
 }
 
 
@@ -454,10 +381,12 @@ _WRAPPERS = {
 def test_doctor_warns_about_setup_run_over_a_session_start_wrapper(
     tmp_path: Path, shape: str,
 ) -> None:
-    """Setup keeps a wrapper it doesn't own and adds its handler beside it.
+    """The state the move-off-a-wrapper steps start from.
 
-    Doctor reads the program from the wrapper's script or arguments, so it
-    names the wrapper in a warning and doesn't fail.
+    A user replaces setup's SessionStart handler with a wrapper, then runs
+    setup again. Setup doesn't own the wrapper, so it keeps the wrapper's
+    group and adds its own handler in a new group. Doctor names the
+    wrapper in a warning and doesn't fail.
     """
     codex_dir, hooks, program = _installed(tmp_path)
     wrapper = _WRAPPERS[shape].format(p=program)
@@ -475,25 +404,62 @@ def test_doctor_warns_about_setup_run_over_a_session_start_wrapper(
     assert _warning_for(out, wrapper) is not None, out
 
 
-# Setup reads each of these handlers as its own, because the program is
-# the first word, but none is a shape doctor recognizes as a run.
-_OWNED_NOT_DIRECT = {
-    "piped": "{p} --host codex | cat",
-    "redirected": "{p} --host codex > /dev/null",
-    # No shell runs anything for this one, since `if` opens no command.
-    "syntax error after": "{p} --host codex; if",
+# The commands the round-10 review gave for the exit-1 check. A shell
+# runs the program for some of them, and doctor still only warns, because
+# none is byte-identical to the command setup writes. `{p}` is the program
+# path.
+_NOT_SETUP_COMMANDS = {
+    "PATH nohup": "PATH=/opt/tools/bin nohup {p}",
+    "env assignment redirect": (
+        "env AELFRICE_HOOK_SUMMARY_LINE=1 {p} --host codex 2>/dev/null"
+    ),
+    "nice": "nice {p}",
+    "UID assignment": "UID=0 {p}",
+    "group": "{{ {p}; }}",
+    "absolute nice that isn't there": "/nonexistent/nice {p}",
+    "setup's command with one extra space": "{p}  --host codex",
 }
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("shape", sorted(_OWNED_NOT_DIRECT))
-def test_doctor_warns_about_an_owned_handler_it_does_not_recognize(
+@pytest.mark.parametrize("shape", sorted(_NOT_SETUP_COMMANDS))
+def test_doctor_warns_about_a_command_setup_does_not_write(
     tmp_path: Path, shape: str,
 ) -> None:
-    """A copy of setup's handler counts as a run only in a recognized shape,
-    the rule a foreign handler follows."""
+    """The handler beside setup's in one group gets the warning, which
+    names the command setup writes, and doctor exits 0."""
     codex_dir, hooks, program = _installed(tmp_path)
-    copy = _OWNED_NOT_DIRECT[shape].format(p=program)
+    ours = _session_start_command(hooks)
+    other = _NOT_SETUP_COMMANDS[shape].format(p=program)
+    _set_session_start_commands(hooks, ours, other)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    line = _warning_for(out, other)
+    assert line is not None, out
+    assert f"(`{ours}`)" in line, line
+
+
+# Copies of setup's handler that aren't byte-identical to it. Setup reads
+# each one as its own, because the program is the first word.
+_OWNED_NOT_SETUP = {
+    "piped": "{p} --host codex | cat",
+    "redirected": "{p} --host codex > /dev/null",
+    "syntax error after": "{p} --host codex; if",
+    "trailing space": "{p} --host codex ",
+    "tab": "{p}\t--host codex",
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_OWNED_NOT_SETUP))
+def test_doctor_warns_about_an_owned_handler_setup_does_not_write(
+    tmp_path: Path, shape: str,
+) -> None:
+    """A copy of setup's handler counts as a run only when it is
+    byte-identical to it, the rule a foreign handler follows."""
+    codex_dir, hooks, program = _installed(tmp_path)
+    copy = _OWNED_NOT_SETUP[shape].format(p=program)
     _set_session_start_commands(hooks, _session_start_command(hooks), copy)
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
@@ -520,113 +486,60 @@ def test_a_windows_wrapper_given_the_command_as_one_argument_counts(
 
 
 _HOOK = "aelf-session-start-hook"
-_ABS = f"/opt/aelf/bin/{_HOOK}"
 
-# Commands `_direct_run_key` reads as a direct run, beyond the shapes in
-# `_DIRECT`.
-_DIRECT_RUN_KEYS = {
-    "bare name": f"{_HOOK} --host codex",
-    "quoted program": f"'{_ABS}' --host codex",
-    "escaped program": f"\\{_ABS} --host codex",
-    "quoted assignment value": f"X='a b' {_ABS}",
-    "empty assignment value": f"X= {_ABS}",
-    "PATH with an absolute program": f"PATH=/usr/bin {_ABS}",
-    "env -u PATH with an absolute program": f"env -u PATH {_ABS}",
-    "nice path": f"/usr/bin/nice -n 5 {_ABS}",
-    "negative nice": f"nice -n -5 {_ABS}",
-    "timeout fraction": f"timeout 1.5 {_ABS}",
-    "timeout unit": f"timeout 2m {_ABS}",
-    "time program after reserved time": f"time /usr/bin/time -p {_ABS}",
-    "env -S twice": f"env -S '-S {_ABS}'",
-    "quoted arguments": f"{_ABS} 'a b' \"c d\" e\\ f",
-    "tab between words": f"nice\t{_ABS}",
-    "exec -a NAME": f"exec -a aelf {_ABS}",
-    "second time -p": f"time time -p {_ABS}",
-    "quoted time program -p": f"'time' -p {_ABS}",
-    "env time program": f"env time {_ABS}",
-    "env -S": f"env -S '{_ABS} --host codex'",
+# Install directories whose names hold characters a shell reads in some
+# positions. Setup writes the program path unquoted.
+_INSTALL_DIRS = {
+    "plain": "plain",
+    "non-ASCII letter": "D\u00e9veloppement",
+    "#": "C#",
+    "~": "proj~old",
+    "space": "first last",
 }
 
 
-@pytest.mark.parametrize("shape", sorted(_DIRECT_RUN_KEYS))
-def test_direct_run_key_reads_a_recognized_shape(shape: str) -> None:
-    assert _direct_run_key(_DIRECT_RUN_KEYS[shape], windows=False) == _HOOK
+def _installed_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, folder: str,
+) -> tuple[Path, Path]:
+    """A Codex dir after setup resolves every program in `folder`/bin on
+    `PATH`, and its hooks.json. Doctor also looks for `aelf` on `PATH`."""
+    bindir = tmp_path / folder / "bin"
+    bindir.mkdir(parents=True)
+    for name in (*_OWNED_BASENAMES, "aelf"):
+        stub = bindir / name
+        stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir))
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    hooks = codex_dir / "hooks.json"
+    install_codex_hooks(hooks)
+    install_codex_skills(tmp_path / "skills")
+    return codex_dir, hooks
 
 
-# Commands that name the program in a shape `_direct_run_key` doesn't
-# recognize. Doctor warns about each one (`_wrapped_owned_keys`).
-_NOT_DIRECT_RUN = {
-    # A shell looks a bare name up on the `PATH` the command sets.
-    "PATH assignment, bare name": f"PATH=/usr/bin {_HOOK}",
-    "env PATH, bare name": f"env PATH=/usr/bin {_HOOK}",
-    "env -u PATH, bare name": f"env -u PATH {_HOOK}",
-    "relative path": f"bin/{_HOOK}",
-    "glob": f"{_ABS} *.x",
-    "tilde": f"{_ABS} ~x",
-    "leading equals": f"{_ABS} =x",
-    "dollar in double quotes": f'{_ABS} "$HOME"',
-    "backquote": f"{_ABS} `true`",
-    "unclosed quote": f"{_ABS} 'a",
-    "unclosed double quote": f'{_ABS} "a',
-    "trailing backslash": f"{_ABS} \\",
-    "line continuation": f"{_ABS} \\\n--host codex",
-    "newline": f"{_ABS}\ntrue",
-    "comment": f"{_ABS} # c",
-    "empty": "",
-    "nice -n without a number": f"nice -n x {_ABS}",
-    "timeout without a duration": f"timeout {_ABS}",
-    "timeout with a word that isn't a duration": f"timeout x {_ABS}",
-    "exec after exec": f"exec exec {_ABS}",
-    "exec after nice": f"nice exec {_ABS}",
-    "exec after command": f"command exec {_ABS}",
-    "assignment after nice": f"nice X=1 {_ABS}",
-    "assignment time": f"X=1 time {_ABS}",
-    "reserved time -p": f"time -p {_ABS}",
-    "time program -o": f"/usr/bin/time -o f {_ABS}",
-    "relative time program": f"bin/time {_ABS}",
-    "quoted exec": f"'exec' {_ABS}",
-    "quoted -u": f"env '-u' FOO {_ABS}",
-    "env -u with a bad name": f"env -u 1X {_ABS}",
-    "env -u at the end": "env -u",
-    "env -S with a dollar": f"env -S '$X {_ABS}'",
-    "env -S with a dollar after the program": f"env -S '{_ABS} $X'",
-    "env -S with a quote": f"env -S \"'{_ABS}'\"",
-    "env -S empty": f"env -S '' {_ABS}",
-    "env -S at the end": "env -S",
-    # env reads no option after an assignment, so it runs `-S`.
-    "env -S after an assignment": f"env X=1 -S '{_ABS}'",
-    "env -u after an assignment": f"env X=1 -u FOO {_ABS}",
-    "env -S assignment then nice assignment": f"env -S 'X=1 nice X=1 {_ABS}'",
-    "quoted assignment name": f"'X=1' {_ABS}",
-    "escaped assignment name": f"\\X=1 {_ABS}",
-    "assignment name with a dash": f"X-Y=1 {_ABS}",
-    "exec -a without a name": "exec -a",
-    "program missing": "env X=1",
-    "other program": "/usr/bin/true --host codex",
-}
-
-
-@pytest.mark.parametrize("shape", sorted(_NOT_DIRECT_RUN))
-def test_direct_run_key_leaves_out_any_other_shape(shape: str) -> None:
-    assert _direct_run_key(_NOT_DIRECT_RUN[shape], windows=False) == ""
-
-
-@pytest.mark.parametrize(
-    ("command", "key"),
-    [
-        (f"C:\\aelf\\{_HOOK}.exe --host codex", _HOOK),
-        (f'"C:\\Program Files\\aelf\\{_HOOK}.exe" --host codex', _HOOK),
-        (f"C:\\aelf\\{_HOOK}.exe --host codex & echo", ""),
-        (f"C:\\aelf\\{_HOOK}.exe > nul", ""),
-        (f"set X=1 | C:\\aelf\\{_HOOK}.exe", ""),
-        (f"env C:\\aelf\\{_HOOK}.exe", ""),
-        ("", ""),
-    ],
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="the program stubs are POSIX scripts",
 )
-def test_direct_run_key_on_windows_reads_the_program_alone(
-    command: str, key: str,
+@pytest.mark.parametrize("folder", sorted(_INSTALL_DIRS))
+def test_doctor_faults_a_copy_of_setup_handler_at_any_install_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, folder: str,
 ) -> None:
-    assert _direct_run_key(command, windows=True) == key
+    """Setup's own handler counts as a run wherever setup installs it."""
+    codex_dir, hooks = _installed_at(
+        tmp_path, monkeypatch, _INSTALL_DIRS[folder],
+    )
+    ours = _session_start_command(hooks)
+    program = tmp_path / _INSTALL_DIRS[folder] / "bin" / _HOOK
+    assert ours == f"{program} --host codex"
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    _set_session_start_commands(hooks, ours, ours)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+    assert "may also run" not in out
 
 
 @pytest.mark.timeout(60)
@@ -761,9 +674,7 @@ _DISJOINT_SESSION_START = {
     "copy under ^fork$": ("{ours}", "^fork$"),
 }
 _OVERLAPPING_SESSION_START = {
-    "env under resume": ("/usr/bin/env {p}", "resume"),
     # Setup's matcher lists `fork`, so a forked thread runs both.
-    "env under fork": ("/usr/bin/env {p}", "fork"),
     "copy under fork": ("{ours}", "fork"),
     "copy under ^fork$": ("{ours}", "^fork$"),
     "copy under ^res": ("{ours}", "^res"),
@@ -1202,7 +1113,9 @@ def test_doctor_warns_and_passes_a_handler_that_checks_for_the_program(
 # command. The wrapper gets a warning only when one fire runs it and
 # another handler of the program.
 _WRAPPER_MATCHERS = {
+    "env under resume": ("SessionStart", "resume", "/usr/bin/env {p}", True),
     # Setup's matcher lists `fork`.
+    "env under fork": ("SessionStart", "fork", "/usr/bin/env {p}", True),
     "sh -c under fork": ("SessionStart", "fork", "sh -c '{p}'", True),
     "python under fork": (
         "SessionStart", "fork", "/usr/bin/python3 w.py {p}", True,
