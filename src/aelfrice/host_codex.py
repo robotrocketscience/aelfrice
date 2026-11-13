@@ -2002,7 +2002,7 @@ def _direct_run_key(cmd: str, *, windows: bool) -> str:
     leave out some commands that one of the shells reads another way,
     such as `X=1 time PROGRAM`, which zsh 5.9 rejects, and `time -p
     PROGRAM`, where zsh 5.9 runs `-p`. They also leave out commands that
-    every shell runs, such as `! PROGRAM`, `{ PROGRAM; }`, and `env -i
+    every shell runs, such as `! PROGRAM`, `{ PROGRAM; }`, and `nice -n5
     PROGRAM`, so that doctor fails only on shapes it reads in full.
     """
     owned = owned_keys(_OWNED_BASENAMES, windows=windows)

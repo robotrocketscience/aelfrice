@@ -106,7 +106,7 @@ Some setups replace the SessionStart handler with a wrapper script that runs `ae
   - The program is an absolute path, or a bare name when no word sets or unsets `PATH`.
   - Each word holds only letters, digits, the characters `_-./:,+@%=`, and quoted or backslash-escaped text, and no unquoted word starts with `=`. A command with an operator such as `;`, `|`, `&&`, or `>`, a `$` or backquote expansion, a glob character, `~`, or `#` isn't one of these shapes.
   - On Windows, the program comes first, followed by its arguments, and the command holds none of the `cmd.exe` characters `&|<>^%()!`.
-- Doctor gives any other handler that names the program the `[warn]` line described later in this list instead of the failure, even when every shell runs the program, as all three do for `{ aelf-session-start-hook; }` and `env -i aelf-session-start-hook`. For some of these shapes, a shell runs no program or another program:
+- Doctor gives any other handler that names the program the `[warn]` line described later in this list instead of the failure, even when every shell runs the program, as all three do for `{ aelf-session-start-hook; }` and `! aelf-session-start-hook`. For some of these shapes, a shell runs no program or another program:
   - The shell's own `time` takes no `-o`, so bash 3.2, bash 5.2, and zsh 5.9 run `time -o FILE aelf-session-start-hook` as a program named `-o`, and the hook never runs.
   - zsh 5.9 runs the `-p` in `time -p aelf-session-start-hook` as the program. bash 3.2 and bash 5.2 run the hook.
   - zsh 5.9 stops at an unquoted `time` after a `VAR=value` word, as in `X=1 time aelf-session-start-hook`, with ``parse error near `time'``, and runs nothing.
