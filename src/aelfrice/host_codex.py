@@ -1439,8 +1439,8 @@ class CodexDoctorReport:
     #: (#1812).
     stale_matchers: list[str] = field(default_factory=list[str])
     #: (event, program, count) for each aelfrice program that more than one
-    #: handler in one event runs as its command's first word, either as its
-    #: own handler or after a prefix word such as `env` (#1812). The count
+    #: handler in one event runs with a command byte-identical to the one
+    #: `aelf setup --host codex` writes for that program (#1812). The count
     #: is for one fire, so handlers whose matchers share no value, such as
     #: a SessionStart `startup` group and a `resume` group, don't add up.
     duplicate_runs: list[tuple[str, str, int]] = field(
@@ -1505,9 +1505,9 @@ class CodexDoctorReport:
             )
         for event, program, count in self.duplicate_runs:
             reasons.append(
-                f"{event} runs {program} {count} times, once per handler; "
-                "keep the handler `aelf setup --host codex` wrote and "
-                "delete the others, such as a wrapper script",
+                f"{event} runs {program} {count} times, once per copy of "
+                "the handler `aelf setup --host codex` writes; keep one "
+                "and delete the others",
             )
         if self.feature_flag_on is False:
             reasons.append(
@@ -1835,8 +1835,8 @@ def _program_index(
     word other than `env` is the program, as in `nice X=1 PROGRAM`.
 
     The index only decides where the scan starts to look. The scan reads
-    every word from there on, so a shell that reads the command another
-    way, as zsh 5.9 does `time -p PROGRAM`, doesn't hide the program.
+    every word from there on, so an option it skips the wrong way doesn't
+    hide the program.
     """
     words = simple
     i = 0
@@ -1856,284 +1856,17 @@ def _program_index(
     return words, i
 
 
-class _Word:
-    """One word of a command that `_closed_words` accepts.
-
-    `value` is the word once the shell removes its quotes, and `quoted` is
-    True when the word holds a quote or a backslash. `assigns` is the
-    variable a `VAR=value` word sets, or '' when the word sets none. The
-    name and the `=` must be unquoted, so `'X=1'`, `"X=1"`, and `X'=1'`
-    are command names.
-    """
-
-    __slots__ = ("assigns", "quoted", "value")
-
-    def __init__(self, value: str, *, quoted: bool, assigns: str) -> None:
-        self.value = value
-        self.quoted = quoted
-        self.assigns = assigns
-
-    def plain(self, *texts: str) -> bool:
-        """True when the word is one of `texts`, written with no quote."""
-        return not self.quoted and self.value in texts
+#: The scopes `aelf setup --host codex` writes. `_cmd_setup_codex` in
+#: cli.py passes `scope="user"`, and the command takes no `--scope`.
+_SETUP_SCOPES: Final[tuple[SettingsScope, ...]] = ("user",)
 
 
-#: The characters an unquoted word of a direct run may hold (#1812). Each
-#: one is literal in bash 3.2, bash 5.2, and zsh 5.9. The others start an
-#: operator, an expansion, a glob, or a comment, so `_closed_words` gives
-#: up on a command that holds one.
-_CLOSED_CHARS: Final[frozenset[str]] = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    "_-./:,+@%=",
-)
-#: The characters that a double-quoted part of such a word may not hold,
-#: because each one is special inside double quotes.
-_DOUBLE_QUOTE_SPECIALS: Final[frozenset[str]] = frozenset("$`\\!")
-_IDENTIFIER: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-#: The operands `nice -n` and `timeout` take in a direct run.
-_NICE_ADJUSTMENT: Final[re.Pattern[str]] = re.compile(r"-?[0-9]+")
-_DURATION: Final[re.Pattern[str]] = re.compile(r"[0-9]+(\.[0-9]+)?[smhd]?")
-#: The programs a direct run can start the aelfrice program through. Each
-#: runs its operand with `execvp`, so it finds a bare name on `PATH`.
-_DIRECT_RUNNERS: Final[frozenset[str]] = frozenset(
-    {"env", "nice", "nohup", "time", "timeout"},
-)
-
-
-def _closed_words(cmd: str) -> list[_Word] | None:
-    """A POSIX command's words, or None when it isn't one simple command
-    of plain words.
-
-    A word is a run of `_CLOSED_CHARS`, single-quoted text, double-quoted
-    text without `_DOUBLE_QUOTE_SPECIALS`, and backslash-escaped
-    characters, with spaces or tabs between words. An unquoted word can't
-    start with `=`, which zsh expands to a program's path. Any other
-    character, a newline, an unclosed quote, or a command of no words
-    gives None.
-    """
-    words: list[_Word] = []
-    i, n = 0, len(cmd)
-    while i < n:
-        if cmd[i] in " \t":
-            i += 1
-            continue
-        value: list[str] = []
-        quoted = False
-        assigns = ""
-        while i < n and cmd[i] not in " \t":
-            ch = cmd[i]
-            if ch == "'":
-                end = cmd.find("'", i + 1)
-                if end < 0:
-                    return None
-                value.append(cmd[i + 1:end])
-                quoted, i = True, end + 1
-            elif ch == '"':
-                end = cmd.find('"', i + 1)
-                if end < 0:
-                    return None
-                part = cmd[i + 1:end]
-                if not _DOUBLE_QUOTE_SPECIALS.isdisjoint(part):
-                    return None
-                value.append(part)
-                quoted, i = True, end + 1
-            elif ch == "\\":
-                if i + 1 >= n or cmd[i + 1] == "\n":
-                    return None
-                value.append(cmd[i + 1])
-                quoted, i = True, i + 2
-            elif ch not in _CLOSED_CHARS or (ch == "=" and not value):
-                return None
-            else:
-                # Only the first `=` can end a name: the text before a
-                # later one holds an `=`, which no name does.
-                if ch == "=" and not quoted:
-                    name = "".join(value)
-                    if _IDENTIFIER.fullmatch(name):
-                        assigns = name
-                value.append(ch)
-                i += 1
-        words.append(_Word("".join(value), quoted=quoted, assigns=assigns))
-    return words or None
-
-
-def _runner_name(word: _Word, *, windows: bool) -> str:
-    """The name in `_DIRECT_RUNNERS` a word starts, or ''.
-
-    The word can be the bare name or an absolute path to it, such as
-    `/usr/bin/env`. A quoted `time` counts, since no shell reads a quoted
-    word as its reserved `time`. A bare, unquoted `time` is the caller's
-    to read.
-    """
-    name = launcher_key(word.value, windows=windows)
-    if name not in _DIRECT_RUNNERS:
-        return ""
-    if word.value == name or word.value.startswith("/"):
-        return name
-    return ""
-
-
-def _direct_run_key(cmd: str, *, windows: bool) -> str:
-    """The owned program a command runs in every shell doctor reads, or ''.
-
-    The command must be one of these shapes, and any other command gives
-    '' (#1812):
-
-    * `[time] [VAR=value ...] [RUNNER ...] PROGRAM [ARG ...]`, where
-      `time` is the shell's own `time`, unquoted and first;
-    * each RUNNER is `exec` or `exec -a NAME`, or `command`, either one
-      only before every other runner, or `env` with `-u NAME` and `-S
-      STRING` before any `VAR=value`, `nice` or `nice -n N`, `nohup`,
-      `timeout DURATION`, or the `time` program with an optional `-p`;
-    * the `time` program is `/usr/bin/time` or any absolute path to
-      `time`, a quoted or escaped `time`, or a bare `time` after the
-      shell's own `time` or after another runner;
-    * PROGRAM is an aelfrice program as an absolute path or a bare name,
-      quoted or not, and a bare name only when no word sets or unsets
-      `PATH`.
-
-    Each word is a plain word that `_closed_words` reads, and `env -S`
-    takes a string of plain words. On Windows the shape is the program
-    alone, with its arguments and none of the `cmd.exe` operators.
-
-    bash 3.2, bash 5.2, and zsh 5.9 run the program for every command of
-    these shapes. The enumerated probe in the #1812 gate ran every
-    command of up to five of its tokens in the three shells. The shapes
-    leave out some commands that one of the shells reads another way,
-    such as `X=1 time PROGRAM`, which zsh 5.9 rejects, and `time -p
-    PROGRAM`, where zsh 5.9 runs `-p`. They also leave out commands that
-    every shell runs, such as `! PROGRAM`, `{ PROGRAM; }`, and `nice -n5
-    PROGRAM`, so that doctor fails only on shapes it reads in full.
-    """
-    owned = owned_keys(_OWNED_BASENAMES, windows=windows)
-    if windows:
-        if not _WINDOWS_OPERATORS.isdisjoint(cmd):
-            return ""
-        tokens = command_tokens(cmd, windows=True)
-        key = launcher_key(tokens[0], windows=True) if tokens else ""
-        return key if key in owned else ""
-    words = _closed_words(cmd)
-    if words is None:
-        return ""
-    i = 0
-    path_set = False
-    after = ""
-    if words[0].plain("time"):
-        i, after = 1, "time"
-    while i < len(words) and words[i].assigns:
-        path_set = path_set or words[i].assigns == "PATH"
-        i, after = i + 1, "="
-    builtin_ok = True
-    while i < len(words):
-        word = words[i]
-        if builtin_ok and word.plain("exec", "command"):
-            i += 1
-            if (
-                word.value == "exec" and i + 1 < len(words)
-                and words[i].plain("-a")
-            ):
-                i += 2
-            builtin_ok, after = False, word.value
-            continue
-        if word.plain("time"):
-            if after == "=":
-                return ""
-            runner = "time"
-        else:
-            runner = _runner_name(word, windows=windows)
-        if not runner:
-            break
-        i += 1
-        builtin_ok, after = False, runner
-        if runner == "env":
-            # env reads its options only before its first assignment.
-            options = True
-            while i < len(words):
-                if words[i].assigns:
-                    path_set = path_set or words[i].assigns == "PATH"
-                    i, options = i + 1, False
-                elif not options:
-                    break
-                elif words[i].plain("-u") and i + 1 < len(words):
-                    name = words[i + 1].value
-                    if not _IDENTIFIER.fullmatch(name):
-                        return ""
-                    path_set = path_set or name == "PATH"
-                    i += 2
-                elif words[i].plain("-S") and i + 1 < len(words):
-                    split = _env_split_words(words[i + 1].value)
-                    if split is None:
-                        return ""
-                    words = [*words[:i], *split, *words[i + 2:]]
-                else:
-                    break
-        elif runner == "nice":
-            if (
-                i + 1 < len(words) and words[i].plain("-n")
-                and _NICE_ADJUSTMENT.fullmatch(words[i + 1].value)
-            ):
-                i += 2
-        elif runner == "timeout":
-            if i >= len(words) or not _DURATION.fullmatch(words[i].value):
-                return ""
-            i += 1
-        elif runner == "time" and i < len(words) and words[i].plain("-p"):
-            i += 1
-    if i >= len(words):
-        return ""
-    program = words[i].value
-    key = launcher_key(program, windows=False)
-    if key not in owned:
-        return ""
-    if "/" in program and not program.startswith("/"):
-        return ""
-    if "/" not in program and path_set:
-        return ""
-    return key
-
-
-#: The `cmd.exe` characters that start an operator, an escape, or a
-#: variable, which a direct run on Windows can't hold.
-_WINDOWS_OPERATORS: Final[frozenset[str]] = frozenset("&|<>^%()!\r\n")
-
-
-def _env_split_words(text: str) -> list[_Word] | None:
-    """The words `env -S STRING` splits STRING into, when each is plain.
-
-    GNU and BSD `env` split the string at spaces and tabs, and read quotes,
-    backslashes, `$`, and `#` in it, so a string that holds any character
-    outside `_CLOSED_CHARS` but spaces and tabs gives None, as does a
-    string of no words.
-    """
-    parts = text.split()
-    if not parts or any(
-        not set(part) <= _CLOSED_CHARS or part.startswith("=")
-        for part in parts
-    ):
-        return None
-    words: list[_Word] = []
-    for part in parts:
-        name, equals, _value = part.partition("=")
-        assigns = name if equals and _IDENTIFIER.fullmatch(name) else ""
-        words.append(_Word(part, quoted=False, assigns=assigns))
-    return words
-
-
-def _direct_owned_key(handler: object, *, windows: bool | None = None) -> str:
-    """The owned program a foreign handler runs as its first word, or ''.
-
-    Doctor counts such a handler toward a duplicate run (#1812), so the
-    command must be one of the shapes `_direct_run_key` reads. Any other
-    handler that names an owned program gets the warning
-    (`_wrapped_owned_keys`).
-    """
+def _handler_command(handler: object) -> str | None:
+    """A handler's `command` string, or None when it has none."""
     if not isinstance(handler, dict):
-        return ""
+        return None
     cmd = cast(dict[str, object], handler).get("command")
-    if not isinstance(cmd, str):
-        return ""
-    win = os.name == "nt" if windows is None else windows
-    return _direct_run_key(cmd.strip(), windows=win)
+    return cmd if isinstance(cmd, str) else None
 
 
 def _top_level_words(cmd: str, *, windows: bool) -> list[str]:
@@ -2154,12 +1887,12 @@ def _top_level_words(cmd: str, *, windows: bool) -> list[str]:
 def _wrapped_owned_keys(
     handler: object, *, windows: bool | None = None,
 ) -> set[str]:
-    """Owned programs a foreign handler's command may run.
+    """Owned programs a handler's command may run, for doctor's warning.
 
-    Every program `_direct_owned_key` finds is here too. The others are
-    heuristic matches: the scan doesn't read quotes, `command -v`, `test`,
-    or comments, so a script that only names a program also matches, and
-    doctor warns about them instead of failing (#1812).
+    The scan is heuristic: it doesn't read quotes, `command -v`, `test`,
+    or comments, so a script that only names a program also matches.
+    Doctor only warns about what it finds here, and never fails on it
+    (#1812).
 
     A wrapper such as `python3 aelf-visible.py SessionStart
     <bin>/aelf-session-start-hook` is not ours by its program, so setup
@@ -2181,10 +1914,8 @@ def _wrapped_owned_keys(
       wrapper, as in `flock FILE sh -c SCRIPT`. This one is POSIX only,
       because the Windows splitter keeps single quotes.
     """
-    if not isinstance(handler, dict):
-        return set()
-    cmd = cast(dict[str, object], handler).get("command")
-    if not isinstance(cmd, str):
+    cmd = _handler_command(handler)
+    if cmd is None:
         return set()
     win = os.name == "nt" if windows is None else windows
     owned = owned_keys(_OWNED_BASENAMES, windows=win)
@@ -2819,7 +2550,7 @@ def _matched_values(event: str, group: object) -> frozenset[str] | None:
 
 def _group_counts(group: object, *, windows: bool | None = None) -> bool:
     """True when a group holds an aelfrice handler, or a foreign handler
-    that doctor counts as a run of an aelfrice program or warns about."""
+    that names an aelfrice program, which doctor warns about."""
     return any(
         _handler_is_owned(handler, windows=windows)
         or _wrapped_owned_keys(handler, windows=windows)
@@ -2918,25 +2649,32 @@ def doctor_codex(
     # transcript-logger handler out of `UserPromptSubmit` while `aelf-hook`
     # remained left `missing_events` empty and doctor silent — a partial
     # removal, which is exactly the state #1430 is about.
-    desired = desired_codex_hooks()
     expected_keys: dict[str, set[str]] = {}
-    for event, groups in desired.items():
-        keys: set[str] = set()
-        for group in groups:
-            for handler in cast(list[object], group.get("hooks", [])):
-                cmd = cast(dict[str, object], handler).get("command")
-                if isinstance(cmd, str):
-                    keys.add(
+    # #1812: each command setup writes now, in every scope it supports,
+    # mapped to its program's key. A handler counts as a run of a program
+    # only when its command is one of these, byte for byte.
+    setup_runs: dict[str, str] = {}
+    for scope in _SETUP_SCOPES:
+        for event, groups in desired_codex_hooks(scope).items():
+            keys = expected_keys.setdefault(event, set())
+            for group in groups:
+                for handler in cast(list[object], group.get("hooks", [])):
+                    cmd = _handler_command(handler)
+                    if cmd is None:
+                        continue
+                    key = (
                         _owned_command_key(cmd, windows=windows)
-                        or command_launcher_key(cmd, windows=windows),
+                        or command_launcher_key(cmd, windows=windows)
                     )
-        expected_keys[event] = keys
-    expected_events = set(desired.keys())
+                    keys.add(key)
+                    setup_runs[cmd] = key
+    expected_events = set(expected_keys)
     covered: set[str] = set()
     found_keys: dict[str, set[str]] = {}
-    # The values each handler of a program runs on, per event (#1812).
+    # The values each run of a program runs on, per event (#1812).
     runs: dict[tuple[str, str], list[frozenset[str]]] = {}
-    # The values and the command of each handler that may run a program.
+    # The values and the command of each other handler that names a
+    # program, per event.
     maybe: dict[tuple[str, str], list[tuple[frozenset[str], str]]] = {}
     for event, groups in hooks_map.items():
         if not isinstance(groups, list):
@@ -2962,22 +2700,21 @@ def doctor_codex(
                     "read this matcher and counted it as matching every "
                     "fire",
                 )
-            # #1812: a foreign handler that runs an aelfrice program as its
-            # first word counts toward duplicate runs. One that names it
-            # only in a shell script or an argument may run it, so doctor
-            # warns about it.
-            for other in _handlers_in(group):
-                if values is None or _handler_is_owned(other, windows=windows):
+            # #1812: a handler whose command is one setup writes counts as
+            # a run of its program. Doctor reads no shell syntax for this:
+            # any other handler that names an aelfrice program, ours by its
+            # first word or a wrapper, may run it, so doctor warns about it.
+            for handler in _handlers_in(group):
+                cmd = _handler_command(handler)
+                if values is None or cmd is None:
                     continue
-                direct = _direct_owned_key(other, windows=windows)
-                if direct:
-                    runs.setdefault((event, direct), []).append(values)
-                for key in _wrapped_owned_keys(other, windows=windows):
-                    if key != direct:
-                        maybe.setdefault((event, key), []).append((
-                            values,
-                            str(cast(dict[str, object], other)["command"]),
-                        ))
+                run = setup_runs.get(cmd, "")
+                if run:
+                    runs.setdefault((event, run), []).append(values)
+                named = _wrapped_owned_keys(handler, windows=windows)
+                named.add(_owned_command_key(cmd, windows=windows))
+                for key in sorted(named - {run, ""}):
+                    maybe.setdefault((event, key), []).append((values, cmd))
             # #1412: count per handler. Gating on a fully-owned group made
             # an aelfrice handler sharing a group with a foreign one
             # invisible to doctor — the same blind spot that let setup
@@ -3004,16 +2741,6 @@ def doctor_codex(
                         or command_launcher_key(cmd, windows=windows)
                     )
                     found_keys.setdefault(event, set()).add(own_key)
-                    # #1812: an aelfrice handler counts as a run only in a
-                    # shape doctor recognizes, the rule a foreign handler
-                    # follows. Doctor warns about any other one.
-                    direct = _direct_owned_key(handler, windows=windows)
-                    if values is not None and direct == own_key:
-                        runs.setdefault((event, own_key), []).append(values)
-                    elif values is not None:
-                        maybe.setdefault((event, own_key), []).append(
-                            (values, cmd),
-                        )
                     exe = Path(program_token(cmd, windows=windows))
                     path = _program_path(cmd, own_key, windows=windows)
                     if (
@@ -3028,20 +2755,23 @@ def doctor_codex(
         for (event, key), value_sets in sorted(runs.items())
         if (count := _most_runs(event, value_sets)) > 1
     ]
-    for (event, key), wrapped in sorted(maybe.items()):
-        # #1812: a wrapper gets a warning only when some fire that runs it
-        # also runs another handler of the program, the rule the failure
-        # above follows.
-        direct = runs.get((event, key), [])
-        fires = _fires(event, direct + [values for values, _cmd in wrapped])
-        for index, (_values, cmd) in enumerate(wrapped, start=len(direct)):
+    for (event, key), others in sorted(maybe.items()):
+        # #1812: a handler that names the program gets a warning only when
+        # some fire that runs it also runs another handler of the program,
+        # the rule the failure above follows.
+        counted = runs.get((event, key), [])
+        fires = _fires(event, counted + [values for values, _cmd in others])
+        wrote = " or ".join(
+            f"`{c}`" for c, k in sorted(setup_runs.items()) if k == key
+        )
+        for index, (_values, cmd) in enumerate(others, start=len(counted)):
             if not any(index in fire and len(fire) > 1 for fire in fires):
                 continue
             warning = (
-                f"{event} handler may also run {key}: doctor doesn't "
-                "recognize the shape of its command as a run and can't tell "
-                "whether the handler runs it. If it does, keep the handler "
-                f"`aelf setup --host codex` wrote and delete this one: {cmd}"
+                f"{event} handler may also run {key}. Doctor counts a run "
+                "only for a command byte-identical to one `aelf setup "
+                f"--host codex` writes ({wrote or key}). If this handler "
+                f"runs {key}, keep setup's handler and delete this one: {cmd}"
             )
             if warning not in report.warnings:
                 report.warnings.append(warning)
