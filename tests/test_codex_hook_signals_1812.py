@@ -1053,8 +1053,6 @@ _NOT_RUNNING = {
     "assignment echo": "AELFRICE_HOOK_SUMMARY_LINE=1 echo {p}",
     # The option's operand is skipped, so echo is the program.
     "exec -a echo": "exec -a name echo {p}",
-    "env -C echo": "env -C {p} echo hello",
-    "time -o echo": "/usr/bin/time -o {p} echo hello",
     "timeout -s echo": "timeout -s KILL 30 echo {p}",
     "nice -n echo": "nice -n 5 echo {p}",
     # The split string's first word is the program.
@@ -1077,6 +1075,32 @@ def test_doctor_ignores_a_foreign_handler_that_runs_no_aelfrice_program(
     assert rc == 0, out
     assert "times" not in out
     assert "may also run" not in out
+
+
+# Each foreign handler names the program where a prefix word takes an
+# operand, so it runs no aelfrice program, but it names one, and doctor
+# warns about every handler that names one.
+_OPERANDS = {
+    "exec -a": "exec -a {p}",
+    "env -u": "env -u {p} --host codex",
+    "timeout": "timeout {p} --host codex",
+    "env -C echo": "env -C {p} echo hello",
+    "time -o echo": "/usr/bin/time -o {p} echo hello",
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_OPERANDS))
+def test_doctor_warns_about_a_handler_that_names_the_program_as_an_operand(
+    tmp_path: Path, shape: str,
+) -> None:
+    codex_dir, hooks, program = _installed(tmp_path)
+    other = _OPERANDS[shape].format(p=program)
+    _set_session_start_commands(hooks, other, _session_start_command(hooks))
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    assert _warning_for(out, other) is not None, out
 
 
 # Each foreign handler only checks that the program is there, but the

@@ -1901,6 +1901,8 @@ def _wrapped_owned_keys(
 
     * as its program after any `VAR=value` words and prefix words such as
       `env` or `exec`, as in `/usr/bin/env <bin>/aelf-session-start-hook`;
+    * as one of those words or an option's operand, as in `exec -a
+      <bin>/aelf-session-start-hook`, which runs nothing but names it;
     * as an argument, or the first word of one, since a wrapper takes the
       program it runs as an argument, unless the command only prints its
       arguments (`echo`, `printf`) and no pipe sends them to another
@@ -1934,6 +1936,12 @@ def _wrapped_owned_keys(
             )
         for command, piped in _simple_commands(words):
             simple, i = _program_index(command, windows=win)
+            # A word the scan skips before the program, such as an option's
+            # operand in `exec -a PROGRAM`, still names the program.
+            found.update(
+                key for word in simple[:i]
+                if (key := _word_program_key(word, owned, windows=win)) in owned
+            )
             if i >= len(simple):
                 continue
             head = launcher_key(simple[i], windows=win)
