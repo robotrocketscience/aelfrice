@@ -34,6 +34,7 @@ from aelfrice.host_codex import (
     _OWNED_BASENAMES,
     _named_owned_keys,
     _rust_regex_rejects,
+    doctor_codex,
     install_codex_hooks,
     install_codex_skills,
 )
@@ -598,6 +599,77 @@ def test_doctor_counts_no_run_for_a_handler_codex_runs_no_command_for(
     assert rc == 0, out
     assert "times" not in out
     assert _warning_for(out, ours) is not None, out
+
+
+def _windows_report(
+    codex_dir: Path, hooks: Path, extra: dict[str, object],
+) -> tuple[list[tuple[str, str, int]], list[str]]:
+    """Doctor's duplicate runs and warnings on Windows after `extra` is
+    added beside setup's SessionStart handler."""
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["SessionStart"][0]["hooks"].append(
+        {"type": "command", **extra},
+    )
+    hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    report = doctor_codex(codex_dir, windows=True)
+    return report.duplicate_runs, report.warnings
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("field", ["commandWindows", "command_windows"])
+def test_doctor_on_windows_counts_the_windows_command(
+    tmp_path: Path, field: str,
+) -> None:
+    """Codex runs `commandWindows`, or its alias, on Windows in place of
+    `command`."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    runs, _warnings = _windows_report(
+        codex_dir, hooks, {"command": "true", field: ours},
+    )
+    assert runs == [("SessionStart", _HOOK, 2)]
+
+
+@pytest.mark.timeout(60)
+def test_doctor_on_windows_warns_about_setup_command_that_codex_skips(
+    tmp_path: Path,
+) -> None:
+    """A handler with setup's `command` and another `commandWindows` runs
+    the other command on Windows, so doctor counts no run for it and warns
+    that it names the program."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    runs, warnings = _windows_report(
+        codex_dir, hooks, {"command": ours, "commandWindows": "true"},
+    )
+    assert runs == []
+    assert any(
+        w.startswith(f"SessionStart handler may also run {_HOOK}.")
+        and w.endswith(f"delete this one: {ours}")
+        for w in warnings
+    ), warnings
+
+
+@pytest.mark.timeout(60)
+def test_doctor_warns_about_a_windows_command_that_names_the_program(
+    tmp_path: Path,
+) -> None:
+    """On POSIX Codex runs `command`, so doctor counts no run for the
+    Windows field and warns that it names the program."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["SessionStart"][0]["hooks"].append(
+        {"type": "command", "command": "true", "commandWindows": ours},
+    )
+    hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    report = doctor_codex(codex_dir, windows=False)
+    assert report.duplicate_runs == []
+    assert any(
+        w.startswith(f"SessionStart handler may also run {_HOOK}.")
+        and w.endswith(f"delete this one: {ours}")
+        for w in report.warnings
+    ), report.warnings
 
 
 def _add_group(
