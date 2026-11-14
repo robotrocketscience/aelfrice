@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -32,7 +33,11 @@ from aelfrice.hook_summary import ENV_HOOK_SUMMARY_LINE
 from aelfrice.host_codex import (
     CODEX_ADDITIONAL_CONTEXT_LIMIT,
     _OWNED_BASENAMES,
+    _TOML_STRINGS,
+    _json_object,
     _named_owned_keys,
+    _rejected_events,
+    _rejected_hooks_file,
     _rust_regex_rejects,
     doctor_codex,
     install_codex_hooks,
@@ -578,14 +583,13 @@ def test_doctor_faults_a_copied_session_start_handler(tmp_path: Path) -> None:
 
 
 # Copies of setup's SessionStart handler under a `type` Codex runs no
-# command for: it skips `prompt` and `agent` handlers, an `mcp_tool`
-# handler calls a tool, and a handler without a `type` doesn't parse.
+# command for: it skips `prompt` and `agent` handlers, and an `mcp_tool`
+# handler calls a tool. A handler with no `type` or an unknown one makes
+# Codex reject the whole file (`_REJECTED_HANDLERS`).
 _NOT_COMMAND_TYPES = {
     "prompt": {"type": "prompt"},
     "agent": {"type": "agent"},
     "mcp_tool": {"type": "mcp_tool", "server": "s", "tool": "t"},
-    "no type": {},
-    "Command": {"type": "Command"},
 }
 
 
@@ -608,7 +612,7 @@ def test_doctor_counts_no_run_for_a_handler_codex_runs_no_command_for(
     assert _warning_for(out, ours) is not None, out
 
 
-# --- config.toml [hooks] and event names ------------------------------------
+# --- config.toml [hooks], event names, and files Codex rejects ---------------
 
 
 def _write_config_hooks(codex_dir: Path, event: str, *commands: str) -> None:
@@ -693,6 +697,169 @@ def test_doctor_counts_no_run_under_a_key_codex_reads_no_event_for(
     ), report.warnings
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
+
+
+# Changes to setup's hooks.json that make Codex reject the whole file
+# (`HooksFile` and the types it holds). Each one returns the document with
+# a copy of setup's SessionStart handler beside it, so a doctor that kept
+# reading the file would report two runs.
+def _reject_untyped(ours: str) -> dict[str, object]:
+    return {"command": ours}
+
+
+def _reject_unknown_type(ours: str) -> dict[str, object]:
+    return {"type": "Command", "command": ours}
+
+
+def _reject_no_command(ours: str) -> dict[str, object]:
+    return {"type": "command", "commandWindows": ours}
+
+
+def _reject_both_windows_fields(ours: str) -> dict[str, object]:
+    return {
+        "type": "command", "command": ours,
+        "commandWindows": ours, "command_windows": ours,
+    }
+
+
+_REJECTED_HANDLERS = {
+    "no type": _reject_untyped,
+    "unknown type": _reject_unknown_type,
+    "type command with no command": _reject_no_command,
+    "both Windows fields": _reject_both_windows_fields,
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize("shape", sorted(_REJECTED_HANDLERS))
+def test_doctor_counts_nothing_in_a_hooks_json_codex_rejects(
+    tmp_path: Path, shape: str, windows: bool,
+) -> None:
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["SessionStart"][0]["hooks"] += [
+        {"type": "command", "command": ours},
+        _REJECTED_HANDLERS[shape](ours),
+    ]
+    hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    report = doctor_codex(codex_dir, windows=windows)
+    assert report.duplicate_runs == []
+    assert report.hooks_file_rejected is not None
+    assert any(
+        w.startswith(f"Codex loads no hook from {hooks}, because it rejects")
+        for w in report.warnings
+    ), report.warnings
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A matcher that isn't a string.
+        '{"hooks": {"SessionStart": [{"matcher": 5, "hooks": []}]}}',
+        # A top-level key other than `description` and `hooks`.
+        '{"hooks": {}, "version": 1}',
+        # A field written twice.
+        '{"hooks": {"Stop": [{"hooks": [{"type": "command",'
+        ' "command": "a", "command": "b"}]}]}}',
+    ],
+)
+def test_doctor_exits_1_on_a_hooks_json_codex_rejects(
+    tmp_path: Path, text: str,
+) -> None:
+    """The exit an unparsable hooks.json gets."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    hooks.write_text(text, encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert f"[warn] Codex loads no hook from {hooks}" in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_exits_1_on_a_config_toml_hooks_table_codex_rejects(
+    tmp_path: Path,
+) -> None:
+    """A copy of setup's handler with no `type` in config.toml makes Codex
+    reject the table, so it adds no run to setup's handler in hooks.json."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    (codex_dir / "config.toml").write_text(
+        "[[hooks.SessionStart]]\n[[hooks.SessionStart.hooks]]\n"
+        f"command = {json.dumps(ours)}\n",
+        encoding="utf-8",
+    )
+    report = doctor_codex(codex_dir)
+    assert report.duplicate_runs == []
+    assert report.config_hooks_rejected is not None
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert (
+        "[warn] Codex loads no hook from the [hooks] table in "
+        f"{codex_dir / 'config.toml'}" in out
+    ), out
+
+
+# Each case and whether serde, built from the Codex types at
+# openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9, rejects it. Every
+# outcome here was checked against that build. JSON cases are hooks.json
+# text; TOML cases are config.toml text.
+_SERDE_CASES = {
+    "json: valid": ('{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x"}]}]}}', False),
+    "json: no type": ('{"hooks": {"Stop": [{"hooks": [{"command": "x"}]}]}}', True),
+    "json: type null": ('{"hooks": {"Stop": [{"hooks": [{"type": null}]}]}}', True),
+    "json: unknown type": ('{"hooks": {"Stop": [{"hooks": [{"type": "shell"}]}]}}', True),
+    "json: command null": ('{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": null}]}]}}', True),
+    "json: commandWindows only": ('{"hooks": {"Stop": [{"hooks": [{"type": "command", "commandWindows": "x"}]}]}}', True),
+    "json: both Windows fields null": ('{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x", "commandWindows": null, "command_windows": null}]}]}}', True),
+    "json: commandWindows null": ('{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x", "commandWindows": null}]}]}}', False),
+    "json: async null": ('{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x", "async": null}]}]}}', True),
+    "json: timeout -1": ('{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x", "timeout": -1}]}]}}', True),
+    "json: timeout 1.0": ('{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x", "timeout": 1.0}]}]}}', True),
+    "json: timeout null": ('{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x", "timeout": null}]}]}}', False),
+    "json: additionalContextLimit string": ('{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x", "additionalContextLimit": "1"}]}]}}', True),
+    "json: statusMessage number": ('{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x", "statusMessage": 1}]}]}}', True),
+    "json: prompt with a number command": ('{"hooks": {"Stop": [{"hooks": [{"type": "prompt", "command": 1}]}]}}', False),
+    "json: mcp_tool with no server": ('{"hooks": {"Stop": [{"hooks": [{"type": "mcp_tool", "tool": "t"}]}]}}', True),
+    "json: mcp_tool input with null": ('{"hooks": {"Stop": [{"hooks": [{"type": "mcp_tool", "server": "s", "tool": "t", "input": {"a": null}}]}]}}', True),
+    "json: mcp_tool input 2**63": ('{"hooks": {"Stop": [{"hooks": [{"type": "mcp_tool", "server": "s", "tool": "t", "input": {"a": 9223372036854775808}}]}]}}', True),
+    "json: mcp_tool input 2**64": ('{"hooks": {"Stop": [{"hooks": [{"type": "mcp_tool", "server": "s", "tool": "t", "input": {"a": 18446744073709551616}}]}]}}', False),
+    "json: handler null": ('{"hooks": {"Stop": [{"hooks": [null]}]}}', True),
+    "json: group hooks null": ('{"hooks": {"Stop": [{"hooks": null}]}}', True),
+    "json: group with an unknown key": ('{"hooks": {"Stop": [{"x": 1, "hooks": []}]}}', False),
+    "json: matcher number": ('{"hooks": {"Stop": [{"matcher": 1}]}}', True),
+    "json: matcher null": ('{"hooks": {"Stop": [{"matcher": null}]}}', False),
+    "json: event null": ('{"hooks": {"Stop": null}}', True),
+    "json: unknown event null": ('{"hooks": {"Notification": null}}', False),
+    "json: unknown event with no type": ('{"hooks": {"Notification": [{"hooks": [{"command": "x"}]}]}}', False),
+    "json: event twice": ('{"hooks": {"Stop": [], "Stop": []}}', True),
+    "json: unknown key twice": ('{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x", "z": 1, "z": 2}]}]}}', False),
+    "json: top-level extra key": ('{"hooks": {}, "x": 1}', True),
+    "json: description number": ('{"description": 1}', True),
+    "json: hooks null": ('{"hooks": null}', True),
+    "toml: valid": ('[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "x"\n', False),
+    "toml: no type": ('[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand = "x"\n', True),
+    "toml: timeout 1.5": ('[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "x"\ntimeout = 1.5\n', True),
+    "toml: command a date": ('[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = 1979-05-27\n', False),
+    "toml: event a table": ('[hooks.Stop]\nmatcher = "x"\n', True),
+    "toml: state only": ('[hooks.state."k"]\ntrusted_hash = "h"\n', False),
+    "toml: hooks a number": ('hooks = 5\n', True),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_SERDE_CASES))
+def test_doctor_rejects_what_codex_serde_rejects(case: str) -> None:
+    text, rejects = _SERDE_CASES[case]
+    if case.startswith("json: "):
+        reason = _rejected_hooks_file(
+            json.loads(text, object_pairs_hook=_json_object),
+        )
+    else:
+        reason = _rejected_events(
+            tomllib.loads(text)["hooks"], _TOML_STRINGS,
+        )
+    assert (reason is not None) == rejects, reason
 
 
 def _windows_report(
@@ -894,7 +1061,6 @@ _OVERLAPPING_SESSION_START = {
     "copy under ^res": ("{ours}", "^res"),
     "copy under *": ("{ours}", "*"),
     "copy under empty": ("{ours}", ""),
-    "copy under a number": ("{ours}", 5),
     # Rust's regex reads these, so Codex runs the group.
     "copy under (?i)": ("{ours}", "(?i)RESUME"),
     "copy under a class holding (?=": ("{ours}", "[(?=]?resume"),

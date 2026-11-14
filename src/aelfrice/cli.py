@@ -6282,7 +6282,9 @@ def _cmd_doctor_codex(
     """`aelf doctor --host codex`: scan the Codex host (#1052).
 
     Exit contract, stable for CI (#1430). **Exit 1** on a `hooks.json` that
-    is present but unparseable, or on wiring that is installed and broken:
+    is present but unparseable, on a `hooks.json` or a config.toml `[hooks]`
+    table that Codex rejects whole (#1812), or on wiring that is installed
+    and broken:
     a hook command not present on disk, a partially installed hook set, the
     Codex ``hooks`` feature disabled while our handlers are installed, an
     installed ``$aelf-*`` skill that does not match what this build
@@ -6421,6 +6423,10 @@ def _cmd_doctor_codex(
         print(f"[FAIL] {fault}", file=out)  # type: ignore[arg-type]
 
     if report.hooks_file_present and not report.hooks_file_valid:
+        return 1
+    # #1812: a `[hooks]` table Codex rejects whole loads no hook, the same
+    # state as a hooks.json that doesn't parse.
+    if report.config_hooks_rejected is not None:
         return 1
     return 1 if faults else 0
 
