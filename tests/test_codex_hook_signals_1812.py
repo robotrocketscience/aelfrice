@@ -569,6 +569,37 @@ def test_doctor_faults_a_copied_session_start_handler(tmp_path: Path) -> None:
     assert "SessionStart runs aelf-session-start-hook 2 times" in out
 
 
+# Copies of setup's SessionStart handler under a `type` Codex runs no
+# command for: it skips `prompt` and `agent` handlers, an `mcp_tool`
+# handler calls a tool, and a handler without a `type` doesn't parse.
+_NOT_COMMAND_TYPES = {
+    "prompt": {"type": "prompt"},
+    "agent": {"type": "agent"},
+    "mcp_tool": {"type": "mcp_tool", "server": "s", "tool": "t"},
+    "no type": {},
+    "Command": {"type": "Command"},
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_NOT_COMMAND_TYPES))
+def test_doctor_counts_no_run_for_a_handler_codex_runs_no_command_for(
+    tmp_path: Path, shape: str,
+) -> None:
+    """The copy names the program, so it gets the warning."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["SessionStart"][0]["hooks"].append(
+        {**_NOT_COMMAND_TYPES[shape], "command": ours},
+    )
+    hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    assert _warning_for(out, ours) is not None, out
+
+
 def _add_group(
     hooks: Path, event: str, command: str, matcher: object = None,
 ) -> None:
