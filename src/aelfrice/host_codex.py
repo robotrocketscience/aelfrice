@@ -1584,6 +1584,15 @@ def orphaned_codex_skills(dest_dir: Path | None = None) -> list[str]:
 #: The scopes `aelf setup --host codex` writes. `_cmd_setup_codex` in
 #: cli.py passes `scope="user"`, and the command takes no `--scope`.
 _SETUP_SCOPES: Final[tuple[SettingsScope, ...]] = ("user",)
+#: The handler fields that hold the command Codex runs on Windows, the
+#: field and its alias. Codex runs this command on Windows when a handler
+#: has it, and `command` otherwise (`HookHandlerConfig` in
+#: codex-rs/protocol/src/hooks.rs, lines 150-155, and
+#: `append_matcher_groups` in codex-rs/hooks/src/engine/discovery.rs, lines
+#: 660-664, at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9).
+_WINDOWS_COMMAND_FIELDS: Final[tuple[str, ...]] = (
+    "commandWindows", "command_windows",
+)
 #: The characters a program name can hold. Doctor reads an owned program
 #: name in a command only where no character of this class is next to it.
 _NAME_CHARS: Final[str] = "A-Za-z0-9_.-"
@@ -1628,30 +1637,38 @@ def _handler_command(handler: object) -> str | None:
     return cmd if isinstance(cmd, str) else None
 
 
-def _run_command(handler: object) -> str | None:
+def _run_command(handler: object, *, windows: bool) -> str | None:
     """The command Codex runs for a handler, or None when it runs none.
 
     Codex runs a command only for a handler whose `type` is `command`. It
     skips a `prompt` or `agent` handler, and an `mcp_tool` handler calls a
     tool (`append_matcher_groups` in codex-rs/hooks/src/engine/discovery.rs,
     lines 650-801, at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9).
+    On Windows, Codex runs the handler's `commandWindows` when it has one
+    (`_WINDOWS_COMMAND_FIELDS`), and its `command` otherwise.
     """
     if not isinstance(handler, dict):
         return None
     hd = cast(dict[str, object], handler)
     if hd.get("type") != "command":
         return None
+    if windows:
+        for name in _WINDOWS_COMMAND_FIELDS:
+            command = hd.get(name)
+            if isinstance(command, str):
+                return command
     return _handler_command(hd)
 
 
 def _named_owned_keys(
     handler: object, *, windows: bool | None = None,
 ) -> dict[str, str]:
-    """The owned programs a handler's `command` names, for doctor's
+    """The owned programs a handler's command fields name, for doctor's
     warning (#1812).
 
-    Each key maps to the command's text. Doctor reads `command` on a
-    handler of any `type`.
+    Each key maps to the text of the first field that names it, starting
+    with the field Codex runs on the platform (`_run_command`). Doctor
+    reads `command` and the Windows fields of a handler of any `type`.
 
     This is a text match (`_OWNED_NAME`). Doctor reads no shell syntax, so
     a name counts wherever it is in the text: in a script string such as
@@ -1663,13 +1680,18 @@ def _named_owned_keys(
         return {}
     win = os.name == "nt" if windows is None else windows
     hd = cast(dict[str, object], handler)
-    text = _handler_command(hd)
+    fields = (
+        (*_WINDOWS_COMMAND_FIELDS, "command") if win
+        else ("command", *_WINDOWS_COMMAND_FIELDS)
+    )
     found: dict[str, str] = {}
-    if text is None:
-        return found
-    for match in _OWNED_NAME[win].finditer(text):
-        key = match.group(1).casefold() if win else match.group(1)
-        found.setdefault(key, text)
+    for name in fields:
+        text = hd.get(name)
+        if not isinstance(text, str):
+            continue
+        for match in _OWNED_NAME[win].finditer(text):
+            key = match.group(1).casefold() if win else match.group(1)
+            found.setdefault(key, text)
     return found
 
 
@@ -2314,6 +2336,7 @@ def doctor_codex(
     Read-only. Reports rather than raises; the CLI decides exit codes.
     """
     cdir = codex_dir if codex_dir is not None else resolve_codex_home()
+    win = os.name == "nt" if windows is None else windows
     report = CodexDoctorReport(
         codex_dir_present=cdir.is_dir(), codex_dir=cdir,
     )
@@ -2399,18 +2422,18 @@ def doctor_codex(
                     "fire",
                 )
             # #1812: a handler counts as a run of a program only when the
-            # command Codex runs for it is one setup writes, byte for
-            # byte. Doctor reads no shell syntax: any other handler whose
-            # command names an aelfrice program may run it, so doctor
-            # warns about it.
+            # command Codex runs for it on this platform is one setup
+            # writes, byte for byte. Doctor reads no shell syntax: any
+            # other handler whose command fields name an aelfrice program
+            # may run it, so doctor warns about it.
             for handler in _handlers_in(group):
                 if values is None:
                     continue
-                command = _run_command(handler)
+                command = _run_command(handler, windows=win)
                 run = setup_runs.get(command, "") if command is not None else ""
                 if run:
                     runs.setdefault((event, run), []).append(values)
-                named = _named_owned_keys(handler, windows=windows)
+                named = _named_owned_keys(handler, windows=win)
                 for key in sorted(named.keys() - {run}):
                     maybe.setdefault((event, key), []).append(
                         (values, named[key]),
