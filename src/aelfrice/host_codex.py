@@ -1707,8 +1707,9 @@ def _rejected_handler(
     """Why serde rejects one handler, or None when it reads it.
 
     A handler written as a JSON array or a TOML array is one that serde
-    reads by position. Doctor doesn't read that form and claims nothing
-    about it.
+    reads by position. Doctor doesn't check that form's shape and counts
+    no run in it, but warns when a string in it names an aelfrice program
+    (`_named_owned_keys`).
     """
     if isinstance(handler, list):
         return None
@@ -1772,8 +1773,10 @@ def _rejected_events(
     (`load_hooks_json` and `load_toml_hooks_from_layer` in
     codex-rs/hooks/src/engine/discovery.rs, lines 390-451). Codex skips any
     key that isn't an event name, so what is under one never rejects the
-    table. A group or a `hooks` table written as an array is read by
-    position, and doctor claims nothing about it.
+    table. A group written as an array is read by position: doctor doesn't
+    check its shape and counts no run in it, but warns when a string in it
+    names an aelfrice program (`_named_items`). Doctor claims nothing about
+    a `hooks` table written as an array.
     """
     if isinstance(events, list):
         return None
@@ -1863,43 +1866,82 @@ def _run_command(handler: object, *, windows: bool) -> str | None:
     return _handler_command(hd)
 
 
+#: The most values `_strings_in` visits in one handler or group, a bound
+#: far above any hook config.
+_MAX_SCANNED_VALUES: Final[int] = 100_000
+
+
+def _strings_in(value: object) -> list[str]:
+    """Every string in a parsed JSON or TOML value, object keys included,
+    in file order, up to `_MAX_SCANNED_VALUES` values."""
+    found: list[str] = []
+    stack: list[object] = [value]
+    for _ in range(_MAX_SCANNED_VALUES):
+        if not stack:
+            break
+        item = stack.pop()
+        if isinstance(item, str):
+            found.append(item)
+        elif isinstance(item, dict):
+            for key, child in reversed(
+                list(cast(dict[object, object], item).items()),
+            ):
+                stack.append(child)
+                stack.append(key)
+        elif isinstance(item, list):
+            stack.extend(reversed(cast(list[object], item)))
+    return found
+
+
 def _named_owned_keys(
     handler: object, *, windows: bool | None = None,
 ) -> dict[str, str]:
-    """The owned programs a handler's command fields name, for doctor's
-    warning (#1812).
+    """The owned programs a handler names, for doctor's warning (#1812).
 
-    Each key maps to the text of the first field that names it, starting
-    with the field Codex runs on the platform (`_run_command`). Doctor
-    reads `command` and the Windows fields of a handler of any `type`.
+    Each key maps to the first string that names it, starting with the
+    field Codex runs on the platform (`_run_command`), then the other
+    command field, then every other string in the handler, object keys
+    included, in file order. Doctor reads every string of a handler of any
+    `type`, and of a handler or a group written as an array, which serde
+    reads by position (`_named_items`).
 
-    A field names a program when it holds the program's name as a plain
+    A string names a program when it holds the program's name as a plain
     substring in any case, on every platform. Doctor reads no shell syntax,
     so the name counts wherever it is: in a script string such as
     `python3 -c "...aelf-session-start-hook..."`, right after `-S` or
     `:-`, after an escape such as `\\n`, inside a longer word such as
-    `aelf-session-start-hook.py`, and in a command that only prints the
-    name. A name that the command builds at run time, or a link with
-    another name, escapes it.
+    `aelf-session-start-hook.py`, in a command that only prints the name,
+    and in a field Codex doesn't run, such as `statusMessage`. A name that
+    the command builds at run time, or a link with another name, escapes
+    it.
     """
-    if not isinstance(handler, dict):
-        return {}
     win = os.name == "nt" if windows is None else windows
-    hd = cast(dict[str, object], handler)
-    fields = (
-        (*_WINDOWS_COMMAND_FIELDS, "command") if win
-        else ("command", *_WINDOWS_COMMAND_FIELDS)
-    )
+    texts: list[str] = []
+    if isinstance(handler, dict):
+        hd = cast(dict[str, object], handler)
+        fields = (
+            (*_WINDOWS_COMMAND_FIELDS, "command") if win
+            else ("command", *_WINDOWS_COMMAND_FIELDS)
+        )
+        texts = [t for name in fields if isinstance(t := hd.get(name), str)]
+    elif not isinstance(handler, list):
+        return {}
     found: dict[str, str] = {}
-    for name in fields:
-        text = hd.get(name)
-        if not isinstance(text, str):
-            continue
+    for text in texts + _strings_in(cast(object, handler)):
         folded = text.casefold()
         for key in sorted(_OWNED_BASENAMES):
             if key in folded:
                 found.setdefault(key, text)
     return found
+
+
+def _named_items(group: object) -> list[object]:
+    """What doctor scans for the warning in one matcher group: each of its
+    handlers, or the group itself when it is written as an array, which
+    serde reads by position and doctor doesn't split."""
+    if isinstance(group, list):
+        return [group]
+    return _handlers_in(group)
 
 
 #: The values a group's `matcher` is tested against, for each event whose
@@ -2493,7 +2535,7 @@ def _group_counts(group: object, *, windows: bool | None = None) -> bool:
     return any(
         _handler_is_owned(handler, windows=windows)
         or _named_owned_keys(handler, windows=windows)
-        for handler in _handlers_in(group)
+        for handler in _named_items(group)
     )
 
 
@@ -2675,7 +2717,7 @@ def doctor_codex(
                 # #1812: Codex skips a key that isn't an event name, so a
                 # handler there never runs and counts as no run.
                 for group in cast(list[object], groups):
-                    for handler in _handlers_in(group):
+                    for handler in _named_items(group):
                         named = _named_owned_keys(handler, windows=win)
                         for key, cmd in sorted(named.items()):
                             warning = (
@@ -2715,7 +2757,7 @@ def doctor_codex(
                 # program may run it, so doctor warns about it.
                 if values is None:
                     continue
-                for handler in _handlers_in(group):
+                for handler in _named_items(group):
                     command = _run_command(handler, windows=win)
                     run = (
                         setup_runs.get(command, "") if command is not None
