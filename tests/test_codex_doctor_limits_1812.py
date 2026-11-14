@@ -309,8 +309,8 @@ def test_doctor_says_where_it_stopped_reading_a_deep_config_toml(
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert (
-        f"[warn] doctor read the [hooks] table of {config} only to a depth "
-        "of 256 and checked no string below it for an aelfrice program name"
+        f"[warn] doctor read {config} only to a depth of 256 and checked no "
+        "string below it for an aelfrice program name"
     ) in out, out
 
 
@@ -836,6 +836,50 @@ def test_doctor_warns_about_a_spelled_name_outside_a_handler(
     assert rc == 0, out
     assert (
         f"[warn] The string at `description` in {hooks} names aelf-stop-hook"
+    ) in out, out
+
+
+# --- config.toml beyond [hooks] ----------------------------------------------
+
+# config.toml keys outside [hooks] that start a program, and one that
+# doesn't, each with the path doctor names and the program.
+_CONFIG_STRINGS = {
+    "notify": ('notify = ["/opt/bin/aelf-stop-hook"]\n', "notify[0]", "aelf-stop-hook"),
+    "a profile's notify": (
+        '[profiles.x]\nnotify = ["aelf-transcript-logger"]\n',
+        "profiles.x.notify[0]", "aelf-transcript-logger",
+    ),
+    "an MCP server command": (
+        '[mcp_servers.mem]\ncommand = "aelf-hook"\n',
+        "mcp_servers.mem.command", "aelf-hook",
+    ),
+    "an MCP server argument": (
+        '[mcp_servers.mem]\ncommand = "uvx"\nargs = ["--from", "x", "aelf-search-tool-hook"]\n',
+        "mcp_servers.mem.args[2]", "aelf-search-tool-hook",
+    ),
+    "any key": ('[tui]\nfoo = "aelf-commit-ingest"\n', "tui.foo", "aelf-commit-ingest"),
+    "a spelled name": ('notify = ["aelf-st\'\'op-hook"]\n', "notify[0]", "aelf-stop-hook"),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_CONFIG_STRINGS))
+@pytest.mark.parametrize("where", ["config.toml", "a profile file"])
+def test_doctor_warns_about_a_program_name_anywhere_in_config_toml(
+    tmp_path: Path, shape: str, where: str,
+) -> None:
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    text, path, key = _CONFIG_STRINGS[shape]
+    file = codex_dir / (
+        "config.toml" if where == "config.toml" else "work.config.toml"
+    )
+    file.write_text(text, encoding="utf-8")
+    label = str(file) if where == "config.toml" else f"the profile file {file}"
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert (
+        f"[warn] The string at `{path}` in {label} names {key}, outside the "
+        "handlers `aelf setup --host codex` writes"
     ) in out, out
 
 

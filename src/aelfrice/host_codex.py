@@ -3314,12 +3314,12 @@ def doctor_codex(
                     f"handler is the supported form. The handler is at "
                     f"{at}.{then} Handler: {cmd}",
                 )
-    # #1812: the last check reads every string in hooks.json and in the
-    # [hooks] table of config.toml, object keys included, at any depth and
-    # in any container. A string that names an aelfrice program and that no
-    # FAIL or warning above covers gets a warning with its file and path,
-    # so no form of the files leaves a program name unreported. A file
-    # Codex rejects whole is already a FAIL.
+    # #1812: the last check reads every string in hooks.json, config.toml,
+    # and each profile file, object keys included, in any container, to the
+    # bounds of `_strings_with_paths`. A string that names an aelfrice
+    # program and that no FAIL or warning above covers gets a warning with
+    # its file and path, so no form of the files leaves a program name
+    # unreported. A file Codex rejects whole is already a FAIL.
     scans: list[tuple[str, str, object, tuple[object, ...]]] = []
     if hooks_doc is not None:
         scans.append(("json", str(hooks_path), hooks_doc, ()))
@@ -3331,11 +3331,19 @@ def doctor_codex(
                 "skips, and checked no string in it for an aelfrice program "
                 "name",
             )
-    if "hooks" in cfg and report.config_hooks_rejected is None:
-        scans.append((
-            "toml", f"the [hooks] table of {config_path}",
-            cast(object, cfg["hooks"]), ("hooks",),
-        ))
+    # #1812: every string of config.toml, not only of its [hooks] table,
+    # since other keys start programs too, such as `notify`, which Codex
+    # runs after each turn (config_toml.rs, lines 246-248, at
+    # openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9), and
+    # `mcp_servers.<name>.command`. A profile file can hold any of them.
+    if report.config_hooks_rejected is None:
+        scans.append(("toml", str(config_path), cast(object, cfg), ()))
+    for path, _name, data, error in profiles:
+        if error is None:
+            scans.append((
+                f"profile {path}", f"the profile file {path}",
+                cast(object, data), (),
+            ))
     for tag, label, value, base in scans:
         strings, cut, deep = _strings_with_paths(value, base)
         if cut:

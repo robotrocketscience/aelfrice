@@ -2470,9 +2470,9 @@ def test_doctor_names_a_config_toml_handler_outside_setup_handlers(
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert (
-        "[warn] The string at `hooks.SessionStart[0].hooks[0].command` in the "
-        f"[hooks] table of {codex_dir / 'config.toml'} names "
-        f"{_HOOK}, outside the handlers" in out
+        "[warn] The string at `hooks.SessionStart[0].hooks[0].command` in "
+        f"{codex_dir / 'config.toml'} names {_HOOK}, outside the handlers"
+        in out
     ), out
 
 
