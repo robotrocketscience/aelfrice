@@ -1975,6 +1975,69 @@ def _scan_json_depth(
 _TOML_DEPTH_LIMIT: Final[int] = 80
 
 
+#: A UTF-16 surrogate code point. Python's `json` reads a `\\ud800` escape
+#: that no low surrogate follows, or a lone `\\udc00`, as one of these.
+_SURROGATE: Final[re.Pattern[str]] = re.compile("[\ud800-\udfff]")
+
+
+def _lone_surrogate_path(doc: dict[str, object]) -> tuple[object, ...] | None:
+    """The path of the first string in hooks.json that holds a lone UTF-16
+    surrogate where serde_json reads it as text, or None.
+
+    serde_json rejects a lone surrogate escape in a string it reads as a
+    Rust `String`, a key or a value, and accepts one in a value it skips
+    with `ignore_value` (`parse_unicode_escape` and `ignore_escape` in
+    serde_json 1.0.149's src/read.rs, lines 897-970 and 1025-1048). serde
+    skips the value of a key under `hooks` that isn't an event name, and
+    of a group key other than `matcher` and `hooks` (`_serde_skips`), and
+    reads that key itself. It reads every member of a JSON object, the
+    ones `json.loads` drops for a repeated key included.
+    """
+    hooks = doc.get("hooks")
+    stack: list[tuple[tuple[object, ...], object]] = [((), doc)]
+    # Each value of the parsed file is pushed once, so the walk ends.
+    while stack:
+        path, item = stack.pop()
+        if isinstance(item, str):
+            if _SURROGATE.search(item) is not None:
+                return path
+            continue
+        if isinstance(item, list):
+            stack.extend(
+                ((*path, i), child)
+                for i, child in enumerate(cast(list[object], item))
+            )
+            continue
+        if not isinstance(item, dict):
+            continue
+        pairs = getattr(cast(object, item), "pairs", None)
+        members = (
+            list(cast(tuple[tuple[str, object], ...], pairs))
+            if pairs is not None
+            else list(cast(dict[str, object], item).items())
+        )
+        for key, child in members:
+            if _SURROGATE.search(key) is not None:
+                return (*path, key)
+            in_hooks = isinstance(hooks, dict) and path[:1] == ("hooks",)
+            skipped = in_hooks and (
+                (len(path) == 1 and key not in _CODEX_EVENTS)
+                or (
+                    len(path) == 3 and path[1] in _CODEX_EVENTS
+                    and isinstance(path[2], int) and key not in _GROUP_FIELDS
+                )
+            )
+            if not skipped:
+                stack.append(((*path, key), child))
+    return None
+
+
+def _printable(text: str) -> str:
+    """`text` with each UTF-16 surrogate written as a `\\udXXX` escape, so
+    a warning that quotes a string from a file prints on any stream."""
+    return _SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", text)
+
+
 def _toml_string_end(text: str, start: int) -> int:
     """The index after the TOML string that starts at `start`, or the end
     of its line or of the text when nothing closes it."""
@@ -2595,6 +2658,16 @@ def doctor_codex(
                 # doctor counts nothing in it and exits 1, as it does for
                 # a file that isn't JSON.
                 report.hooks_file_rejected = _rejected_hooks_file(doc)
+                lone = (
+                    _lone_surrogate_path(doc)
+                    if report.hooks_file_rejected is None else None
+                )
+                if lone is not None:
+                    report.hooks_file_rejected = (
+                        f"the string at `{_render_path(lone)}` holds a lone "
+                        "UTF-16 surrogate escape, which serde_json rejects "
+                        "where Codex reads the value as text"
+                    )
                 report.hooks_file_valid = report.hooks_file_rejected is None
                 if report.hooks_file_valid:
                     hooks_doc = doc
@@ -3110,4 +3183,7 @@ def doctor_codex(
             "hooks are silently skipped; run /hooks in a Codex session "
             "to approve them",
         )
+    # #1812: a value serde skips can hold a lone surrogate, which no
+    # stream can encode, and a warning may quote it.
+    report.warnings = [_printable(w) for w in report.warnings]
     return report
