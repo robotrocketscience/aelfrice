@@ -313,3 +313,139 @@ def test_doctor_says_where_it_stopped_reading_a_deep_config_toml(
         "of 256 and checked no string below it for an aelfrice program name"
     ) in out, out
 
+
+# --- lone surrogates ----------------------------------------------------------
+
+_LONE = "\ud800"
+
+
+def _session_start_copy(ours: str, **fields: object) -> dict[str, Any]:
+    return {
+        "matcher": "startup",
+        "hooks": [{"type": "command", "command": ours, **fields}],
+    }
+
+
+# Places serde_json reads as text, where a lone surrogate escape rejects
+# the file. Each adds a copy of setup's SessionStart handler, which Codex
+# never runs, since it loads no hook from the file.
+_SURROGATE_READ: dict[str, Callable[[dict[str, Any], str], object]] = {
+    "statusMessage": lambda d, c: d["hooks"]["SessionStart"].append(
+        _session_start_copy(c, statusMessage=_LONE),
+    ),
+    "description": lambda d, c: (
+        d.__setitem__("description", _LONE),
+        d["hooks"]["SessionStart"].append(_session_start_copy(c)),
+    ),
+    "unknown event name": lambda d, c: (
+        d["hooks"].__setitem__("Bo" + _LONE, 1),
+        d["hooks"]["SessionStart"].append(_session_start_copy(c)),
+    ),
+    "unknown group key name": lambda d, c: d["hooks"]["SessionStart"].append(
+        {"x" + "\udc00": 1, **_session_start_copy(c)},
+    ),
+    "unknown handler field": lambda d, c: d["hooks"]["SessionStart"].append(
+        _session_start_copy(c, zz=_LONE),
+    ),
+    "mcp_tool input": lambda d, c: d["hooks"]["SessionStart"].append({
+        "matcher": "startup", "hooks": [
+            {"type": "command", "command": c},
+            {"type": "mcp_tool", "server": "s", "tool": "t",
+             "input": {"k": [_LONE]}},
+        ],
+    }),
+    "prompt handler field": lambda d, c: d["hooks"]["SessionStart"].append({
+        "matcher": "startup", "hooks": [
+            {"type": "command", "command": c}, {"type": "prompt", "zz": _LONE},
+        ],
+    }),
+    "high then high": lambda d, c: d["hooks"]["SessionStart"].append(
+        _session_start_copy(c, statusMessage="\ud800𐀀"),
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("place", sorted(_SURROGATE_READ))
+def test_doctor_rejects_a_hooks_json_with_a_lone_surrogate_codex_reads(
+    tmp_path: Path, place: str,
+) -> None:
+    codex_dir, hooks, ours = _installed(tmp_path)
+    _edit_hooks(hooks, lambda d: _SURROGATE_READ[place](d, ours))
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert (
+        f"[warn] Codex loads no hook from {hooks}, because it rejects the "
+        "whole file: the string at `"
+    ) in out, out
+    assert (
+        "holds a lone UTF-16 surrogate escape, which serde_json rejects "
+        "where Codex reads the value as text"
+    ) in out, out
+    assert "times" not in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_a_repeated_member_that_json_loads_drops(
+    tmp_path: Path,
+) -> None:
+    """serde reads both members of a repeated `input` key, so the dropped
+    one's lone surrogate rejects the file."""
+    codex_dir, hooks, ours = _installed(tmp_path)
+    _edit_hooks(hooks, lambda d: d["hooks"]["SessionStart"].append({
+        "matcher": "startup", "hooks": [
+            {"type": "command", "command": ours},
+            {"type": "mcp_tool", "server": "s", "tool": "t",
+             "input": {"k": "DROPPED"}},
+        ],
+    }))
+    text = hooks.read_text(encoding="utf-8")
+    hooks.write_text(
+        text.replace('{"k": "DROPPED"}', '{"k": "\\ud800", "k": "ok"}'),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "holds a lone UTF-16 surrogate escape" in out, out
+
+
+# Places serde skips, where a lone surrogate loads.
+_SURROGATE_SKIPPED: dict[str, Callable[[dict[str, Any], str], object]] = {
+    "under an unknown event": lambda d, c: d["hooks"].__setitem__(
+        "Bogus", [{"hooks": [{"type": "command", "command": c + _LONE}]}],
+    ),
+    "under an unknown group key": lambda d, c: d["hooks"]["Stop"][0]
+    .__setitem__("x", {"run": c + _LONE}),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("place", sorted(_SURROGATE_SKIPPED))
+def test_doctor_reads_a_lone_surrogate_where_serde_skips_it(
+    tmp_path: Path, place: str,
+) -> None:
+    """Codex loads such a file, so a copy of setup's handler in it counts,
+    and the warning that quotes the string prints on a UTF-8 stream."""
+    codex_dir, hooks, ours = _installed(tmp_path)
+
+    def edit(doc: dict[str, Any]) -> None:
+        _SURROGATE_SKIPPED[place](doc, ours)
+        doc["hooks"]["SessionStart"].append(_session_start_copy(ours))
+
+    _edit_hooks(hooks, edit)
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding="utf-8")
+    rc = _cmd_doctor_codex(
+        argparse.Namespace(host="codex"), stream,
+        codex_dir=codex_dir, skills_dest=tmp_path / "skills",
+    )
+    stream.flush()
+    out = buffer.getvalue().decode("utf-8")
+    assert rc == 1, out
+    assert "SessionStart starts the aelf-session-start-hook command 2 times" in out
+    assert any(
+        ln.startswith("[warn]") and ln.endswith(ours + "\\ud800")
+        for ln in out.splitlines()
+    ), out
+
+
