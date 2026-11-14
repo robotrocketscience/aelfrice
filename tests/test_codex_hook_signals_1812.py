@@ -2435,6 +2435,56 @@ def test_doctor_names_a_config_toml_handler_outside_setup_handlers(
     ), out
 
 
+_PATH_WARNING = "outside the handlers `aelf setup --host codex` writes"
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("added", [None, "copy", "wrapper"])
+def test_doctor_gives_no_path_warning_for_what_another_line_covers(
+    tmp_path: Path, added: str | None,
+) -> None:
+    """Setup's own commands get no path warning, and neither do a copy of
+    setup's command that a duplicate run failure names, nor any string of
+    a handler that another warning names."""
+    codex_dir, hooks, program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert _PATH_WARNING not in out, out
+    if added == "copy":
+        _add_group(hooks, "SessionStart", ours, "fork")
+        rc, out = _doctor(codex_dir, tmp_path / "skills")
+        assert rc == 1, out
+        assert "SessionStart starts the aelf-session-start-hook command 2 times" in out
+    elif added == "wrapper":
+        wrapper = f"sh -c '{program}'"
+        _add_group(hooks, "SessionStart", wrapper, "fork")
+        rc, out = _doctor(codex_dir, tmp_path / "skills")
+        assert rc == 0, out
+        assert _warning_for(out, wrapper) is not None, out
+    assert _PATH_WARNING not in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_says_where_it_stopped_reading_a_large_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scan visits a bounded number of values and says when it stops
+    before the end, so a name past the bound isn't dropped silently."""
+    import aelfrice.host_codex as host_codex
+
+    codex_dir, hooks, _program = _installed(tmp_path)
+    monkeypatch.setattr(host_codex, "_MAX_SCANNED_VALUES", 50)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["Notification"] = {"k": ["x"] * 60 + ["aelf-hook"]}
+    hooks.write_text(json.dumps(doc), encoding="utf-8")
+    report = doctor_codex(codex_dir)
+    assert (
+        f"doctor read only the first 50 values of {hooks} and checked no "
+        "string after them for an aelfrice program name"
+    ) in report.warnings, report.warnings
+
+
 # --- the summary line -------------------------------------------------------------
 
 
