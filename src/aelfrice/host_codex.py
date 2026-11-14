@@ -1650,14 +1650,17 @@ _TOML_STRINGS: Final[tuple[type[object], ...]] = (
 
 
 class _JsonObject(dict[str, object]):
-    """A JSON object that remembers the keys it held more than once."""
+    """A JSON object that remembers the keys it held more than once, and
+    every member in file order, the ones a repeated key drops included."""
 
     repeated: frozenset[str] = frozenset()
+    pairs: tuple[tuple[str, object], ...] = ()
 
 
 def _json_object(pairs: list[tuple[str, object]]) -> _JsonObject:
     """`json.loads` object hook: Codex rejects a repeated field."""
     obj = _JsonObject(pairs)
+    obj.pairs = tuple(pairs)
     seen: set[str] = set()
     repeated: set[str] = set()
     for key, _value in pairs:
@@ -1775,8 +1778,10 @@ def _rejected_events(
     key that isn't an event name, so what is under one never rejects the
     table. A group written as an array is read by position: doctor doesn't
     check its shape and counts no run in it, but warns when a string in it
-    names an aelfrice program (`_named_items`). Doctor claims nothing about
-    a `hooks` table written as an array.
+    names an aelfrice program (`_named_items`). In hooks.json, doctor
+    doesn't check a `hooks` table written as an array either, and its last
+    check warns about each string in one that names a program. In
+    config.toml, Codex rejects one (`_rejected_config_hooks`).
     """
     if isinstance(events, list):
         return None
@@ -1900,17 +1905,21 @@ def _run_command(handler: object, *, windows: bool) -> str | None:
     On Windows, Codex runs the handler's `commandWindows` when it has one
     (`_WINDOWS_COMMAND_FIELDS`), and its `command` otherwise.
     """
+    name = _run_field(handler, windows=windows)
+    if name is None:
+        return None
+    return cast(str, cast(dict[str, object], handler)[name])
+
+
+def _run_field(handler: object, *, windows: bool) -> str | None:
+    """The field that holds the command `_run_command` returns, or None."""
     if not isinstance(handler, dict):
         return None
     hd = cast(dict[str, object], handler)
     if hd.get("type") != "command":
         return None
-    if windows:
-        for name in _WINDOWS_COMMAND_FIELDS:
-            command = hd.get(name)
-            if isinstance(command, str):
-                return command
-    return _handler_command(hd)
+    names = (*_WINDOWS_COMMAND_FIELDS, "command") if windows else ("command",)
+    return next((n for n in names if isinstance(hd.get(n), str)), None)
 
 
 #: The most values `_strings_in` visits in one handler or group, a bound
@@ -1982,13 +1991,14 @@ def _named_owned_keys(
     return found
 
 
-def _named_items(group: object) -> list[object]:
-    """What doctor scans for the warning in one matcher group: each of its
-    handlers, or the group itself when it is written as an array, which
-    serde reads by position and doctor doesn't split."""
+def _named_items(group: object) -> list[tuple[tuple[object, ...], object]]:
+    """What doctor scans for the warning in one matcher group, each with
+    its path inside the group: each of its handlers, or the group itself
+    when it is written as an array, which serde reads by position and
+    doctor doesn't split."""
     if isinstance(group, list):
-        return [group]
-    return _handlers_in(group)
+        return [((), group)]
+    return [(("hooks", i), h) for i, h in enumerate(_handlers_in(group))]
 
 
 #: The values a group's `matcher` is tested against, for each event whose
@@ -2173,6 +2183,75 @@ def _most_runs(event: str, value_sets: list[frozenset[str]]) -> int:
     return max((len(fire) for fire in _fires(event, value_sets)), default=0)
 
 
+#: A path part that `_render_path` writes after a dot.
+_PATH_NAME: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _render_path(path: tuple[object, ...]) -> str:
+    """A JSON or TOML path such as `hooks.SessionStart[1].hooks[0]`.
+
+    A list index is in brackets, and a key that isn't a plain name is a
+    quoted string in brackets.
+    """
+    out = ""
+    for part in path:
+        if isinstance(part, int):
+            out += f"[{part}]"
+        elif _PATH_NAME.fullmatch(str(part)) is not None:
+            out += f".{part}" if out else str(part)
+        else:
+            out += f"[{json.dumps(str(part))}]"
+    return out
+
+
+def _strings_with_paths(
+    value: object, base: tuple[object, ...],
+) -> tuple[list[tuple[tuple[object, ...], str, bool]], bool]:
+    """Every string in a parsed JSON or TOML value, with its path and
+    whether it is an object key, in file order, and whether the scan ended
+    before the value did.
+
+    A key's path is the path of its member. For a JSON object, this reads
+    every member the file holds, the ones `json.loads` drops for a repeated
+    key included (`_JsonObject.pairs`). It visits at most
+    `_MAX_SCANNED_VALUES` values.
+    """
+    found: list[tuple[tuple[object, ...], str, bool]] = []
+    stack: list[tuple[tuple[object, ...], object, bool]] = [
+        (base, value, False),
+    ]
+    for _ in range(_MAX_SCANNED_VALUES):
+        if not stack:
+            return found, False
+        path, item, is_key = stack.pop()
+        if isinstance(item, str):
+            found.append((path, item, is_key))
+        elif isinstance(item, dict):
+            pairs = getattr(cast(object, item), "pairs", None)
+            members = (
+                list(cast(tuple[tuple[str, object], ...], pairs))
+                if pairs is not None
+                else list(cast(dict[object, object], item).items())
+            )
+            for key, child in reversed(members):
+                stack.append(((*path, key), child, False))
+                stack.append(((*path, key), key, True))
+        elif isinstance(item, list):
+            stack.extend(
+                ((*path, i), child, False)
+                for i, child in reversed(
+                    list(enumerate(cast(list[object], item))),
+                )
+            )
+    return found, bool(stack)
+
+
+def _names_in(text: str) -> list[str]:
+    """The owned programs a string names, as plain substrings in any case."""
+    folded = text.casefold()
+    return [key for key in sorted(_OWNED_BASENAMES) if key in folded]
+
+
 def _program_path(cmd: str, key: str, *, windows: bool | None = None) -> str:
     """The program path of an owned handler's command, without arguments.
 
@@ -2208,6 +2287,8 @@ def doctor_codex(
     hooks_path = codex_hooks_path(cdir)
     report.hooks_file_present = hooks_path.is_file()
     hooks_map: dict[str, object] = {}
+    # The whole hooks.json when Codex loads it, for the last check (#1812).
+    hooks_doc: object = None
     if report.hooks_file_present:
         try:
             parsed = json.loads(
@@ -2221,6 +2302,8 @@ def doctor_codex(
                 # a file that isn't JSON.
                 report.hooks_file_rejected = _rejected_hooks_file(doc)
                 report.hooks_file_valid = report.hooks_file_rejected is None
+                if report.hooks_file_valid:
+                    hooks_doc = doc
                 obj = doc.get("hooks")
                 if report.hooks_file_valid and isinstance(obj, dict):
                     hooks_map = cast(dict[str, object], obj)
@@ -2249,10 +2332,19 @@ def doctor_codex(
     # mapped to its program's key. A handler counts as a run of a program
     # only when its command is one of these, byte for byte.
     setup_runs: dict[str, str] = {}
+    # The matcher and the commands of each group setup writes, per event.
+    setup_groups: dict[str, list[tuple[object, frozenset[str]]]] = {}
     for scope in _SETUP_SCOPES:
         for event, groups in desired_codex_hooks(scope).items():
             keys = expected_keys.setdefault(event, set())
             for group in groups:
+                setup_groups.setdefault(event, []).append((
+                    group.get("matcher"),
+                    frozenset(
+                        c for h in cast(list[object], group.get("hooks", []))
+                        if (c := _handler_command(h)) is not None
+                    ),
+                ))
                 for handler in cast(list[object], group.get("hooks", [])):
                     cmd = _handler_command(handler)
                     if cmd is None:
@@ -2292,53 +2384,94 @@ def doctor_codex(
     found_keys: dict[str, set[str]] = {}
     # The values each run of a program runs on, per event (#1812).
     runs: dict[tuple[str, str], list[frozenset[str]]] = {}
-    # The values, the command, and the file of each other handler that
-    # names a program, per event, and whether setup's next run replaces it.
+    # The file, the path of the field that holds the command, and the
+    # command of each run, per event and program.
+    run_fields: dict[
+        tuple[str, str], list[tuple[str, tuple[object, ...], str]],
+    ] = {}
+    # The values, the command, the file, whether setup's next run replaces
+    # it, and the path of each other handler that names a program, per
+    # event.
     maybe: dict[
-        tuple[str, str], list[tuple[frozenset[str], str, str, bool]],
+        tuple[str, str],
+        list[tuple[frozenset[str], str, str, bool, tuple[object, ...]]],
     ] = {}
     # (event, program) pairs with a counted run in each file.
     toml_runs: set[tuple[str, str]] = set()
     json_runs: set[tuple[str, str]] = set()
-    # The command and the file of each run of a program in an event where
-    # setup writes no handler of that program.
-    misplaced: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    # The command, the file, and the path of each run of a program in an
+    # event where setup writes no handler of that program.
+    misplaced: dict[
+        tuple[str, str], list[tuple[str, str, tuple[object, ...]]],
+    ] = {}
+    # #1812: (file, path, program) for each place a FAIL or a warning
+    # covers, with the strings under it. The last check warns about every
+    # other string that names a program.
+    accounted: set[tuple[str, tuple[object, ...], str]] = set()
+
+    def warn(warning: str) -> None:
+        if warning not in report.warnings:
+            report.warnings.append(warning)
+
+    def setup_writes(event: str, group: object, command: str) -> bool:
+        """True when `command` is setup's own in the group setup writes."""
+        matcher = (
+            cast(dict[str, object], group).get("matcher")
+            if isinstance(group, dict) else _ABSENT
+        )
+        return any(
+            command in commands and (
+                matcher == written or (
+                    event == "SessionStart"
+                    and matcher in _STALE_SESSION_START_MATCHERS
+                )
+            )
+            for written, commands in setup_groups.get(event, [])
+        )
+
     sources = (
-        ("", hooks_map),
-        (f" in the [hooks] table of {config_path}", toml_events),
+        ("json", "", hooks_map),
+        ("toml", f" in the [hooks] table of {config_path}", toml_events),
     )
-    for where, events in sources:
+    for tag, where, events in sources:
         for event, groups in events.items():
             if not isinstance(groups, list):
                 continue
-            if event not in _CODEX_EVENTS:
-                # #1812: Codex skips a key that isn't an event name, so a
-                # handler there never runs and counts as no run.
-                for group in cast(list[object], groups):
-                    for handler in _named_items(group):
-                        named = _named_owned_keys(handler, windows=win)
-                        for key, cmd in sorted(named.items()):
-                            warning = (
-                                f"{event!r} handler{where} names {key}, but "
-                                "Codex reads no hook event by that name, so "
-                                f"it never runs this handler: {cmd}"
-                            )
-                            if warning not in report.warnings:
-                                report.warnings.append(warning)
-                continue
-            for group in cast(list[object], groups):
+            for g, group in enumerate(cast(list[object], groups)):
                 # #1812: handlers whose matchers share no value, such as
                 # tool groups under `Bash` and under `WebSearch`, never run
                 # on the same fire, so they don't count as duplicate runs.
-                values = _matched_values(event, group)
-                for handler in _named_items(group):
-                    named = _named_owned_keys(handler, windows=win)
+                values = (
+                    _matched_values(event, group)
+                    if event in _CODEX_EVENTS else None
+                )
+                for sub, item in _named_items(group):
+                    path = ("hooks", event, g, *sub)
+                    at = f"at `{_render_path(path)}`"
+                    named = _named_owned_keys(item, windows=win)
                     # Setup rewrites the events it writes in hooks.json and
                     # drops each aelfrice handler there (`_plan_install`).
                     replaced = (
-                        not where and event in expected_events
-                        and _handler_is_owned(handler, windows=windows)
+                        tag == "json" and event in expected_events
+                        and _handler_is_owned(item, windows=windows)
                     )
+                    then = (
+                        " A rerun of `aelf setup --host codex` replaces "
+                        "this aelfrice handler with setup's, as it does one "
+                        "an older install wrote at another path."
+                        if replaced else ""
+                    )
+                    if event not in _CODEX_EVENTS:
+                        # #1812: Codex skips a key that isn't an event
+                        # name, so a handler there never runs.
+                        for key, cmd in sorted(named.items()):
+                            warn(
+                                f"{event!r} handler {at}{where} names {key}, "
+                                "but Codex reads no hook event by that name, "
+                                f"so it never runs this handler: {cmd}",
+                            )
+                            accounted.add((tag, path, key))
+                        continue
                     if values is None:
                         # #1812: doctor fails only where it reads the
                         # matchers the way Codex does, so it counts no run
@@ -2355,44 +2488,53 @@ def doctor_codex(
                             else "doctor doesn't list the values Codex "
                             f"tests a {event} matcher against"
                         )
-                        then = (
-                            " A rerun of `aelf setup --host codex` replaces "
-                            "this aelfrice handler with setup's, as it does "
-                            "one an older install wrote at another path."
-                            if replaced else ""
-                        )
                         for key, cmd in sorted(named.items()):
-                            warning = (
-                                f"{event} handler{where} names {key}, and "
-                                "doctor counts no run in its group, because "
-                                f"{why}.{then} If this handler runs {key}, "
-                                f"check that no other handler runs {key} on "
-                                f"the same fire. Handler: {cmd}"
+                            warn(
+                                f"{event} handler {at}{where} names {key}, "
+                                f"and doctor counts no run in its group, "
+                                f"because {why}.{then} If this handler runs "
+                                f"{key}, check that no other handler runs "
+                                f"{key} on the same fire. Handler: {cmd}",
                             )
-                            if warning not in report.warnings:
-                                report.warnings.append(warning)
+                            accounted.add((tag, path, key))
                         continue
                     # #1812: a handler counts as a run of a program only
                     # when the command Codex runs for it on this platform
                     # is one setup writes, byte for byte. Doctor reads no
                     # shell syntax: any other handler that names an
                     # aelfrice program may run it, so doctor warns about it.
-                    command = _run_command(handler, windows=win)
+                    command = _run_command(item, windows=win)
                     run = (
                         setup_runs.get(command, "") if command is not None
                         else ""
                     )
-                    if run:
+                    if run and command is not None:
+                        field_path = (
+                            *path, str(_run_field(item, windows=win)),
+                        )
                         runs.setdefault((event, run), []).append(values)
-                        (toml_runs if where else json_runs).add((event, run))
+                        run_fields.setdefault((event, run), []).append(
+                            (tag, field_path, command),
+                        )
+                        (toml_runs if tag == "toml" else json_runs).add(
+                            (event, run),
+                        )
                         if run not in expected_keys.get(event, set()):
                             misplaced.setdefault((event, run), []).append(
-                                (str(command), where),
+                                (command, where, path),
+                            )
+                        elif tag == "json" and setup_writes(
+                            event, cast(object, group), command,
+                        ):
+                            accounted.update(
+                                (tag, field_path, k)
+                                for k in _names_in(command)
                             )
                     for key in sorted(named.keys() - {run}):
                         maybe.setdefault((event, key), []).append(
-                            (values, named[key], where, replaced),
+                            (values, named[key], where, replaced, path),
                         )
+                        accounted.add((tag, path, key))
     for event, groups in hooks_map.items():
         if not isinstance(groups, list):
             continue
@@ -2438,6 +2580,8 @@ def doctor_codex(
         if (count := _most_runs(event, value_sets)) > 1
     ]
     for event, key, _count in report.duplicate_runs:
+        for tag, field_path, command in run_fields[(event, key)]:
+            accounted.update((tag, field_path, k) for k in _names_in(command))
         if (event, key) in toml_runs:
             # #1812: name hooks.json only when it holds a copy as well.
             also = (
@@ -2452,14 +2596,16 @@ def doctor_codex(
     for (event, key), copies in sorted(misplaced.items()):
         # #1812: a copy of setup's command is a run, but setup writes it in
         # another event, so it isn't setup's handler here.
-        for cmd, where in copies:
-            warning = (
+        for cmd, where, path in copies:
+            warn(
                 f"{event} handler{where} runs {key} with a command `aelf "
                 f"setup --host codex` writes, but setup writes no {key} "
-                f"handler in {event}; delete this one: {cmd}"
+                f"handler in {event}; delete this one, at "
+                f"`{_render_path(path)}`: {cmd}",
             )
-            if warning not in report.warnings:
-                report.warnings.append(warning)
+            accounted.update(
+                ("toml" if where else "json", path, k) for k in _names_in(cmd)
+            )
     for (event, key), others in sorted(maybe.items()):
         # #1812: every handler that names the program and isn't a run of
         # it gets a warning. One that some fire runs beside another handler
@@ -2472,16 +2618,17 @@ def doctor_codex(
         wrote = " or ".join(
             f"`{c}`" for c, k in sorted(setup_runs.items()) if k == key
         )
-        for index, (_values, cmd, where, replaced) in enumerate(
+        for index, (_values, cmd, where, replaced, path) in enumerate(
             others, start=len(counted),
         ):
+            at = f"`{_render_path(path)}`"
             if any(index in fire and len(fire) > 1 for fire in fires):
-                warning = (
+                warn(
                     f"{event} handler{where} may also run {key}. Doctor "
                     "counts a run only for a command byte-identical to one "
                     f"`aelf setup --host codex` writes ({wrote or key}). If "
-                    f"this handler runs {key}, keep setup's handler and "
-                    f"delete this one: {cmd}"
+                    f"this handler, at {at}, runs {key}, keep setup's "
+                    f"handler and delete this one: {cmd}",
                 )
             else:
                 then = (
@@ -2490,15 +2637,55 @@ def doctor_codex(
                     "install wrote at another path."
                     if replaced else ""
                 )
-                warning = (
+                warn(
                     f"{event} handler{where} names {key}, and doctor can't "
                     f"tell whether it runs {key}. Doctor counts a run only "
                     "for a command byte-identical to one `aelf setup --host "
                     f"codex` writes ({wrote or key}), and setup's own "
-                    f"handler is the supported form.{then} Handler: {cmd}"
+                    f"handler is the supported form. The handler is at "
+                    f"{at}.{then} Handler: {cmd}",
                 )
-            if warning not in report.warnings:
-                report.warnings.append(warning)
+    # #1812: the last check reads every string in hooks.json and in the
+    # [hooks] table of config.toml, object keys included, at any depth and
+    # in any container. A string that names an aelfrice program and that no
+    # FAIL or warning above covers gets a warning with its file and path,
+    # so no form of the files leaves a program name unreported. A file
+    # Codex rejects whole is already a FAIL.
+    scans: list[tuple[str, str, object, tuple[object, ...]]] = []
+    if hooks_doc is not None:
+        scans.append(("json", str(hooks_path), hooks_doc, ()))
+    if "hooks" in cfg and report.config_hooks_rejected is None:
+        scans.append((
+            "toml", f"the [hooks] table of {config_path}",
+            cast(object, cfg["hooks"]), ("hooks",),
+        ))
+    for tag, label, value, base in scans:
+        strings, cut = _strings_with_paths(value, base)
+        if cut:
+            warn(
+                f"doctor read only the first {_MAX_SCANNED_VALUES} values of "
+                f"{label} and checked no string after them for an aelfrice "
+                "program name",
+            )
+        for path, text, is_key in strings:
+            names = [
+                key for key in _names_in(text)
+                if not any(
+                    (tag, path[:depth], key) in accounted
+                    for depth in range(len(path) + 1)
+                )
+            ]
+            if not names:
+                continue
+            kind = "key" if is_key else "string"
+            warn(
+                f"The {kind} at `{_render_path(path)}` in {label} names "
+                f"{', '.join(names)}, outside the handlers `aelf setup "
+                "--host codex` writes, and no other doctor check covers it. "
+                "Doctor fails only when one fire runs a copy of a command "
+                "setup writes more than once, so check what Codex runs from "
+                f"this {kind}: {text}",
+            )
     report.missing_handlers = sorted(
         f"{event}:{key}"
         for event in sorted(expected_keys)
