@@ -1628,6 +1628,22 @@ def _handler_command(handler: object) -> str | None:
     return cmd if isinstance(cmd, str) else None
 
 
+def _run_command(handler: object) -> str | None:
+    """The command Codex runs for a handler, or None when it runs none.
+
+    Codex runs a command only for a handler whose `type` is `command`. It
+    skips a `prompt` or `agent` handler, and an `mcp_tool` handler calls a
+    tool (`append_matcher_groups` in codex-rs/hooks/src/engine/discovery.rs,
+    lines 650-801, at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9).
+    """
+    if not isinstance(handler, dict):
+        return None
+    hd = cast(dict[str, object], handler)
+    if hd.get("type") != "command":
+        return None
+    return _handler_command(hd)
+
+
 def _named_owned_keys(
     handler: object, *, windows: bool | None = None,
 ) -> dict[str, str]:
@@ -2390,7 +2406,7 @@ def doctor_codex(
             for handler in _handlers_in(group):
                 if values is None:
                     continue
-                command = _handler_command(handler)
+                command = _run_command(handler)
                 run = setup_runs.get(command, "") if command is not None else ""
                 if run:
                     runs.setdefault((event, run), []).append(values)
