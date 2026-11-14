@@ -2228,14 +2228,22 @@ def _run_command(handler: object, *, windows: bool) -> str | None:
 
 
 def _run_field(handler: object, *, windows: bool) -> str | None:
-    """The field that holds the command `_run_command` returns, or None."""
+    """The field that holds the command `_run_command` returns, or None.
+
+    None also when that field holds a TOML date or time, which Codex's
+    toml reads as its text: Codex runs that text, and doctor doesn't read
+    it (#1812). On Windows, such a `commandWindows` is the field Codex
+    runs, so doctor doesn't read `command` in its place.
+    """
     if not isinstance(handler, dict):
         return None
     hd = cast(dict[str, object], handler)
     if hd.get("type") != "command":
         return None
-    names = (*_WINDOWS_COMMAND_FIELDS, "command") if windows else ("command",)
-    return next((n for n in names if isinstance(hd.get(n), str)), None)
+    for name in _WINDOWS_COMMAND_FIELDS if windows else ():
+        if hd.get(name) is not None:
+            return name if isinstance(hd[name], str) else None
+    return "command" if isinstance(hd.get("command"), str) else None
 
 
 #: The most values `_strings_in` visits in one handler or group, a bound
@@ -2442,9 +2450,11 @@ def _matched_values(event: str, group: object) -> frozenset[str] | None:
     `matcher` matches every occurrence). Doctor reads only the matchers
     `_matcher_branches` reads and the ones that match every value, so
     `startup|resume` matches those two sources, `start` matches none, and
-    `^res` matches `resume`. A null matcher is no matcher to Codex. Codex
-    rejects the whole file for a matcher of any other type
-    (`_rejected_events`), so doctor never counts one.
+    `^res` matches `resume`. A null matcher is no matcher to Codex. Codex's
+    toml reads a TOML date or time as its text, such as `1979-05-27`, and
+    doctor doesn't read such a matcher. Codex rejects the whole file for a
+    matcher of any other type (`_rejected_events`), so doctor never counts
+    one.
 
     This is None for a group under any other matcher, and for every group
     of an event whose matcher Codex reads and whose values doctor doesn't
@@ -2464,7 +2474,10 @@ def _matched_values(event: str, group: object) -> frozenset[str] | None:
         if isinstance(group, dict) else None
     )
     values = _MATCHER_VALUES.get(event)
-    if not isinstance(matcher, str) or matcher in _EVERY_VALUE_MATCHERS:
+    if matcher is not None and not isinstance(matcher, str):
+        # #1812: a TOML date or time, which Codex's toml reads as its text.
+        return None
+    if matcher is None or matcher in _EVERY_VALUE_MATCHERS:
         return _EVERY_FIRE if values is None else frozenset(values)
     branches = _matcher_branches(matcher)
     if branches is None:
@@ -2872,7 +2885,14 @@ def doctor_codex(
                             if isinstance(group, dict) else None
                         )
                         why = (
-                            f"doctor doesn't read the matcher {matcher!r}"
+                            f"its matcher, {matcher.isoformat()}, is a TOML "
+                            "date or time, which Codex reads as text and "
+                            "doctor doesn't read"
+                            if isinstance(
+                                matcher,
+                                datetime.date | datetime.time,
+                            )
+                            else f"doctor doesn't read the matcher {matcher!r}"
                             if event in _MATCHER_VALUES
                             or event in _OPEN_EVENTS
                             else "doctor doesn't list the values Codex "
