@@ -1919,6 +1919,16 @@ _MATCHER_VALUES: Final[dict[str, tuple[str, ...]]] = {
 #: matcher a group's values are the names it lists, since any name can be
 #: a tool's.
 _TOOL_EVENTS: Final[frozenset[str]] = frozenset({"PreToolUse", "PostToolUse"})
+#: The events whose matcher is tested against a value from a set doctor
+#: doesn't list: the tool events, and Codex's two agent start and stop
+#: events, whose matcher Codex reads (`matcher_pattern_for_event` in
+#: codex-rs/hooks/src/events/common.rs, lines 129-149, at
+#: openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9). Under an exact
+#: matcher a group's values are the names it lists, and a regex counts as
+#: matching every fire. Python joins the names split across literals.
+_OPEN_EVENTS: Final[frozenset[str]] = _TOOL_EVENTS | frozenset({
+    "Sub" "agentStart", "Sub" "agentStop",
+})
 #: The names one tool call is matched by, for each tool that carries more
 #: than its own name. Codex tests a matcher against the tool's name and its
 #: matcher aliases (`matcher_inputs` in codex-rs/hooks/src/events/common.rs
@@ -1930,12 +1940,12 @@ _TOOL_MATCHER_INPUTS: Final[tuple[frozenset[str], ...]] = (
 )
 #: The events whose `matcher` Codex reads. Codex ignores the matcher on
 #: the others, so it never compiles one there (`matcher_pattern_for_event`
-#: in codex-rs/hooks/src/events/common.rs at openai/codex@c0cc9fc82).
-#: This leaves out Codex's two agent start and stop events, where aelfrice
-#: writes no hooks, so doctor counts every handler there.
+#: in codex-rs/hooks/src/events/common.rs, lines 129-149, at
+#: openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9).
 _MATCHER_EVENTS: Final[frozenset[str]] = frozenset({
     "PermissionRequest", "PostCompact", "PostToolUse", "PreCompact",
     "PreToolUse", "SessionEnd", "SessionStart",
+    "Sub" "agentStart", "Sub" "agentStop",
 })
 #: The one value that stands for every fire of an event not in
 #: `_MATCHER_VALUES`.
@@ -2464,7 +2474,7 @@ def _matched_values(event: str, group: object) -> frozenset[str] | None:
     exact = _EXACT_MATCHER.fullmatch(matcher) is not None
     if not exact and _rust_regex_rejects(matcher):
         return None
-    if exact and event in _TOOL_EVENTS:
+    if exact and event in _OPEN_EVENTS:
         return frozenset(name for name in matcher.split("|") if name)
     values = _MATCHER_VALUES.get(event)
     if values is None:
@@ -2496,11 +2506,11 @@ def _fires(event: str, value_sets: list[frozenset[str]]) -> list[frozenset[int]]
     one. A fire has one value, except a tool event's: a tool call is
     matched by the tool's name and its aliases (`_TOOL_MATCHER_INPUTS`), so
     handlers under `Write` and under `Edit` both run on an `apply_patch`
-    call. In a tool event, a handler under a regex or no matcher counts as
-    running on the same fire as every other handler, because doctor can't
-    list the tool names a regex matches.
+    call. In an event of `_OPEN_EVENTS`, a handler under a regex or no
+    matcher counts as running on the same fire as every other handler,
+    because doctor can't list the names a regex matches.
     """
-    if event in _TOOL_EVENTS and _EVERY_FIRE in value_sets:
+    if event in _OPEN_EVENTS and _EVERY_FIRE in value_sets:
         return [frozenset(i for i, values in enumerate(value_sets) if values)]
     inputs = [frozenset({v}) for v in sorted(set[str]().union(*value_sets))]
     if event in _TOOL_EVENTS:

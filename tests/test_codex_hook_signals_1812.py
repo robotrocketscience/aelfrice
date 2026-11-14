@@ -1928,6 +1928,41 @@ def test_doctor_passes_a_hooks_json_written_before_this_build(
     assert rc == 0, out
 
 
+# --- Codex's agent start and stop events --------------------------------------
+
+# Two groups that each hold a copy of setup's UserPromptSubmit handler under
+# one of Codex's agent events: (first matcher, second matcher, exit code).
+# Codex reads the matcher there, tested against a name doctor doesn't list,
+# so groups that list exact names run together only when they share one,
+# and a regex or no matcher runs with every group.
+_AGENT_EVENT_MATCHERS: dict[str, tuple[str | None, str, int]] = {
+    "disjoint exact names": ("a", "b", 0),
+    "a shared exact name": ("a|b", "b", 1),
+    "a matcher Rust rejects": ("(", "(", 0),
+    "a regex beside an exact name": ("^x", "b", 1),
+    "no matcher beside an exact name": (None, "b", 1),
+}
+_AGENT_EVENTS = ("Sub" "agentStart", "Sub" "agentStop")
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("event", _AGENT_EVENTS)
+@pytest.mark.parametrize("shape", sorted(_AGENT_EVENT_MATCHERS))
+def test_doctor_reads_the_matcher_of_codex_agent_events(
+    tmp_path: Path, shape: str, event: str,
+) -> None:
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _first_command(hooks, "UserPromptSubmit")
+    first, second, code = _AGENT_EVENT_MATCHERS[shape]
+    _add_group(hooks, event, ours, first)
+    _add_group(hooks, event, ours, second)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == code, out
+    assert (f"{event} starts the aelf-hook command 2 times" in out) == bool(
+        code,
+    ), out
+
+
 # --- the summary line -------------------------------------------------------------
 
 
