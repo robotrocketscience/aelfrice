@@ -42,7 +42,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import tempfile
 import tomllib
 import warnings
@@ -53,6 +52,7 @@ from typing import Final, cast
 
 from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT
 from aelfrice.launcher import (
+    LAUNCHER_SUFFIXES,
     command_launcher_key,
     command_program_keys,
     command_tokens,
@@ -1581,284 +1581,43 @@ def orphaned_codex_skills(dest_dir: Path | None = None) -> list[str]:
     ]
 
 
-#: Shells whose `-c` option runs the next operand as a script (#1812).
-_SHELLS: Final[frozenset[str]] = frozenset(
-    {"ash", "bash", "dash", "ksh", "mksh", "sh", "zsh"},
-)
-#: Words that run the command after them, so the next word is the program.
-#: The shell reserved words are here because a `-c` script can open with one.
-_PREFIX_WORDS: Final[frozenset[str]] = frozenset({
-    "!", "{", "command", "do", "elif", "else", "env", "exec", "if",
-    "nice", "nohup", "then", "time", "timeout", "until", "while",
-})
-#: The prefix words that find the program after them on `PATH` and run it,
-#: so a `VAR=value` word after one other than `env` is the program.
-_PROGRAM_RUNNERS: Final[frozenset[str]] = frozenset(
-    {"command", "env", "exec", "nice", "nohup", "time", "timeout"},
-)
-#: The options of a prefix word that take the next word as their operand,
-#: as in `env -u VAR`, `env -C DIR`, `exec -a NAME`, and `/usr/bin/time -o
-#: FILE`: the short option letters, then the long options. GNU env takes
-#: `-C` and `--chdir`, BSD env takes `-P`, both take `-S`, and GNU and BSD
-#: `/usr/bin/time` take `-o`, which GNU also spells `--output`. The `time`
-#: entry is for the `time` program only (`_program_index`). GNU `timeout`
-#: takes `-s SIGNAL` and `-k DURATION`
-#: (https://www.gnu.org/software/coreutils/manual/html_node/timeout-invocation.html),
-#: and `nice` takes `-n ADJUSTMENT`, which GNU also spells `--adjustment`
-#: (https://www.gnu.org/software/coreutils/manual/html_node/nice-invocation.html).
-_PREFIX_OPERAND_OPTIONS: Final[
-    dict[str, tuple[frozenset[str], frozenset[str]]]
-] = {
-    "env": (
-        frozenset("uCPS"),
-        frozenset({"--unset", "--chdir", "--split-string"}),
-    ),
-    "exec": (frozenset("a"), frozenset()),
-    "nice": (frozenset("n"), frozenset({"--adjustment"})),
-    "time": (frozenset("o"), frozenset({"--output"})),
-    "timeout": (frozenset("sk"), frozenset({"--signal", "--kill-after"})),
-}
-#: How many words a prefix word takes after its options before the
-#: program, as `timeout 30 PROGRAM` takes its duration.
-_PREFIX_OPERANDS: Final[dict[str, int]] = {"timeout": 1}
-#: The option of a prefix word whose operand is a string the word splits
-#: into more of its own arguments, as `env -S 'PROGRAM --host codex'` and
-#: `env --split-string=STRING` do: the short option letter, then the long
-#: option.
-_SPLIT_STRING_OPTIONS: Final[dict[str, tuple[str, str]]] = {
-    "env": ("S", "--split-string"),
-}
-#: Programs that print their arguments and run none of them.
-_PRINTERS: Final[frozenset[str]] = frozenset({"echo", "printf"})
-#: Characters of the shell operators that end one simple command.
-_COMMAND_SEPARATORS: Final[frozenset[str]] = frozenset(";&|()\n")
-#: The operators that send one command's output to the next command.
-_PIPES: Final[frozenset[str]] = frozenset({"|", "|&"})
-_ASSIGNMENT: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
-#: How many scripts deep the scan reads. Each level is one `sh -c` script
-#: or command substitution inside another; real wrappers use one.
-_MAX_SHELL_DEPTH: Final[int] = 4
-
-
-def _script_words(script: str) -> list[str]:
-    """A `-c` script split into words, with each operator as its own word.
-
-    `shlex` with `punctuation_chars` splits `a|b` and `a;b` the way a shell
-    does. A script with unbalanced quotes yields no words.
-    """
-    lexer = shlex.shlex(script, posix=True, punctuation_chars="();<>|&\n")
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    try:
-        return list(lexer)
-    except ValueError:
-        return []
-
-
-def _simple_commands(words: list[str]) -> list[tuple[list[str], bool]]:
-    """Split words at shell operators such as `|`, `;` and `&&`.
-
-    Each command comes with True when a pipe sends its output to the next
-    command, as in `echo PROGRAM | sh`.
-    """
-    commands: list[tuple[list[str], bool]] = []
-    current: list[str] = []
-    for word in words:
-        if set(word) <= _COMMAND_SEPARATORS:
-            if current:
-                commands.append((current, word in _PIPES))
-            current = []
-        else:
-            current.append(word)
-    if current:
-        commands.append((current, False))
-    return commands
-
-
-def _substitutions(text: str) -> list[str]:
-    """The scripts of the command substitutions in a command's text.
-
-    Finds `$(...)` and backquoted scripts in any word, such as `printf "%s"
-    "$(PROGRAM)"`. Quotes are not read, so a substitution inside single
-    quotes, which a shell prints and doesn't run, also counts. A nested
-    substitution stays in its outer script, which the caller scans again.
-    """
-    found: list[str] = []
-    i = 0
-    while i < len(text):
-        if text[i] == "`":
-            end = text.find("`", i + 1)
-            if end < 0:
-                break
-            found.append(text[i + 1:end])
-            i = end + 1
-        elif text.startswith("$(", i):
-            depth = 0
-            j = i + 1
-            while j < len(text):
-                if text[j] == "(":
-                    depth += 1
-                elif text[j] == ")":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                j += 1
-            found.append(text[i + 2:j])
-            i = j + 1
-        else:
-            i += 1
-    return found
-
-
-def _shell_script(args: list[str]) -> tuple[str, list[str]] | None:
-    """The script a shell runs for its `-c` option and the words after it.
-
-    None without a `-c` option. Covers `sh -c SCRIPT`, combined flags such
-    as `bash -lc SCRIPT`, and options before it such as `bash -o pipefail
-    -c SCRIPT`. The words after the script are its `$0` and `$@`, which
-    the script can run, as in `sh -c 'exec "$0"' PROGRAM`.
-    """
-    has_c = False
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        if arg == "--":
-            if has_c and i + 1 < len(args):
-                return args[i + 1], args[i + 2:]
-            return None
-        if arg in ("-o", "+o", "-O", "+O"):
-            i += 2
-            continue
-        if len(arg) > 1 and arg[0] in "-+":
-            if arg[0] == "-" and not arg.startswith("--") and "c" in arg[1:]:
-                has_c = True
-            i += 1
-            continue
-        return (arg, args[i + 1:]) if has_c else None
-    return None
-
-
-def _word_program_key(
-    word: str, owned: frozenset[str], *, windows: bool,
-) -> str:
-    """The key of the program a word names, or of the first word in it.
-
-    A wrapper can take a whole command as one word, as in `python3 w.py
-    '<program> --host codex'`, so a word whose own key isn't owned is
-    split and its first word is tried.
-    """
-    key = launcher_key(word, windows=windows)
-    if key in owned:
-        return key
-    inner = command_tokens(word, windows=windows)
-    return launcher_key(inner[0], windows=windows) if inner else ""
-
-
-def _split_string_words(text: str) -> list[str]:
-    """The words `env -S STRING` splits STRING into.
-
-    GNU env splits the string at spaces and tabs and reads single quotes,
-    double quotes, and backslash escapes in it
-    (https://www.gnu.org/software/coreutils/manual/html_node/env-invocation.html),
-    which POSIX `shlex` splitting follows. A string with unbalanced quotes
-    yields no words.
-    """
-    try:
-        return shlex.split(text)
-    except ValueError:
-        return []
-
-
-def _after_options(
-    simple: list[str], start: int, prefix: str,
-) -> tuple[list[str], int]:
-    """A simple command's words, and the index of the first word after the
-    options of the prefix word before `start`.
-
-    An option in `_PREFIX_OPERAND_OPTIONS` takes the next word as its
-    operand, as in `env -u VAR` or `exec -a NAME`, unless the operand is
-    in the same word, as in `env -uVAR` or `env --unset=VAR`. The operand
-    of an option in `_SPLIT_STRING_OPTIONS` is split into words that take
-    the option's place, so `env -S 'PROGRAM --host codex'` reads as `env
-    PROGRAM --host codex`. Each split takes out at least the option's
-    letter, so the words get shorter and the loop ends.
-    """
-    short, long = _PREFIX_OPERAND_OPTIONS.get(
-        prefix, (frozenset[str](), frozenset[str]()),
-    )
-    split_short, split_long = _SPLIT_STRING_OPTIONS.get(prefix, ("", ""))
-    words = simple
-    i = start
-    while i < len(words) and words[i].startswith("-"):
-        at_option = i
-        word = words[i]
-        i += 1
-        split: str | None = None
-        if word.startswith("--"):
-            name, eq, value = word.partition("=")
-            if word in long:
-                if word == split_long and i < len(words):
-                    split = words[i]
-                i += 1
-            elif eq and name == split_long:
-                split = value
-        else:
-            letters = word[1:]
-            at = next((k for k, ch in enumerate(letters) if ch in short), None)
-            if at is not None and at == len(letters) - 1:
-                if letters[at] == split_short and i < len(words):
-                    split = words[i]
-                i += 1
-            elif at is not None and letters[at] == split_short:
-                split = letters[at + 1:]
-        if split is not None:
-            words = [
-                *words[:at_option], *_split_string_words(split), *words[i:],
-            ]
-            i = at_option
-    return words, i
-
-
-def _program_index(
-    simple: list[str], *, windows: bool,
-) -> tuple[list[str], int]:
-    """A simple command's words and the index of its program word, for the
-    warning scan (`_wrapped_owned_keys`).
-
-    Skips `VAR=value` words, and prefix words such as `env` or `exec` with
-    the options after them and their operands, as in `env -u VAR PROGRAM`,
-    and with the words in `_PREFIX_OPERANDS`, as in `timeout -s KILL 30
-    PROGRAM`. The words are `simple` with the string of each `env -S
-    STRING` split in its place (`_after_options`). The index equals the
-    number of words when no word is left. A `VAR=value` word after a prefix
-    word other than `env` is the program, as in `nice X=1 PROGRAM`.
-
-    The index only decides where the scan starts to look. The scan reads
-    every word from there on, so an option it skips the wrong way doesn't
-    hide the program.
-    """
-    words = simple
-    i = 0
-    before = ""
-    while i < len(words):
-        if _ASSIGNMENT.match(words[i]):
-            if before in _PROGRAM_RUNNERS and before != "env":
-                break
-            i += 1
-            continue
-        prefix = launcher_key(words[i], windows=windows)
-        if prefix not in _PREFIX_WORDS:
-            break
-        words, i = _after_options(words, i + 1, prefix)
-        i = min(len(words), i + _PREFIX_OPERANDS.get(prefix, 0))
-        before = prefix
-    return words, i
-
-
 #: The scopes `aelf setup --host codex` writes. `_cmd_setup_codex` in
 #: cli.py passes `scope="user"`, and the command takes no `--scope`.
 _SETUP_SCOPES: Final[tuple[SettingsScope, ...]] = ("user",)
+#: The characters a program name can hold. Doctor reads an owned program
+#: name in a command only where no character of this class is next to it.
+_NAME_CHARS: Final[str] = "A-Za-z0-9_.-"
+
+
+def _owned_name_pattern(*, windows: bool) -> re.Pattern[str]:
+    """A regex that finds an owned program name in a command's text.
+
+    The name must have the start or end of the text, or a character
+    outside `_NAME_CHARS`, on each side. On Windows the name can end in a
+    launcher suffix such as `.exe`, and its case doesn't matter, the way
+    `launcher_key` reads a name there. The class next to the name always
+    matches case.
+    """
+    names = "|".join(
+        re.escape(name)
+        for name in sorted(_OWNED_BASENAMES, key=len, reverse=True)
+    )
+    suffix = ""
+    if windows:
+        suffix = "(?:{})?".format(
+            "|".join(re.escape(s) for s in sorted(LAUNCHER_SUFFIXES)),
+        )
+    return re.compile(
+        rf"(?<!(?-i:[{_NAME_CHARS}]))({names}){suffix}"
+        rf"(?!(?-i:[{_NAME_CHARS}]))",
+        re.IGNORECASE if windows else 0,
+    )
+
+
+#: `_owned_name_pattern` for POSIX (False) and for Windows (True).
+_OWNED_NAME: Final[dict[bool, re.Pattern[str]]] = {
+    windows: _owned_name_pattern(windows=windows) for windows in (False, True)
+}
 
 
 def _handler_command(handler: object) -> str | None:
@@ -1869,117 +1628,32 @@ def _handler_command(handler: object) -> str | None:
     return cmd if isinstance(cmd, str) else None
 
 
-def _top_level_words(cmd: str, *, windows: bool) -> list[str]:
-    """A handler's command split into words for the warning scan.
-
-    On POSIX, Codex runs the command as a shell script, so it splits the
-    way `_script_words` does, with each operator as its own word: the
-    program word in `{ PROGRAM; }` is `PROGRAM`, not `PROGRAM;`. A
-    command that `shlex` can't split, such as one that ends in a
-    backslash, splits at whitespace, since a shell can still run it. The
-    Windows splitter keeps single quotes and has no operators to split.
-    """
-    if windows:
-        return command_tokens(cmd, windows=True)
-    return _script_words(cmd) or cmd.split()
-
-
-def _wrapped_owned_keys(
+def _named_owned_keys(
     handler: object, *, windows: bool | None = None,
-) -> set[str]:
-    """Owned programs a handler's command may run, for doctor's warning.
+) -> dict[str, str]:
+    """The owned programs a handler's `command` names, for doctor's
+    warning (#1812).
 
-    The scan is heuristic: it doesn't read quotes, `command -v`, `test`,
-    or comments, so a script that only names a program also matches.
-    Doctor only warns about what it finds here, and never fails on it
-    (#1812).
+    Each key maps to the command's text. Doctor reads `command` on a
+    handler of any `type`.
 
-    A wrapper such as `python3 aelf-visible.py SessionStart
-    <bin>/aelf-session-start-hook` is not ours by its program, so setup
-    keeps it and adds its own handler beside it (#1812). A program counts
-    when the command runs it:
-
-    * as its program after any `VAR=value` words and prefix words such as
-      `env` or `exec`, as in `/usr/bin/env <bin>/aelf-session-start-hook`;
-    * as one of those words or an option's operand, as in `exec -a
-      <bin>/aelf-session-start-hook`, which runs nothing but names it;
-    * as an argument, or the first word of one, since a wrapper takes the
-      program it runs as an argument, unless the command only prints its
-      arguments (`echo`, `printf`) and no pipe sends them to another
-      command, as `echo PROGRAM | sh` does;
-    * inside a command substitution, as in `echo "$(PROGRAM)"`, which is
-      read the same way and is POSIX only;
-    * inside the script of a shell's `-c` option, such as `sh -c
-      '<bin>/aelf-session-start-hook | cat'`, which is read the same way,
-      or as an argument after that script, such as `sh -c 'exec "$0"'
-      <bin>/aelf-session-start-hook`. The shell can follow another
-      wrapper, as in `flock FILE sh -c SCRIPT`. This one is POSIX only,
-      because the Windows splitter keeps single quotes.
+    This is a text match (`_OWNED_NAME`). Doctor reads no shell syntax, so
+    a name counts wherever it is in the text: in a script string such as
+    `python3 -c "...aelf-session-start-hook..."`, in a command substitution,
+    after `=` as in `--cmd=aelf-session-start-hook`, and in a command that
+    only prints the name or checks that the program exists.
     """
-    cmd = _handler_command(handler)
-    if cmd is None:
-        return set()
+    if not isinstance(handler, dict):
+        return {}
     win = os.name == "nt" if windows is None else windows
-    owned = owned_keys(_OWNED_BASENAMES, windows=win)
-    found: set[str] = set()
-    # Each entry is a command's text, its words, and how many scripts deep
-    # it is.
-    pending: list[tuple[str, list[str], int]] = [
-        (cmd, _top_level_words(cmd, windows=win), 0),
-    ]
-    while pending:
-        text, words, depth = pending.pop()
-        if not win and depth < _MAX_SHELL_DEPTH:
-            pending.extend(
-                (inner, _script_words(inner), depth + 1)
-                for inner in _substitutions(text)
-            )
-        for command, piped in _simple_commands(words):
-            simple, i = _program_index(command, windows=win)
-            # A word the scan skips before the program, such as an option's
-            # operand in `exec -a PROGRAM`, still names the program.
-            found.update(
-                key for word in simple[:i]
-                if (key := _word_program_key(word, owned, windows=win)) in owned
-            )
-            if i >= len(simple):
-                continue
-            head = launcher_key(simple[i], windows=win)
-            args = simple[i + 1:]
-            program = _word_program_key(simple[i], owned, windows=win)
-            if program in owned:
-                found.add(program)
-                continue
-            if head in _PRINTERS and not piped:
-                continue
-            shell = (
-                _shell_script(args)
-                if head in _SHELLS and not win else None
-            )
-            if shell is not None:
-                script, args = shell
-                if depth < _MAX_SHELL_DEPTH:
-                    pending.append(
-                        (script, _script_words(script), depth + 1),
-                    )
-            elif not win and head not in _PRINTERS:
-                # A wrapper such as `flock FILE` or `ionice -c 3` can start
-                # the shell, so its words from the shell on are a command.
-                at = next(
-                    (
-                        k for k, arg in enumerate(args)
-                        if launcher_key(arg, windows=win) in _SHELLS
-                    ),
-                    None,
-                )
-                if at is not None:
-                    if depth < _MAX_SHELL_DEPTH:
-                        pending.append(("", args[at:], depth + 1))
-                    args = args[:at]
-            found.update(
-                key for arg in args
-                if (key := _word_program_key(arg, owned, windows=win)) in owned
-            )
+    hd = cast(dict[str, object], handler)
+    text = _handler_command(hd)
+    found: dict[str, str] = {}
+    if text is None:
+        return found
+    for match in _OWNED_NAME[win].finditer(text):
+        key = match.group(1).casefold() if win else match.group(1)
+        found.setdefault(key, text)
     return found
 
 
@@ -2561,7 +2235,7 @@ def _group_counts(group: object, *, windows: bool | None = None) -> bool:
     that names an aelfrice program, which doctor warns about."""
     return any(
         _handler_is_owned(handler, windows=windows)
-        or _wrapped_owned_keys(handler, windows=windows)
+        or _named_owned_keys(handler, windows=windows)
         for handler in _handlers_in(group)
     )
 
@@ -2708,21 +2382,23 @@ def doctor_codex(
                     "read this matcher and counted it as matching every "
                     "fire",
                 )
-            # #1812: a handler whose command is one setup writes counts as
-            # a run of its program. Doctor reads no shell syntax for this:
-            # any other handler that names an aelfrice program, ours by its
-            # first word or a wrapper, may run it, so doctor warns about it.
+            # #1812: a handler counts as a run of a program only when the
+            # command Codex runs for it is one setup writes, byte for
+            # byte. Doctor reads no shell syntax: any other handler whose
+            # command names an aelfrice program may run it, so doctor
+            # warns about it.
             for handler in _handlers_in(group):
-                cmd = _handler_command(handler)
-                if values is None or cmd is None:
+                if values is None:
                     continue
-                run = setup_runs.get(cmd, "")
+                command = _handler_command(handler)
+                run = setup_runs.get(command, "") if command is not None else ""
                 if run:
                     runs.setdefault((event, run), []).append(values)
-                named = _wrapped_owned_keys(handler, windows=windows)
-                named.add(_owned_command_key(cmd, windows=windows))
-                for key in sorted(named - {run, ""}):
-                    maybe.setdefault((event, key), []).append((values, cmd))
+                named = _named_owned_keys(handler, windows=windows)
+                for key in sorted(named.keys() - {run}):
+                    maybe.setdefault((event, key), []).append(
+                        (values, named[key]),
+                    )
             # #1412: count per handler. Gating on a fully-owned group made
             # an aelfrice handler sharing a group with a foreign one
             # invisible to doctor — the same blind spot that let setup
