@@ -1437,6 +1437,9 @@ class CodexDoctorReport:
     #: Why Codex rejects the `[hooks]` table of config.toml whole, so it
     #: loads no hook from it, or None (#1812).
     config_hooks_rejected: str | None = None
+    #: Why Codex's TOML parser rejects all of config.toml for its nesting,
+    #: so Codex loads no hook from it, or None (#1812).
+    config_rejected: str | None = None
     owned_handler_count: int = 0
     missing_events: list[str] = field(default_factory=list[str])
     missing_handlers: list[str] = field(default_factory=list[str])
@@ -1962,6 +1965,134 @@ def _scan_json_depth(
     return "".join(pieces), cuts, None
 
 
+#: The nesting limit of the toml crate Codex reads config.toml with
+#: (toml 0.9.11 in Codex's Cargo.lock). Its parser fails when arrays and
+#: inline tables nest more than this many levels deep (`RecursionGuard` in
+#: toml_parser's src/parser/event.rs, with `LIMIT` in toml's
+#: src/de/parser/mod.rs, line 71), and when a key has more than this many
+#: dotted parts (src/de/parser/key.rs, lines 66-70), in a table header or
+#: anywhere else.
+_TOML_DEPTH_LIMIT: Final[int] = 80
+
+
+def _toml_string_end(text: str, start: int) -> int:
+    """The index after the TOML string that starts at `start`, or the end
+    of its line or of the text when nothing closes it."""
+    for quote in ('"""', "'''"):
+        if text.startswith(quote, start):
+            pos = start + 3
+            for _ in range(len(text)):
+                if pos >= len(text):
+                    return len(text)
+                if quote == '"""' and text[pos] == "\\":
+                    pos += 2
+                elif text.startswith(quote, pos):
+                    end = pos + 3
+                    # A closing delimiter may follow one or two quotes of
+                    # the string's own text.
+                    for _ in range(2):
+                        if text.startswith(quote[0], end):
+                            end += 1
+                    return end
+                else:
+                    pos += 1
+            return len(text)
+    pos = start + 1
+    for _ in range(len(text)):
+        if pos >= len(text) or text[pos] == "\n":
+            return pos
+        if text[start] == '"' and text[pos] == "\\":
+            pos += 2
+        elif text[pos] == text[start]:
+            return pos + 1
+        else:
+            pos += 1
+    return len(text)
+
+
+def _toml_nesting_error(text: str) -> str | None:
+    """Why Codex's TOML parser rejects `text` for its nesting, or None.
+
+    This reads strings, comments, table headers, keys, and brackets only,
+    in one pass without recursion, so `tomllib` reads only a file whose
+    arrays and inline tables nest at most `_TOML_DEPTH_LIMIT` levels deep.
+    """
+    stack: list[str] = []
+    state = "line"
+    parts = 1
+    pos = 0
+    for _ in range(len(text) + 1):
+        if pos >= len(text):
+            return None
+        char = text[pos]
+        pos += 1
+        if char in "\"'":
+            pos = _toml_string_end(text, pos - 1)
+            if state == "line":
+                state = "key"
+            continue
+        if char == "#":
+            newline = text.find("\n", pos)
+            pos = len(text) if newline < 0 else newline
+            continue
+        if char == "\n" and not stack:
+            state, parts = "line", 1
+            continue
+        if char in " \t\r\n" or state == "trail":
+            continue
+        if state == "line" and char == "[":
+            if text.startswith("[", pos):
+                pos += 1
+            state = "header"
+            continue
+        if state == "line":
+            state = "key"
+        if state in ("key", "header") and char == ".":
+            parts += 1
+        elif (state, char) in (("key", "="), ("header", "]")):
+            if parts > _TOML_DEPTH_LIMIT:
+                return (
+                    f"it has a key of more than {_TOML_DEPTH_LIMIT} dotted "
+                    "parts"
+                )
+            state, parts = ("value" if char == "=" else "trail"), 1
+        elif state != "header" and char in "[{":
+            stack.append(char)
+            if len(stack) > _TOML_DEPTH_LIMIT:
+                return (
+                    "it nests arrays or inline tables more than "
+                    f"{_TOML_DEPTH_LIMIT} levels deep"
+                )
+            state = "key" if char == "{" else "value"
+        elif state != "header" and char in "]}":
+            if stack:
+                stack.pop()
+            state = "value"
+        elif state == "value" and char == "," and stack and stack[-1] == "{":
+            state = "key"
+    return None
+
+
+def _load_toml(
+    path: Path,
+) -> tuple[dict[str, object], str | None, str | None]:
+    """A TOML file as `tomllib` reads it, why `tomllib` couldn't read it,
+    and why Codex's TOML parser rejects it for its nesting
+    (`_toml_nesting_error`). `tomllib` doesn't read a file Codex rejects,
+    so no nesting depth can exhaust Python's recursion limit."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {}, f"could not parse {path}: {exc}", None
+    nesting = _toml_nesting_error(text)
+    if nesting is not None:
+        return {}, None, nesting
+    try:
+        return tomllib.loads(text), None, None
+    except tomllib.TOMLDecodeError as exc:
+        return {}, f"could not parse {path}: {exc}", None
+
+
 #: The fields of a `[hooks.state]` entry and the type each one takes
 #: (`HookStateToml` in codex-rs/config/src/hook_config.rs, lines 29-38, at
 #: openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9). The type doesn't
@@ -2341,12 +2472,20 @@ def _render_path(path: tuple[object, ...]) -> str:
     return out
 
 
+#: The deepest path `_strings_with_paths` reads into. TOML nests tables
+#: through dotted keys and headers as well as brackets, so a config.toml
+#: Codex's parser accepts can nest thousands of levels deep, and a path
+#: per string that long would make the scan quadratic.
+_MAX_SCANNED_DEPTH: Final[int] = 256
+
+
 def _strings_with_paths(
     value: object, base: tuple[object, ...],
-) -> tuple[list[tuple[tuple[object, ...], str, bool]], bool]:
+) -> tuple[list[tuple[tuple[object, ...], str, bool]], bool, bool]:
     """Every string in a parsed JSON or TOML value, with its path and
-    whether it is an object key, in file order, and whether the scan ended
-    before the value did.
+    whether it is an object key, in file order, whether the scan ended
+    before the value did, and whether it left out a container below
+    `_MAX_SCANNED_DEPTH`.
 
     A key's path is the path of its member. For a JSON object, this reads
     every member the file holds, the ones `json.loads` drops for a repeated
@@ -2357,12 +2496,15 @@ def _strings_with_paths(
     stack: list[tuple[tuple[object, ...], object, bool]] = [
         (base, value, False),
     ]
+    deep = False
     for _ in range(_MAX_SCANNED_VALUES):
         if not stack:
-            return found, False
+            return found, False, deep
         path, item, is_key = stack.pop()
         if isinstance(item, str):
             found.append((path, item, is_key))
+        elif isinstance(item, dict | list) and len(path) >= _MAX_SCANNED_DEPTH:
+            deep = True
         elif isinstance(item, dict):
             pairs = getattr(cast(object, item), "pairs", None)
             members = (
@@ -2380,7 +2522,7 @@ def _strings_with_paths(
                     list(enumerate(cast(list[object], item))),
                 )
             )
-    return found, bool(stack)
+    return found, bool(stack), deep
 
 
 def _names_in(text: str) -> list[str]:
@@ -2517,10 +2659,13 @@ def doctor_codex(
     cfg: dict[str, object] = {}
     cfg_error: str | None = None
     if config_path.is_file():
-        try:
-            cfg = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        except (tomllib.TOMLDecodeError, OSError) as exc:
-            cfg_error = f"could not parse {config_path}: {exc}"
+        cfg, cfg_error, report.config_rejected = _load_toml(config_path)
+        if report.config_rejected is not None:
+            report.warnings.append(
+                f"Codex loads no hook from {config_path}, because its TOML "
+                f"parser rejects the whole file: {report.config_rejected}, "
+                f"past the limit of {_TOML_DEPTH_LIMIT}",
+            )
     toml_events: dict[str, object] = {}
     if "hooks" in cfg:
         report.config_hooks_rejected = _rejected_config_hooks(cfg["hooks"])
@@ -2843,12 +2988,18 @@ def doctor_codex(
             cast(object, cfg["hooks"]), ("hooks",),
         ))
     for tag, label, value, base in scans:
-        strings, cut = _strings_with_paths(value, base)
+        strings, cut, deep = _strings_with_paths(value, base)
         if cut:
             warn(
                 f"doctor read only the first {_MAX_SCANNED_VALUES} values of "
                 f"{label} and checked no string after them for an aelfrice "
                 "program name",
+            )
+        if deep:
+            warn(
+                f"doctor read {label} only to a depth of "
+                f"{_MAX_SCANNED_DEPTH} and checked no string below it for an "
+                "aelfrice program name",
             )
         for path, text, is_key in strings:
             names = [
