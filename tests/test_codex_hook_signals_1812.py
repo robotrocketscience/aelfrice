@@ -35,10 +35,10 @@ from aelfrice.host_codex import (
     CODEX_ADDITIONAL_CONTEXT_LIMIT,
     _OWNED_BASENAMES,
     _json_object,
+    _matched_values,
     _named_owned_keys,
     _rejected_config_hooks,
     _rejected_hooks_file,
-    _rust_regex_rejects,
     doctor_codex,
     install_codex_hooks,
     install_codex_skills,
@@ -1193,29 +1193,52 @@ _OVERLAPPING_SESSION_START = {
     "copy under fork": ("{ours}", "fork"),
     "copy under ^fork$": ("{ours}", "^fork$"),
     "copy under ^res": ("{ours}", "^res"),
+    "copy under up$": ("{ours}", "up$"),
     "copy under *": ("{ours}", "*"),
     "copy under empty": ("{ours}", ""),
-    # Rust's regex reads these, so Codex runs the group.
-    "copy under (?i)": ("{ours}", "(?i)RESUME"),
-    "copy under a class holding (?=": ("{ours}", "[(?=]?resume"),
+    "copy under .*": ("{ours}", ".*"),
+    "copy under ^startup$|ork": ("{ours}", "^startup$|ork"),
 }
-# Matchers Codex can't compile. It logs "invalid matcher" and skips the
-# group, so a copy under one never runs. Each would match `resume` if
-# Codex could compile it.
-_SKIPPED_MATCHERS = {
+# Matchers doctor doesn't read, so it counts no run in the group and warns
+# about each handler there that names a program. Codex can't compile some
+# of them, and skips the group. Rust's `regex` reads the others, and some
+# of those mean something else to Python's `re`, such as `[[:alpha:]]`.
+_UNREAD_MATCHERS = {
     "unclosed group": "(",
     "lookahead": "(?=resume)",
-    "negative lookahead": "(?!fork)resume",
-    "lookbehind": "(?<=r)esume",
-    "negative lookbehind": "(?<!x)resume",
     "backreference": r"(r)\1?esume",
-    "named backreference": "(?P<a>r)(?P=a)?esume",
-    "atomic group": "(?>resume)",
-    # Python's `re` reads the `{` and the inner `[` as literals and matches
-    # `resume`, but Rust's `regex` rejects both patterns.
     "unclosed counted repetition": "resume|x{",
     "nested class opener": "resume|[[]",
+    "named group": "(?<s>resume)",
+    "flag": "(?i)RESUME",
+    "class holding (?=": "[(?=]?resume",
+    "braced hex escape": r"\x{72}esume",
+    "Unicode class": r"\p{L}+",
+    "POSIX class": "^[[:alpha:]]+$",
+    "word class": "[[:word:]]+",
+    "class intersection": "[a-z&&[^q]]+",
+    "word start": r"\b{start}fork",
+    "group": "^(startup|fork)$",
+    "empty branch": "^resume||x",
+    "anchor alone": "^",
 }
+
+
+def _unread_warning_for(
+    out: str, event: str, key: str, command: str, why: str,
+) -> str | None:
+    """The doctor warning line for a handler in a group doctor counts no
+    run in, if there is one."""
+    return next(
+        (
+            ln for ln in out.splitlines()
+            if ln.startswith(f"[warn] {event} handler")
+            and f"names {key}, and doctor counts no run in its group, because "
+            f"{why}." in ln
+            and ln.endswith(f"on the same fire. Handler: {command}")
+        ),
+        None,
+    )
 
 
 @pytest.mark.timeout(60)
@@ -1255,33 +1278,35 @@ def test_doctor_faults_a_second_run_under_an_overlapping_matcher(
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("shape", sorted(_SKIPPED_MATCHERS))
-def test_doctor_skips_a_group_whose_matcher_codex_cannot_compile(
+@pytest.mark.parametrize("shape", sorted(_UNREAD_MATCHERS))
+def test_doctor_counts_no_run_under_a_matcher_it_does_not_read(
     tmp_path: Path, shape: str,
 ) -> None:
+    """A copy of setup's command under the matcher gets a warning, and
+    doctor exits 0 whether or not Codex runs the group."""
     codex_dir, hooks, _program = _installed(tmp_path)
-    matcher = _SKIPPED_MATCHERS[shape]
-    _add_group(hooks, "SessionStart", _session_start_command(hooks), matcher)
+    matcher = _UNREAD_MATCHERS[shape]
+    ours = _session_start_command(hooks)
+    _add_group(hooks, "SessionStart", ours, matcher)
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert "times" not in out
-    assert (
-        f"[warn] SessionStart group with matcher {matcher!r} never runs"
-        in out
-    ), out
+    why = f"doctor doesn't read the matcher {matcher!r}"
+    assert _unread_warning_for(out, "SessionStart", _HOOK, ours, why), out
 
 
 @pytest.mark.timeout(60)
-def test_doctor_skips_a_wrapper_under_a_matcher_codex_cannot_compile(
+def test_doctor_gives_a_wrapper_under_an_unread_matcher_one_warning(
     tmp_path: Path,
 ) -> None:
-    """A skipped group's wrapper gets no `may also run` warning either."""
     codex_dir, hooks, program = _installed(tmp_path)
-    _add_group(hooks, "SessionStart", f"sh -c '{program}'", "(?=resume)")
+    wrapper = f"sh -c '{program}'"
+    _add_group(hooks, "SessionStart", wrapper, "(?=resume)")
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert "may also run" not in out
-    assert "never runs" in out, out
+    why = "doctor doesn't read the matcher '(?=resume)'"
+    assert _unread_warning_for(out, "SessionStart", _HOOK, wrapper, why), out
 
 
 # A foreign handler that runs no aelfrice program and that doctor doesn't
@@ -1301,123 +1326,144 @@ def test_doctor_says_nothing_about_an_unrelated_group_matcher(
     assert repr(matcher) not in out, out
 
 
-# Matchers that Rust's `regex` compiles and Python's `re` rejects. Each
-# matches `resume` in Rust, so Codex runs the copy beside setup's handler.
-_PYTHON_ONLY_MATCHERS = {
-    "named group": "(?<s>resume)",
-    "flag after the start": "^(?i)resume",
-    "swap greed": "(?U)resume",
-    "braced hex escape": r"\x{72}esume",
-    "one-letter class": r"\pL+",
-    "Unicode class": r"\p{L}+",
-    "repeated repetition": "resume|a**",
-    "repeated counted repetition": "resume|x{1,}{2}",
-    # Python reads `\z` from 3.14 on.
-    "end of text": r"^resume\z",
-}
-
-
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("shape", sorted(_PYTHON_ONLY_MATCHERS))
-def test_doctor_counts_a_matcher_it_cannot_read_as_every_fire(
-    tmp_path: Path, shape: str,
+@pytest.mark.parametrize(
+    ("event", "matcher"),
+    [
+        ("PreToolUse", "(?<=B)ash"),
+        # A tool event's values are an open set of tool names, so doctor
+        # reads a regex there only when each branch is `^name$`.
+        ("PreToolUse", "^Ba"),
+        ("PreToolUse", "^Web"),
+        ("PostToolUse", "Web.*"),
+        ("PostToolUse", "^Bash$|Read"),
+    ],
+)
+def test_doctor_counts_no_run_under_a_tool_matcher_it_does_not_read(
+    tmp_path: Path, event: str, matcher: str,
 ) -> None:
-    """Doctor counts the copy as running on every source and says it
-    can't read the matcher."""
     codex_dir, hooks, _program = _installed(tmp_path)
-    matcher = _PYTHON_ONLY_MATCHERS[shape]
-    _add_group(hooks, "SessionStart", _session_start_command(hooks), matcher)
-    rc, out = _doctor(codex_dir, tmp_path / "skills")
-    assert rc == 1, out
-    assert "SessionStart starts the aelf-session-start-hook command 2 times" in out
-    assert "never runs" not in out
-    unread = (
-        f"[warn] SessionStart group with matcher {matcher!r}: doctor can't "
-        "read this matcher and counted it as matching every fire"
-    )
-    python_reads = shape == "end of text" and sys.version_info >= (3, 14)
-    assert (unread in out) is not python_reads, out
-
-
-@pytest.mark.timeout(60)
-def test_doctor_skips_a_tool_group_whose_matcher_codex_cannot_compile(
-    tmp_path: Path,
-) -> None:
-    """Codex compiles a tool event's matcher too, and skips the group."""
-    codex_dir, hooks, _program = _installed(tmp_path)
-    _add_group(
-        hooks, "PreToolUse", _first_command(hooks, "PreToolUse"), "(?<=B)ash",
-    )
+    command = _first_command(hooks, event)
+    _add_group(hooks, event, command, matcher)
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert "times" not in out
+    why = f"doctor doesn't read the matcher {matcher!r}"
+    assert _unread_warning_for(
+        out, event, command_launcher_key(command), command, why,
+    ), out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("event", "first", "second"),
+    [
+        # Codex fires SessionEnd with one reason and matches
+        # PermissionRequest against tool names, and doctor lists neither.
+        ("SessionEnd", "clear", "startup"),
+        ("SessionEnd", None, None),
+        ("PermissionRequest", "Bash", "Read"),
+        ("PermissionRequest", "Bash", "Bash"),
+    ],
+)
+def test_doctor_counts_no_run_in_an_event_whose_values_it_does_not_list(
+    tmp_path: Path, event: str, first: str | None, second: str | None,
+) -> None:
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = next(
+        str(h["command"]) for h in json.loads(
+            hooks.read_text(encoding="utf-8"),
+        )["hooks"]["Stop"][0]["hooks"]
+        if "aelf-stop-hook" in str(h["command"])
+    )
+    _add_group(hooks, event, ours, first)
+    _add_group(hooks, event, ours, second)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    why = f"doctor doesn't list the values Codex tests a {event} matcher against"
+    lines = [
+        ln for ln in out.splitlines()
+        if _unread_warning_for(ln, event, "aelf-stop-hook", ours, why)
+    ]
+    assert lines, out
+
+
+# Matchers and the SessionStart sources Rust's `regex` 1.12.3 matches with
+# each, from the rv15 oracle, which compiles a matcher the way
+# codex-rs/hooks/src/engine/matcher.rs does. `None` means Rust rejects the
+# pattern. Doctor reads the first group, and must agree with Rust on each.
+# It reads none of the second group, whose meaning differs between Rust's
+# `regex` and Python's `re` or that only a wider reader could list.
+_READ_BY_DOCTOR: dict[str, frozenset[str]] = {
+    "": frozenset({"startup", "resume", "clear", "compact", "fork"}),
+    "*": frozenset({"startup", "resume", "clear", "compact", "fork"}),
+    ".*": frozenset({"startup", "resume", "clear", "compact", "fork"}),
+    "startup|resume": frozenset({"startup", "resume"}),
+    "start": frozenset(),
+    "startup|": frozenset({"startup"}),
+    "|": frozenset(),
+    "^res": frozenset({"resume"}),
+    "up$": frozenset({"startup"}),
+    # Only letters and `|`, so a list of one exact name to Codex.
+    "c": frozenset(),
+    "a||b": frozenset(),
+    "^c": frozenset({"clear", "compact"}),
+    "^fork$": frozenset({"fork"}),
+    "^startup$|ork": frozenset({"startup", "fork"}),
+    "^s|e$|ar": frozenset({"startup", "resume", "clear"}),
+    "STARTUP$": frozenset(),
+    "^r$": frozenset(),
+}
+_NOT_READ_BY_DOCTOR: dict[str, frozenset[str] | None] = {
+    "^[[:alpha:]]+$": frozenset({"startup", "resume", "clear", "compact", "fork"}),
+    "[[:word:]]+": frozenset({"startup", "resume", "clear", "compact", "fork"}),
+    "[a-z&&[^q]]+": frozenset({"startup", "resume", "clear", "compact", "fork"}),
+    r"\b{start}fork": frozenset({"fork"}),
+    r"\>": frozenset({"startup", "resume", "clear", "compact", "fork"}),
+    "(?i)FORK": frozenset({"fork"}),
+    "x{": None,
+    "(?=a)": None,
+    "^(startup|fork)$": frozenset({"startup", "fork"}),
+    "^a||b": frozenset({"startup", "resume", "clear", "compact", "fork"}),
+    "^": frozenset({"startup", "resume", "clear", "compact", "fork"}),
+    "st.rtup": frozenset({"startup"}),
+    "^ fork$": frozenset(),
+}
+
+
+@pytest.mark.parametrize("matcher", sorted(_READ_BY_DOCTOR))
+def test_doctor_reads_its_matcher_subset_the_way_rust_regex_does(
+    matcher: str,
+) -> None:
+    got = _matched_values("SessionStart", {"matcher": matcher})
+    assert got == _READ_BY_DOCTOR[matcher]
+
+
+@pytest.mark.parametrize("matcher", sorted(_NOT_READ_BY_DOCTOR))
+def test_doctor_reads_no_matcher_outside_its_subset(matcher: str) -> None:
+    assert _matched_values("SessionStart", {"matcher": matcher}) is None
+    assert _matched_values("PreToolUse", {"matcher": matcher}) is None
 
 
 @pytest.mark.parametrize(
-    ("pattern", "rejected"),
+    ("matcher", "names"),
     [
-        ("(?=x)", True),
-        ("(?<!x)", True),
-        (r"\1", True),
-        (r"[\1]", True),
-        ("(?P=a)", True),
-        ("(?#c)", True),
-        ("(?a)x", True),
-        (r"x\Z", True),
-        (r"[\b]", True),
-        ("x{,3}", True),
-        # A `{` always starts a counted repetition in Rust.
-        ("x{", True),
-        ("{", True),
-        ("^{", True),
-        (".{", True),
-        ("x{a}", True),
-        ("x{2,1}", True),
-        ("x{2, }", True),
-        # A `[` in a class opens a nested class.
-        ("[[]", True),
-        ("[[]]", True),
-        ("[a[b]", True),
-        # Errors that Python's `re` shares.
-        ("(", True),
-        ("x)", True),
-        ("[", True),
-        ("[]", True),
-        ("*x", True),
-        ("x|*", True),
-        ("(?i)*", True),
-        ("(?)", True),
-        ("[z-a]", True),
-        (r"[\d-z]", True),
-        (r"\x4", True),
-        (r"\x{}", True),
-        (r"\e", True),
-        ("x{2}", False),
-        ("x{ 2 }", False),
-        ("x{1,}{2}", False),
-        ("x**", False),
-        (r"\b{2}", False),
-        ("[a[b]c]", False),
-        ("[[:alpha:]]", False),
-        ("[[:foo:]]", False),
-        ("[]a]", False),
-        ("[a&&[^b]]", False),
-        ("(?i:x)", False),
-        ("(?-s)x", False),
-        ("(?P<a>x)", False),
-        ("(?<a>x)", False),
-        ("[(?=]", False),
-        ("[](?=]", False),
-        (r"\(?=x", False),
-        (r"\bx\b", False),
-        ("x{2,}", False),
+        ("Bash", frozenset({"Bash"})),
+        ("Bash|Read", frozenset({"Bash", "Read"})),
+        ("^Bash$", frozenset({"Bash"})),
+        ("^Bash$|^Read$", frozenset({"Bash", "Read"})),
+        ("^Ba", None),
+        ("sh$", None),
+        ("Ba", frozenset({"Ba"})),
+        ("^Bash$|Read", None),
     ],
 )
-def test_rust_regex_rejects_what_regex_1_12_rejects(
-    pattern: str, rejected: bool,
+def test_doctor_reads_a_tool_matcher_only_as_exact_names(
+    matcher: str, names: frozenset[str] | None,
 ) -> None:
-    """Each verdict is what regex 1.12.3's `Regex::new` returned."""
-    assert _rust_regex_rejects(pattern) is rejected
+    """`Ba` is a list of one exact name to Codex, and `^Ba` a regex."""
+    assert _matched_values("PreToolUse", {"matcher": matcher}) == names
 
 
 @pytest.mark.timeout(60)
@@ -1473,15 +1519,15 @@ def test_doctor_reads_the_compaction_trigger_matcher(
 @pytest.mark.parametrize(
     ("event", "matcher"),
     [
-        # Doctor can't list the tool names a regex matches, so it counts
-        # every handler.
-        ("PreToolUse", "^Web"),
-        ("PostToolUse", "Web.*"),
+        # `.*` matches every tool name, so the copy runs beside setup's.
+        ("PreToolUse", ".*"),
+        ("PostToolUse", ".*"),
         # Codex ignores a matcher on Stop.
         ("Stop", "never"),
+        ("Stop", "(?=x)"),
     ],
 )
-def test_doctor_counts_every_handler_where_it_reads_no_matcher(
+def test_doctor_counts_every_handler_where_every_fire_runs_it(
     tmp_path: Path, event: str, matcher: str,
 ) -> None:
     codex_dir, hooks, _program = _installed(tmp_path)
@@ -1508,10 +1554,15 @@ _TOOL_MATCHERS = {
     "Edit|Agent and spawn_agent": (
         "PreToolUse", ["Edit|Agent", "spawn_agent"], 2,
     ),
-    # A group under no matcher or `*` counts as running on every fire, so
-    # the copy under `WebSearch` counts as well.
-    "no matcher and WebSearch": ("PreToolUse", [None, "WebSearch"], 3),
-    "* and WebSearch": ("PreToolUse", ["*", "WebSearch"], 3),
+    # A group under no matcher or `*` runs on every fire, so a `Bash` call
+    # runs it and setup's handler, and a `WebSearch` call runs it and the
+    # copy under `WebSearch`. No call runs all three.
+    "no matcher and WebSearch": ("PreToolUse", [None, "WebSearch"], 2),
+    "* and WebSearch": ("PreToolUse", ["*", "WebSearch"], 2),
+    "no matcher and Bash": ("PreToolUse", [None, "Bash"], 3),
+    # A regex whose branches are each `^name$` lists exact names.
+    "^Bash$|^Read$": ("PreToolUse", ["^Bash$|^Read$"], 2),
+    "^WebSearch$": ("PreToolUse", ["^WebSearch$"], 0),
 }
 
 
@@ -1767,7 +1818,7 @@ _WRAPPER_MATCHERS = {
         "PreToolUse", "WebSearch", "sh -c '{search}'", False,
     ),
     "sh -c under Bash": ("PreToolUse", "Bash", "sh -c '{search}'", True),
-    "sh -c under ^Web": ("PreToolUse", "^Web", "sh -c '{search}'", True),
+    "sh -c under ^Bash$": ("PreToolUse", "^Bash$", "sh -c '{search}'", True),
     # No handler of the program runs in PreCompact.
     "lone sh -c in PreCompact": ("PreCompact", None, "sh -c '{p}'", False),
 }
@@ -1841,7 +1892,7 @@ def test_doctor_gives_the_disjoint_wrapper_the_lone_handler_warning(
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("where", ["hooks.json", "config.toml"])
-@pytest.mark.parametrize("event", ["SessionStart", "SessionEnd"])
+@pytest.mark.parametrize("event", ["SessionStart", "PreCompact"])
 def test_doctor_warns_about_a_copy_of_setup_command_in_another_event(
     tmp_path: Path, event: str, where: str,
 ) -> None:
@@ -1879,15 +1930,20 @@ def _old_install_program(tmp_path: Path, name: str) -> str:
 # A handler that names aelf-stop-hook where no fire runs another handler
 # of it: (event, file, whether the handler is the stop program itself at
 # another path, whether setup's next run replaces it). Setup writes Stop
-# in hooks.json, writes no SessionEnd handler, and never touches
-# config.toml.
+# in hooks.json, writes no handler in Codex's agent stop event, and never
+# touches config.toml. Python joins the event name split across literals.
+_AGENT_STOP = "Sub" "agentStop"
 _LONE_HANDLERS = {
     "older install in Stop": ("Stop", "hooks.json", True, True),
-    "older install in SessionEnd": ("SessionEnd", "hooks.json", True, False),
+    "older install in the agent stop event": (
+        _AGENT_STOP, "hooks.json", True, False,
+    ),
     "older install in config.toml Stop": ("Stop", "config.toml", True, False),
-    "wrapper in SessionEnd": ("SessionEnd", "hooks.json", False, False),
-    "wrapper in config.toml SessionEnd": (
-        "SessionEnd", "config.toml", False, False,
+    "wrapper in the agent stop event": (
+        _AGENT_STOP, "hooks.json", False, False,
+    ),
+    "wrapper in config.toml in the agent stop event": (
+        _AGENT_STOP, "config.toml", False, False,
     ),
 }
 
@@ -1996,12 +2052,15 @@ def test_doctor_passes_a_hooks_json_written_before_this_build(
 # one of Codex's agent events: (first matcher, second matcher, exit code).
 # Codex reads the matcher there, tested against a name doctor doesn't list,
 # so groups that list exact names run together only when they share one,
-# and a regex or no matcher runs with every group.
+# and a group under no matcher runs with every group. Doctor counts no run
+# under any other regex, and warns instead.
 _AGENT_EVENT_MATCHERS: dict[str, tuple[str | None, str, int]] = {
     "disjoint exact names": ("a", "b", 0),
     "a shared exact name": ("a|b", "b", 1),
     "a matcher Rust rejects": ("(", "(", 0),
-    "a regex beside an exact name": ("^x", "b", 1),
+    "an anchored name beside the same exact name": ("^b$", "b", 1),
+    # Each branch of a regex in these events must be `^name$`.
+    "a partly anchored regex beside an exact name": ("^x", "b", 0),
     "no matcher beside an exact name": (None, "b", 1),
 }
 _AGENT_EVENTS = ("Sub" "agentStart", "Sub" "agentStop")
