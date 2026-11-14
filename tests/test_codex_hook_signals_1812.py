@@ -18,12 +18,14 @@ import argparse
 import io
 import json
 import os
+import random
 import re
 import subprocess
 import sys
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -1232,7 +1234,7 @@ def _unread_warning_for(
     return next(
         (
             ln for ln in out.splitlines()
-            if ln.startswith(f"[warn] {event} handler")
+            if ln.startswith(f"[warn] {event} handler at `hooks.{event}[")
             and f"names {key}, and doctor counts no run in its group, because "
             f"{why}." in ln
             and ln.endswith(f"on the same fire. Handler: {command}")
@@ -1386,7 +1388,7 @@ def test_doctor_counts_no_run_in_an_event_whose_values_it_does_not_list(
         ln for ln in out.splitlines()
         if _unread_warning_for(ln, event, "aelf-stop-hook", ours, why)
     ]
-    assert lines, out
+    assert len(lines) == 2, out
 
 
 # Matchers and the SessionStart sources Rust's `regex` 1.12.3 matches with
@@ -1903,10 +1905,11 @@ def test_doctor_warns_about_a_copy_of_setup_command_in_another_event(
     ours = _first_command(hooks, "UserPromptSubmit")
     if where == "hooks.json":
         _add_group(hooks, event, ours)
-        label = ""
+        label, group = "", 1
     else:
         _write_config_hooks(codex_dir, event, ours)
         label = f" in the [hooks] table of {codex_dir / 'config.toml'}"
+        group = 0
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert "times" not in out
@@ -1914,7 +1917,8 @@ def test_doctor_warns_about_a_copy_of_setup_command_in_another_event(
     assert (
         f"[warn] {event} handler{label} runs aelf-hook with a command `aelf "
         "setup --host codex` writes, but setup writes no aelf-hook handler "
-        f"in {event}; delete this one: {ours}\n" in out
+        f"in {event}; delete this one, at `hooks.{event}[{group}].hooks[0]`: "
+        f"{ours}\n" in out
     ), out
 
 
@@ -2129,6 +2133,305 @@ def test_doctor_warns_about_a_name_in_any_string_of_a_handler_or_group(
         ln.startswith("[warn] Stop handler may also run aelf-stop-hook.")
         and ln.endswith(f"delete this one: {stop}")
         for ln in out.splitlines()
+    ), out
+
+
+# --- the last check: every string that names a program --------------------------
+
+# A path written the way doctor writes one, such as `hooks.Stop[1].hooks[0]`.
+_PATH_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _render(path: tuple[object, ...]) -> str:
+    out = ""
+    for part in path:
+        if isinstance(part, int):
+            out += f"[{part}]"
+        elif _PATH_NAME.fullmatch(str(part)):
+            out += f".{part}" if out else str(part)
+        else:
+            out += f"[{json.dumps(str(part))}]"
+    return out
+
+
+def _named_strings(
+    value: object, path: tuple[object, ...],
+) -> list[tuple[tuple[object, ...], str]]:
+    """Every string in `value` that names an owned program, keys included,
+    each with its path; a key's path is its member's."""
+    found: list[tuple[tuple[object, ...], str]] = []
+    if isinstance(value, str):
+        if any(k in value.casefold() for k in _OWNED_BASENAMES):
+            found.append((path, value))
+    elif isinstance(value, dict):
+        for key, child in cast(dict[str, object], value).items():
+            found += _named_strings(key, (*path, key))
+            found += _named_strings(child, (*path, key))
+    elif isinstance(value, list):
+        for i, child in enumerate(cast(list[object], value)):
+            found += _named_strings(child, (*path, i))
+    return found
+
+
+def _unreported(
+    warnings: list[str], config: Path, tag: str,
+    strings: list[tuple[tuple[object, ...], str]],
+) -> list[str]:
+    """The paths of the strings that no warning names, with the program,
+    by the string's path or a path above it in the same file."""
+    missed: list[str] = []
+    for path, text in strings:
+        keys = [k for k in _OWNED_BASENAMES if k in text.casefold()]
+        above = [f"`{_render(path[:n])}`" for n in range(1, len(path) + 1)]
+        if not any(
+            (str(config) in w) == (tag == "toml")
+            and all(k in w for k in keys) and any(a in w for a in above)
+            for w in warnings
+        ):
+            missed.append(f"{tag} {_render(path)}: {text}")
+    return missed
+
+
+def _toml_value(value: object) -> str:
+    """`value` as a TOML inline value, keys always quoted."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, str)):
+        return json.dumps(value)
+    if isinstance(value, list):
+        items = cast(list[object], value)
+        return "[" + ", ".join(_toml_value(v) for v in items) + "]"
+    assert isinstance(value, dict)
+    return "{" + ", ".join(
+        f"{json.dumps(k)} = {_toml_value(v)}"
+        for k, v in cast(dict[str, object], value).items()
+    ) + "}"
+
+
+# Text that names a program but is no command setup writes.
+_NAMING = (
+    "aelf-hook", "AELF-STOP-HOOK", "/opt/aelf-search-tool-hook --x",
+    "x aelf-commit-ingest", "aelf-pre-issue-hook.py", "aelf-transcript-logger;",
+    "env aelf-session-start-hook",
+)
+_PLAIN = ("x", "echo hi", "Bash", "")
+
+
+def _junk(rng: random.Random, depth: int) -> object:
+    """A random JSON and TOML value whose strings may name a program."""
+    roll = rng.random()
+    if depth <= 0 or roll < 0.35:
+        return rng.choice([
+            rng.choice(_NAMING), rng.choice(_PLAIN), 1, True,
+        ])
+    if roll < 0.65:
+        return [_junk(rng, depth - 1) for _ in range(rng.randint(0, 3))]
+    return {
+        (rng.choice(_NAMING) if rng.random() < 0.4 else rng.choice("abc")):
+        _junk(rng, depth - 1)
+        for _ in range(rng.randint(0, 3))
+    }
+
+
+def _junk_handler(rng: random.Random) -> object:
+    roll = rng.random()
+    if roll < 0.15:
+        return ["command", _junk(rng, 2)]
+    if roll < 0.3:
+        return {
+            "type": "mcp_tool", "server": "s", "tool": "t",
+            "input": {"a": _junk(rng, 2)},
+        }
+    handler: dict[str, object] = {
+        "type": rng.choice(["command", "prompt"]),
+        "command": rng.choice(_NAMING + _PLAIN),
+    }
+    if rng.random() < 0.3:
+        handler["commandWindows"] = rng.choice(_NAMING)
+    if rng.random() < 0.3:
+        handler["statusMessage"] = rng.choice(_NAMING)
+    if rng.random() < 0.4:
+        handler["extra"] = _junk(rng, 3)
+    return handler
+
+
+# Matchers for junk groups: some doctor reads, some it doesn't, one Codex
+# rejects.
+_JUNK_MATCHERS = (None, "", "*", "startup", "^res", "(?i)x", "(", "Bash")
+
+
+def _junk_events(rng: random.Random) -> dict[str, object]:
+    """Junk groups under Codex events and junk values under other keys."""
+    events: dict[str, object] = {}
+    for event in rng.sample(
+        ["Stop", "SessionStart", "SessionEnd", "PreToolUse", "PreCompact"],
+        rng.randint(0, 2),
+    ):
+        groups: list[object] = []
+        for _ in range(rng.randint(1, 2)):
+            if rng.random() < 0.15:
+                groups.append(["", [_junk_handler(rng)]])
+                continue
+            group: dict[str, object] = {
+                "hooks": [_junk_handler(rng) for _ in range(rng.randint(1, 2))],
+            }
+            matcher = rng.choice(_JUNK_MATCHERS)
+            if matcher is not None:
+                group["matcher"] = matcher
+            if rng.random() < 0.2:
+                group["extra"] = _junk(rng, 2)
+            groups.append(group)
+        events[event] = groups
+    for key in rng.sample(["Notification", "aelf-hook", "x y"], rng.randint(0, 2)):
+        events[key] = _junk(rng, 3)
+    return events
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("seed", range(4))
+def test_doctor_reports_every_program_name_in_random_nestings(
+    tmp_path: Path, seed: int,
+) -> None:
+    """Strings that name a program anywhere in hooks.json or config.toml,
+    at any depth, as keys or values, under events, other keys, extra
+    fields, and arrays, each get a warning that names their path. Setup's
+    own commands are the only strings left out."""
+    rng = random.Random(1812 + seed)
+    codex_dir, hooks, _program = _installed(tmp_path)
+    setup_doc = json.loads(hooks.read_text(encoding="utf-8"))
+    config = codex_dir / "config.toml"
+    for _case in range(10):
+        doc = json.loads(json.dumps(setup_doc))
+        for event, groups in _junk_events(rng).items():
+            if isinstance(groups, list) and event in doc["hooks"]:
+                doc["hooks"][event].extend(groups)
+            else:
+                doc["hooks"][event] = groups
+        if rng.random() < 0.3:
+            doc["description"] = rng.choice(_NAMING)
+        stop = doc["hooks"]["Stop"][0]["hooks"][1]
+        if rng.random() < 0.3:
+            stop["extra"] = _junk(rng, 2)
+        hooks.write_text(json.dumps(doc), encoding="utf-8")
+        toml_hooks = _junk_events(rng)
+        config.write_text(f"hooks = {_toml_value(toml_hooks)}\n", encoding="utf-8")
+        own = {
+            ("hooks", event, 0, "hooks", h, "command")
+            for event, groups in setup_doc["hooks"].items()
+            for h in range(len(groups[0]["hooks"]))
+        }
+        json_strings = [
+            (p, t) for p, t in _named_strings(doc, ()) if p not in own
+        ]
+        toml_strings = _named_strings(toml_hooks, ("hooks",))
+        for windows in (False, True):
+            report = doctor_codex(codex_dir, windows=windows)
+            assert report.duplicate_runs == []
+            assert report.hooks_file_rejected is None
+            assert report.config_hooks_rejected is None
+            missed = _unreported(
+                report.warnings, config, "json", json_strings,
+            ) + _unreported(report.warnings, config, "toml", toml_strings)
+            assert missed == [], (missed, report.warnings)
+
+
+def _repeated_key(doc: dict[str, object], ours: str) -> str:
+    """hooks.json text with a handler field written twice; json.loads keeps
+    the second value."""
+    text = json.dumps(doc)
+    return text.replace(
+        '"Stop": [{"hooks": [',
+        '"Stop": [{"hooks": [{"type": "command", "command": "true", '
+        f'"z": {json.dumps(ours)}, "z": 1}}, ',
+        1,
+    )
+
+
+# A form of hooks.json that names setup's stop command `{s}` where no other
+# check reads it, and the path doctor names. Codex reads a `hooks` value
+# written as an array by position.
+_UNREAD_FORMS: dict[
+    str, tuple[Callable[[dict[str, object], str], str], Callable[[str], str]],
+] = {
+    "description": (
+        lambda d, s: json.dumps({**d, "description": s}),
+        lambda _s: "description",
+    ),
+    "hooks written as an array": (
+        lambda _d, s: json.dumps({"hooks": [
+            [], [], [], [], [], [], [],
+            [{"hooks": [{"type": "command", "command": s}]}],
+        ]}),
+        lambda _s: "hooks[7][0].hooks[0].command",
+    ),
+    "object under a key that names no event": (
+        lambda d, s: json.dumps({"hooks": {
+            **cast_dict(d["hooks"]),
+            "Bogus": {"hooks": [{"type": "command", "command": s}]},
+        }}),
+        lambda _s: "hooks.Bogus.hooks[0].command",
+    ),
+    "a key that names the program": (
+        lambda d, s: json.dumps({"hooks": {**cast_dict(d["hooks"]), s: []}}),
+        lambda s: f"hooks[{json.dumps(s)}]",
+    ),
+    "a field of setup's handler other than its command": (
+        lambda d, s: json.dumps(d).replace(
+            f'"command": {json.dumps(s)}',
+            f'"command": {json.dumps(s)}, "note": {json.dumps(s)}',
+        ),
+        lambda _s: "hooks.Stop[0].hooks[1].note",
+    ),
+    "the first value of a repeated field": (
+        _repeated_key, lambda _s: "hooks.Stop[0].hooks[0].z",
+    ),
+}
+
+
+def cast_dict(value: object) -> dict[str, object]:
+    assert isinstance(value, dict)
+    return cast(dict[str, object], value)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_UNREAD_FORMS))
+def test_doctor_names_the_path_of_a_program_name_no_other_check_reads(
+    tmp_path: Path, shape: str,
+) -> None:
+    codex_dir, hooks, _program = _installed(tmp_path)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    stop = next(
+        str(h["command"]) for h in doc["hooks"]["Stop"][0]["hooks"]
+        if "aelf-stop-hook" in str(h["command"])
+    )
+    build, path_of = _UNREAD_FORMS[shape]
+    hooks.write_text(build(doc, stop), encoding="utf-8")
+    path = path_of(stop)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert (
+        f"in {hooks} names aelf-stop-hook, outside the handlers `aelf setup "
+        "--host codex` writes, and no other doctor check covers it." in out
+    ), out
+    assert f"at `{path}` in {hooks}" in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_names_a_config_toml_handler_outside_setup_handlers(
+    tmp_path: Path,
+) -> None:
+    """One copy of setup's command in config.toml `[hooks]` is no duplicate
+    run when hooks.json holds none, and setup never writes config.toml."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    hooks.unlink()
+    _write_config_hooks(codex_dir, "SessionStart", ours)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert (
+        "[warn] The string at `hooks.SessionStart[0].hooks[0].command` in the "
+        f"[hooks] table of {codex_dir / 'config.toml'} names "
+        f"{_HOOK}, outside the handlers" in out
     ), out
 
 
