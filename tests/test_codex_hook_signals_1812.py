@@ -488,19 +488,26 @@ def test_a_windows_command_names_the_program_with_a_launcher_suffix(
     }
 
 
+@pytest.mark.parametrize("windows", [False, True])
 @pytest.mark.parametrize(
     "command",
     [
         "/x/aelf-session-start-hook.exe",
         "/x/AELF-SESSION-START-HOOK",
+        "/x/Aelf-Session-Start-Hook",
+        "/usr/bin/env -Saelf-session-start-hook",
+        "cmd /caelf-session-start-hook",
+        "/x/xaelf-session-start-hook_2",
     ],
 )
-def test_a_posix_command_names_the_program_only_as_written(
-    command: str,
+def test_a_command_names_the_program_in_any_case_on_every_platform(
+    command: str, windows: bool,
 ) -> None:
-    """On POSIX a launcher suffix or another case is another program."""
+    """The name is a plain substring in any case, wherever it is."""
     handler = {"type": "command", "command": command}
-    assert _named_owned_keys(handler, windows=False) == {}
+    assert set(_named_owned_keys(handler, windows=windows)) == {
+        "aelf-session-start-hook",
+    }
 
 
 _HOOK = "aelf-session-start-hook"
@@ -1160,17 +1167,13 @@ def test_setup_and_doctor_pass_an_env_search_handler_under_websearch(
     assert "times" not in out
 
 
-# Each foreign handler holds no owned program name with the start or end
-# of the command, or a character outside [A-Za-z0-9_.-], on each side.
-# `{p}` is the program path.
+# Each foreign handler holds no owned program name in any case. A name
+# built at run time or a link with another name escapes the check.
 _NAMES_NO_PROGRAM = {
     "other hook": "/usr/bin/python3 /x/other-hook.py SessionStart --verbose",
-    "suffix after a dot": "/usr/bin/python3 {p}.py --host codex",
-    "suffix after a dash": "{p}-old --host codex",
-    "suffix after an underscore": "{p}_2 --host codex",
-    "suffix after a digit": "{p}2 --host codex",
-    "prefix letter": "/x/xaelf-session-start-hook",
-    "prefix dot": "/x/.aelf-session-start-hook",
+    "built from parts": "X=hook; exec aelf-session-start-$X --host codex",
+    "one letter short": "/x/aelf-session-start-hoo --host codex",
+    "a link with another name": "/x/session-start-link --host codex",
 }
 
 
@@ -1189,6 +1192,46 @@ def test_doctor_ignores_a_foreign_handler_that_names_no_aelfrice_program(
     assert rc == 0, out
     assert "times" not in out
     assert "may also run" not in out
+
+
+# Each foreign handler holds the program name inside other text: right
+# after a letter or `-`, after an escape such as `\n` or `\t`, in another
+# case, or inside a longer word. The round-12 review found doctor silent
+# on the first seven, and a shell runs the program for each of them.
+# `{p}` is the program path and `{n}` its name.
+_INSIDE_TEXT = {
+    "env -S attached": "/usr/bin/env -S{n}",
+    "default expansion": "exec \"${{CMD:-{n}}}\"",
+    "default expansion without :": "exec ${{CMD-{n}}}",
+    "python3 -c after \\n": (
+        "python3 -c 'import os; os.system(\"true\\n{n}\")'"
+    ),
+    "printf \\n into sh": "printf 'true\\n{n}\\n' | sh",
+    "bash -c $'...\\n'": "bash -c $'true\\n{n}'",
+    "printf \\t into sh": "printf '\\t{n}' | sh",
+    "other case": "Aelf-Session-Start-Hook",
+    "upper case path": "{P} --host codex",
+    "suffix after a dot": "/usr/bin/python3 {p}.py --host codex",
+    "suffix after a dash": "{p}-old --host codex",
+    "suffix after an underscore": "{p}_2 --host codex",
+    "suffix after a digit": "{p}2 --host codex",
+    "prefix letter": "/x/xaelf-session-start-hook",
+    "prefix dot": "/x/.aelf-session-start-hook",
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_INSIDE_TEXT))
+def test_doctor_warns_about_a_name_inside_other_text(
+    tmp_path: Path, shape: str,
+) -> None:
+    codex_dir, hooks, program = _installed(tmp_path)
+    other = _INSIDE_TEXT[shape].format(p=program, n=_HOOK, P=program.upper())
+    _set_session_start_commands(hooks, _session_start_command(hooks), other)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    assert _warning_for(out, other) is not None, out
 
 
 # Each foreign handler only prints the program's name. Doctor reads no

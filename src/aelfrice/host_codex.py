@@ -52,7 +52,6 @@ from typing import Final, cast
 
 from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT
 from aelfrice.launcher import (
-    LAUNCHER_SUFFIXES,
     command_launcher_key,
     command_program_keys,
     command_tokens,
@@ -1596,40 +1595,6 @@ _SETUP_SCOPES: Final[tuple[SettingsScope, ...]] = ("user",)
 _WINDOWS_COMMAND_FIELDS: Final[tuple[str, ...]] = (
     "commandWindows", "command_windows",
 )
-#: The characters a program name can hold. Doctor reads an owned program
-#: name in a command only where no character of this class is next to it.
-_NAME_CHARS: Final[str] = "A-Za-z0-9_.-"
-
-
-def _owned_name_pattern(*, windows: bool) -> re.Pattern[str]:
-    """A regex that finds an owned program name in a command's text.
-
-    The name must have the start or end of the text, or a character
-    outside `_NAME_CHARS`, on each side. On Windows the name can end in a
-    launcher suffix such as `.exe`, and its case doesn't matter, the way
-    `launcher_key` reads a name there. The class next to the name always
-    matches case.
-    """
-    names = "|".join(
-        re.escape(name)
-        for name in sorted(_OWNED_BASENAMES, key=len, reverse=True)
-    )
-    suffix = ""
-    if windows:
-        suffix = "(?:{})?".format(
-            "|".join(re.escape(s) for s in sorted(LAUNCHER_SUFFIXES)),
-        )
-    return re.compile(
-        rf"(?<!(?-i:[{_NAME_CHARS}]))({names}){suffix}"
-        rf"(?!(?-i:[{_NAME_CHARS}]))",
-        re.IGNORECASE if windows else 0,
-    )
-
-
-#: `_owned_name_pattern` for POSIX (False) and for Windows (True).
-_OWNED_NAME: Final[dict[bool, re.Pattern[str]]] = {
-    windows: _owned_name_pattern(windows=windows) for windows in (False, True)
-}
 
 
 def _handler_command(handler: object) -> str | None:
@@ -1673,11 +1638,14 @@ def _named_owned_keys(
     with the field Codex runs on the platform (`_run_command`). Doctor
     reads `command` and the Windows fields of a handler of any `type`.
 
-    This is a text match (`_OWNED_NAME`). Doctor reads no shell syntax, so
-    a name counts wherever it is in the text: in a script string such as
-    `python3 -c "...aelf-session-start-hook..."`, in a command substitution,
-    after `=` as in `--cmd=aelf-session-start-hook`, and in a command that
-    only prints the name or checks that the program exists.
+    A field names a program when it holds the program's name as a plain
+    substring in any case, on every platform. Doctor reads no shell syntax,
+    so the name counts wherever it is: in a script string such as
+    `python3 -c "...aelf-session-start-hook..."`, right after `-S` or
+    `:-`, after an escape such as `\\n`, inside a longer word such as
+    `aelf-session-start-hook.py`, and in a command that only prints the
+    name. A name that the command builds at run time, or a link with
+    another name, escapes it.
     """
     if not isinstance(handler, dict):
         return {}
@@ -1692,9 +1660,10 @@ def _named_owned_keys(
         text = hd.get(name)
         if not isinstance(text, str):
             continue
-        for match in _OWNED_NAME[win].finditer(text):
-            key = match.group(1).casefold() if win else match.group(1)
-            found.setdefault(key, text)
+        folded = text.casefold()
+        for key in sorted(_OWNED_BASENAMES):
+            if key in folded:
+                found.setdefault(key, text)
     return found
 
 
