@@ -1438,11 +1438,13 @@ class CodexDoctorReport:
     #: under the matcher an earlier release wrote, which leaves out `fork`
     #: (#1812).
     stale_matchers: list[str] = field(default_factory=list[str])
-    #: (event, program, count) for each aelfrice program that more than one
-    #: handler in one event runs with a command byte-identical to the one
-    #: `aelf setup --host codex` writes for that program (#1812). The count
-    #: is for one fire, so handlers whose matchers share no value, such as
-    #: a SessionStart `startup` group and a `resume` group, don't add up.
+    #: (event, program, count) for each aelfrice program whose command
+    #: Codex starts more than once on one fire of an event, because more
+    #: than one `command` handler there has, in the field Codex runs on this
+    #: platform, a command byte-identical to the one `aelf setup --host
+    #: codex` writes for that program (#1812). The count is for one fire,
+    #: so handlers whose matchers share no value, such as a SessionStart
+    #: `startup` group and a `resume` group, don't add up.
     duplicate_runs: list[tuple[str, str, int]] = field(
         default_factory=list[tuple[str, str, int]],
     )
@@ -1505,7 +1507,8 @@ class CodexDoctorReport:
             )
         for event, program, count in self.duplicate_runs:
             reasons.append(
-                f"{event} runs {program} {count} times, once per copy of "
+                f"{event} starts the {program} command {count} times, "
+                "once per copy of "
                 "the handler `aelf setup --host codex` writes; keep one "
                 "and delete the others",
             )

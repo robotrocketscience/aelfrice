@@ -556,7 +556,7 @@ def test_doctor_faults_a_copy_of_setup_handler_at_any_install_path(
     _set_session_start_commands(hooks, ours, ours)
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 1, out
-    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+    assert "SessionStart starts the aelf-session-start-hook command 2 times" in out
     assert "may also run" not in out
 
 
@@ -567,7 +567,7 @@ def test_doctor_faults_a_copied_session_start_handler(tmp_path: Path) -> None:
     _set_session_start_commands(hooks, ours, ours)
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 1, out
-    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+    assert "SessionStart starts the aelf-session-start-hook command 2 times" in out
 
 
 # Copies of setup's SessionStart handler under a `type` Codex runs no
@@ -857,7 +857,7 @@ def test_doctor_faults_a_second_run_under_an_overlapping_matcher(
     )
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 1, out
-    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+    assert "SessionStart starts the aelf-session-start-hook command 2 times" in out
 
 
 @pytest.mark.timeout(60)
@@ -935,7 +935,7 @@ def test_doctor_counts_a_matcher_it_cannot_read_as_every_fire(
     _add_group(hooks, "SessionStart", _session_start_command(hooks), matcher)
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 1, out
-    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+    assert "SessionStart starts the aelf-session-start-hook command 2 times" in out
     assert "never runs" not in out
     unread = (
         f"[warn] SessionStart group with matcher {matcher!r}: doctor can't "
@@ -1037,7 +1037,7 @@ def test_doctor_counts_runs_on_one_source_not_across_sources(
     _add_group(hooks, "SessionStart", ours, "resume")
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 1, out
-    assert "SessionStart runs aelf-session-start-hook 2 times" in out
+    assert "SessionStart starts the aelf-session-start-hook command 2 times" in out
 
 
 @pytest.mark.timeout(60)
@@ -1050,7 +1050,7 @@ def test_doctor_faults_two_runs_on_a_forked_session(tmp_path: Path) -> None:
     _add_group(hooks, "SessionStart", ours, "fork")
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 1, out
-    assert "SessionStart runs aelf-session-start-hook 3 times" in out
+    assert "SessionStart starts the aelf-session-start-hook command 3 times" in out
 
 
 @pytest.mark.timeout(60)
@@ -1072,7 +1072,7 @@ def test_doctor_reads_the_compaction_trigger_matcher(
     )
     got, out = _doctor(codex_dir, tmp_path / "skills")
     assert got == rc, out
-    assert ("PreCompact runs aelf-transcript-logger 2 times" in out) == bool(rc)
+    assert ("PreCompact starts the aelf-transcript-logger command 2 times" in out) == bool(rc)
 
 
 @pytest.mark.timeout(60)
@@ -1095,7 +1095,7 @@ def test_doctor_counts_every_handler_where_it_reads_no_matcher(
     _add_group(hooks, event, command, matcher)
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 1, out
-    assert f"{event} runs {command_launcher_key(command)} 2 times" in out
+    assert f"{event} starts the {command_launcher_key(command)} command 2 times" in out
 
 
 # Copies of the event's first handler, each in its own group under one of
@@ -1134,7 +1134,7 @@ def test_doctor_reads_exact_tool_matchers(tmp_path: Path, shape: str) -> None:
     assert rc == (1 if runs else 0), out
     if runs:
         key = command_launcher_key(command)
-        assert f"{event} runs {key} {runs} times" in out, out
+        assert f"{event} starts the {key} command {runs} times" in out, out
     else:
         assert "times" not in out, out
 
