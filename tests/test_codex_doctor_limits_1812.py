@@ -522,3 +522,157 @@ def test_doctor_reads_a_lone_surrogate_where_serde_skips_it(
     ), out
 
 
+# --- handlers Codex doesn't start ----------------------------------------------
+
+
+def _toml_copy(command: str, matcher: str = "startup") -> str:
+    """A config.toml SessionStart group that holds `command`."""
+    return (
+        f'[[hooks.SessionStart]]\nmatcher = "{matcher}"\n'
+        "[[hooks.SessionStart.hooks]]\n"
+        f'type = "command"\ncommand = {json.dumps(command)}\n'
+    )
+
+
+# config.toml settings and profile files that turn the `hooks` feature off
+# for some launch, or leave doctor unable to tell: (config.toml text, profile
+# files, the reason doctor gives).
+_HOOKS_OFF: dict[str, tuple[str, dict[str, str], str]] = {
+    "hooks false": (
+        "[features]\nhooks = false\n", {},
+        "[features] in {config} sets `hooks` to false",
+    ),
+    "codex_hooks false": (
+        "[features]\ncodex_hooks = false\n", {},
+        "[features] in {config} sets `codex_hooks` to false",
+    ),
+    "hooks false over codex_hooks true": (
+        "[features]\ncodex_hooks = true\nhooks = false\n", {},
+        "[features] in {config} sets `hooks` to false",
+    ),
+    "not true or false": (
+        '[features]\nhooks = "off"\n', {},
+        "`hooks` in [features] in {config} isn't true or false",
+    ),
+    "features not a table": (
+        "features = 1\n", {},
+        "[features] in {config} isn't a table",
+    ),
+    "a profile table": (
+        "[profiles.work.features]\nhooks = false\n", {},
+        "[profiles.work.features] in {config} sets `hooks` to false",
+    ),
+    "a profile file": (
+        "", {"work.config.toml": "[features]\nhooks = false\n"},
+        "[features] in the profile file {dir}/work.config.toml sets `hooks` "
+        "to false",
+    ),
+    "a profile file's profile table": (
+        "", {"work.config.toml": "[profiles.x.features]\ncodex_hooks = false\n"},
+        "[profiles.x.features] in the profile file {dir}/work.config.toml "
+        "sets `codex_hooks` to false",
+    ),
+    "an unreadable profile file": (
+        "", {"work.config.toml": "[features\n"},
+        "doctor can't read the profile file {dir}/work.config.toml, which "
+        "Codex reads when you pass `--profile work`",
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_HOOKS_OFF))
+def test_doctor_counts_no_run_while_hooks_may_be_off(
+    tmp_path: Path, shape: str,
+) -> None:
+    """Two copies of setup's command that only config.toml holds fail
+    doctor, unless a setting can turn the `hooks` feature off. Then Codex
+    may start neither, so doctor counts no run and warns about each."""
+    codex_dir, hooks, ours = _installed(tmp_path)
+    hooks.unlink()
+    settings, files, reason = _HOOKS_OFF[shape]
+    config = codex_dir / "config.toml"
+    config.write_text(
+        settings + _toml_copy(ours) + _toml_copy(ours, "startup|resume"),
+        encoding="utf-8",
+    )
+    for name, text in files.items():
+        (codex_dir / name).write_text(text, encoding="utf-8")
+    why = reason.format(config=config, dir=codex_dir)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out, out
+    assert (
+        f"[warn] doctor counts no duplicate run, because {why}, and Codex "
+        "starts no hook of yours while its `hooks` feature is off\n"
+    ) in out, out
+    for g in (0, 1):
+        assert (
+            f"[warn] SessionStart handler at `hooks.SessionStart[{g}].hooks[0]`"
+            f" in the [hooks] table of {config} names aelf-session-start-hook, "
+            f"and doctor counts no run for it, because {why}. Handler: {ours}\n"
+        ) in out, out
+
+
+# Settings that leave the feature on for every launch, and a file that
+# isn't a profile file.
+_HOOKS_ON: dict[str, tuple[str, dict[str, str]]] = {
+    "codex_hooks false under hooks true": (
+        "[features]\ncodex_hooks = false\nhooks = true\n", {},
+    ),
+    "a profile that turns them on": (
+        "[profiles.work.features]\nhooks = true\n",
+        {"home.config.toml": "[features]\ncodex_hooks = true\n"},
+    ),
+    "not a profile name": ("", {"my work.config.toml": "[features\n"}),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_HOOKS_ON))
+def test_doctor_counts_runs_while_hooks_stay_on(
+    tmp_path: Path, shape: str,
+) -> None:
+    codex_dir, hooks, ours = _installed(tmp_path)
+    hooks.unlink()
+    settings, files = _HOOKS_ON[shape]
+    (codex_dir / "config.toml").write_text(
+        settings + _toml_copy(ours) + _toml_copy(ours, "startup|resume"),
+        encoding="utf-8",
+    )
+    for name, text in files.items():
+        (codex_dir / name).write_text(text, encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert (
+        "[FAIL] SessionStart starts the aelf-session-start-hook command 2 "
+        "times" in out
+    ), out
+    assert "doctor counts no duplicate run" not in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_gives_setup_handler_no_line_of_its_own_while_hooks_are_off(
+    tmp_path: Path,
+) -> None:
+    """Setup's own handlers in hooks.json get the one summary line, and a
+    copy in another group gets its own."""
+    codex_dir, hooks, ours = _installed(tmp_path)
+    (codex_dir / "config.toml").write_text(
+        "[features]\nhooks = false\n", encoding="utf-8",
+    )
+    _edit_hooks(hooks, lambda d: d["hooks"]["SessionStart"].append(
+        _session_start_copy(ours),
+    ))
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "the Codex `hooks` feature is disabled" in out, out
+    assert "times" not in out, out
+    lines = [ln for ln in out.splitlines() if "doctor counts no run for it" in ln]
+    assert len(lines) == 1, out
+    assert lines[0].startswith(
+        "[warn] SessionStart handler at `hooks.SessionStart[1].hooks[0]` names "
+        "aelf-session-start-hook",
+    ), out
+
+
