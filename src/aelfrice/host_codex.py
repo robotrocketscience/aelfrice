@@ -2643,11 +2643,16 @@ def doctor_codex(
     # The values each run of a program runs on, per event (#1812).
     runs: dict[tuple[str, str], list[frozenset[str]]] = {}
     # The values, the command, and the file of each other handler that
-    # names a program, per event.
-    maybe: dict[tuple[str, str], list[tuple[frozenset[str], str, str]]] = {}
+    # names a program, per event, and whether setup's next run replaces it.
+    maybe: dict[
+        tuple[str, str], list[tuple[frozenset[str], str, str, bool]],
+    ] = {}
     # (event, program) pairs with a counted run in each file.
     toml_runs: set[tuple[str, str]] = set()
     json_runs: set[tuple[str, str]] = set()
+    # The command and the file of each run of a program in an event where
+    # setup writes no handler of that program.
+    misplaced: dict[tuple[str, str], list[tuple[str, str]]] = {}
     sources = (
         ("", hooks_map),
         (f" in the [hooks] table of {config_path}", toml_events),
@@ -2709,10 +2714,20 @@ def doctor_codex(
                     if run:
                         runs.setdefault((event, run), []).append(values)
                         (toml_runs if where else json_runs).add((event, run))
+                        if run not in expected_keys.get(event, set()):
+                            misplaced.setdefault((event, run), []).append(
+                                (str(command), where),
+                            )
+                    # Setup rewrites the events it writes in hooks.json and
+                    # drops each aelfrice handler there (`_plan_install`).
+                    replaced = (
+                        not where and event in expected_events
+                        and _handler_is_owned(handler, windows=windows)
+                    )
                     named = _named_owned_keys(handler, windows=win)
                     for key in sorted(named.keys() - {run}):
                         maybe.setdefault((event, key), []).append(
-                            (values, named[key], where),
+                            (values, named[key], where, replaced),
                         )
     for event, groups in hooks_map.items():
         if not isinstance(groups, list):
@@ -2770,28 +2785,54 @@ def doctor_codex(
                 f"of the {key} command that `aelf setup --host codex` "
                 f"writes, and Codex runs the handlers in that table{also}",
             )
+    for (event, key), copies in sorted(misplaced.items()):
+        # #1812: a copy of setup's command is a run, but setup writes it in
+        # another event, so it isn't setup's handler here.
+        for cmd, where in copies:
+            warning = (
+                f"{event} handler{where} runs {key} with a command `aelf "
+                f"setup --host codex` writes, but setup writes no {key} "
+                f"handler in {event}; delete this one: {cmd}"
+            )
+            if warning not in report.warnings:
+                report.warnings.append(warning)
     for (event, key), others in sorted(maybe.items()):
-        # #1812: a handler that names the program gets a warning only when
-        # some fire that runs it also runs another handler of the program,
-        # the rule the failure above follows.
+        # #1812: every handler that names the program and isn't a run of
+        # it gets a warning. One that some fire runs beside another handler
+        # of the program may run it twice; any other one may run it in a
+        # form setup doesn't write.
         counted = runs.get((event, key), [])
         fires = _fires(
-            event, counted + [values for values, _cmd, _where in others],
+            event, counted + [entry[0] for entry in others],
         )
         wrote = " or ".join(
             f"`{c}`" for c, k in sorted(setup_runs.items()) if k == key
         )
-        for index, (_values, cmd, where) in enumerate(
+        for index, (_values, cmd, where, replaced) in enumerate(
             others, start=len(counted),
         ):
-            if not any(index in fire and len(fire) > 1 for fire in fires):
-                continue
-            warning = (
-                f"{event} handler{where} may also run {key}. Doctor counts "
-                "a run only for a command byte-identical to one `aelf setup "
-                f"--host codex` writes ({wrote or key}). If this handler "
-                f"runs {key}, keep setup's handler and delete this one: {cmd}"
-            )
+            if any(index in fire and len(fire) > 1 for fire in fires):
+                warning = (
+                    f"{event} handler{where} may also run {key}. Doctor "
+                    "counts a run only for a command byte-identical to one "
+                    f"`aelf setup --host codex` writes ({wrote or key}). If "
+                    f"this handler runs {key}, keep setup's handler and "
+                    f"delete this one: {cmd}"
+                )
+            else:
+                then = (
+                    " A rerun of `aelf setup --host codex` replaces this "
+                    "aelfrice handler with setup's, as it does one an older "
+                    "install wrote at another path."
+                    if replaced else ""
+                )
+                warning = (
+                    f"{event} handler{where} names {key}, and doctor can't "
+                    f"tell whether it runs {key}. Doctor counts a run only "
+                    "for a command byte-identical to one `aelf setup --host "
+                    f"codex` writes ({wrote or key}), and setup's own "
+                    f"handler is the supported form.{then} Handler: {cmd}"
+                )
             if warning not in report.warnings:
                 report.warnings.append(warning)
     report.missing_handlers = sorted(
