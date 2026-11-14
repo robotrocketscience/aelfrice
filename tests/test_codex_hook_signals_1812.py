@@ -608,7 +608,7 @@ def test_doctor_counts_no_run_for_a_handler_codex_runs_no_command_for(
     assert _warning_for(out, ours) is not None, out
 
 
-# --- config.toml [hooks] ----------------------------------------------------
+# --- config.toml [hooks] and event names ------------------------------------
 
 
 def _write_config_hooks(codex_dir: Path, event: str, *commands: str) -> None:
@@ -663,6 +663,36 @@ def test_doctor_warns_about_a_config_toml_handler_that_names_the_program(
         and ln.endswith(f"delete this one: {wrapper}")
         for ln in out.splitlines()
     ), out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("event", ["Notification", "sessionstart"])
+@pytest.mark.parametrize("where", ["hooks.json", "config.toml"])
+def test_doctor_counts_no_run_under_a_key_codex_reads_no_event_for(
+    tmp_path: Path, event: str, where: str,
+) -> None:
+    """Codex skips a key that isn't one of its event names, so two copies of
+    setup's handler there never run. Doctor warns about each one."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    if where == "hooks.json":
+        doc = json.loads(hooks.read_text(encoding="utf-8"))
+        doc["hooks"][event] = [
+            {"hooks": [{"type": "command", "command": ours}] * 2},
+        ]
+        hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    else:
+        _write_config_hooks(codex_dir, event, ours, ours)
+    report = doctor_codex(codex_dir)
+    assert report.duplicate_runs == []
+    assert any(
+        w.startswith(f"{event!r} handler")
+        and f"names {_HOOK}, but Codex reads no hook event by that name" in w
+        and w.endswith(f"never runs this handler: {ours}")
+        for w in report.warnings
+    ), report.warnings
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
 
 
 def _windows_report(
