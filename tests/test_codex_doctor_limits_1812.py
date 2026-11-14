@@ -198,3 +198,118 @@ def test_doctor_reads_a_hooks_json_nested_deep_where_serde_skips(
         )
         for ln in out.splitlines()
     ), out
+
+
+def _inline_tables(depth: int) -> str:
+    return "{a = " * depth + "1" + "}" * depth
+
+
+_NESTING = "it nests arrays or inline tables more than 80 levels deep"
+_KEY_PARTS = "it has a key of more than 80 dotted parts"
+# config.toml lines `n` levels or parts deep, past the limits of Codex's
+# TOML parser when `n` is over 80: 80 levels of arrays and inline tables,
+# and 80 parts in a key. Two follow a string whose end the scan must find
+# for the brackets after it to count.
+_TOML_TOO_DEEP: dict[str, tuple[Callable[[int], str], str]] = {
+    "inline arrays": (lambda n: "x = " + "[" * n + "]" * n, _NESTING),
+    "inline tables": (lambda n: "x = " + _inline_tables(n), _NESTING),
+    "after a string closed by extra quotes": (
+        lambda n: 'x = ["""a"""", ' + "[" * (n - 1) + "]" * n, _NESTING,
+    ),
+    "after an escaped quote": (
+        lambda n: 'x = ["""\\"""a""", ' + "[" * (n - 1) + "]" * n, _NESTING,
+    ),
+    "dotted key": (lambda n: ".".join(["a"] * n) + " = 1", _KEY_PARTS),
+    "table header": (lambda n: "[" + ".".join(["b"] * n) + "]", _KEY_PARTS),
+    "array of tables header": (
+        lambda n: "[[" + ".".join(["c"] * n) + "]]", _KEY_PARTS,
+    ),
+    "inline table key": (
+        lambda n: "y = {" + ".".join(["d"] * n) + " = 1}", _KEY_PARTS,
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_TOML_TOO_DEEP))
+@pytest.mark.parametrize("depth", [80, 81, 129, 100_000])
+def test_doctor_rejects_a_config_toml_past_codex_toml_limits(
+    tmp_path: Path, shape: str, depth: int,
+) -> None:
+    """Codex's TOML parser rejects the whole file past its limits, so Codex
+    loads no hook from it, and doctor exits 1. `tomllib` never reads such
+    a file, so no depth can exhaust Python's recursion limit."""
+    codex_dir, _hooks, ours = _installed(tmp_path)
+    config = codex_dir / "config.toml"
+    config.write_text(
+        '[[hooks.SessionStart]]\nmatcher = "startup"\n'
+        "[[hooks.SessionStart.hooks]]\n"
+        f'type = "command"\ncommand = {json.dumps(ours)}\n'
+        + _TOML_TOO_DEEP[shape][0](depth) + "\n",
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    why = _TOML_TOO_DEEP[shape][1]
+    rejected = (
+        f"[warn] Codex loads no hook from {config}, because its TOML parser "
+        f"rejects the whole file: {why}, past the limit of 80"
+    )
+    if depth <= 80:
+        # Codex loads the file, and its copy of setup's handler is a
+        # second run.
+        assert rc == 1, out
+        assert rejected not in out, out
+        assert "starts the aelf-session-start-hook command 2 times" in out
+    else:
+        assert rc == 1, out
+        assert rejected in out, out
+        assert "times" not in out, out
+
+
+# Brackets, dots, and quotes that Codex's TOML parser reads as text.
+_TOML_TEXT = {
+    "basic string": 'x = "' + "[" * 90 + '"',
+    "literal string": "x = '" + "[" * 90 + "'",
+    "multiline basic string": 'x = """\n' + "{" * 90 + '\n\\""" """',
+    "multiline literal string": "x = '''\n" + "[" * 90 + "\n'' '''",
+    "string closed by extra quotes": 'x = """' + "[" * 90 + '""""',
+    "comment": "# x = " + "[" * 90,
+    "quoted key": '"' + ".".join(["a"] * 90) + '" = 1',
+    "quoted header part": '["' + ".".join(["b"] * 90) + '"]',
+    "float": "x = [" + ", ".join(["1.5"] * 90) + "]",
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_TOML_TEXT))
+def test_doctor_counts_no_nesting_inside_toml_text(
+    tmp_path: Path, shape: str,
+) -> None:
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    config = codex_dir / "config.toml"
+    config.write_text(_TOML_TEXT[shape] + "\n", encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "rejects the whole file" not in out, out
+    assert "could not parse" not in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_says_where_it_stopped_reading_a_deep_config_toml(
+    tmp_path: Path,
+) -> None:
+    """Inline tables of dotted keys nest past the scan's depth bound within
+    the parser's limits, and doctor says it didn't read below it."""
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    value = '"aelf-hook"'
+    for _ in range(5):
+        value = "{" + ".".join(["k"] * 60) + " = " + value + "}"
+    config = codex_dir / "config.toml"
+    config.write_text(f"[hooks]\nBogus = {value}\n", encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert (
+        f"[warn] doctor read the [hooks] table of {config} only to a depth "
+        "of 256 and checked no string below it for an aelfrice program name"
+    ) in out, out
+

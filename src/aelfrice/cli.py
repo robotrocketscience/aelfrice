@@ -6396,7 +6396,8 @@ def _cmd_doctor_codex(
 
     Exit contract, stable for CI (#1430). **Exit 1** on a `hooks.json` that
     is present but unparseable, on a `hooks.json` or a config.toml `[hooks]`
-    table that Codex rejects whole (#1812), or on wiring that is installed
+    table that Codex rejects whole, or a config.toml that Codex's TOML
+    parser rejects for its nesting (#1812), or on wiring that is installed
     and broken: a hook command not present on disk, a partially installed
     hook set, a SessionStart group under the matcher an earlier release
     wrote, an event whose fire starts a command setup writes more than once
@@ -6542,6 +6543,10 @@ def _cmd_doctor_codex(
     # #1812: a `[hooks]` table Codex rejects whole loads no hook, the same
     # state as a hooks.json that doesn't parse.
     if report.config_hooks_rejected is not None:
+        return 1
+    # #1812: the same for a config.toml that Codex's TOML parser rejects
+    # whole for its nesting.
+    if report.config_rejected is not None:
         return 1
     return 1 if faults else 0
 
