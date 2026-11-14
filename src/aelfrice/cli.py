@@ -6284,11 +6284,13 @@ def _cmd_doctor_codex(
     Exit contract, stable for CI (#1430). **Exit 1** on a `hooks.json` that
     is present but unparseable, on a `hooks.json` or a config.toml `[hooks]`
     table that Codex rejects whole (#1812), or on wiring that is installed
-    and broken:
-    a hook command not present on disk, a partially installed hook set, the
-    Codex ``hooks`` feature disabled while our handlers are installed, an
-    installed ``$aelf-*`` skill that does not match what this build
-    generates, or an ``aelf`` that does not resolve on ``PATH`` (#1413).
+    and broken: a hook command not present on disk, a partially installed
+    hook set, a SessionStart group under the matcher an earlier release
+    wrote, an event whose fire starts a command setup writes more than once
+    (#1812), the Codex ``hooks`` feature disabled while our handlers are
+    installed, an installed ``$aelf-*`` skill that does not match what this
+    build generates, or an ``aelf`` that does not resolve on ``PATH``
+    (#1413).
     **Exit 0** when the wiring is simply absent — a machine that
     never ran ``aelf setup --host codex`` is a normal machine — and when
     zero ``[hooks.state]`` approvals are recorded, since approval keying is
