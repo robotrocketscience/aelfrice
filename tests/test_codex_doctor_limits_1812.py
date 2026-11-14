@@ -314,6 +314,79 @@ def test_doctor_says_where_it_stopped_reading_a_deep_config_toml(
     ) in out, out
 
 
+# --- value types --------------------------------------------------------------
+
+# TOML dates and times, which Codex's toml reads as their text. A matcher
+# such as "1979-05-27" matches no session source or tool name.
+_TOML_DATES = {
+    "date": "1979-05-27",
+    "time": "07:32:00",
+    "offset date-time": "1979-05-27T07:32:00Z",
+    "local date-time": "1979-05-27T07:32:00",
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("event", ["SessionStart", "PreToolUse"])
+@pytest.mark.parametrize("kind", sorted(_TOML_DATES))
+def test_doctor_counts_no_run_under_a_toml_date_matcher(
+    tmp_path: Path, kind: str, event: str,
+) -> None:
+    codex_dir, hooks, ours = _installed(tmp_path)
+    if event == "PreToolUse":
+        doc = json.loads(hooks.read_text(encoding="utf-8"))
+        ours = str(doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"])
+    config = codex_dir / "config.toml"
+    config.write_text(
+        f"[[hooks.{event}]]\nmatcher = {_TOML_DATES[kind]}\n"
+        f"[[hooks.{event}.hooks]]\n"
+        f'type = "command"\ncommand = {json.dumps(ours)}\n',
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out, out
+    assert any(
+        ln.startswith(f"[warn] {event} handler at `hooks.{event}[0].hooks[0]`")
+        and "is a TOML date or time, which Codex reads as text and doctor "
+        "doesn't read." in ln
+        and ln.endswith(f"Handler: {ours}")
+        for ln in out.splitlines()
+    ), out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("field", ["commandWindows", "command_windows"])
+@pytest.mark.parametrize("windows", [False, True])
+def test_doctor_reads_no_toml_date_windows_command_on_windows(
+    tmp_path: Path, field: str, windows: bool,
+) -> None:
+    """On Windows, Codex runs the date's text, not `command`, so the copy of
+    setup's command in `command` is no run there. Elsewhere it is one."""
+    from aelfrice.host_codex import doctor_codex
+
+    codex_dir, _hooks, ours = _installed(tmp_path)
+    (codex_dir / "config.toml").write_text(
+        '[[hooks.SessionStart]]\nmatcher = "startup"\n'
+        "[[hooks.SessionStart.hooks]]\n"
+        f'type = "command"\ncommand = {json.dumps(ours)}\n'
+        f"{field} = 1979-05-27\n",
+        encoding="utf-8",
+    )
+    report = doctor_codex(codex_dir, windows=windows)
+    if windows:
+        assert report.duplicate_runs == [], report.duplicate_runs
+        assert any(
+            w.startswith("SessionStart handler in the [hooks] table of ")
+            and "may also run aelf-session-start-hook." in w
+            for w in report.warnings
+        ), report.warnings
+    else:
+        assert report.duplicate_runs == [
+            ("SessionStart", "aelf-session-start-hook", 2),
+        ], report.duplicate_runs
+
+
 # --- lone surrogates ----------------------------------------------------------
 
 _LONE = "\ud800"
