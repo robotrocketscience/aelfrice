@@ -676,3 +676,114 @@ def test_doctor_gives_setup_handler_no_line_of_its_own_while_hooks_are_off(
     ), out
 
 
+def _state(key: str, enabled: str = "false") -> str:
+    return f"[hooks.state.{json.dumps(key)}]\nenabled = {enabled}\n"
+
+
+# `[hooks.state]` keys for the copy of setup's SessionStart handler, and
+# whether Codex may skip it: the file, as an absolute path; `{alias}` is a
+# symlink to the Codex home. `{file}` is the file that holds the copy.
+_STATE_KEYS: dict[str, tuple[str, bool]] = {
+    "its key": ("{file}:session_start:{g}:0", True),
+    "its key through a symlinked home": ("{alias}/{name}:session_start:{g}:0", True),
+    "its key with spaces Codex trims": ("  {file}:session_start:{g}:0　", True),
+    "another handler's key": ("{file}:session_start:{g}:1", False),
+    "another event's key": ("{file}:session_end:{g}:0", False),
+    "a relative path": ("{name}:session_start:{g}:0", False),
+    "another file": ("{other}/{name}:session_start:{g}:0", False),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("where", ["hooks.json", "config.toml"])
+@pytest.mark.parametrize("shape", sorted(_STATE_KEYS))
+def test_doctor_counts_no_run_for_a_handler_hooks_state_disables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: str, where: str,
+) -> None:
+    """Codex skips a handler whose `[hooks.state]` entry sets `enabled =
+    false`, so its copy of setup's command is no run. Codex's key holds an
+    absolute path, so a relative one names no handler, even from the Codex
+    home."""
+    codex_dir, hooks, ours = _installed(tmp_path)
+    monkeypatch.chdir(codex_dir)
+    alias = tmp_path / "alias"
+    alias.symlink_to(codex_dir, target_is_directory=True)
+    other = tmp_path / "other"
+    other.mkdir()
+    config = codex_dir / "config.toml"
+    if where == "hooks.json":
+        _edit_hooks(hooks, lambda d: d["hooks"]["SessionStart"].append(
+            _session_start_copy(ours),
+        ))
+        source, g, copy = hooks, 1, _toml_copy("/bin/true")
+    else:
+        source, g, copy = config, 0, _toml_copy(ours)
+    template, skipped = _STATE_KEYS[shape]
+    key = template.format(
+        file=source, alias=alias, other=other, name=source.name, g=g,
+    )
+    config.write_text(copy + _state(key), encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    at = f"hooks.SessionStart[{g}].hooks[0]"
+    if skipped:
+        assert rc == 0, out
+        assert "times" not in out, out
+        assert any(
+            ln.startswith(f"[warn] SessionStart handler at `{at}`")
+            and "names aelf-session-start-hook, and doctor counts no run for "
+            f"it, because the [hooks.state] entry {key!r} in {config} sets "
+            "`enabled = false` for it, and Codex skips a disabled handler. "
+            f"Handler: {ours}" in ln
+            for ln in out.splitlines()
+        ), out
+    else:
+        assert rc == 1, out
+        assert "starts the aelf-session-start-hook command 2 times" in out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_the_handler_index_of_a_hooks_state_key(
+    tmp_path: Path,
+) -> None:
+    """The copy is the second handler of its group, so its key ends in 1."""
+    codex_dir, _hooks, ours = _installed(tmp_path)
+    config = codex_dir / "config.toml"
+    config.write_text(
+        _toml_copy("/bin/true")
+        + f'[[hooks.SessionStart.hooks]]\ntype = "command"\n'
+        f"command = {json.dumps(ours)}\n"
+        + _state(f"{config}:session_start:0:1"),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out, out
+    assert "`hooks.SessionStart[0].hooks[1]`" in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("enabled", ["false", "true"])
+def test_doctor_reads_hooks_state_in_a_profile_file(
+    tmp_path: Path, enabled: str,
+) -> None:
+    """A profile file's entry applies when `--profile` selects it, so
+    doctor can't tell whether Codex starts the handler."""
+    codex_dir, hooks, ours = _installed(tmp_path)
+    config = codex_dir / "config.toml"
+    config.write_text(_toml_copy(ours), encoding="utf-8")
+    profile = codex_dir / "work.config.toml"
+    profile.write_text(
+        _state(f"{config}:session_start:0:0", enabled), encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    if enabled == "true":
+        assert rc == 1, out
+        assert "starts the aelf-session-start-hook command 2 times" in out
+        return
+    assert rc == 0, out
+    assert (
+        f"in the profile file {profile}, which Codex reads when you pass "
+        "`--profile work` sets `enabled = false` for it"
+    ) in out, out
+
+
