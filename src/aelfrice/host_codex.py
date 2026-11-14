@@ -1597,6 +1597,18 @@ _SETUP_SCOPES: Final[tuple[SettingsScope, ...]] = ("user",)
 _WINDOWS_COMMAND_FIELDS: Final[tuple[str, ...]] = (
     "commandWindows", "command_windows",
 )
+#: The hook events Codex reads, the fields of `HookEventsToml` in
+#: codex-rs/protocol/src/hooks.rs, lines 8-38, at
+#: openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9. The type doesn't
+#: deny unknown fields, so Codex skips any other key under `hooks` and runs
+#: no handler there. Python joins the two names that are split across
+#: string literals.
+_CODEX_EVENTS: Final[frozenset[str]] = frozenset({
+    "PreModelRequest", "PostModelRequest", "PreToolUse",
+    "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact",
+    "SessionStart", "SessionEnd", "UserPromptSubmit",
+    "Sub" "agentStart", "Sub" "agentStop", "Stop", "Interrupt",
+})
 
 
 def _handler_command(handler: object) -> str | None:
@@ -2397,6 +2409,21 @@ def doctor_codex(
     for where, events in sources:
         for event, groups in events.items():
             if not isinstance(groups, list):
+                continue
+            if event not in _CODEX_EVENTS:
+                # #1812: Codex skips a key that isn't an event name, so a
+                # handler there never runs and counts as no run.
+                for group in cast(list[object], groups):
+                    for handler in _handlers_in(group):
+                        named = _named_owned_keys(handler, windows=win)
+                        for key, cmd in sorted(named.items()):
+                            warning = (
+                                f"{event!r} handler{where} names {key}, but "
+                                "Codex reads no hook event by that name, so "
+                                f"it never runs this handler: {cmd}"
+                            )
+                            if warning not in report.warnings:
+                                report.warnings.append(warning)
                 continue
             for group in cast(list[object], groups):
                 # #1812: handlers whose matchers share no value, such as
