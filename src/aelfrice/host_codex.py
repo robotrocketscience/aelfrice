@@ -40,6 +40,7 @@ established in #1054/#1052 triage:
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
@@ -1431,6 +1432,12 @@ class CodexDoctorReport:
     hooks_file_present: bool = False
     hooks_file_valid: bool = False
     parse_error: str | None = None
+    #: Why Codex rejects hooks.json whole, so it loads no hook from it, or
+    #: None. The file then counts as not valid (#1812).
+    hooks_file_rejected: str | None = None
+    #: Why Codex rejects the `[hooks]` table of config.toml whole, so it
+    #: loads no hook from it, or None (#1812).
+    config_hooks_rejected: str | None = None
     owned_handler_count: int = 0
     missing_events: list[str] = field(default_factory=list[str])
     missing_handlers: list[str] = field(default_factory=list[str])
@@ -1609,6 +1616,215 @@ _CODEX_EVENTS: Final[frozenset[str]] = frozenset({
     "SessionStart", "SessionEnd", "UserPromptSubmit",
     "Sub" "agentStart", "Sub" "agentStop", "Stop", "Interrupt",
 })
+#: The fields Codex reads on each `type` of handler (`HookHandlerConfig`
+#: in codex-rs/protocol/src/hooks.rs, lines 148-188, at the commit above).
+_HANDLER_FIELDS: Final[dict[str, frozenset[str]]] = {
+    "command": frozenset({
+        "type", "command", "commandWindows", "command_windows", "timeout",
+        "async", "statusMessage", "additionalContextLimit",
+    }),
+    "mcp_tool": frozenset({
+        "type", "server", "tool", "input", "timeout", "statusMessage",
+    }),
+    "prompt": frozenset({"type"}),
+    "agent": frozenset({"type"}),
+}
+#: The fields of a matcher group, and the top-level keys of hooks.json
+#: (`HooksFile` in codex-rs/config/src/hook_config.rs, which denies any
+#: other key).
+_GROUP_FIELDS: Final[frozenset[str]] = frozenset({"matcher", "hooks"})
+_HOOKS_FILE_FIELDS: Final[frozenset[str]] = frozenset({"description", "hooks"})
+_U64_MAX: Final[int] = 2**64 - 1
+_I64_MAX: Final[int] = 2**63 - 1
+#: The values a string field accepts in JSON, and in TOML, where Codex's
+#: `toml` crate also reads a date or time as a string.
+_JSON_STRINGS: Final[tuple[type[object], ...]] = (str,)
+_TOML_STRINGS: Final[tuple[type[object], ...]] = (
+    str, datetime.date, datetime.time,
+)
+
+
+class _JsonObject(dict[str, object]):
+    """A JSON object that remembers the keys it held more than once."""
+
+    repeated: frozenset[str] = frozenset()
+
+
+def _json_object(pairs: list[tuple[str, object]]) -> _JsonObject:
+    """`json.loads` object hook: Codex rejects a repeated field."""
+    obj = _JsonObject(pairs)
+    seen: set[str] = set()
+    repeated: set[str] = set()
+    for key, _value in pairs:
+        (repeated if key in seen else seen).add(key)
+    obj.repeated = frozenset(repeated)
+    return obj
+
+
+def _repeated(obj: dict[str, object], fields: frozenset[str]) -> str | None:
+    """The first field of `fields` that `obj` held twice, or None."""
+    names = sorted(getattr(obj, "repeated", frozenset[str]()) & fields)
+    return names[0] if names else None
+
+
+def _is_u64(value: object) -> bool:
+    return (
+        isinstance(value, int) and not isinstance(value, bool)
+        and 0 <= value <= _U64_MAX
+    )
+
+
+def _toml_representable(value: object) -> bool:
+    """`deserialize_mcp_tool_input`'s check on an `mcp_tool` input value.
+
+    It rejects null and an integer above i64's range that fits in u64. A
+    JSON integer above u64's range reaches it as a float, which passes.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, int):
+        return not _I64_MAX < value <= _U64_MAX
+    if isinstance(value, list):
+        return all(_toml_representable(v) for v in cast(list[object], value))
+    if isinstance(value, dict):
+        return all(
+            _toml_representable(v)
+            for v in cast(dict[str, object], value).values()
+        )
+    return True
+
+
+def _rejected_handler(
+    handler: object, strings: tuple[type[object], ...],
+) -> str | None:
+    """Why serde rejects one handler, or None when it reads it.
+
+    A handler written as a JSON array or a TOML array is one that serde
+    reads by position. Doctor doesn't read that form and claims nothing
+    about it.
+    """
+    if isinstance(handler, list):
+        return None
+    if not isinstance(handler, dict):
+        return "is not an object"
+    hd = cast(dict[str, object], handler)
+    if "type" not in hd:
+        return "has no `type`"
+    kind = hd["type"]
+    fields = _HANDLER_FIELDS.get(kind) if isinstance(kind, str) else None
+    if fields is None:
+        return f"has the type {kind!r}, which Codex doesn't know"
+    twice = _repeated(hd, fields)
+    if twice is not None:
+        return f"has `{twice}` twice"
+    if kind == "command":
+        if "command" not in hd:
+            return "has the type `command` and no `command`"
+        if all(name in hd for name in _WINDOWS_COMMAND_FIELDS):
+            return "has both `commandWindows` and `command_windows`"
+        if not isinstance(hd["command"], strings):
+            return "has a `command` that isn't a string"
+        if not isinstance(hd.get("async", False), bool):
+            return "has an `async` that isn't true or false"
+        if hd.get("additionalContextLimit") is not None and not _is_u64(
+            hd["additionalContextLimit"],
+        ):
+            return "has an `additionalContextLimit` that isn't a count"
+        optional_strings: tuple[str, ...] = (
+            *_WINDOWS_COMMAND_FIELDS, "statusMessage",
+        )
+    else:
+        if kind == "mcp_tool":
+            for name in ("server", "tool"):
+                if not isinstance(hd.get(name), strings):
+                    return f"has the type `mcp_tool` and no `{name}` string"
+            tool_input = hd.get("input", {})
+            if not (
+                isinstance(tool_input, dict)
+                and _toml_representable(cast(dict[str, object], tool_input))
+            ):
+                return "has an `input` that Codex can't store as TOML"
+        optional_strings = ("statusMessage",) if kind == "mcp_tool" else ()
+    if kind in ("command", "mcp_tool") and hd.get("timeout") is not None:
+        if not _is_u64(hd["timeout"]):
+            return "has a `timeout` that isn't a count of seconds"
+    for name in optional_strings:
+        if hd.get(name) is not None and not isinstance(hd[name], strings):
+            return f"has a `{name}` that isn't a string"
+    return None
+
+
+def _rejected_events(
+    events: object, strings: tuple[type[object], ...],
+) -> str | None:
+    """Why Codex rejects a `hooks` table whole, or None when it loads it.
+
+    This mirrors serde's reading of `HookEventsToml`, `MatcherGroup`, and
+    `HookHandlerConfig` at the commit `_CODEX_EVENTS` cites. When it fails,
+    Codex logs "failed to parse" and loads no hook from the file
+    (`load_hooks_json` and `load_toml_hooks_from_layer` in
+    codex-rs/hooks/src/engine/discovery.rs, lines 390-451). Codex skips any
+    key that isn't an event name, so what is under one never rejects the
+    table. A group or a `hooks` table written as an array is read by
+    position, and doctor claims nothing about it.
+    """
+    if isinstance(events, list):
+        return None
+    if not isinstance(events, dict):
+        return "`hooks` is not an object"
+    ed = cast(dict[str, object], events)
+    twice = _repeated(ed, _CODEX_EVENTS)
+    if twice is not None:
+        return f"`hooks` has {twice} twice"
+    for event, groups in ed.items():
+        if event not in _CODEX_EVENTS:
+            continue
+        if not isinstance(groups, list):
+            return f"{event} is not a list of matcher groups"
+        for g, group in enumerate(cast(list[object], groups), start=1):
+            if isinstance(group, list):
+                continue
+            if not isinstance(group, dict):
+                return f"{event} group {g} is not an object"
+            gd = cast(dict[str, object], group)
+            twice = _repeated(gd, _GROUP_FIELDS)
+            if twice is not None:
+                return f"{event} group {g} has `{twice}` twice"
+            matcher = gd.get("matcher")
+            if matcher is not None and not isinstance(matcher, strings):
+                return f"{event} group {g} has a `matcher` that isn't a string"
+            if "hooks" not in gd:
+                continue
+            handlers = gd["hooks"]
+            if not isinstance(handlers, list):
+                return f"{event} group {g} has `hooks` that isn't a list"
+            for h, handler in enumerate(cast(list[object], handlers), start=1):
+                reason = _rejected_handler(handler, strings)
+                if reason is not None:
+                    return f"{event} group {g}, handler {h} {reason}"
+    return None
+
+
+def _rejected_hooks_file(doc: dict[str, object]) -> str | None:
+    """Why Codex rejects a hooks.json whose top level is an object, or
+    None when it loads it (`HooksFile`, then `_rejected_events`)."""
+    unknown = sorted(doc.keys() - _HOOKS_FILE_FIELDS)
+    if unknown:
+        return (
+            f"it has the top-level key {unknown[0]!r}, and Codex accepts "
+            "only `description` and `hooks` there"
+        )
+    twice = _repeated(doc, _HOOKS_FILE_FIELDS)
+    if twice is not None:
+        return f"it has `{twice}` twice"
+    description = doc.get("description")
+    if description is not None and not isinstance(description, str):
+        return "its `description` isn't a string"
+    if "hooks" not in doc:
+        return None
+    return _rejected_events(doc["hooks"], _JSON_STRINGS)
 
 
 def _handler_command(handler: object) -> str | None:
@@ -2227,8 +2443,10 @@ def _matched_values(event: str, group: object) -> frozenset[str] | None:
     on to the next group, so none of the group's handlers run. This is None
     for such a group, which `_rust_regex_rejects` finds. Doctor matches the
     values with Python's `re`, and a regex that `re` rejects counts as
-    matching every value (`_unread_matcher`), as does a matcher that isn't
-    a string, so a pattern doctor can't read never hides a duplicate run.
+    matching every value (`_unread_matcher`), so a pattern doctor can't
+    read never hides a duplicate run. A null matcher is no matcher to
+    Codex. Codex rejects the whole file for a matcher of any other type
+    (`_rejected_events`), so doctor never counts one.
     """
     if event not in _MATCHER_EVENTS:
         return _EVERY_FIRE
@@ -2335,17 +2553,30 @@ def doctor_codex(
     hooks_map: dict[str, object] = {}
     if report.hooks_file_present:
         try:
-            parsed = json.loads(hooks_path.read_text(encoding="utf-8"))
+            parsed = json.loads(
+                hooks_path.read_text(encoding="utf-8"),
+                object_pairs_hook=_json_object,
+            )
             if isinstance(parsed, dict):
-                report.hooks_file_valid = True
-                obj = cast(dict[str, object], parsed).get("hooks")
-                if isinstance(obj, dict):
+                doc = cast(dict[str, object], parsed)
+                # #1812: a file Codex rejects whole loads no hook, so
+                # doctor counts nothing in it and exits 1, as it does for
+                # a file that isn't JSON.
+                report.hooks_file_rejected = _rejected_hooks_file(doc)
+                report.hooks_file_valid = report.hooks_file_rejected is None
+                obj = doc.get("hooks")
+                if report.hooks_file_valid and isinstance(obj, dict):
                     hooks_map = cast(dict[str, object], obj)
             else:
                 report.parse_error = "top-level JSON is not an object"
         except json.JSONDecodeError as exc:
             report.parse_error = str(exc)
-        if not report.hooks_file_valid:
+        if report.hooks_file_rejected is not None:
+            report.warnings.append(
+                f"Codex loads no hook from {hooks_path}, because it rejects "
+                f"the whole file: {report.hooks_file_rejected}",
+            )
+        elif not report.hooks_file_valid:
             report.warnings.append(
                 f"{hooks_path} is unreadable as hooks config "
                 f"({report.parse_error}); Codex will ignore or reject it",
@@ -2390,9 +2621,18 @@ def doctor_codex(
         except (tomllib.TOMLDecodeError, OSError) as exc:
             cfg_error = f"could not parse {config_path}: {exc}"
     toml_events: dict[str, object] = {}
-    toml_hooks = cfg.get("hooks")
-    if isinstance(toml_hooks, dict):
-        toml_events = cast(dict[str, object], toml_hooks)
+    if "hooks" in cfg:
+        report.config_hooks_rejected = _rejected_events(
+            cfg["hooks"], _TOML_STRINGS,
+        )
+        if report.config_hooks_rejected is not None:
+            report.warnings.append(
+                f"Codex loads no hook from the [hooks] table in "
+                f"{config_path}, because it rejects the whole table: "
+                f"{report.config_hooks_rejected}",
+            )
+        elif isinstance(cfg["hooks"], dict):
+            toml_events = cast(dict[str, object], cfg["hooks"])
     covered: set[str] = set()
     found_keys: dict[str, set[str]] = {}
     # The values each run of a program runs on, per event (#1812).
