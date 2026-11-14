@@ -787,3 +787,55 @@ def test_doctor_reads_hooks_state_in_a_profile_file(
     ) in out, out
 
 
+# --- names a shell spells ------------------------------------------------------
+
+# Ways to write `aelf-session-start-hook` that sh, bash, and zsh turn back
+# into the name by quote removal and line joining, and cmd's escape. `{p}`
+# is setup's command, which holds the name.
+_SPELLED = {
+    "empty quotes": ("aelf-session", "aelf-sess''ion"),
+    "double quotes": ("aelf-session-start-hook", 'aelf-"session"-start-hook'),
+    "a backslash": ("aelf-session", "aelf-sess\\ion"),
+    "a line continuation": ("start-hook", "start-ho\\\nok"),
+    "a backtick pair": ("aelf-session", "aelf-sess``ion"),
+    "cmd's caret": ("aelf-session", "aelf-sess^ion"),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_SPELLED))
+def test_doctor_warns_about_a_name_spelled_with_shell_quoting(
+    tmp_path: Path, shape: str,
+) -> None:
+    codex_dir, hooks, ours = _installed(tmp_path)
+    old, new = _SPELLED[shape]
+    spelled = ours.replace(old, new)
+    assert "aelf-session-start-hook" not in spelled
+    _edit_hooks(hooks, lambda d: d["hooks"]["SessionStart"].append(
+        _session_start_copy(spelled),
+    ))
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert any(
+        ln.startswith("[warn] SessionStart handler may also run "
+                      "aelf-session-start-hook.")
+        for ln in out.splitlines()
+    ), out
+    assert spelled.splitlines()[-1] in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_warns_about_a_spelled_name_outside_a_handler(
+    tmp_path: Path,
+) -> None:
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    _edit_hooks(hooks, lambda d: d.__setitem__(
+        "description", "runs aelf-st''op-hook",
+    ))
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert (
+        f"[warn] The string at `description` in {hooks} names aelf-stop-hook"
+    ) in out, out
+
+
