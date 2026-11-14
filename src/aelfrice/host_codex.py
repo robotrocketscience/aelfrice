@@ -1687,20 +1687,23 @@ def _toml_representable(value: object) -> bool:
 
     It rejects null and an integer above i64's range that fits in u64. A
     JSON integer above u64's range reaches it as a float, which passes.
+    The walk keeps its own stack, so a value of any depth can't exhaust
+    Python's recursion limit (#1812).
     """
-    if value is None:
-        return False
-    if isinstance(value, bool):
-        return True
-    if isinstance(value, int):
-        return not _I64_MAX < value <= _U64_MAX
-    if isinstance(value, list):
-        return all(_toml_representable(v) for v in cast(list[object], value))
-    if isinstance(value, dict):
-        return all(
-            _toml_representable(v)
-            for v in cast(dict[str, object], value).values()
-        )
+    stack: list[object] = [value]
+    while stack:
+        item = stack.pop()
+        if item is None:
+            return False
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, int):
+            if _I64_MAX < item <= _U64_MAX:
+                return False
+        elif isinstance(item, list):
+            stack.extend(cast(list[object], item))
+        elif isinstance(item, dict):
+            stack.extend(cast(dict[str, object], item).values())
     return True
 
 
