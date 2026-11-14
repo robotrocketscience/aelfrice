@@ -32,8 +32,8 @@ from aelfrice.hook_summary import ENV_HOOK_SUMMARY_LINE
 from aelfrice.host_codex import (
     CODEX_ADDITIONAL_CONTEXT_LIMIT,
     _OWNED_BASENAMES,
+    _named_owned_keys,
     _rust_regex_rejects,
-    _wrapped_owned_keys,
     install_codex_hooks,
     install_codex_skills,
 )
@@ -472,17 +472,34 @@ def test_doctor_warns_about_an_owned_handler_setup_does_not_write(
     [
         'bash -c "C:\\bin\\aelf-session-start-hook.exe --host codex"',
         'cmd /c "C:\\bin\\aelf-session-start-hook.exe --host codex"',
+        'cmd /c "C:\\bin\\AELF-SESSION-START-HOOK.CMD"',
+        "C:\\bin\\aelf-session-start-hook",
     ],
 )
-def test_a_windows_wrapper_given_the_command_as_one_argument_counts(
+def test_a_windows_command_names_the_program_with_a_launcher_suffix(
     command: str,
 ) -> None:
-    """Windows doesn't read the shell script, but the argument's program
-    still counts."""
+    """On Windows the name can end in a launcher suffix, and its case
+    doesn't matter."""
     handler = {"type": "command", "command": command}
-    assert _wrapped_owned_keys(handler, windows=True) == {
+    assert set(_named_owned_keys(handler, windows=True)) == {
         "aelf-session-start-hook",
     }
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/x/aelf-session-start-hook.exe",
+        "/x/AELF-SESSION-START-HOOK",
+    ],
+)
+def test_a_posix_command_names_the_program_only_as_written(
+    command: str,
+) -> None:
+    """On POSIX a launcher suffix or another case is another program."""
+    handler = {"type": "command", "command": command}
+    assert _named_owned_keys(handler, windows=False) == {}
 
 
 _HOOK = "aelf-session-start-hook"
@@ -1040,41 +1057,104 @@ def test_setup_and_doctor_pass_an_env_search_handler_under_websearch(
     assert "times" not in out
 
 
-# Each foreign handler names the program without running it, or runs none.
-_NOT_RUNNING = {
+# Each foreign handler holds no owned program name with the start or end
+# of the command, or a character outside [A-Za-z0-9_.-], on each side.
+# `{p}` is the program path.
+_NAMES_NO_PROGRAM = {
     "other hook": "/usr/bin/python3 /x/other-hook.py SessionStart --verbose",
-    "echo": "echo aelf-session-start-hook",
-    "sh -c printf": "sh -c 'printf \"%s\\n\" {p}'",
-    "echo or true": "echo {p} || true",
-    "printf into a file": "printf '%s\\n' {p} > /dev/null",
-    # The flag after a prefix word is skipped, so echo is the program.
-    "env -i echo": "env -i echo {p}",
-    # The assignment is skipped, so echo is the program.
-    "assignment echo": "AELFRICE_HOOK_SUMMARY_LINE=1 echo {p}",
-    # The option's operand is skipped, so echo is the program.
-    "exec -a echo": "exec -a name echo {p}",
-    "timeout -s echo": "timeout -s KILL 30 echo {p}",
-    "nice -n echo": "nice -n 5 echo {p}",
-    # The split string's first word is the program.
-    "env -S echo": "env -S 'echo {p}'",
+    "suffix after a dot": "/usr/bin/python3 {p}.py --host codex",
+    "suffix after a dash": "{p}-old --host codex",
+    "suffix after an underscore": "{p}_2 --host codex",
+    "suffix after a digit": "{p}2 --host codex",
+    "prefix letter": "/x/xaelf-session-start-hook",
+    "prefix dot": "/x/.aelf-session-start-hook",
 }
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("shape", sorted(_NOT_RUNNING))
-def test_doctor_ignores_a_foreign_handler_that_runs_no_aelfrice_program(
+@pytest.mark.parametrize("shape", sorted(_NAMES_NO_PROGRAM))
+def test_doctor_ignores_a_foreign_handler_that_names_no_aelfrice_program(
     tmp_path: Path, shape: str,
 ) -> None:
     codex_dir, hooks, program = _installed(tmp_path)
     _set_session_start_commands(
         hooks,
-        _NOT_RUNNING[shape].format(p=program),
+        _NAMES_NO_PROGRAM[shape].format(p=program),
         _session_start_command(hooks),
     )
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert "times" not in out
     assert "may also run" not in out
+
+
+# Each foreign handler only prints the program's name. Doctor reads no
+# shell syntax, so it warns about each one.
+_PRINTS = {
+    "echo": "echo aelf-session-start-hook",
+    "sh -c printf": "sh -c 'printf \"%s\\n\" {p}'",
+    "echo or true": "echo {p} || true",
+    "printf into a file": "printf '%s\\n' {p} > /dev/null",
+    "env -i echo": "env -i echo {p}",
+    "assignment echo": "AELFRICE_HOOK_SUMMARY_LINE=1 echo {p}",
+    "exec -a echo": "exec -a name echo {p}",
+    "timeout -s echo": "timeout -s KILL 30 echo {p}",
+    "nice -n echo": "nice -n 5 echo {p}",
+    "env -S echo": "env -S 'echo {p}'",
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_PRINTS))
+def test_doctor_warns_about_a_handler_that_only_prints_the_program(
+    tmp_path: Path, shape: str,
+) -> None:
+    codex_dir, hooks, program = _installed(tmp_path)
+    other = _PRINTS[shape].format(p=program)
+    _set_session_start_commands(hooks, other, _session_start_command(hooks))
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    assert _warning_for(out, other) is not None, out
+
+
+# Handlers that run the program from a script string, from the output of
+# a command substitution, or from a variable. The round-11 review found
+# doctor silent on each one. `{p}` is the program path and `{n}` its name.
+_STRING_RUNS = {
+    "python3 -c subprocess": (
+        "python3 -c \"import subprocess; subprocess.run(['{p}'])\""
+    ),
+    "python3 -c os.system": (
+        "python3 -c 'import os; os.system(\"{p} --host codex\")'"
+    ),
+    "perl -e": "perl -e 'system(\"{p}\")'",
+    "node -e": "node -e \"require('child_process').execSync('{p}')\"",
+    "awk": "awk 'BEGIN{{system(\"{p}\")}}'",
+    "osascript": "osascript -e \"do shell script \\\"{p}\\\"\"",
+    "$(echo)": "$(echo {p})",
+    "backquotes": "`echo {p}`",
+    "eval $(echo)": "eval \"$(echo {p})\"",
+    "exec $(printf)": "exec $(printf %s {p})",
+    "default expansion": "exec \"${{CMD:-{p}}}\"",
+    "variable": "CMD={n}; exec $CMD",
+    "variable with a path": "CMD={p}; $CMD",
+    "--cmd=": "wrapper --cmd={n}",
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_STRING_RUNS))
+def test_doctor_warns_about_a_program_run_from_a_string(
+    tmp_path: Path, shape: str,
+) -> None:
+    codex_dir, hooks, program = _installed(tmp_path)
+    other = _STRING_RUNS[shape].format(p=program, n=_HOOK)
+    _set_session_start_commands(hooks, _session_start_command(hooks), other)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    assert _warning_for(out, other) is not None, out
 
 
 # Each foreign handler names the program where a prefix word takes an
@@ -1103,8 +1183,8 @@ def test_doctor_warns_about_a_handler_that_names_the_program_as_an_operand(
     assert _warning_for(out, other) is not None, out
 
 
-# Each foreign handler only checks that the program is there, but the
-# script scan reads the program as one the handler runs.
+# Each foreign handler only checks that the program is there. Doctor reads
+# no shell syntax, so it warns about each one.
 _CHECKS = {
     "command -v": "sh -c 'command -v {p} >/dev/null || exit 1'",
     # `command` is a prefix word, but `-v` only looks the program up.
