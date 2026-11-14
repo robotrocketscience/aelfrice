@@ -275,6 +275,27 @@ def _warning_for(out: str, command: str) -> str | None:
     )
 
 
+def _lone_warning_for(
+    out: str, event: str, key: str, command: str, where: str = "",
+) -> str | None:
+    """The doctor warning line for a handler that names `key` and that no
+    fire runs beside another handler of it, if there is one."""
+    return next(
+        (
+            ln for ln in out.splitlines()
+            if ln.startswith(
+                f"[warn] {event} handler{where} names {key}, and doctor "
+                f"can't tell whether it runs {key}. Doctor counts a run only "
+                "for a command byte-identical to one `aelf setup --host "
+                "codex` writes (",
+            )
+            and "and setup's own handler is the supported form." in ln
+            and ln.endswith(f" Handler: {command}")
+        ),
+        None,
+    )
+
+
 # Wrappers that name the session-start program. Setup owns none of them,
 # so it keeps each one and adds its own handler beside it. None is
 # byte-identical to the command setup writes, so doctor warns about each
@@ -994,7 +1015,7 @@ def _add_group(
     }
     if matcher is not None:
         group["matcher"] = matcher
-    doc["hooks"][event].append(group)
+    doc["hooks"].setdefault(event, []).append(group)
     hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
 
@@ -1664,8 +1685,9 @@ def test_doctor_warns_and_passes_a_handler_that_checks_for_the_program(
 
 # A wrapper in its own group beside setup's handlers. `{p}` is the
 # session-start program path and `{search}` setup's PreToolUse search-tool
-# command. The wrapper gets a warning only when one fire runs it and
-# another handler of the program.
+# command. The wrapper gets the "may also run" warning when one fire runs
+# it and another handler of the program, and the lone-handler warning
+# otherwise.
 _WRAPPER_MATCHERS = {
     "env under resume": ("SessionStart", "resume", "/usr/bin/env {p}", True),
     # Setup's matcher lists `fork`.
@@ -1691,11 +1713,11 @@ _WRAPPER_MATCHERS = {
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("shape", sorted(_WRAPPER_MATCHERS))
-def test_doctor_warns_about_a_wrapper_only_where_a_fire_runs_it_twice(
+def test_doctor_words_a_wrapper_warning_by_whether_a_fire_runs_it_twice(
     tmp_path: Path, shape: str,
 ) -> None:
     codex_dir, hooks, program = _installed(tmp_path)
-    event, matcher, template, warns = _WRAPPER_MATCHERS[shape]
+    event, matcher, template, cofires = _WRAPPER_MATCHERS[shape]
     wrapper = template.format(
         p=program, search=_first_command(hooks, "PreToolUse"),
     )
@@ -1711,7 +1733,11 @@ def test_doctor_warns_about_a_wrapper_only_where_a_fire_runs_it_twice(
         ),
         None,
     )
-    assert (line is not None) == warns, out
+    assert (line is not None) == cofires, out
+    key = "aelf-search-tool-hook" if "{search}" in template else _HOOK
+    lone = _lone_warning_for(out, event, key, wrapper)
+    assert (lone is not None) != cofires, out
+    assert lone is None or "A rerun" not in lone, lone
 
 
 @pytest.mark.timeout(60)
@@ -1732,12 +1758,12 @@ def test_doctor_warns_about_two_wrappers_under_one_disjoint_matcher(
 
 
 @pytest.mark.timeout(60)
-def test_doctor_warns_about_the_overlapping_wrapper_and_not_the_disjoint_one(
+def test_doctor_gives_the_disjoint_wrapper_the_lone_handler_warning(
     tmp_path: Path,
 ) -> None:
     """A `resume` fire runs setup's handler and one wrapper. With setup's
     matcher narrowed to `startup|resume`, no fire runs the `fork` wrapper
-    beside another handler."""
+    beside another handler, so it gets the lone-handler warning."""
     codex_dir, hooks, program = _installed(tmp_path)
     _narrow_setup_matcher(hooks, "startup|resume")
     overlapping, disjoint = f"sh -c '{program}'", f"bash -c '{program}'"
@@ -1747,6 +1773,112 @@ def test_doctor_warns_about_the_overlapping_wrapper_and_not_the_disjoint_one(
     assert rc == 0, out
     assert _warning_for(out, overlapping) is not None, out
     assert _warning_for(out, disjoint) is None, out
+    assert _lone_warning_for(out, "SessionStart", _HOOK, overlapping) is None
+    assert _lone_warning_for(out, "SessionStart", _HOOK, disjoint) is not None
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("where", ["hooks.json", "config.toml"])
+@pytest.mark.parametrize("event", ["SessionStart", "SessionEnd"])
+def test_doctor_warns_about_a_copy_of_setup_command_in_another_event(
+    tmp_path: Path, event: str, where: str,
+) -> None:
+    """Setup writes the aelf-hook handler in UserPromptSubmit only. One copy
+    of its command in another event is no duplicate run, and it isn't
+    setup's handler there, so it gets a warning."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _first_command(hooks, "UserPromptSubmit")
+    if where == "hooks.json":
+        _add_group(hooks, event, ours)
+        label = ""
+    else:
+        _write_config_hooks(codex_dir, event, ours)
+        label = f" in the [hooks] table of {codex_dir / 'config.toml'}"
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    assert out.count("runs aelf-hook with a command") == 1, out
+    assert (
+        f"[warn] {event} handler{label} runs aelf-hook with a command `aelf "
+        "setup --host codex` writes, but setup writes no aelf-hook handler "
+        f"in {event}; delete this one: {ours}\n" in out
+    ), out
+
+
+def _old_install_program(tmp_path: Path, name: str) -> str:
+    """An aelfrice program an older install left at another path."""
+    old = tmp_path / "old" / "bin" / name
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    old.chmod(0o755)
+    return str(old)
+
+
+# A handler that names aelf-stop-hook where no fire runs another handler
+# of it: (event, file, whether the handler is the stop program itself at
+# another path, whether setup's next run replaces it). Setup writes Stop
+# in hooks.json, writes no SessionEnd handler, and never touches
+# config.toml.
+_LONE_HANDLERS = {
+    "older install in Stop": ("Stop", "hooks.json", True, True),
+    "older install in SessionEnd": ("SessionEnd", "hooks.json", True, False),
+    "older install in config.toml Stop": ("Stop", "config.toml", True, False),
+    "wrapper in SessionEnd": ("SessionEnd", "hooks.json", False, False),
+    "wrapper in config.toml SessionEnd": (
+        "SessionEnd", "config.toml", False, False,
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="the program stub is a POSIX script",
+)
+@pytest.mark.parametrize("shape", sorted(_LONE_HANDLERS))
+def test_doctor_warns_about_a_lone_handler_that_names_the_program(
+    tmp_path: Path, shape: str,
+) -> None:
+    """Every handler that names a program and isn't a byte-identical copy
+    of setup's command gets a warning, though no fire runs it twice."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    event, where, owned, replaced = _LONE_HANDLERS[shape]
+    old = _old_install_program(tmp_path, "aelf-stop-hook")
+    command = old if owned else f"bash -c {old}"
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    stop = doc["hooks"]["Stop"][0]["hooks"]
+    ours = next(h for h in stop if "aelf-stop-hook" in h["command"])
+    if where == "hooks.json" and event == "Stop":
+        # The older install's handler stands where setup's was.
+        ours["command"] = command
+    else:
+        stop.remove(ours)
+        if where == "hooks.json":
+            doc["hooks"].setdefault(event, []).append(
+                {"hooks": [{"type": "command", "command": command}]},
+            )
+    hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    if where == "config.toml":
+        _write_config_hooks(codex_dir, event, command)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert "times" not in out
+    assert "may also run" not in out
+    label = (
+        f" in the [hooks] table of {codex_dir / 'config.toml'}"
+        if where == "config.toml" else ""
+    )
+    line = _lone_warning_for(out, event, "aelf-stop-hook", command, label)
+    assert line is not None, out
+    assert (
+        " A rerun of `aelf setup --host codex` replaces this aelfrice "
+        "handler with setup's, as it does one an older install wrote at "
+        "another path." in line
+    ) == replaced, line
+    if replaced:
+        assert rc == 0, out
+        install_codex_hooks(hooks)
+        rc, out = _doctor(codex_dir, tmp_path / "skills")
+        assert rc == 0, out
+        assert old not in out, out
 
 
 @pytest.mark.timeout(60)
