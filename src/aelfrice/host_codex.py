@@ -1477,8 +1477,11 @@ class CodexDoctorReport:
         users are told the requested memory surface is present when it cannot
         work.
 
-        Every condition here is therefore gated on our handlers actually
-        being installed. None of them requires a reachable Codex model, which
+        Every condition here but a duplicate run is therefore gated on our
+        handlers actually being installed in hooks.json. A duplicate run
+        counts only copies of a command setup writes, byte for byte, so it
+        is installed wiring wherever it is, including config.toml `[hooks]`
+        with no hooks.json (#1812). None of them requires a reachable Codex model, which
         is what parked the rest of #1430 — they are all filesystem and config
         states, provable by fixture.
 
@@ -1488,9 +1491,18 @@ class CodexDoctorReport:
         the issue itself asks for ``unknown`` rather than unhealthy when trust
         cannot be established authoritatively.
         """
+        # #1812: a duplicate run of setup's command is a fault wherever it
+        # is, so a copy in config.toml `[hooks]` fails doctor with no
+        # aelfrice handler in hooks.json.
+        reasons = [
+            f"{event} starts the {program} command {count} times, "
+            "once per copy of "
+            "the handler `aelf setup --host codex` writes; keep one "
+            "and delete the others"
+            for event, program, count in self.duplicate_runs
+        ]
         if not self.owned_handler_count:
-            return []
-        reasons: list[str] = []
+            return reasons
         if self.stale_commands:
             reasons.append(
                 "hook command(s) configured but not present on disk: "
@@ -1512,13 +1524,6 @@ class CodexDoctorReport:
             reasons.append(
                 "aelfrice handlers are missing from events that are "
                 "otherwise installed: " + ", ".join(self.missing_handlers),
-            )
-        for event, program, count in self.duplicate_runs:
-            reasons.append(
-                f"{event} starts the {program} command {count} times, "
-                "once per copy of "
-                "the handler `aelf setup --host codex` writes; keep one "
-                "and delete the others",
             )
         if self.feature_flag_on is False:
             reasons.append(
@@ -2640,8 +2645,9 @@ def doctor_codex(
     # The values, the command, and the file of each other handler that
     # names a program, per event.
     maybe: dict[tuple[str, str], list[tuple[frozenset[str], str, str]]] = {}
-    # (event, program) pairs with a counted run in config.toml.
+    # (event, program) pairs with a counted run in each file.
     toml_runs: set[tuple[str, str]] = set()
+    json_runs: set[tuple[str, str]] = set()
     sources = (
         ("", hooks_map),
         (f" in the [hooks] table of {config_path}", toml_events),
@@ -2702,8 +2708,7 @@ def doctor_codex(
                     )
                     if run:
                         runs.setdefault((event, run), []).append(values)
-                        if where:
-                            toml_runs.add((event, run))
+                        (toml_runs if where else json_runs).add((event, run))
                     named = _named_owned_keys(handler, windows=win)
                     for key in sorted(named.keys() - {run}):
                         maybe.setdefault((event, key), []).append(
@@ -2755,11 +2760,15 @@ def doctor_codex(
     ]
     for event, key, _count in report.duplicate_runs:
         if (event, key) in toml_runs:
+            # #1812: name hooks.json only when it holds a copy as well.
+            also = (
+                f" as well as those in {hooks_path}"
+                if (event, key) in json_runs else ""
+            )
             report.warnings.append(
                 f"{event}: the [hooks] table in {config_path} holds a copy "
                 f"of the {key} command that `aelf setup --host codex` "
-                "writes, and Codex runs the handlers in that table as well "
-                f"as those in {hooks_path}",
+                f"writes, and Codex runs the handlers in that table{also}",
             )
     for (event, key), others in sorted(maybe.items()):
         # #1812: a handler that names the program gets a warning only when
@@ -2818,9 +2827,14 @@ def doctor_codex(
             # never having run `aelf setup --host codex` is a legitimate
             # state, and exiting nonzero on it would fail doctor on every
             # machine that does not use the Codex host.
+            # #1812: unless config.toml `[hooks]` holds setup's handler.
+            where = (
+                f"only the [hooks] table in {config_path} runs aelfrice "
+                "hooks" if toml_runs
+                else "no aelfrice hooks are installed"
+            )
             report.warnings.append(
-                f"{hooks_path} does not exist; no aelfrice hooks are "
-                "installed for the Codex host "
+                f"{hooks_path} does not exist; {where} for the Codex host "
                 "(run `aelf setup --host codex`)",
             )
 

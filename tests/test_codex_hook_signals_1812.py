@@ -647,8 +647,59 @@ def test_doctor_counts_a_copy_of_setup_handler_in_config_toml(
     assert "SessionStart starts the aelf-session-start-hook command 2 times" in out
     assert (
         f"[warn] SessionStart: the [hooks] table in {codex_dir / 'config.toml'}"
-        " holds a copy of the aelf-session-start-hook command" in out
+        " holds a copy of the aelf-session-start-hook command that `aelf setup "
+        "--host codex` writes, and Codex runs the handlers in that table as "
+        f"well as those in {hooks}\n" in out
     ), out
+
+
+# hooks.json beside a config.toml whose `[hooks]` table holds two copies of
+# setup's SessionStart handler: none, one with no event, and one with only
+# a foreign handler.
+_NO_OWNED_HOOKS_JSON: dict[str, object] = {
+    "absent": None,
+    "no events": {"hooks": {}},
+    "foreign only": {
+        "hooks": {
+            "Stop": [{"hooks": [{"type": "command", "command": "/bin/true"}]}],
+        },
+    },
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_NO_OWNED_HOOKS_JSON))
+def test_doctor_faults_copies_of_setup_handler_only_in_config_toml(
+    tmp_path: Path, shape: str,
+) -> None:
+    """A duplicate run fails doctor whichever file holds it, and the
+    warning names hooks.json only when hooks.json holds a copy."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    doc = _NO_OWNED_HOOKS_JSON[shape]
+    if doc is None:
+        hooks.unlink()
+    else:
+        hooks.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+    _write_config_hooks(codex_dir, "SessionStart", ours, ours)
+    config = codex_dir / "config.toml"
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert (
+        "[FAIL] SessionStart starts the aelf-session-start-hook command 2 "
+        "times" in out
+    ), out
+    assert (
+        f"[warn] SessionStart: the [hooks] table in {config} holds a copy of "
+        "the aelf-session-start-hook command that `aelf setup --host codex` "
+        "writes, and Codex runs the handlers in that table\n" in out
+    ), out
+    if doc is None:
+        assert (
+            f"[warn] {hooks} does not exist; only the [hooks] table in "
+            f"{config} runs aelfrice hooks for the Codex host" in out
+        ), out
+        assert "no aelfrice hooks are installed" not in out
 
 
 @pytest.mark.timeout(60)
