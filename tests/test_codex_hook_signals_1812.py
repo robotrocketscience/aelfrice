@@ -608,6 +608,63 @@ def test_doctor_counts_no_run_for_a_handler_codex_runs_no_command_for(
     assert _warning_for(out, ours) is not None, out
 
 
+# --- config.toml [hooks] ----------------------------------------------------
+
+
+def _write_config_hooks(codex_dir: Path, event: str, *commands: str) -> None:
+    """Write a config.toml whose `[hooks]` table has one `event` group
+    under setup's SessionStart matcher with these command handlers."""
+    lines = [
+        f"[[hooks.{event}]]",
+        'matcher = "startup|resume|clear|compact|fork"',
+    ]
+    for command in commands:
+        lines += [
+            f"[[hooks.{event}.hooks]]",
+            'type = "command"',
+            f"command = {json.dumps(command)}",
+        ]
+    (codex_dir / "config.toml").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8",
+    )
+
+
+@pytest.mark.timeout(60)
+def test_doctor_counts_a_copy_of_setup_handler_in_config_toml(
+    tmp_path: Path,
+) -> None:
+    """Codex loads config.toml `[hooks]` beside hooks.json and runs both, so
+    setup's handler in hooks.json and its copy in config.toml are two runs."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    _write_config_hooks(codex_dir, "SessionStart", ours)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "SessionStart starts the aelf-session-start-hook command 2 times" in out
+    assert (
+        f"[warn] SessionStart: the [hooks] table in {codex_dir / 'config.toml'}"
+        " holds a copy of the aelf-session-start-hook command" in out
+    ), out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_warns_about_a_config_toml_handler_that_names_the_program(
+    tmp_path: Path,
+) -> None:
+    codex_dir, hooks, program = _installed(tmp_path)
+    wrapper = f"/usr/bin/env {program}"
+    _write_config_hooks(codex_dir, "SessionStart", wrapper)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    where = f" in the [hooks] table of {codex_dir / 'config.toml'}"
+    assert any(
+        ln.startswith(f"[warn] SessionStart handler{where} may also run {_HOOK}.")
+        and ln.endswith(f"delete this one: {wrapper}")
+        for ln in out.splitlines()
+    ), out
+
+
 def _windows_report(
     codex_dir: Path, hooks: Path, extra: dict[str, object],
 ) -> tuple[list[tuple[str, str, int]], list[str]]:
