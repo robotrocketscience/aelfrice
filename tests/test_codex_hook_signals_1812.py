@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -1960,6 +1961,54 @@ def test_doctor_reads_the_matcher_of_codex_agent_events(
     assert rc == code, out
     assert (f"{event} starts the aelf-hook command 2 times" in out) == bool(
         code,
+    ), out
+
+
+# --- strings anywhere in a handler, and handlers written as arrays --------------
+
+# A handler or group in its own Stop group beside setup's, built from setup's
+# stop command `{p}`. Codex reads an array by position, and doctor counts no
+# run in one but warns about any string in it that names a program, as it
+# does for a string in any field of a handler.
+_ANYWHERE: dict[str, Callable[[str], object]] = {
+    "positional handler": lambda p: {"hooks": [["command", p]]},
+    "positional group": lambda p: [
+        "", [{"type": "command", "command": p}],
+    ],
+    "positional group of a positional handler": lambda p: ["", [["command", p]]],
+    "statusMessage": lambda p: {
+        "hooks": [
+            {"type": "command", "command": "/bin/true", "statusMessage": p},
+        ],
+    },
+    "mcp_tool input key": lambda p: {
+        "hooks": [
+            {"type": "mcp_tool", "server": "s", "tool": "t", "input": {p: 1}},
+        ],
+    },
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_ANYWHERE))
+def test_doctor_warns_about_a_name_in_any_string_of_a_handler_or_group(
+    tmp_path: Path, shape: str,
+) -> None:
+    codex_dir, hooks, _program = _installed(tmp_path)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    stop = next(
+        str(h["command"]) for h in doc["hooks"]["Stop"][0]["hooks"]
+        if "aelf-stop-hook" in str(h["command"])
+    )
+    doc["hooks"]["Stop"].append(_ANYWHERE[shape](stop))
+    hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    assert any(
+        ln.startswith("[warn] Stop handler may also run aelf-stop-hook.")
+        and ln.endswith(f"delete this one: {stop}")
+        for ln in out.splitlines()
     ), out
 
 
