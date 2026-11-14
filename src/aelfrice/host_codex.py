@@ -2623,6 +2623,107 @@ def _program_path(cmd: str, key: str, *, windows: bool | None = None) -> str:
     return program_token(cmd, windows=windows)
 
 
+#: A profile file, `$CODEX_HOME/<name>.config.toml`, which Codex reads as a
+#: second user config layer when you pass `--profile <name>`, where the
+#: name is ASCII letters, digits, `_`, and `-` (`ProfileV2Name` in
+#: codex-rs/protocol/src/config_types.rs, lines 116-159, and
+#: `load_config_layers_state` in codex-rs/config/src/loader/mod.rs, lines
+#: 293-341, at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9).
+_PROFILE_FILE: Final[re.Pattern[str]] = re.compile(
+    r"([A-Za-z0-9_-]+)\.config\.toml",
+)
+
+
+def _profile_files(
+    codex_dir: Path,
+) -> list[tuple[Path, str, dict[str, object], str | None]]:
+    """Each profile file in `codex_dir`, in name order: its path, its
+    profile name, its contents, and why doctor can't read it, or None."""
+    found: list[tuple[Path, str, dict[str, object], str | None]] = []
+    for path in sorted(codex_dir.iterdir()):
+        named = _PROFILE_FILE.fullmatch(path.name)
+        if named is None or not path.is_file():
+            continue
+        data, error, nesting = _load_toml(path)
+        found.append((path, named[1], data, error or nesting))
+    return found
+
+
+def _feature_off(features: object, where: str) -> str | None:
+    """Why the `[features]` table at `where` turns Codex's hooks off or
+    makes doctor unable to tell, or None when it leaves them on.
+
+    Codex reads the feature as `hooks`, and as its earlier name
+    `codex_hooks`, applying the keys in sorted order, so `hooks` wins
+    (`Features::apply_map` and `FeaturesToml` in
+    codex-rs/features/src/lib.rs, lines 732-833 and 957-1081, and the
+    alias in codex-rs/features/src/legacy.rs, lines 48-51, at the commit
+    `_PROFILE_FILE` cites). Codex reads each as true or false, and
+    rejects the whole config otherwise.
+    """
+    if features is None:
+        return None
+    if not isinstance(features, dict):
+        return f"{where} isn't a table"
+    table = cast(dict[str, object], features)
+    last: tuple[str, object] | None = None
+    for key in ("codex_hooks", "hooks"):
+        if key in table:
+            if not isinstance(table[key], bool):
+                return f"`{key}` in {where} isn't true or false"
+            last = (key, table[key])
+    if last is not None and last[1] is False:
+        return f"{where} sets `{last[0]}` to false"
+    return None
+
+
+def _hooks_off_reason(
+    cfg: dict[str, object],
+    config_path: Path,
+    profiles: list[tuple[Path, str, dict[str, object], str | None]],
+) -> str | None:
+    """Why Codex may start no hook at all, or None when its `hooks`
+    feature is on for every launch the files in `$CODEX_HOME` describe.
+
+    Codex starts no hook of yours while the feature is off: it keeps only
+    the built-in ones (`ClaudeHooksEngine::new` in
+    codex-rs/hooks/src/engine/mod.rs, lines 290-321, at the commit
+    `_PROFILE_FILE` cites). It reads `[features]` from config.toml, then
+    from the profile that `profile = "..."` or `--profile` selects: a
+    `[profiles.<name>]` table in config.toml or a profile file
+    (`Features::from_sources` in codex-rs/features/src/lib.rs, lines
+    835-856). Doctor can't tell which profile a launch uses, so any
+    profile that turns the feature off, and any profile file it can't
+    read, makes this a reason.
+    """
+    tables: list[tuple[object, str]] = []
+
+    def add(data: dict[str, object], where: str) -> None:
+        tables.append((data.get("features"), f"[features] in {where}"))
+        named = data.get("profiles")
+        if isinstance(named, dict):
+            for name, profile in sorted(cast(dict[str, object], named).items()):
+                if isinstance(profile, dict):
+                    tables.append((
+                        cast(dict[str, object], profile).get("features"),
+                        f"[profiles.{name}.features] in {where}",
+                    ))
+
+    add(cfg, str(config_path))
+    for path, name, data, error in profiles:
+        if error is not None:
+            return (
+                f"doctor can't read the profile file {path}, which Codex "
+                f"reads when you pass `--profile {name}`"
+            )
+        add(data, f"the profile file {path}")
+    for features, where in tables:
+        reason = _feature_off(features, where)
+        if reason is not None:
+            return reason
+    return None
+
+
 def doctor_codex(
     codex_dir: Path | None = None, *, windows: bool | None = None,
 ) -> CodexDoctorReport:
@@ -2763,6 +2864,15 @@ def doctor_codex(
             )
         elif isinstance(cfg["hooks"], dict):
             toml_events = cast(dict[str, object], cfg["hooks"])
+    # #1812: a launch whose `hooks` feature is off starts no handler, so
+    # doctor counts no run when any setting it reads can turn it off.
+    profiles = _profile_files(cdir)
+    hooks_off = _hooks_off_reason(cfg, config_path, profiles)
+    if hooks_off is not None:
+        report.warnings.append(
+            f"doctor counts no duplicate run, because {hooks_off}, and "
+            "Codex starts no hook of yours while its `hooks` feature is off",
+        )
     covered: set[str] = set()
     found_keys: dict[str, set[str]] = {}
     # The values each run of a program runs on, per event (#1812).
@@ -2779,7 +2889,8 @@ def doctor_codex(
         tuple[str, str],
         list[tuple[frozenset[str], str, str, bool, tuple[object, ...]]],
     ] = {}
-    # (event, program) pairs with a counted run in each file.
+    # (event, program) pairs with a counted run in each file, or with a
+    # copy of setup's command while the `hooks` feature may be off.
     toml_runs: set[tuple[str, str]] = set()
     json_runs: set[tuple[str, str]] = set()
     # The command, the file, and the path of each run of a program in an
@@ -2873,6 +2984,28 @@ def doctor_codex(
                                 "but Codex reads no hook event by that name, "
                                 f"so it never runs this handler: {cmd}",
                             )
+                            accounted.add((tag, path, key))
+                        continue
+                    if hooks_off is not None:
+                        # #1812: no run counts, and setup's own handler in
+                        # the group setup writes needs no line of its own.
+                        command = _run_command(item, windows=win)
+                        own = (
+                            command is not None and command in setup_runs
+                            and tag == "json"
+                            and setup_writes(event, cast(object, group), command)
+                        )
+                        if command is not None and command in setup_runs:
+                            (toml_runs if tag == "toml" else json_runs).add(
+                                (event, setup_runs[command]),
+                            )
+                        for key, cmd in sorted(named.items()):
+                            if not own:
+                                warn(
+                                    f"{event} handler {at}{where} names "
+                                    f"{key}, and doctor counts no run for "
+                                    f"it, because {hooks_off}. Handler: {cmd}",
+                                )
                             accounted.add((tag, path, key))
                         continue
                     if values is None:
