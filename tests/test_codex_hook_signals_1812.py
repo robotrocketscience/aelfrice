@@ -2129,10 +2129,51 @@ def test_doctor_warns_about_a_name_in_any_string_of_a_handler_or_group(
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert "times" not in out
+    if shape.startswith("positional"):
+        # Doctor counts no run in a file that holds an array form, so no
+        # fire runs this handler beside a counted one.
+        assert _lone_warning_for(out, "Stop", "aelf-stop-hook", stop), out
+        assert "holds a group or a handler written as an array" in out, out
+        return
     assert any(
         ln.startswith("[warn] Stop handler may also run aelf-stop-hook.")
         and ln.endswith(f"delete this one: {stop}")
         for ln in out.splitlines()
+    ), out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "positional",
+    [
+        # serde reads the tag first, and Codex rejects the unknown type, so
+        # it loads no hook from the file.
+        [None, [{"type": "other"}]],
+        [None, [["command", "/bin/true"]]],
+    ],
+)
+def test_doctor_counts_no_run_in_a_file_with_an_array_form(
+    tmp_path: Path, positional: object,
+) -> None:
+    """Doctor doesn't check an array form's shape, so it can't tell whether
+    Codex loads the file. A copy of setup's command beside setup's handler
+    there gets a warning with its path instead of a failure."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = _session_start_command(hooks)
+    _add_group(hooks, "SessionStart", ours, "fork")
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["Stop"].append(positional)
+    hooks.write_text(json.dumps(doc), encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out
+    assert (
+        f"[warn] {hooks} holds a group or a handler written as an array at "
+        "`hooks.Stop[1]`" in out
+    ), out
+    assert (
+        "[warn] The string at `hooks.SessionStart[1].hooks[0].command` in "
+        f"{hooks} names {_HOOK}" in out
     ), out
 
 

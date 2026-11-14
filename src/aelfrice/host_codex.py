@@ -2090,6 +2090,21 @@ def _matcher_branches(
     return tuple(branches)
 
 
+def _positional_form(events: dict[str, object]) -> tuple[object, ...] | None:
+    """The path of the first group or handler written as an array under a
+    Codex event name, or None when there is none."""
+    for event, groups in events.items():
+        if event not in _CODEX_EVENTS or not isinstance(groups, list):
+            continue
+        for g, group in enumerate(cast(list[object], groups)):
+            if isinstance(group, list):
+                return ("hooks", event, g)
+            for h, handler in enumerate(_handlers_in(group)):
+                if isinstance(handler, list):
+                    return ("hooks", event, g, "hooks", h)
+    return None
+
+
 def _branch_matches(branch: tuple[bool, str, bool], value: str) -> bool:
     start, name, end = branch
     if start and end:
@@ -2433,6 +2448,26 @@ def doctor_codex(
         ("json", "", hooks_map),
         ("toml", f" in the [hooks] table of {config_path}", toml_events),
     )
+    # #1812: serde reads a group or a handler written as an array by
+    # position, and doctor doesn't check that form's shape, so it can't
+    # tell whether Codex loads a file that holds one under an event. Doctor
+    # counts no run in such a file, and its last check warns about each
+    # program name there, setup's own commands included.
+    positional = {
+        tag: _positional_form(events) for tag, _where, events in sources
+    }
+    for tag, label in (
+        ("json", str(hooks_path)),
+        ("toml", f"the [hooks] table of {config_path}"),
+    ):
+        if positional[tag] is not None:
+            warn(
+                f"{label} holds a group or a handler written as an array at "
+                f"`{_render_path(cast(tuple[object, ...], positional[tag]))}`"
+                ", which Codex reads by position and doctor doesn't check, "
+                "so doctor can't tell whether Codex loads the file and "
+                "counts no duplicate run in it",
+            )
     for tag, where, events in sources:
         for event, groups in events.items():
             if not isinstance(groups, list):
@@ -2508,7 +2543,10 @@ def doctor_codex(
                         setup_runs.get(command, "") if command is not None
                         else ""
                     )
-                    if run and command is not None:
+                    if (
+                        run and command is not None
+                        and positional[tag] is None
+                    ):
                         field_path = (
                             *path, str(_run_field(item, windows=win)),
                         )
