@@ -15,6 +15,8 @@ established in #1054/#1052 triage:
   Codex silently skips the hooks. The ``hooks`` feature itself is
   stable and on by default (it was the under-development ``codex_hooks``
   flag on Codex 0.11x–0.12x); doctor surfaces an explicit disable.
+  Codex also loads hooks from a ``[hooks]`` table in ``config.toml``, so
+  doctor's duplicate check reads that table as well (#1812).
 - **Merge-aware and idempotent.** Entries whose command basename is one
   of ours are replaced wholesale on every setup run; everything else in
   the file is preserved byte-for-byte at the JSON level. An unparseable
@@ -2362,54 +2364,88 @@ def doctor_codex(
                     keys.add(key)
                     setup_runs[cmd] = key
     expected_events = set(expected_keys)
+    # #1812: Codex loads the `[hooks]` table of config.toml as well as
+    # hooks.json for the same config layer and runs the handlers of both
+    # (`discover_handlers` in codex-rs/hooks/src/engine/discovery.rs, lines
+    # 171-215, at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9),
+    # so the duplicate count and its warnings read both.
+    config_path = codex_config_path(cdir)
+    cfg: dict[str, object] = {}
+    cfg_error: str | None = None
+    if config_path.is_file():
+        try:
+            cfg = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        except (tomllib.TOMLDecodeError, OSError) as exc:
+            cfg_error = f"could not parse {config_path}: {exc}"
+    toml_events: dict[str, object] = {}
+    toml_hooks = cfg.get("hooks")
+    if isinstance(toml_hooks, dict):
+        toml_events = cast(dict[str, object], toml_hooks)
     covered: set[str] = set()
     found_keys: dict[str, set[str]] = {}
     # The values each run of a program runs on, per event (#1812).
     runs: dict[tuple[str, str], list[frozenset[str]]] = {}
-    # The values and the command of each other handler that names a
-    # program, per event.
-    maybe: dict[tuple[str, str], list[tuple[frozenset[str], str]]] = {}
+    # The values, the command, and the file of each other handler that
+    # names a program, per event.
+    maybe: dict[tuple[str, str], list[tuple[frozenset[str], str, str]]] = {}
+    # (event, program) pairs with a counted run in config.toml.
+    toml_runs: set[tuple[str, str]] = set()
+    sources = (
+        ("", hooks_map),
+        (f" in the [hooks] table of {config_path}", toml_events),
+    )
+    for where, events in sources:
+        for event, groups in events.items():
+            if not isinstance(groups, list):
+                continue
+            for group in cast(list[object], groups):
+                # #1812: handlers whose matchers share no value, such as
+                # tool groups under `Bash` and under `WebSearch`, never run
+                # on the same fire, so they don't count as duplicate runs.
+                values = _matched_values(event, group)
+                # #1812: name a skipped or unread matcher only where it
+                # changes what doctor counts.
+                if values is None and _group_counts(group, windows=windows):
+                    matcher = cast(dict[str, object], group).get("matcher")
+                    report.warnings.append(
+                        f"{event} group{where} with matcher {matcher!r} never "
+                        "runs: Codex logs \"invalid matcher\" for it and "
+                        "skips the group, so doctor doesn't count its "
+                        "handlers as runs",
+                    )
+                unread = _unread_matcher(event, group)
+                if unread is not None and _group_counts(group, windows=windows):
+                    report.warnings.append(
+                        f"{event} group{where} with matcher {unread!r}: doctor "
+                        "can't read this matcher and counted it as matching "
+                        "every fire",
+                    )
+                # #1812: a handler counts as a run of a program only when
+                # the command Codex runs for it on this platform is one
+                # setup writes, byte for byte. Doctor reads no shell syntax:
+                # any other handler whose command fields name an aelfrice
+                # program may run it, so doctor warns about it.
+                if values is None:
+                    continue
+                for handler in _handlers_in(group):
+                    command = _run_command(handler, windows=win)
+                    run = (
+                        setup_runs.get(command, "") if command is not None
+                        else ""
+                    )
+                    if run:
+                        runs.setdefault((event, run), []).append(values)
+                        if where:
+                            toml_runs.add((event, run))
+                    named = _named_owned_keys(handler, windows=win)
+                    for key in sorted(named.keys() - {run}):
+                        maybe.setdefault((event, key), []).append(
+                            (values, named[key], where),
+                        )
     for event, groups in hooks_map.items():
         if not isinstance(groups, list):
             continue
         for group in cast(list[object], groups):
-            # #1812: handlers whose matchers share no value, such as tool
-            # groups under `Bash` and under `WebSearch`, never run on the
-            # same fire, so they don't count as duplicate runs.
-            values = _matched_values(event, group)
-            # #1812: name a skipped or unread matcher only where it changes
-            # what doctor counts.
-            if values is None and _group_counts(group, windows=windows):
-                matcher = cast(dict[str, object], group).get("matcher")
-                report.warnings.append(
-                    f"{event} group with matcher {matcher!r} never runs: "
-                    "Codex logs \"invalid matcher\" for it and skips the "
-                    "group, so doctor doesn't count its handlers as runs",
-                )
-            unread = _unread_matcher(event, group)
-            if unread is not None and _group_counts(group, windows=windows):
-                report.warnings.append(
-                    f"{event} group with matcher {unread!r}: doctor can't "
-                    "read this matcher and counted it as matching every "
-                    "fire",
-                )
-            # #1812: a handler counts as a run of a program only when the
-            # command Codex runs for it on this platform is one setup
-            # writes, byte for byte. Doctor reads no shell syntax: any
-            # other handler whose command fields name an aelfrice program
-            # may run it, so doctor warns about it.
-            for handler in _handlers_in(group):
-                if values is None:
-                    continue
-                command = _run_command(handler, windows=win)
-                run = setup_runs.get(command, "") if command is not None else ""
-                if run:
-                    runs.setdefault((event, run), []).append(values)
-                named = _named_owned_keys(handler, windows=win)
-                for key in sorted(named.keys() - {run}):
-                    maybe.setdefault((event, key), []).append(
-                        (values, named[key]),
-                    )
             # #1412: count per handler. Gating on a fully-owned group made
             # an aelfrice handler sharing a group with a foreign one
             # invisible to doctor — the same blind spot that let setup
@@ -2450,21 +2486,33 @@ def doctor_codex(
         for (event, key), value_sets in sorted(runs.items())
         if (count := _most_runs(event, value_sets)) > 1
     ]
+    for event, key, _count in report.duplicate_runs:
+        if (event, key) in toml_runs:
+            report.warnings.append(
+                f"{event}: the [hooks] table in {config_path} holds a copy "
+                f"of the {key} command that `aelf setup --host codex` "
+                "writes, and Codex runs the handlers in that table as well "
+                f"as those in {hooks_path}",
+            )
     for (event, key), others in sorted(maybe.items()):
         # #1812: a handler that names the program gets a warning only when
         # some fire that runs it also runs another handler of the program,
         # the rule the failure above follows.
         counted = runs.get((event, key), [])
-        fires = _fires(event, counted + [values for values, _cmd in others])
+        fires = _fires(
+            event, counted + [values for values, _cmd, _where in others],
+        )
         wrote = " or ".join(
             f"`{c}`" for c, k in sorted(setup_runs.items()) if k == key
         )
-        for index, (_values, cmd) in enumerate(others, start=len(counted)):
+        for index, (_values, cmd, where) in enumerate(
+            others, start=len(counted),
+        ):
             if not any(index in fire and len(fire) > 1 for fire in fires):
                 continue
             warning = (
-                f"{event} handler may also run {key}. Doctor counts a run "
-                "only for a command byte-identical to one `aelf setup "
+                f"{event} handler{where} may also run {key}. Doctor counts "
+                "a run only for a command byte-identical to one `aelf setup "
                 f"--host codex` writes ({wrote or key}). If this handler "
                 f"runs {key}, keep setup's handler and delete this one: {cmd}"
             )
@@ -2509,13 +2557,9 @@ def doctor_codex(
                 "(run `aelf setup --host codex`)",
             )
 
-    config_path = codex_config_path(cdir)
     if config_path.is_file():
-        try:
-            cfg = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        except (tomllib.TOMLDecodeError, OSError) as exc:
-            report.warnings.append(f"could not parse {config_path}: {exc}")
-            cfg = {}
+        if cfg_error is not None:
+            report.warnings.append(cfg_error)
         # Codex 0.145+ names the feature `hooks` (stage: stable, enabled
         # by default). Legacy 0.11x–0.12x named it `codex_hooks` (under
         # development, off by default). A default-on feature is absent from
