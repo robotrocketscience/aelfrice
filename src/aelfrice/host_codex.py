@@ -47,7 +47,6 @@ import os
 import re
 import tempfile
 import tomllib
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1452,7 +1451,8 @@ class CodexDoctorReport:
     #: platform, a command byte-identical to the one `aelf setup --host
     #: codex` writes for that program (#1812). The count is for one fire,
     #: so handlers whose matchers share no value, such as a SessionStart
-    #: `startup` group and a `resume` group, don't add up.
+    #: `startup` group and a `resume` group, don't add up. Doctor counts a
+    #: run only in a group whose matcher it reads (`_matched_values`).
     duplicate_runs: list[tuple[str, str, int]] = field(
         default_factory=list[tuple[str, str, int]],
     )
@@ -1996,7 +1996,7 @@ def _named_items(group: object) -> list[object]:
 #: "Matcher patterns"): SessionStart matches its start source, and
 #: PreCompact and PostCompact match their trigger. Any other event has no
 #: entry. The tool events match an open set of tool names, which
-#: `_TOOL_EVENTS` covers, and Codex ignores the matcher on
+#: `_OPEN_EVENTS` covers, and Codex ignores the matcher on
 #: UserPromptSubmit and Stop, so doctor counts every handler in such an
 #: event as running on every fire.
 _MATCHER_VALUES: Final[dict[str, tuple[str, ...]]] = {
@@ -2004,17 +2004,15 @@ _MATCHER_VALUES: Final[dict[str, tuple[str, ...]]] = {
     "PreCompact": ("manual", "auto"),
     "PostCompact": ("manual", "auto"),
 }
-#: The events whose matcher is tested against tool names. Under an exact
-#: matcher a group's values are the names it lists, since any name can be
-#: a tool's.
+#: The events whose matcher is tested against tool names.
 _TOOL_EVENTS: Final[frozenset[str]] = frozenset({"PreToolUse", "PostToolUse"})
 #: The events whose matcher is tested against a value from a set doctor
 #: doesn't list: the tool events, and Codex's two agent start and stop
 #: events, whose matcher Codex reads (`matcher_pattern_for_event` in
 #: codex-rs/hooks/src/events/common.rs, lines 129-149, at
-#: openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9). Under an exact
-#: matcher a group's values are the names it lists, and a regex counts as
-#: matching every fire. Python joins the names split across literals.
+#: openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9). Doctor reads a
+#: matcher there only when it matches every value or names exact values.
+#: Python joins the names split across literals.
 _OPEN_EVENTS: Final[frozenset[str]] = _TOOL_EVENTS | frozenset({
     "Sub" "agentStart", "Sub" "agentStop",
 })
@@ -2028,9 +2026,11 @@ _TOOL_MATCHER_INPUTS: Final[tuple[frozenset[str], ...]] = (
     frozenset({"spawn_agent", "Agent"}),
 )
 #: The events whose `matcher` Codex reads. Codex ignores the matcher on
-#: the others, so it never compiles one there (`matcher_pattern_for_event`
-#: in codex-rs/hooks/src/events/common.rs, lines 129-149, at
-#: openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9).
+#: the others (`matcher_pattern_for_event` in
+#: codex-rs/hooks/src/events/common.rs, lines 129-149, at
+#: openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9). Doctor counts no
+#: run in such an event that is in neither `_MATCHER_VALUES` nor
+#: `_OPEN_EVENTS`, such as SessionEnd and PermissionRequest.
 _MATCHER_EVENTS: Final[frozenset[str]] = frozenset({
     "PermissionRequest", "PostCompact", "PostToolUse", "PreCompact",
     "PreToolUse", "SessionEnd", "SessionStart",
@@ -2039,550 +2039,101 @@ _MATCHER_EVENTS: Final[frozenset[str]] = frozenset({
 #: The one value that stands for every fire of an event not in
 #: `_MATCHER_VALUES`.
 _EVERY_FIRE: Final[frozenset[str]] = frozenset({""})
-#: A matcher of only these characters is a list of exact names to Codex.
+#: The matchers that match every value: Codex reads `""` and `*` as no
+#: matcher, and `.*` is a regex that matches any value.
+_EVERY_VALUE_MATCHERS: Final[frozenset[str]] = frozenset({"", "*", ".*"})
+#: A matcher of only these characters is a list of exact names to Codex
+#: (`HookMatcher::new` in codex-rs/hooks/src/engine/matcher.rs at
+#: openai/codex@c0cc9fc82), which never compiles it as a regex.
 _EXACT_MATCHER: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_|]+")
-#: The flags Rust's `regex` crate takes in a `(?flags)` or `(?flags:...)`
-#: group. Python's `re` also takes `a` and `L`, which Rust rejects.
-_RUST_REGEX_FLAGS: Final[frozenset[str]] = frozenset("imsUuxR")
-#: The characters an escape makes literal in Rust's `regex` crate: these
-#: meta characters, and any other ASCII character that isn't a letter, a
-#: digit, `<`, or `>` (`parse_escape` in regex-syntax 0.8).
-_RUST_META: Final[frozenset[str]] = frozenset("\\.+*?()|[]{}^$#&-~")
-#: The escapes of control characters, with each one's code point.
-_RUST_CONTROL_ESCAPES: Final[dict[str, int]] = {
-    "a": 0x07, "f": 0x0C, "t": 0x09, "n": 0x0A, "r": 0x0D, "v": 0x0B,
-}
-#: The escapes of Perl classes and of assertions. A class can't be a range
-#: end, and an assertion can't be in a class at all.
-_RUST_CLASS_ESCAPES: Final[frozenset[str]] = frozenset("dswDSW")
-_RUST_ASSERTION_ESCAPES: Final[frozenset[str]] = frozenset("AzbB<>")
-#: How many hex digits `\x`, `\u`, and `\U` take when there are no braces.
-_RUST_HEX_DIGITS: Final[dict[str, int]] = {"x": 2, "u": 4, "U": 8}
-_HEX_CHARS: Final[frozenset[str]] = frozenset("0123456789abcdefABCDEF")
-_DECIMAL_CHARS: Final[frozenset[str]] = frozenset("0123456789")
-#: The names `\b{name}` takes.
-_RUST_WORD_BOUNDARIES: Final[frozenset[str]] = frozenset(
-    {"start", "end", "start-half", "end-half"},
+#: One branch of an anchored list: a name of ASCII letters, digits, and
+#: `_`, with an optional `^` before it and an optional `$` after it.
+_ANCHORED_BRANCH: Final[re.Pattern[str]] = re.compile(
+    r"(\^?)([A-Za-z0-9_]+)(\$?)",
 )
-#: The general categories `\pX` names with one letter, in either case.
-_RUST_ONE_LETTER_CLASSES: Final[frozenset[str]] = frozenset("clmnpsz")
-#: One side of a `\p{name}` or `\p{name=value}` class, once spaces, `_`,
-#: and `-` are dropped and the letters lowercased.
-_RUST_PROPERTY_PART: Final[re.Pattern[str]] = re.compile(r"[a-z0-9.]+")
-#: The names of the `[:name:]` classes, and the shape of one.
-_RUST_ASCII_CLASSES: Final[frozenset[str]] = frozenset({
-    "alnum", "alpha", "ascii", "blank", "cntrl", "digit", "graph", "lower",
-    "print", "punct", "space", "upper", "word", "xdigit",
-})
-_RUST_ASCII_CLASS: Final[re.Pattern[str]] = re.compile(r"\[:\^?([^:]*):\]")
 
 
-class _RustSyntaxError(Exception):
-    """Syntax that Rust's `regex` crate rejects."""
+def _matcher_branches(
+    matcher: str,
+) -> tuple[tuple[bool, str, bool], ...] | None:
+    """The branches of a matcher doctor reads, or None for any other.
 
-
-def _rust_property_name(name: str) -> bool:
-    """True when a `\\p{...}` name has the shape Rust's `regex` reads.
-
-    Rust drops spaces, `_`, and `-` and ignores case, and a name can be a
-    `name=value`, `name:value`, or `name!=value` pair. This checks only
-    the shape, so a name that no Unicode property has, such as `Foo`,
-    passes.
+    Each branch is (anchored at the start, name, anchored at the end).
+    Doctor reads two forms besides the ones that match every value
+    (`_EVERY_VALUE_MATCHERS`). A matcher of only letters, digits, `_`, and
+    `|` is a list of exact names to Codex, so each name is anchored at both
+    ends. A matcher of names joined by `|`, each with an optional `^` before
+    it and `$` after it, is a regex whose meaning on a value with no line
+    break is the same in Rust's `regex` crate, the one Codex compiles
+    matchers with, and Python's `re`: `^name$` matches the name alone,
+    `^name` a value that starts with it, `name$` one that ends with it, and
+    a bare name one that holds it. Doctor reads no other matcher.
     """
-    for separator in ("!=", ":", "="):
-        if separator in name:
-            parts = name.split(separator, 1)
-            break
-    else:
-        parts = [name]
-    return all(
-        _RUST_PROPERTY_PART.fullmatch(
-            re.sub(r"[\s_-]", "", part).lower(),
-        ) is not None
-        for part in parts
-    )
-
-
-class _RustRegexCheck:
-    """Reads a pattern the way Rust's `regex` crate parses one, far enough
-    to tell whether `Regex::new` rejects it (#1812).
-
-    Each method reads one construct from `self.at` on and raises
-    `_RustSyntaxError` where regex-syntax 0.8's parser returns an error
-    (`ast/parse.rs` in rust-lang/regex), so the method names follow the
-    parser's. Every loop moves `self.at` forward, so a check ends.
-    """
-
-    def __init__(self, pattern: str) -> None:
-        self.text = pattern
-        self.at = 0
-        #: The `x` flag, under which whitespace and `#` comments are skipped.
-        self.verbose = False
-        self.names: set[str] = set()
-
-    def char(self, offset: int = 0) -> str:
-        """The character `offset` past `self.at`, or '' past the end."""
-        k = self.at + offset
-        return self.text[k] if k < len(self.text) else ""
-
-    def done(self) -> bool:
-        return self.at >= len(self.text)
-
-    def fail_at_end(self) -> None:
-        if self.done():
-            raise _RustSyntaxError
-
-    def skip_space(self) -> None:
-        """Skip whitespace and `#` comments under the `x` flag."""
-        while self.verbose and not self.done():
-            if self.text[self.at].isspace():
-                self.at += 1
-            elif self.text[self.at] == "#":
-                end = self.text.find("\n", self.at)
-                self.at = len(self.text) if end < 0 else end + 1
-            else:
-                return
-
-    def bump(self) -> bool:
-        """Step past one character and any skipped space; False at the end."""
-        self.at += 1
-        self.skip_space()
-        return not self.done()
-
-    def peek_space(self) -> str:
-        """The character after this one, past any skipped space."""
-        k = self.at + 1
-        while self.verbose and k < len(self.text) and self.text[k].isspace():
-            k += 1
-        return self.text[k] if k < len(self.text) else ""
-
-    def check(self) -> None:
-        """Read the whole pattern."""
-        # The `x` flag to restore at each open group's `)`.
-        groups: list[bool] = []
-        # Whether a repetition operator here has an item to repeat. A
-        # group starts with none, and a `(?flags)` group isn't one.
-        repeatable = False
-        while True:
-            self.skip_space()
-            if self.done():
-                break
-            ch = self.text[self.at]
-            if ch == "(":
-                self.group(groups)
-                repeatable = False
-            elif ch == ")":
-                if not groups:
-                    raise _RustSyntaxError
-                self.verbose = groups.pop()
-                self.at += 1
-                repeatable = True
-            elif ch == "|":
-                self.at += 1
-                repeatable = False
-            elif ch in ("?", "*", "+", "{"):
-                if not repeatable:
-                    raise _RustSyntaxError
-                self.repetition()
-            elif ch == "[":
-                self.char_class()
-                repeatable = True
-            elif ch == "\\":
-                self.escape()
-                repeatable = True
-            else:
-                self.at += 1
-                repeatable = True
-        if groups:
-            raise _RustSyntaxError
-
-    def group(self, groups: list[bool]) -> None:
-        """Read a `(` and the rest of what opens its group, or a whole
-        `(?flags)` group."""
-        self.bump()
-        rest = self.text[self.at:]
-        if rest.startswith(("?=", "?!", "?<=", "?<!")):
-            raise _RustSyntaxError
-        if rest.startswith(("?P<", "?<")):
-            self.at += 3 if rest.startswith("?P<") else 2
-            self.capture_name()
-        elif rest.startswith("?"):
-            self.at += 1
-            self.fail_at_end()
-            items, verbose = self.flags()
-            closes = self.text[self.at] == ")"
-            self.at += 1
-            if closes and not items:
-                raise _RustSyntaxError
-            if not closes:
-                groups.append(self.verbose)
-            if verbose is not None:
-                self.verbose = verbose
-            return
-        groups.append(self.verbose)
-
-    def flags(self) -> tuple[int, bool | None]:
-        """Read flags up to the `:` or `)` after them, and return how many
-        items there are and what they set the `x` flag to, if anything."""
-        seen: set[str] = set()
-        negated = dangling = False
-        verbose: bool | None = None
-        items = 0
-        while self.char() not in (":", ")"):
-            ch = self.char()
-            if ch == "-" and not negated:
-                negated = dangling = True
-            elif ch in _RUST_REGEX_FLAGS and ch not in seen:
-                seen.add(ch)
-                dangling = False
-                if ch == "x":
-                    verbose = not negated
-            else:
-                raise _RustSyntaxError
-            items += 1
-            self.at += 1
-            self.fail_at_end()
-        if dangling:
-            raise _RustSyntaxError
-        return items, verbose
-
-    def capture_name(self) -> None:
-        """Read a group name and its `>`. A name starts with a letter or
-        `_`, and goes on with letters, digits, `_`, `.`, `[`, and `]`."""
-        start = self.at
-        while self.char() != ">":
-            ch = self.char()
-            if self.at == start:
-                ok = ch == "_" or ch.isalpha()
-            else:
-                ok = ch in ("_", ".", "[", "]") or ch.isalnum()
-            if not ok:
-                raise _RustSyntaxError
-            self.at += 1
-        name = self.text[start:self.at]
-        self.at += 1
-        if not name or name in self.names:
-            raise _RustSyntaxError
-        self.names.add(name)
-
-    def repetition(self) -> None:
-        """Read `?`, `*`, `+`, or a counted `{...}`, and a lazy `?`."""
-        if self.text[self.at] != "{":
-            self.at += 1
-            if self.char() == "?":
-                self.at += 1
-            return
-        if not self.bump():
-            raise _RustSyntaxError
-        low = self.decimal()
-        high: int | None = low
-        self.fail_at_end()
-        if self.text[self.at] == ",":
-            if not self.bump():
-                raise _RustSyntaxError
-            high = None if self.text[self.at] == "}" else self.decimal()
-        if self.char() != "}":
-            raise _RustSyntaxError
-        if self.bump() and self.char() == "?":
-            self.at += 1
-        if high is not None and low > high:
-            raise _RustSyntaxError
-
-    def decimal(self) -> int:
-        """Read a repetition count, with whitespace around it."""
-        while not self.done() and self.text[self.at].isspace():
-            self.at += 1
-        digits = ""
-        while self.char() in _DECIMAL_CHARS:
-            digits += self.text[self.at]
-            self.bump()
-        while not self.done() and self.text[self.at].isspace():
-            self.bump()
-        if not digits or int(digits) > 0xFFFFFFFF:
-            raise _RustSyntaxError
-        return int(digits)
-
-    def escape(self) -> tuple[str, int]:
-        """Read an escape, and return what it is (`literal`, `class`, or
-        `assertion`) and a literal's code point."""
-        self.at += 1
-        ch = self.char()
-        if ch in _RUST_HEX_DIGITS:
-            return "literal", self.hex_escape(ch)
-        if ch in ("p", "P"):
-            self.unicode_class()
-            return "class", 0
-        self.fail_at_end()
-        self.at += 1
-        if ch in _RUST_CLASS_ESCAPES:
-            return "class", 0
-        if ch in _RUST_META or (
-            ch.isascii() and not ch.isalnum() and ch not in ("<", ">")
-        ):
-            return "literal", ord(ch)
-        if ch in _RUST_CONTROL_ESCAPES:
-            return "literal", _RUST_CONTROL_ESCAPES[ch]
-        if ch == "b" and self.char() == "{":
-            self.word_boundary()
-        if ch in _RUST_ASSERTION_ESCAPES:
-            return "assertion", 0
-        raise _RustSyntaxError
-
-    def hex_escape(self, kind: str) -> int:
-        """Read the digits of `\\x`, `\\u`, or `\\U`, with or without braces."""
-        if not self.bump():
-            raise _RustSyntaxError
-        digits = ""
-        if self.text[self.at] == "{":
-            while self.bump() and self.text[self.at] != "}":
-                if self.text[self.at] not in _HEX_CHARS:
-                    raise _RustSyntaxError
-                digits += self.text[self.at]
-            self.fail_at_end()
-            self.bump()
-            if not digits:
-                raise _RustSyntaxError
-        else:
-            for k in range(_RUST_HEX_DIGITS[kind]):
-                if k and not self.bump():
-                    raise _RustSyntaxError
-                if self.text[self.at] not in _HEX_CHARS:
-                    raise _RustSyntaxError
-                digits += self.text[self.at]
-            self.bump()
-        value = int(digits, 16)
-        if value > 0x10FFFF or 0xD800 <= value <= 0xDFFF:
-            raise _RustSyntaxError
-        return value
-
-    def unicode_class(self) -> None:
-        """Read the name after `\\p` or `\\P`: one letter, or `{name}`."""
-        if not self.bump():
-            raise _RustSyntaxError
-        if self.text[self.at] != "{":
-            letter = self.text[self.at]
-            self.bump()
-            if letter.lower() not in _RUST_ONE_LETTER_CLASSES:
-                raise _RustSyntaxError
-            return
-        name = ""
-        while self.bump() and self.text[self.at] != "}":
-            name += self.text[self.at]
-        self.fail_at_end()
-        self.at += 1
-        if not _rust_property_name(name):
-            raise _RustSyntaxError
-
-    def word_boundary(self) -> None:
-        """Read the `{name}` after `\\b`. When its first character can't
-        start a name, as in `\\b{2}`, the `{` opens a counted repetition
-        instead, so this reads nothing."""
-        start = self.at
-
-        def name_char(c: str) -> bool:
-            return c == "-" or (c.isascii() and c.isalpha())
-
-        if not self.bump():
-            raise _RustSyntaxError
-        if not name_char(self.text[self.at]):
-            self.at = start
-            return
-        name = ""
-        while not self.done() and name_char(self.text[self.at]):
-            name += self.text[self.at]
-            self.bump()
-        if self.char() != "}" or name not in _RUST_WORD_BOUNDARIES:
-            raise _RustSyntaxError
-        self.at += 1
-
-    def char_class(self) -> None:
-        """Read a bracketed class, with the classes nested in it."""
-        depth = 0
-        self.class_open()
-        while True:
-            self.skip_space()
-            self.fail_at_end()
-            ch = self.text[self.at]
-            if ch == "[":
-                ascii_class = _RUST_ASCII_CLASS.match(self.text, self.at)
-                if (
-                    ascii_class is not None
-                    and ascii_class.group(1) in _RUST_ASCII_CLASSES
-                ):
-                    self.at = ascii_class.end()
-                else:
-                    self.class_open()
-                    depth += 1
-            elif ch == "]":
-                self.at += 1
-                if depth == 0:
-                    return
-                depth -= 1
-            elif ch in ("&", "-", "~") and self.char(1) == ch:
-                self.at += 2
-            else:
-                self.class_range()
-
-    def class_open(self) -> None:
-        """Read a class's `[`, a `^`, and the `-` or `]` a class can start
-        with as a literal."""
-        if not self.bump():
-            raise _RustSyntaxError
-        if self.text[self.at] == "^" and not self.bump():
-            raise _RustSyntaxError
-        dashes = False
-        while self.text[self.at] == "-":
-            dashes = True
-            if not self.bump():
-                raise _RustSyntaxError
-        if not dashes and self.text[self.at] == "]" and not self.bump():
-            raise _RustSyntaxError
-
-    def class_range(self) -> None:
-        """Read one item of a class, or a range of two literals."""
-        kind, low = self.class_item()
-        self.skip_space()
-        self.fail_at_end()
-        if self.text[self.at] != "-" or self.peek_space() in ("]", "-"):
-            if kind == "assertion":
-                raise _RustSyntaxError
-            return
-        if not self.bump():
-            raise _RustSyntaxError
-        high_kind, high = self.class_item()
-        if kind != "literal" or high_kind != "literal" or low > high:
-            raise _RustSyntaxError
-
-    def class_item(self) -> tuple[str, int]:
-        """Read one escape or character in a class."""
-        if self.text[self.at] == "\\":
-            return self.escape()
-        self.at += 1
-        return "literal", ord(self.text[self.at - 1])
-
-
-def _rust_regex_rejects(pattern: str) -> bool:
-    r"""True when Rust's `regex` crate rejects a pattern.
-
-    `_RustRegexCheck` reads the pattern the way regex 1.12.3, the version
-    openai/codex pins at c0cc9fc82, parses it. Rust's `regex` has no
-    look-around and no backreferences, so it rejects `(?=`, `(?<!`, `\1`,
-    and `(?P=name)`, and it rejects a `{` that doesn't start a counted
-    repetition, such as `x{` or `x{,3}`, where Python's `re` reads a
-    literal. A `[` inside a class opens a nested class, so `[[]` is
-    unclosed. Three checks that come after parsing are left out: a
-    `\p{name}` that no Unicode property has, what `(?-u)` rules out, and
-    the compiled size limit, which `\w{300}` passes.
-    """
-    try:
-        _RustRegexCheck(pattern).check()
-    except _RustSyntaxError:
-        return True
-    return False
-
-
-def _python_regex(pattern: str) -> re.Pattern[str] | None:
-    """A matcher compiled with Python's `re`, or None when `re` rejects it.
-
-    Rust's `regex` compiles some patterns that `re` rejects, such as
-    `(?<name>...)`, `\\p{L}`, and `(?i)` after the start of a pattern.
-    """
-    with warnings.catch_warnings():
-        # `[[:alpha:]]` compiles with a FutureWarning about nested sets.
-        warnings.simplefilter("ignore")
-        try:
-            return re.compile(pattern)
-        except re.error:
+    if _EXACT_MATCHER.fullmatch(matcher) is not None:
+        return tuple((True, name, True) for name in matcher.split("|") if name)
+    branches: list[tuple[bool, str, bool]] = []
+    for part in matcher.split("|"):
+        found = _ANCHORED_BRANCH.fullmatch(part)
+        if found is None:
             return None
+        branches.append((found[1] == "^", found[2], found[3] == "$"))
+    return tuple(branches)
 
 
-def _regex_matcher(event: str, group: object) -> str | None:
-    """A group's matcher when Codex reads it as a regex, or None.
-
-    Codex reads the matcher on the events in `_MATCHER_EVENTS` only. An
-    empty matcher, `*`, and a list of exact names aren't regexes.
-    """
-    if event not in _MATCHER_EVENTS or not isinstance(group, dict):
-        return None
-    matcher = cast(dict[str, object], group).get("matcher")
-    if (
-        not isinstance(matcher, str) or matcher in ("", "*")
-        or _EXACT_MATCHER.fullmatch(matcher) is not None
-    ):
-        return None
-    return matcher
-
-
-def _unread_matcher(event: str, group: object) -> str | None:
-    """A group's matcher when doctor can't read it and so counts the group
-    as matching every fire, or None.
-
-    That is a regex that Rust's `regex` compiles and Python's `re`
-    rejects, in an event whose values doctor lists (`_MATCHER_VALUES`).
-    """
-    matcher = _regex_matcher(event, group)
-    if (
-        matcher is None or event not in _MATCHER_VALUES
-        or _rust_regex_rejects(matcher)
-    ):
-        return None
-    return matcher if _python_regex(matcher) is None else None
+def _branch_matches(branch: tuple[bool, str, bool], value: str) -> bool:
+    start, name, end = branch
+    if start and end:
+        return value == name
+    if start:
+        return value.startswith(name)
+    if end:
+        return value.endswith(name)
+    return name in value
 
 
 def _matched_values(event: str, group: object) -> frozenset[str] | None:
-    """The values of `event` whose fires run a matcher group's handlers.
+    """The values of `event` whose fires run a matcher group's handlers, or
+    None when doctor doesn't read the group's matcher.
 
     This follows Codex's matcher (codex-rs/hooks/src/engine/matcher.rs in
     openai/codex; the docs at https://developers.openai.com/codex/hooks say
     only that `matcher` is a regex string, and that `"*"`, `""`, or no
-    `matcher` matches every occurrence). A matcher of only letters, digits,
-    `_`, and `|` lists exact values, so `startup|resume` matches those two
-    and `start` matches none. Any other matcher is a regex that matches a
-    value when it matches anywhere in it, so `^res` matches `resume`.
-
-    Codex compiles a regex matcher with Rust's `regex` crate
-    (`HookMatcher::new` in codex-rs/hooks/src/engine/matcher.rs at
-    openai/codex@c0cc9fc82). When that fails, `append_matcher_groups` in
-    codex-rs/hooks/src/engine/discovery.rs logs "invalid matcher" and goes
-    on to the next group, so none of the group's handlers run. This is None
-    for such a group, which `_rust_regex_rejects` finds. Doctor matches the
-    values with Python's `re`, and a regex that `re` rejects counts as
-    matching every value (`_unread_matcher`), so a pattern doctor can't
-    read never hides a duplicate run. A null matcher is no matcher to
-    Codex. Codex rejects the whole file for a matcher of any other type
+    `matcher` matches every occurrence). Doctor reads only the matchers
+    `_matcher_branches` reads and the ones that match every value, so
+    `startup|resume` matches those two sources, `start` matches none, and
+    `^res` matches `resume`. A null matcher is no matcher to Codex. Codex
+    rejects the whole file for a matcher of any other type
     (`_rejected_events`), so doctor never counts one.
+
+    This is None for a group under any other matcher, and for every group
+    of an event whose matcher Codex reads and whose values doctor doesn't
+    list, such as SessionEnd. Doctor counts no run in such a group, so it
+    fails on a duplicate run only where it reads the matchers the way Codex
+    does, and it warns about each handler there that names an aelfrice
+    program. In an event of `_OPEN_EVENTS`, doctor reads a matcher only
+    when it matches every value or lists exact names, with each regex
+    branch anchored at both ends, since the event's values are an open set.
     """
     if event not in _MATCHER_EVENTS:
         return _EVERY_FIRE
+    if event not in _MATCHER_VALUES and event not in _OPEN_EVENTS:
+        return None
     matcher = (
         cast(dict[str, object], group).get("matcher")
         if isinstance(group, dict) else None
     )
-    if not isinstance(matcher, str) or matcher in ("", "*"):
-        return frozenset(_MATCHER_VALUES.get(event, _EVERY_FIRE))
-    exact = _EXACT_MATCHER.fullmatch(matcher) is not None
-    if not exact and _rust_regex_rejects(matcher):
-        return None
-    if exact and event in _OPEN_EVENTS:
-        return frozenset(name for name in matcher.split("|") if name)
     values = _MATCHER_VALUES.get(event)
+    if not isinstance(matcher, str) or matcher in _EVERY_VALUE_MATCHERS:
+        return _EVERY_FIRE if values is None else frozenset(values)
+    branches = _matcher_branches(matcher)
+    if branches is None:
+        return None
     if values is None:
-        return _EVERY_FIRE
-    if exact:
-        return frozenset(values) & frozenset(matcher.split("|"))
-    pattern = _python_regex(matcher)
-    if pattern is None:
-        return frozenset(values)
-    return frozenset(v for v in values if pattern.search(v))
-
-
-def _group_counts(group: object, *, windows: bool | None = None) -> bool:
-    """True when a group holds an aelfrice handler, or a foreign handler
-    that names an aelfrice program, which doctor warns about."""
-    return any(
-        _handler_is_owned(handler, windows=windows)
-        or _named_owned_keys(handler, windows=windows)
-        for handler in _named_items(group)
+        if not all(start and end for start, _name, end in branches):
+            return None
+        return frozenset(name for _start, name, _end in branches)
+    return frozenset(
+        v for v in values if any(_branch_matches(b, v) for b in branches)
     )
 
 
@@ -2595,17 +2146,19 @@ def _fires(event: str, value_sets: list[frozenset[str]]) -> list[frozenset[int]]
     one. A fire has one value, except a tool event's: a tool call is
     matched by the tool's name and its aliases (`_TOOL_MATCHER_INPUTS`), so
     handlers under `Write` and under `Edit` both run on an `apply_patch`
-    call. In an event of `_OPEN_EVENTS`, a handler under a regex or no
-    matcher counts as running on the same fire as every other handler,
-    because doctor can't list the names a regex matches.
+    call. In an event of `_OPEN_EVENTS`, a handler under a matcher that
+    matches every value runs on every fire, including the fire of each
+    name another handler lists.
     """
-    if event in _OPEN_EVENTS and _EVERY_FIRE in value_sets:
-        return [frozenset(i for i, values in enumerate(value_sets) if values)]
+    every = event in _OPEN_EVENTS
     inputs = [frozenset({v}) for v in sorted(set[str]().union(*value_sets))]
     if event in _TOOL_EVENTS:
         inputs.extend(_TOOL_MATCHER_INPUTS)
     return [
-        frozenset(i for i, values in enumerate(value_sets) if values & names)
+        frozenset(
+            i for i, values in enumerate(value_sets)
+            if values & names or (every and values == _EVERY_FIRE)
+        )
         for names in inputs
     ]
 
@@ -2778,31 +2331,52 @@ def doctor_codex(
                 # tool groups under `Bash` and under `WebSearch`, never run
                 # on the same fire, so they don't count as duplicate runs.
                 values = _matched_values(event, group)
-                # #1812: name a skipped or unread matcher only where it
-                # changes what doctor counts.
-                if values is None and _group_counts(group, windows=windows):
-                    matcher = cast(dict[str, object], group).get("matcher")
-                    report.warnings.append(
-                        f"{event} group{where} with matcher {matcher!r} never "
-                        "runs: Codex logs \"invalid matcher\" for it and "
-                        "skips the group, so doctor doesn't count its "
-                        "handlers as runs",
-                    )
-                unread = _unread_matcher(event, group)
-                if unread is not None and _group_counts(group, windows=windows):
-                    report.warnings.append(
-                        f"{event} group{where} with matcher {unread!r}: doctor "
-                        "can't read this matcher and counted it as matching "
-                        "every fire",
-                    )
-                # #1812: a handler counts as a run of a program only when
-                # the command Codex runs for it on this platform is one
-                # setup writes, byte for byte. Doctor reads no shell syntax:
-                # any other handler whose command fields name an aelfrice
-                # program may run it, so doctor warns about it.
-                if values is None:
-                    continue
                 for handler in _named_items(group):
+                    named = _named_owned_keys(handler, windows=win)
+                    # Setup rewrites the events it writes in hooks.json and
+                    # drops each aelfrice handler there (`_plan_install`).
+                    replaced = (
+                        not where and event in expected_events
+                        and _handler_is_owned(handler, windows=windows)
+                    )
+                    if values is None:
+                        # #1812: doctor fails only where it reads the
+                        # matchers the way Codex does, so it counts no run
+                        # in this group and warns about each handler that
+                        # names a program.
+                        matcher = (
+                            cast(dict[str, object], group).get("matcher")
+                            if isinstance(group, dict) else None
+                        )
+                        why = (
+                            f"doctor doesn't read the matcher {matcher!r}"
+                            if event in _MATCHER_VALUES
+                            or event in _OPEN_EVENTS
+                            else "doctor doesn't list the values Codex "
+                            f"tests a {event} matcher against"
+                        )
+                        then = (
+                            " A rerun of `aelf setup --host codex` replaces "
+                            "this aelfrice handler with setup's, as it does "
+                            "one an older install wrote at another path."
+                            if replaced else ""
+                        )
+                        for key, cmd in sorted(named.items()):
+                            warning = (
+                                f"{event} handler{where} names {key}, and "
+                                "doctor counts no run in its group, because "
+                                f"{why}.{then} If this handler runs {key}, "
+                                f"check that no other handler runs {key} on "
+                                f"the same fire. Handler: {cmd}"
+                            )
+                            if warning not in report.warnings:
+                                report.warnings.append(warning)
+                        continue
+                    # #1812: a handler counts as a run of a program only
+                    # when the command Codex runs for it on this platform
+                    # is one setup writes, byte for byte. Doctor reads no
+                    # shell syntax: any other handler that names an
+                    # aelfrice program may run it, so doctor warns about it.
                     command = _run_command(handler, windows=win)
                     run = (
                         setup_runs.get(command, "") if command is not None
@@ -2815,13 +2389,6 @@ def doctor_codex(
                             misplaced.setdefault((event, run), []).append(
                                 (str(command), where),
                             )
-                    # Setup rewrites the events it writes in hooks.json and
-                    # drops each aelfrice handler there (`_plan_install`).
-                    replaced = (
-                        not where and event in expected_events
-                        and _handler_is_owned(handler, windows=windows)
-                    )
-                    named = _named_owned_keys(handler, windows=win)
                     for key in sorted(named.keys() - {run}):
                         maybe.setdefault((event, key), []).append(
                             (values, named[key], where, replaced),
