@@ -2285,15 +2285,16 @@ def _named_owned_keys(
     `type`, and of a handler or a group written as an array, which serde
     reads by position (`_named_items`).
 
-    A string names a program when it holds the program's name as a plain
-    substring in any case, on every platform. Doctor reads no shell syntax,
-    so the name counts wherever it is: in a script string such as
+    A string names a program when `_names_in` finds the program's name in
+    it, on every platform. Doctor reads no shell syntax, so the name counts
+    wherever it is: in a script string such as
     `python3 -c "...aelf-session-start-hook..."`, right after `-S` or
     `:-`, after an escape such as `\\n`, inside a longer word such as
     `aelf-session-start-hook.py`, in a command that only prints the name,
-    and in a field Codex doesn't run, such as `statusMessage`. A name that
-    the command builds at run time, or a link with another name, escapes
-    it.
+    in a field Codex doesn't run, such as `statusMessage`, and split by
+    quotes or escapes that a shell removes, such as
+    `aelf-sess''ion-start-hook`. A name that the command builds at run
+    time, or a link with another name, escapes it.
     """
     win = os.name == "nt" if windows is None else windows
     texts: list[str] = []
@@ -2308,10 +2309,8 @@ def _named_owned_keys(
         return {}
     found: dict[str, str] = {}
     for text in texts + _strings_in(cast(object, handler)):
-        folded = text.casefold()
-        for key in sorted(_OWNED_BASENAMES):
-            if key in folded:
-                found.setdefault(key, text)
+        for key in _names_in(text):
+            found.setdefault(key, text)
     return found
 
 
@@ -2601,9 +2600,23 @@ def _strings_with_paths(
     return found, bool(stack), deep
 
 
+#: The characters `_names_in` deletes before it looks for a name: the
+#: quotes and the escape character of sh, bash, and zsh, the command
+#: substitution quote, and cmd's escape character.
+_NAME_SPLITTERS: Final[dict[int, None]] = str.maketrans("", "", "'\"\\`^")
+
+
 def _names_in(text: str) -> list[str]:
-    """The owned programs a string names, as plain substrings in any case."""
-    folded = text.casefold()
+    """The owned programs a string names, as substrings in any case.
+
+    Before the test, doctor deletes each backslash-newline pair, which a
+    shell's line joining deletes, and then each character of
+    `_NAME_SPLITTERS`, which its quote removal deletes. So
+    `aelf-sess''ion-start-hook`, `aelf-"session"-start-hook`, and
+    `aelf-sess\\ion-start-hook` name the program, as they do to a shell
+    (#1812). Doctor reads no other shell syntax.
+    """
+    folded = text.replace("\\\n", "").translate(_NAME_SPLITTERS).casefold()
     return [key for key in sorted(_OWNED_BASENAMES) if key in folded]
 
 
