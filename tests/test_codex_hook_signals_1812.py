@@ -34,10 +34,9 @@ from aelfrice.hook_summary import ENV_HOOK_SUMMARY_LINE
 from aelfrice.host_codex import (
     CODEX_ADDITIONAL_CONTEXT_LIMIT,
     _OWNED_BASENAMES,
-    _TOML_STRINGS,
     _json_object,
     _named_owned_keys,
-    _rejected_events,
+    _rejected_config_hooks,
     _rejected_hooks_file,
     _rust_regex_rejects,
     doctor_codex,
@@ -918,6 +917,27 @@ _SERDE_CASES = {
     "toml: event a table": ('[hooks.Stop]\nmatcher = "x"\n', True),
     "toml: state only": ('[hooks.state."k"]\ntrusted_hash = "h"\n', False),
     "toml: hooks a number": ('hooks = 5\n', True),
+    # Codex reads config.toml's `hooks` as `HooksToml`, whose events are
+    # flattened beside a `state` table of `HookStateToml` entries.
+    "toml: hooks an array": (
+        'hooks = [[], [], [], [], [], [], [], '
+        '[{hooks = [{type = "command", command = "x"}]}]]\n',
+        True,
+    ),
+    "toml: state entry a number": ('[hooks.state]\nfoo = 1\n', True),
+    "toml: state a number": ('[hooks]\nstate = 1\n', True),
+    "toml: state enabled a string": (
+        '[hooks.state."k"]\nenabled = "yes"\n', True,
+    ),
+    "toml: state trusted_hash a number": (
+        '[hooks.state."k"]\ntrusted_hash = 1\n', True,
+    ),
+    "toml: state trusted_content_hash a number": (
+        '[hooks.state."k"]\ntrusted_content_hash = 1\n', True,
+    ),
+    "toml: state with an unknown key": (
+        '[hooks.state."k"]\nenabled = true\nother = 1\n', False,
+    ),
 }
 
 
@@ -929,10 +949,51 @@ def test_doctor_rejects_what_codex_serde_rejects(case: str) -> None:
             json.loads(text, object_pairs_hook=_json_object),
         )
     else:
-        reason = _rejected_events(
-            tomllib.loads(text)["hooks"], _TOML_STRINGS,
-        )
+        reason = _rejected_config_hooks(tomllib.loads(text)["hooks"])
     assert (reason is not None) == rejects, reason
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "text",
+    [
+        'hooks = [[], [], [], [], [], [], [], [{hooks = [{type = "command", '
+        'command = {ss}}]}]]\n',
+        '[hooks.state]\nfoo = 1\n',
+        '[hooks.state."k"]\nenabled = "yes"\n',
+    ],
+)
+def test_doctor_exits_1_on_a_config_toml_hooks_value_codex_rejects(
+    tmp_path: Path, text: str,
+) -> None:
+    """Codex's config load rejects a `hooks` value written as an array and
+    a malformed `[hooks.state]`, so doctor exits 1 as it does for any other
+    `[hooks]` table Codex rejects."""
+    codex_dir, hooks, _program = _installed(tmp_path)
+    ours = json.dumps(_session_start_command(hooks))
+    (codex_dir / "config.toml").write_text(
+        text.replace("{ss}", ours), encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert (
+        "[warn] Codex loads no hook from the [hooks] table in "
+        f"{codex_dir / 'config.toml'}, because it rejects the whole table" in out
+    ), out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_passes_a_config_toml_with_approved_hooks_state(
+    tmp_path: Path,
+) -> None:
+    codex_dir, _hooks, _program = _installed(tmp_path)
+    (codex_dir / "config.toml").write_text(
+        '[hooks.state."k"]\nenabled = true\ntrusted_hash = "h"\n',
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "rejects the whole table" not in out, out
 
 
 def _windows_report(

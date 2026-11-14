@@ -1835,6 +1835,53 @@ def _rejected_hooks_file(doc: dict[str, object]) -> str | None:
     return _rejected_events(doc["hooks"], _JSON_STRINGS)
 
 
+#: The fields of a `[hooks.state]` entry and the type each one takes
+#: (`HookStateToml` in codex-rs/config/src/hook_config.rs, lines 29-38, at
+#: openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9). The type doesn't
+#: deny unknown fields.
+_STATE_FIELDS: Final[dict[str, str]] = {
+    "enabled": "true or false", "trusted_hash": "string",
+    "trusted_content_hash": "string",
+}
+
+
+def _rejected_config_hooks(hooks: object) -> str | None:
+    """Why Codex rejects the `hooks` value of config.toml, or None when it
+    loads it.
+
+    Codex reads the value as `HooksToml` (codex-rs/config/src/hook_config.rs,
+    lines 21-27, at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9):
+    a table whose event keys are flattened into it beside a `state` table
+    of `HookStateToml` entries. So it rejects a `hooks` value that isn't a
+    table, such as one written as an array, and a `state` that isn't a
+    table of tables with the field types `_STATE_FIELDS` lists. It checks
+    the event keys as `_rejected_events` does.
+    """
+    if not isinstance(hooks, dict):
+        return "`hooks` is not a table"
+    hd = cast(dict[str, object], hooks)
+    state = hd.get("state", {})
+    if not isinstance(state, dict):
+        return "`hooks.state` is not a table"
+    for name, entry in cast(dict[str, object], state).items():
+        if not isinstance(entry, dict):
+            return f"`hooks.state` entry {name!r} is not a table"
+        ed = cast(dict[str, object], entry)
+        for field_name, kind in _STATE_FIELDS.items():
+            value = ed.get(field_name)
+            if value is None:
+                continue
+            if not (
+                isinstance(value, bool) if kind == "true or false"
+                else isinstance(value, _TOML_STRINGS)
+            ):
+                return (
+                    f"`hooks.state` entry {name!r} has a `{field_name}` "
+                    f"that isn't a {kind}"
+                )
+    return _rejected_events(hd, _TOML_STRINGS)
+
+
 def _handler_command(handler: object) -> str | None:
     """A handler's `command` string, or None when it has none."""
     if not isinstance(handler, dict):
@@ -2679,9 +2726,7 @@ def doctor_codex(
             cfg_error = f"could not parse {config_path}: {exc}"
     toml_events: dict[str, object] = {}
     if "hooks" in cfg:
-        report.config_hooks_rejected = _rejected_events(
-            cfg["hooks"], _TOML_STRINGS,
-        )
+        report.config_hooks_rejected = _rejected_config_hooks(cfg["hooks"])
         if report.config_hooks_rejected is not None:
             report.warnings.append(
                 f"Codex loads no hook from the [hooks] table in "
