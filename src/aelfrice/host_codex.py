@@ -1843,6 +1843,125 @@ def _rejected_hooks_file(doc: dict[str, object]) -> str | None:
     return _rejected_events(doc["hooks"], _JSON_STRINGS)
 
 
+#: The nesting depth at which serde_json stops: `Deserializer::new` starts
+#: `remaining_depth` at 128, and each array or object it reads takes one,
+#: failing with "recursion limit exceeded" when that reaches 0
+#: (`check_recursion` in serde_json 1.0.149's src/de.rs, lines 1372-1387,
+#: the version Codex locks). So with the top-level object at depth 1, an
+#: array or object at depth 128 rejects the file. `ignore_value`, which
+#: skips a value the type doesn't read, keeps no count (src/de.rs, lines
+#: 1102-1200).
+_JSON_DEPTH_LIMIT: Final[int] = 128
+#: Where the scan finds an array or an object, the start of a JSON string,
+#: or a comma. A string runs to its closing quote or to the end of the text.
+_JSON_TOKEN: Final[re.Pattern[str]] = re.compile(
+    r'"(?:[^"\\]|\\.)*"?|[\[\]{},]', re.DOTALL,
+)
+#: A key `_scan_json_depth` couldn't decode, which no event name equals.
+_UNREAD_KEY: Final[object] = object()
+
+
+def _serde_skips(frames: list[list[object]]) -> bool:
+    """True when the container that opens under `frames` is in a value
+    serde reads with `ignore_value`, so no depth limit applies.
+
+    Each frame is (bracket, key or index, expects a key). In hooks.json,
+    serde skips the value of a key under `hooks` that isn't an event name
+    (`HookEventsToml` doesn't deny unknown fields) and the value of a
+    group key other than `matcher` and `hooks` (`MatcherGroup`). It reads
+    every other value, a handler's unknown fields included, since it
+    buffers a whole handler to read its `type` tag.
+    """
+    if len(frames) < 2 or frames[0][:2] != ["{", "hooks"]:
+        return False
+    if frames[1][0] != "{":
+        return False
+    if frames[1][1] not in _CODEX_EVENTS:
+        return True
+    return (
+        len(frames) >= 4 and frames[2][0] == "[" and frames[3][0] == "{"
+        and frames[3][1] not in _GROUP_FIELDS
+    )
+
+
+def _json_container_end(text: str, start: int) -> int:
+    """The index after the bracket that closes the container at `start`,
+    or the end of the text when nothing closes it."""
+    depth = 0
+    pos = start
+    for _ in range(len(text) + 1):
+        found = _JSON_TOKEN.search(text, pos)
+        if found is None:
+            return len(text)
+        pos = found.end()
+        token = found.group()
+        if token in ("[", "{"):
+            depth += 1
+        elif token in ("]", "}"):
+            depth -= 1
+            if depth == 0:
+                return pos
+    return len(text)
+
+
+def _scan_json_depth(
+    text: str,
+) -> tuple[str, list[tuple[object, ...]], tuple[object, ...] | None]:
+    """Read hooks.json's nesting the way serde_json does, without recursion.
+
+    Returns the text for `json.loads`, the path of each value doctor cut
+    from it, and the path of the first array or object that serde_json
+    rejects for its depth (`_JSON_DEPTH_LIMIT`), or None. A container that
+    deep in a value serde skips (`_serde_skips`) becomes `null` in the
+    returned text and its path is listed, so `json.loads` never nests more
+    than `_JSON_DEPTH_LIMIT - 1` levels. The scan reads strings, brackets,
+    and commas only. On a file that isn't JSON it can misplace a key, but
+    `json.loads` then rejects that file anyway.
+    """
+    frames: list[list[object]] = []
+    pieces: list[str] = []
+    cuts: list[tuple[object, ...]] = []
+    copied = 0
+    pos = 0
+    for _ in range(len(text) + 1):
+        found = _JSON_TOKEN.search(text, pos)
+        if found is None:
+            break
+        pos = found.end()
+        token = found.group()
+        if token.startswith('"'):
+            if frames and frames[-1][0] == "{" and frames[-1][2]:
+                try:
+                    key: object = json.decoder.scanstring(
+                        text, found.start() + 1,
+                    )[0]
+                except ValueError:
+                    key = _UNREAD_KEY
+                frames[-1][1] = key
+                frames[-1][2] = False
+        elif token in ("[", "{"):
+            if len(frames) + 1 >= _JSON_DEPTH_LIMIT:
+                path = tuple(f[1] for f in frames)
+                if not _serde_skips(frames):
+                    return text, cuts, path
+                end = _json_container_end(text, found.start())
+                pieces += [text[copied:found.start()], "null"]
+                copied = pos = end
+                cuts.append(path)
+                continue
+            frames.append([token, None if token == "{" else 0, token == "{"])
+        elif token in ("]", "}"):
+            if frames:
+                frames.pop()
+        elif frames:
+            if frames[-1][0] == "[":
+                frames[-1][1] = cast(int, frames[-1][1]) + 1
+            else:
+                frames[-1][2] = True
+    pieces.append(text[copied:])
+    return "".join(pieces), cuts, None
+
+
 #: The fields of a `[hooks.state]` entry and the type each one takes
 #: (`HookStateToml` in codex-rs/config/src/hook_config.rs, lines 29-38, at
 #: openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9). The type doesn't
@@ -2307,13 +2426,28 @@ def doctor_codex(
     hooks_map: dict[str, object] = {}
     # The whole hooks.json when Codex loads it, for the last check (#1812).
     hooks_doc: object = None
+    # #1812: values that nest past serde_json's limit where Codex skips
+    # them, which doctor cuts before `json.loads` reads the file.
+    json_cuts: list[tuple[object, ...]] = []
     if report.hooks_file_present:
         try:
-            parsed = json.loads(
+            text, json_cuts, too_deep = _scan_json_depth(
                 hooks_path.read_text(encoding="utf-8"),
-                object_pairs_hook=_json_object,
             )
-            if isinstance(parsed, dict):
+            parsed = (
+                None if too_deep is not None
+                else json.loads(text, object_pairs_hook=_json_object)
+            )
+            if too_deep is not None:
+                # #1812: serde_json stops at its depth limit, so Codex
+                # rejects the file, as it does one that isn't JSON.
+                report.hooks_file_rejected = (
+                    f"an array or object at `{_render_path(too_deep[:6])}"
+                    f"{'...' if len(too_deep) > 6 else ''}` nests "
+                    f"{_JSON_DEPTH_LIMIT} levels deep, where serde_json, "
+                    "which Codex reads the file with, stops"
+                )
+            elif isinstance(parsed, dict):
                 doc = cast(dict[str, object], parsed)
                 # #1812: a file Codex rejects whole loads no hook, so
                 # doctor counts nothing in it and exits 1, as it does for
@@ -2695,6 +2829,14 @@ def doctor_codex(
     scans: list[tuple[str, str, object, tuple[object, ...]]] = []
     if hooks_doc is not None:
         scans.append(("json", str(hooks_path), hooks_doc, ()))
+        for path in json_cuts:
+            warn(
+                f"doctor didn't read the value at `{_render_path(path[:6])}"
+                f"{'...' if len(path) > 6 else ''}` in {hooks_path}, which "
+                f"nests {_JSON_DEPTH_LIMIT} levels deep under a key Codex "
+                "skips, and checked no string in it for an aelfrice program "
+                "name",
+            )
     if "hooks" in cfg and report.config_hooks_rejected is None:
         scans.append((
             "toml", f"the [hooks] table of {config_path}",
