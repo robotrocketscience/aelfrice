@@ -2724,6 +2724,89 @@ def _hooks_off_reason(
     return None
 
 
+#: The label of each hook event in a `[hooks.state]` key
+#: (`hook_event_key_label` in codex-rs/hooks/src/lib.rs, lines 104-122, at
+#: openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9). Python joins
+#: the two names split across string literals.
+_EVENT_KEY_LABELS: Final[dict[str, str]] = {
+    "PreToolUse": "pre_tool_use", "PermissionRequest": "permission_request",
+    "PostToolUse": "post_tool_use", "PreCompact": "pre_compact",
+    "PostCompact": "post_compact", "PreModelRequest": "pre_model_request",
+    "PostModelRequest": "post_model_request",
+    "SessionStart": "session_start", "SessionEnd": "session_end",
+    "UserPromptSubmit": "user_prompt_submit",
+    "Sub" "agentStart": "sub" "agent_start",
+    "Sub" "agentStop": "sub" "agent_stop",
+    "Stop": "stop", "Interrupt": "interrupt",
+}
+#: The characters Rust's `str::trim` removes from each end of a
+#: `[hooks.state]` key: Unicode's White_Space set.
+_RUST_WHITESPACE: Final[str] = (
+    "\t\n\x0b\x0c\r \x85\xa0 "
+    + "".join(chr(c) for c in range(0x2000, 0x200B))
+    + "    　"
+)
+
+
+def _disabled_entries(
+    data: dict[str, object], where: str,
+) -> list[tuple[str, str]]:
+    """Each `[hooks.state]` entry in a config file that sets `enabled =
+    false`, as its key, trimmed as Codex trims it, and a phrase that names
+    it and `where` it is.
+
+    Codex merges these entries from config.toml and from the profile
+    file `--profile` selects, later ones winning (`hook_states_from_stack`
+    in codex-rs/hooks/src/config_rules.rs, lines 15-69, at the commit
+    `_EVENT_KEY_LABELS` cites), and skips a handler whose entry ends with
+    `enabled = false` (`hook_enabled` in
+    codex-rs/hooks/src/engine/discovery.rs, lines 1019-1021, and its use
+    at lines 842 and 917-925).
+    """
+    hooks = data.get("hooks")
+    state = (
+        cast(dict[str, object], hooks).get("state")
+        if isinstance(hooks, dict) else None
+    )
+    if not isinstance(state, dict):
+        return []
+    return [
+        (key.strip(_RUST_WHITESPACE),
+         f"the [hooks.state] entry {key!r} in {where}")
+        for key, entry in cast(dict[str, object], state).items()
+        if isinstance(entry, dict)
+        and cast(dict[str, object], entry).get("enabled") is False
+    ]
+
+
+def _disabling_entry(
+    source: Path, event: str, group: int, handler: int,
+    entries: list[tuple[str, str]],
+) -> str | None:
+    """The entry of `entries` that may disable a handler, or None.
+
+    Codex keys a handler's entry `<file>:<event label>:<group>:<handler>`
+    (`hook_key` in codex-rs/hooks/src/lib.rs, lines 125-135), where the
+    file is the absolute path of hooks.json or config.toml under the Codex
+    home: canonical when `CODEX_HOME` is set and as written when it isn't
+    (`find_codex_home` in codex-rs/utils/home-dir/src/lib.rs). Doctor
+    can't tell which, so it takes any absolute path to the same file.
+    """
+    suffix = f":{_EVENT_KEY_LABELS[event]}:{group}:{handler}"
+    for key, phrase in entries:
+        prefix = key.removesuffix(suffix)
+        if prefix != key and os.path.isabs(prefix):
+            try:
+                same = os.path.normcase(os.path.realpath(prefix)) == (
+                    os.path.normcase(os.path.realpath(source))
+                )
+            except (OSError, ValueError):
+                same = False
+            if same:
+                return phrase
+    return None
+
+
 def doctor_codex(
     codex_dir: Path | None = None, *, windows: bool | None = None,
 ) -> CodexDoctorReport:
@@ -2868,6 +2951,15 @@ def doctor_codex(
     # doctor counts no run when any setting it reads can turn it off.
     profiles = _profile_files(cdir)
     hooks_off = _hooks_off_reason(cfg, config_path, profiles)
+    # #1812: and it starts no handler whose [hooks.state] entry, in
+    # config.toml or in a profile file, sets `enabled = false`.
+    disabled = _disabled_entries(cfg, str(config_path))
+    for path, name, data, _error in profiles:
+        disabled += _disabled_entries(
+            data,
+            f"the profile file {path}, which Codex reads when you pass "
+            f"`--profile {name}`",
+        )
     if hooks_off is not None:
         report.warnings.append(
             f"doctor counts no duplicate run, because {hooks_off}, and "
@@ -3006,6 +3098,24 @@ def doctor_codex(
                                     f"{key}, and doctor counts no run for "
                                     f"it, because {hooks_off}. Handler: {cmd}",
                                 )
+                            accounted.add((tag, path, key))
+                        continue
+                    entry = (
+                        _disabling_entry(
+                            hooks_path if tag == "json" else config_path,
+                            event, g, cast(int, sub[1]), disabled,
+                        )
+                        if sub else None
+                    )
+                    if entry is not None:
+                        for key, cmd in sorted(named.items()):
+                            warn(
+                                f"{event} handler {at}{where} names {key}, "
+                                f"and doctor counts no run for it, because "
+                                f"{entry} sets `enabled = false` for it, and "
+                                f"Codex skips a disabled handler. Handler: "
+                                f"{cmd}",
+                            )
                             accounted.add((tag, path, key))
                         continue
                     if values is None:
