@@ -512,6 +512,45 @@ def test_doctor_reads_approvals_through_a_symlinked_home_as_written(
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize(
+    ("spelling", "counted"), [("as written", True), ("canonical", False)],
+)
+def test_doctor_reads_an_empty_codex_home_as_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
+    counted: bool,
+) -> None:
+    """Codex ignores an empty `CODEX_HOME`, so through a symlinked
+    `~/.codex` it keys approvals by `~/.codex` as written."""
+    written, real = _symlinked_dot_codex(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEX_HOME", "")
+    config = _two_copies_in(written, tmp_path / "skills")
+    _approve_under(config, written if spelling == "as written" else real)
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    _check_approvals(rc, out, counted, written)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("spelling", "counted"), [("made absolute", True), ("as written", False)],
+)
+def test_doctor_reads_approvals_under_home_with_dot_dot_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
+    counted: bool,
+) -> None:
+    """With `CODEX_HOME` unset, Codex removes `.` and `..` from
+    `$HOME/.codex` before it keys approvals by it."""
+    (tmp_path / "home" / ".codex").mkdir(parents=True)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home" / ".." / "home"))
+    written = tmp_path / "home" / ".." / "home" / ".codex"
+    config = _two_copies_in(written, tmp_path / "skills")
+    absolute = tmp_path / "home" / ".codex"
+    _approve_under(config, absolute if spelling == "made absolute" else written)
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    _check_approvals(rc, out, counted, absolute)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
     ("where", "spelling", "counted"),
     [
         ("a symlink", "canonical", True),
