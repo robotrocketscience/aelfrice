@@ -1457,7 +1457,7 @@ class CodexDoctorReport:
     #: `startup` group and a `resume` group, don't add up. Doctor counts a
     #: run only in a group whose matcher it reads (`_matched_values`), and
     #: only for a handler Codex starts: none while a setting can turn the
-    #: `hooks` feature off (`_hooks_off_reason`), and none for a handler a
+    #: `hooks` feature off (`_launch_off_reason`), and none for a handler a
     #: `[hooks.state]` entry disables (`_disabling_entry`).
     duplicate_runs: list[tuple[str, str, int]] = field(
         default_factory=list[tuple[str, str, int]],
@@ -2695,96 +2695,190 @@ _PROFILE_FILE: Final[re.Pattern[str]] = re.compile(
 )
 
 
-def _profile_files(
-    codex_dir: Path,
-) -> list[tuple[Path, str, dict[str, object], str | None]]:
+def _profile_files(codex_dir: Path) -> list[tuple[Path, str, _TomlFile]]:
     """Each profile file in `codex_dir`, in name order: its path, its
-    profile name, its contents, and why doctor can't read it, or None."""
-    found: list[tuple[Path, str, dict[str, object], str | None]] = []
+    profile name, and the file as doctor reads it."""
+    found: list[tuple[Path, str, _TomlFile]] = []
     for path in sorted(codex_dir.iterdir()):
         named = _PROFILE_FILE.fullmatch(path.name)
         if named is None or not path.is_file():
             continue
-        loaded = _load_toml(path)
-        found.append((
-            path, named[1], loaded.data, loaded.rejected or loaded.unparsed,
-        ))
+        found.append((path, named[1], _load_toml(path)))
     return found
 
 
-def _feature_off(features: object, where: str) -> str | None:
-    """Why the `[features]` table at `where` turns Codex's hooks off or
-    makes doctor unable to tell, or None when it leaves them on.
+def _feature_value(
+    features: object, where: str,
+) -> tuple[tuple[str, bool] | None, str | None]:
+    """The key and value that set Codex's `hooks` feature in the
+    `[features]` table at `where`, or None when it sets neither, and why
+    Codex refuses to start on the table, or None.
 
     Codex reads the feature as `hooks`, and as its earlier name
     `codex_hooks`, applying the keys in sorted order, so `hooks` wins
     (`Features::apply_map` and `FeaturesToml` in
     codex-rs/features/src/lib.rs, lines 732-833 and 957-1081, and the
     alias in codex-rs/features/src/legacy.rs, lines 48-51, at the commit
-    `_PROFILE_FILE` cites). Codex reads each as true or false, and
-    rejects the whole config otherwise.
+    `_PROFILE_FILE` cites). `FeaturesToml` reads each as true or false,
+    so Codex rejects the whole config otherwise.
     """
     if features is None:
-        return None
+        return None, None
     if not isinstance(features, dict):
-        return f"{where} isn't a table"
+        return None, f"{where} isn't a table"
     table = cast(dict[str, object], features)
-    last: tuple[str, object] | None = None
+    last: tuple[str, bool] | None = None
     for key in ("codex_hooks", "hooks"):
         if key in table:
-            if not isinstance(table[key], bool):
-                return f"`{key}` in {where} isn't true or false"
-            last = (key, table[key])
-    if last is not None and last[1] is False:
-        return f"{where} sets `{last[0]}` to false"
+            value = table[key]
+            if not isinstance(value, bool):
+                return None, f"`{key}` in {where} isn't true or false"
+            last = (key, value)
+    return last, None
+
+
+def _launch_off_reason(cfg: dict[str, object], config_path: Path) -> str | None:
+    """Why a plain `codex` launch starts no hook of yours, or None when
+    its `hooks` feature is on.
+
+    A plain launch reads config.toml and no profile file (`_PROFILE_FILE`).
+    It refuses to start when config.toml has a top-level `profile` key
+    (`Config::load_config_with_layer_stack` in
+    codex-rs/core/src/config/mod.rs, lines 3545-3552, at the commit
+    `_PROFILE_FILE` cites), or a `[features]` table, in config.toml or in a
+    `[profiles.<name>]` table, that `FeaturesToml` can't read. It takes the
+    feature from config.toml's `[features]` alone, since it passes no
+    profile features (lines 3559-3568), and starts no hook of yours while
+    the feature is off: it keeps only the built-in ones
+    (`ClaudeHooksEngine::new` in codex-rs/hooks/src/engine/mod.rs, lines
+    290-325).
+    """
+    if "profile" in cfg:
+        return (
+            f"{config_path} sets the top-level `profile` key, which Codex no "
+            "longer supports, so Codex refuses to start"
+        )
+    value, error = _feature_value(
+        cfg.get("features"), f"[features] in {config_path}",
+    )
+    if error is not None:
+        return f"{error}, so Codex refuses to start"
+    named = cfg.get("profiles")
+    if named is not None and not isinstance(named, dict):
+        return (
+            f"`profiles` in {config_path} isn't a table, so Codex refuses to "
+            "start"
+        )
+    for name, profile in sorted(cast(dict[str, object], named or {}).items()):
+        if not isinstance(profile, dict):
+            return (
+                f"[profiles.{name}] in {config_path} isn't a table, so Codex "
+                "refuses to start"
+            )
+        _value, error = _feature_value(
+            cast(dict[str, object], profile).get("features"),
+            f"[profiles.{name}.features] in {config_path}",
+        )
+        if error is not None:
+            return f"{error}, so Codex refuses to start"
+    if value is not None and value[1] is False:
+        return (
+            f"[features] in {config_path} sets `{value[0]}` to false, and "
+            "Codex starts no hook of yours while its `hooks` feature is off"
+        )
     return None
 
 
-def _hooks_off_reason(
+def _profile_warnings(
     cfg: dict[str, object],
     config_path: Path,
-    profiles: list[tuple[Path, str, dict[str, object], str | None]],
-) -> str | None:
-    """Why Codex may start no hook at all, or None when its `hooks`
-    feature is on for every launch the files in `$CODEX_HOME` describe.
+    profiles: list[tuple[Path, str, _TomlFile]],
+) -> list[str]:
+    """A warning for each profile that changes which hooks Codex starts
+    under `codex --profile <name>`, a launch doctor doesn't score.
 
-    Codex starts no hook of yours while the feature is off: it keeps only
-    the built-in ones (`ClaudeHooksEngine::new` in
-    codex-rs/hooks/src/engine/mod.rs, lines 290-325, at the commit
-    `_PROFILE_FILE` cites). It reads `[features]` from config.toml, then
-    from the profile that `profile = "..."` or `--profile` selects: a
-    `[profiles.<name>]` table in config.toml or a profile file
-    (`Features::from_sources` in codex-rs/features/src/lib.rs, lines
-    835-856). Doctor can't tell which profile a launch uses, so any
-    profile that turns the feature off, and any profile file it can't
-    read, makes this a reason.
+    `--profile <name>` adds the profile file as a second user layer that
+    Codex merges over config.toml, and refuses to start while config.toml
+    has a `[profiles.<name>]` table or selects `<name>` with `profile`
+    (`load_config_layers_state` in codex-rs/config/src/loader/mod.rs,
+    lines 293-341, at the commit `_PROFILE_FILE` cites).
     """
-    tables: list[tuple[object, str]] = []
-
-    def add(data: dict[str, object], where: str) -> None:
-        tables.append((data.get("features"), f"[features] in {where}"))
-        named = data.get("profiles")
-        if isinstance(named, dict):
-            for name, profile in sorted(cast(dict[str, object], named).items()):
-                if isinstance(profile, dict):
-                    tables.append((
-                        cast(dict[str, object], profile).get("features"),
-                        f"[profiles.{name}.features] in {where}",
-                    ))
-
-    add(cfg, str(config_path))
-    for path, name, data, error in profiles:
-        if error is not None:
-            return (
-                f"doctor can't read the profile file {path}, which Codex "
-                f"reads when you pass `--profile {name}`"
+    warnings: list[str] = []
+    named = cfg.get("profiles")
+    for name, profile in sorted(
+        cast(dict[str, object], named).items() if isinstance(named, dict)
+        else [],
+    ):
+        features = (
+            cast(dict[str, object], profile).get("features")
+            if isinstance(profile, dict) else None
+        )
+        value, _error = _feature_value(
+            features, f"[profiles.{name}.features] in {config_path}",
+        )
+        if value is not None:
+            warnings.append(
+                f"[profiles.{name}.features] in {config_path} sets "
+                f"`{value[0]}`, which no launch reads: a plain `codex` launch "
+                "reads the `hooks` feature from [features] only, and `codex "
+                f"--profile {name}` refuses to start while config.toml has "
+                f"[profiles.{name}]",
             )
-        add(data, f"the profile file {path}")
-    for features, where in tables:
-        reason = _feature_off(features, where)
-        if reason is not None:
-            return reason
-    return None
+    base, _error = _feature_value(cfg.get("features"), "")
+    for path, name, loaded in profiles:
+        launch = f"`codex --profile {name}`"
+        why = loaded.rejected or loaded.unparsed
+        if why is not None:
+            warnings.append(
+                f"doctor can't read the profile file {path}, which {launch} "
+                f"reads: {why}. Doctor scores a plain `codex` launch, which "
+                "doesn't read it",
+            )
+            continue
+        changes: list[str] = []
+        if "profile" in loaded.data:
+            changes.append(
+                f"its top-level `profile` key makes {launch} refuse to start",
+            )
+        prof_features = loaded.data.get("features")
+        if prof_features is not None:
+            # Codex merges the profile file's tables over config.toml's.
+            merged: object = prof_features
+            if isinstance(prof_features, dict) and isinstance(
+                cfg.get("features"), dict,
+            ):
+                merged = {
+                    **cast(dict[str, object], cfg["features"]),
+                    **cast(dict[str, object], prof_features),
+                }
+            value, error = _feature_value(merged, f"[features] in {path}")
+            if error is not None:
+                changes.append(f"{error}, so {launch} refuses to start")
+            elif (value is None or value[1]) != (base is None or base[1]):
+                changes.append(
+                    "its [features] turns Codex's `hooks` feature "
+                    + ("on" if value is None or value[1] else "off"),
+                )
+        hooks = loaded.data.get("hooks")
+        if isinstance(hooks, dict):
+            hd = cast(dict[str, object], hooks)
+            if hd.get("state"):
+                changes.append(
+                    "its [hooks.state] entries change which handlers Codex "
+                    "skips or has approved",
+                )
+            if any(key != "state" for key in hd):
+                changes.append("its [hooks] table adds handlers")
+        elif hooks is not None:
+            changes.append("its `hooks` value changes which handlers Codex loads")
+        if changes:
+            warnings.append(
+                f"{launch} also reads the profile file {path}, and "
+                + "; ".join(changes)
+                + ". Doctor scores a plain `codex` launch, which doesn't "
+                "read that file, so this doesn't change what doctor counts",
+            )
+    return warnings
 
 
 #: The label of each hook event in a `[hooks.state]` key
@@ -3003,7 +3097,7 @@ def doctor_codex(
         report.config_rejected = loaded.rejected
         if report.config_rejected is not None:
             report.warnings.append(
-                f"Codex loads no hook from {config_path}, because "
+                f"Codex refuses to start with {config_path}, because "
                 f"{report.config_rejected}",
             )
     toml_events: dict[str, object] = {}
@@ -3012,28 +3106,31 @@ def doctor_codex(
         if report.config_hooks_rejected is not None:
             report.warnings.append(
                 f"Codex loads no hook from the [hooks] table in "
-                f"{config_path}, because it rejects the whole table: "
-                f"{report.config_hooks_rejected}",
+                f"{config_path}, and refuses to start, because it rejects "
+                f"the whole table: {report.config_hooks_rejected}",
             )
         elif isinstance(cfg["hooks"], dict):
             toml_events = cast(dict[str, object], cfg["hooks"])
     # #1812: a launch whose `hooks` feature is off starts no handler, so
     # doctor counts no run when any setting it reads can turn it off.
+    # Doctor scores a plain `codex` launch, which reads no profile file, and
+    # warns about each profile that changes the hooks `--profile` starts.
     profiles = _profile_files(cdir)
-    hooks_off = _hooks_off_reason(cfg, config_path, profiles)
-    # #1812: and it starts no handler whose [hooks.state] entry, in
-    # config.toml or in a profile file, sets `enabled = false`.
-    disabled = _disabled_entries(cfg, str(config_path))
-    for path, name, data, _error in profiles:
-        disabled += _disabled_entries(
-            data,
-            f"the profile file {path}, which Codex reads when you pass "
-            f"`--profile {name}`",
+    hooks_off = (
+        f"Codex refuses to start with {config_path}" if (
+            report.config_rejected is not None
+            or report.config_hooks_rejected is not None
         )
+        else _launch_off_reason(cfg, config_path)
+    )
+    for warning in _profile_warnings(cfg, config_path, profiles):
+        report.warnings.append(warning)
+    # #1812: and it starts no handler whose [hooks.state] entry in
+    # config.toml sets `enabled = false`.
+    disabled = _disabled_entries(cfg, str(config_path))
     if hooks_off is not None:
         report.warnings.append(
-            f"doctor counts no duplicate run, because {hooks_off}, and "
-            "Codex starts no hook of yours while its `hooks` feature is off",
+            f"doctor counts no duplicate run, because {hooks_off}",
         )
     covered: set[str] = set()
     found_keys: dict[str, set[str]] = {}
@@ -3401,11 +3498,11 @@ def doctor_codex(
     # `mcp_servers.<name>.command`. A profile file can hold any of them.
     if report.config_hooks_rejected is None:
         scans.append(("toml", str(config_path), cast(object, cfg), ()))
-    for path, _name, data, error in profiles:
-        if error is None:
+    for path, _name, loaded in profiles:
+        if loaded.rejected is None and loaded.unparsed is None:
             scans.append((
                 f"profile {path}", f"the profile file {path}",
-                cast(object, data), (),
+                cast(object, loaded.data), (),
             ))
     for tag, label, value, base in scans:
         strings, cut, deep = _strings_with_paths(value, base)
