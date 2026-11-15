@@ -43,6 +43,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -2173,22 +2174,56 @@ def _read_utf8(path: Path) -> tuple[str | None, str | None]:
 class _TomlFile:
     """A TOML file as doctor reads it (#1812)."""
 
-    #: The file as `tomllib` reads it, or empty when it can't.
+    #: The file as `tomllib` reads it, or empty when it can't or doesn't
+    #: read it.
     data: dict[str, object]
     #: The text, or None when Codex can't read the file.
     text: str | None = None
     #: Why Codex loads none of the file, or None: it can't read it as
     #: UTF-8 text, or its TOML parser rejects the nesting
-    #: (`_toml_nesting_error`).
+    #: (`_toml_nesting_error`) or a number out of range (`_load_toml`).
     rejected: str | None = None
     #: Why `tomllib` can't parse a file Codex may still load, or None.
     unparsed: str | None = None
 
 
+def _toml_int_out_of_range(data: dict[str, object]) -> tuple[object, ...] | None:
+    """The path of the first integer in `data` that a 64-bit signed
+    integer can't hold, or None. Iterative, so no depth can exhaust
+    Python's recursion limit."""
+    stack: list[tuple[tuple[object, ...], object]] = [((), data)]
+    while stack:
+        path, value = stack.pop()
+        if isinstance(value, dict):
+            items = list(cast(dict[str, object], value).items())
+        elif isinstance(value, list):
+            items = list(enumerate(cast(list[object], value)))
+        else:
+            if (
+                isinstance(value, int) and not isinstance(value, bool)
+                and not -_I64_MAX - 1 <= value <= _I64_MAX
+            ):
+                return path
+            continue
+        stack.extend(
+            ((*path, key), item) for key, item in reversed(items)
+        )
+    return None
+
+
 def _load_toml(path: Path) -> _TomlFile:
     """A TOML file as `tomllib` reads it, and why Codex or `tomllib`
-    can't read it. `tomllib` doesn't read a file Codex rejects, so no
-    nesting depth can exhaust Python's recursion limit."""
+    can't read it. `tomllib` doesn't read a file Codex rejects for its
+    nesting, so no depth can exhaust Python's recursion limit.
+
+    Codex reads config.toml with toml 0.9.11, which rejects the whole file
+    when an integer is out of the range of an `i64` (`visit_u64` in
+    `src/value.rs`, lines 441-447) or when a float literal other than
+    `inf` overflows to infinity (`DeFloat::to_f64` in
+    `src/de/parser/devalue.rs`, lines 88-95). `tomllib` reads an integer
+    of any size and such a float as infinity, so doctor checks both, and
+    reads an integer too long for Python's `int` as out of range.
+    """
     text, error = _read_utf8(path)
     if text is None:
         return _TomlFile({}, rejected=error)
@@ -2201,8 +2236,16 @@ def _load_toml(path: Path) -> _TomlFile:
                 f"the limit of {_TOML_DEPTH_LIMIT}"
             ),
         )
+    overflows: list[str] = []
+
+    def read_float(literal: str) -> float:
+        value = float(literal)
+        if math.isinf(value) and literal.lstrip("+-") != "inf":
+            overflows.append(literal)
+        return value
+
     try:
-        return _TomlFile(tomllib.loads(text), text)
+        data = tomllib.loads(text, parse_float=read_float)
     except tomllib.TOMLDecodeError as exc:
         return _TomlFile({}, text, unparsed=f"could not parse {path}: {exc}")
     except ValueError:
@@ -2216,6 +2259,25 @@ def _load_toml(path: Path) -> _TomlFile:
                 "the range of a 64-bit signed integer"
             ),
         )
+    out_of_range = _toml_int_out_of_range(data)
+    if out_of_range is not None:
+        return _TomlFile(
+            data, text,
+            rejected=(
+                "its TOML parser rejects the whole file: the integer at "
+                f"`{_render_path(out_of_range)}` is outside the range of a "
+                "64-bit signed integer"
+            ),
+        )
+    if overflows:
+        return _TomlFile(
+            data, text,
+            rejected=(
+                f"its TOML parser rejects the whole file: the float "
+                f"`{overflows[0]}` overflows a 64-bit float"
+            ),
+        )
+    return _TomlFile(data, text)
 
 
 #: The fields of a `[hooks.state]` entry and the type each one takes
