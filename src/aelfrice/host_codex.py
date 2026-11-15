@@ -1458,7 +1458,7 @@ class CodexDoctorReport:
     #: run only in a group whose matcher it reads (`_matched_values`), and
     #: only for a handler a plain `codex` launch starts: none while that
     #: launch starts no hook (`_launch_off_reason`), none for a handler a
-    #: `[hooks.state]` entry disables (`_disabling_entry`), and none for one
+    #: `[hooks.state]` entry disables (`_disabled_entries`), and none for one
     #: whose approval doesn't hold the hash Codex computes for it now
     #: (`_trust_hash`).
     duplicate_runs: list[tuple[str, str, int]] = field(
@@ -2951,12 +2951,10 @@ _RUST_WHITESPACE: Final[str] = (
 )
 
 
-def _disabled_entries(
-    data: dict[str, object], where: str,
-) -> list[tuple[str, str]]:
-    """Each `[hooks.state]` entry in a config file that sets `enabled =
-    false`, as its key, trimmed as Codex trims it, and a phrase that names
-    it and `where` it is.
+def _disabled_entries(data: dict[str, object], where: str) -> dict[str, str]:
+    """Each `[hooks.state]` key in a config file, trimmed as Codex trims
+    it, whose entry sets `enabled = false`, and a phrase that names the
+    entry and `where` it is.
 
     Codex merges these entries from config.toml and from the profile
     file `--profile` selects, later ones winning (`hook_states_from_stack`
@@ -2972,42 +2970,22 @@ def _disabled_entries(
         if isinstance(hooks, dict) else None
     )
     if not isinstance(state, dict):
-        return []
-    return [
-        (key.strip(_RUST_WHITESPACE),
-         f"the [hooks.state] entry {key!r} in {where}")
+        return {}
+    return {
+        key.strip(_RUST_WHITESPACE):
+            f"the [hooks.state] entry {key!r} in {where}"
         for key, entry in cast(dict[str, object], state).items()
         if isinstance(entry, dict)
         and cast(dict[str, object], entry).get("enabled") is False
-    ]
+    }
 
 
-def _disabling_entry(
-    source: Path, event: str, group: int, handler: int,
-    entries: list[tuple[str, str]],
-) -> str | None:
-    """The entry of `entries` that may disable a handler, or None.
-
-    Codex keys a handler's entry `<file>:<event label>:<group>:<handler>`
-    (`hook_key` in codex-rs/hooks/src/lib.rs, lines 125-135), where the
-    file is the absolute path of hooks.json or config.toml under the Codex
-    home: canonical when `CODEX_HOME` is set and as written when it isn't
-    (`find_codex_home` in codex-rs/utils/home-dir/src/lib.rs). Doctor
-    can't tell which, so it takes any absolute path to the same file.
-    """
-    suffix = f":{_EVENT_KEY_LABELS[event]}:{group}:{handler}"
-    for key, phrase in entries:
-        prefix = key.removesuffix(suffix)
-        if prefix != key and os.path.isabs(prefix):
-            try:
-                same = os.path.normcase(os.path.realpath(prefix)) == (
-                    os.path.normcase(os.path.realpath(source))
-                )
-            except (OSError, ValueError):
-                same = False
-            if same:
-                return phrase
-    return None
+def _state_key(key_file: str, event: str, group: int, handler: int) -> str:
+    """The `[hooks.state]` key of a handler: `<file>:<event label>:<group>:
+    <handler>` (`hook_key` in codex-rs/hooks/src/lib.rs, lines 125-135, at
+    the commit `_EVENT_KEY_LABELS` cites), where the file is hooks.json or
+    config.toml under the Codex home as `_state_key_home` spells it."""
+    return f"{key_file}:{_EVENT_KEY_LABELS[event]}:{group}:{handler}"
 
 
 #: The events that keep a handler's `additionalContextLimit`, and the
@@ -3126,17 +3104,25 @@ def _trusted_hashes(data: dict[str, object]) -> dict[str, str]:
     return found
 
 
-def _state_key_files(codex_dir: Path, name: str) -> list[str]:
-    """Every spelling of the path of `name` in `codex_dir` that Codex may
-    key a `[hooks.state]` entry by: as written, as Codex normalizes it,
-    and canonical (`_disabling_entry`). An empty list when doctor can't
-    resolve the path."""
-    written = codex_dir / name
+def _state_key_home(codex_dir: Path) -> str | None:
+    """The Codex home as Codex spells it in a `[hooks.state]` key, or None
+    when doctor can't resolve it.
+
+    Codex spells it one way: canonical when `CODEX_HOME` is set, and as
+    written, made absolute with `.` and `..` removed, when it isn't
+    (`find_codex_home` in codex-rs/utils/home-dir/src/lib.rs, lines 13-62,
+    and `AbsolutePathBuf::from_absolute_path` in
+    codex-rs/utils/absolute-path/src/lib.rs, lines 59-63, at the commit
+    `_EVENT_KEY_LABELS` cites). So through a symlinked `~/.codex`, or a
+    `CODEX_HOME` under `/tmp` on macOS, an entry under the other spelling
+    names no handler.
+    """
     try:
-        canonical = Path(os.path.realpath(codex_dir)) / name
+        if os.environ.get(CODEX_HOME_ENV):
+            return os.path.realpath(codex_dir)
+        return os.path.abspath(codex_dir)
     except (OSError, ValueError):
-        return []
-    return sorted({str(written), os.path.normpath(written), str(canonical)})
+        return None
 
 
 def doctor_codex(
@@ -3320,8 +3306,10 @@ def doctor_codex(
     # config.toml sets `enabled = false`, and none you haven't approved.
     disabled = _disabled_entries(cfg, str(config_path))
     trusted = _trusted_hashes(cfg)
+    key_home = _state_key_home(cdir)
     key_files = {
-        tag: _state_key_files(cdir, name) for tag, name in (
+        tag: None if key_home is None else os.path.join(key_home, name)
+        for tag, name in (
             ("json", CODEX_HOOKS_FILENAME), ("toml", CODEX_CONFIG_FILENAME),
         )
     }
@@ -3337,19 +3325,18 @@ def doctor_codex(
                 "doctor can't compute the hash Codex approves it by, because "
                 + why
             )
-        if not key_files[tag]:
+        key_file = key_files[tag]
+        if key_file is None:
             return "doctor can't resolve the path Codex keys its approval by"
-        suffix = f":{_EVENT_KEY_LABELS[event]}:{g}:{h}"
-        found = [trusted.get(f + suffix) for f in key_files[tag]]
-        if all(value == current for value in found):
+        key = _state_key(key_file, event, g, h)
+        found = trusted.get(key)
+        if found == current:
             return None
-        if current in found:
+        if found is None:
             return (
-                "its [hooks.state] approval is keyed by one spelling of the "
-                "file's path and not by another Codex may use"
+                f"no [hooks.state] entry in {config_path} approves it under "
+                f"the key Codex reads, `{key}`"
             )
-        if all(value is None for value in found):
-            return f"no [hooks.state] entry in {config_path} approves it"
         return (
             f"its [hooks.state] `trusted_hash` in {config_path} isn't the hash "
             "of the handler as it is now, so Codex skips it as modified"
@@ -3512,12 +3499,12 @@ def doctor_codex(
                                 )
                             accounted.add((tag, path, key))
                         continue
+                    key_file = key_files[tag]
                     entry = (
-                        _disabling_entry(
-                            hooks_path if tag == "json" else config_path,
-                            event, g, cast(int, sub[1]), disabled,
-                        )
-                        if sub else None
+                        disabled.get(_state_key(
+                            key_file, event, g, cast(int, sub[1]),
+                        ))
+                        if sub and key_file is not None else None
                     )
                     if entry is not None:
                         for key, cmd in sorted(named.items()):

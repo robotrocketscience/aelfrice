@@ -10,6 +10,10 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
+import shutil
+import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -347,9 +351,15 @@ def test_doctor_fails_two_approved_copies(tmp_path: Path) -> None:
 # Approval states that leave a copy unapproved: (groups approved, the hash
 # they hold, why doctor counts no run for group 1).
 _UNAPPROVED: dict[str, tuple[tuple[int, ...], str | None, str]] = {
-    "no entry": ((0,), None, "no [hooks.state] entry in {config} approves it"),
+    "no entry": (
+        (0,), None,
+        "no [hooks.state] entry in {config} approves it under the key Codex "
+        "reads, `{config}:session_start:1:0`",
+    ),
     "neither has an entry": (
-        (), None, "no [hooks.state] entry in {config} approves it",
+        (), None,
+        "no [hooks.state] entry in {config} approves it under the key Codex "
+        "reads, `{config}:session_start:1:0`",
     ),
     "a stale hash": (
         (0, 1), "sha256:" + "0" * 64,
@@ -408,34 +418,161 @@ def test_doctor_counts_no_run_for_a_copy_it_can_not_hash(tmp_path: Path) -> None
     ) in out, out
 
 
-@pytest.mark.timeout(60)
-def test_doctor_counts_no_run_for_an_approval_under_one_path_spelling(
-    tmp_path: Path,
-) -> None:
-    """Codex keys an approval by the Codex home as written, or canonical
-    when `CODEX_HOME` is set. Through a link the two differ, and doctor
-    counts a run only when both spellings hold the approval."""
-    real, config, _ours = _two_toml_copies(tmp_path)
-    link = tmp_path / "link"
-    link.symlink_to(real, target_is_directory=True)
-    _approve(config, 0, 1)
-    rc, out = _doctor(link, tmp_path / "skills", approve=False)
-    assert rc == 0, out
-    assert (
-        "because its [hooks.state] approval is keyed by one spelling of the "
-        "file's path and not by another Codex may use"
-    ) in out, out
-    linked = link / "config.toml"
+def _resolved_doctor(skills: Path) -> tuple[int, str]:
+    """Doctor's exit code and output for the Codex home it resolves."""
+    out = io.StringIO()
+    rc = _cmd_doctor_codex(
+        argparse.Namespace(host="codex"), out, skills_dest=skills,
+    )
+    return rc, out.getvalue()
+
+
+def _two_copies_in(codex_dir: Path, skills: Path) -> Path:
+    """Setup's skills, and two copies of setup's SessionStart handler in
+    the config.toml of `codex_dir`, whose matchers share `startup`."""
+    hooks = codex_dir / "hooks.json"
+    install_codex_hooks(hooks)
+    install_codex_skills(skills)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    ours = str(doc["hooks"]["SessionStart"][0]["hooks"][0]["command"])
+    hooks.unlink()
+    config = codex_dir / "config.toml"
+    config.write_text(
+        _toml_copy(ours) + _toml_copy(ours, "startup|resume"), encoding="utf-8",
+    )
+    return config
+
+
+def _approve_under(config: Path, home: Path) -> None:
+    """Approve both copies under keys that spell the Codex home `home`."""
     config.write_text(
         config.read_text(encoding="utf-8") + "".join(
-            _state_entry(f"{linked}:session_start:{g}:0", _hash_of(config, g))
+            _state_entry(
+                f"{home / 'config.toml'}:session_start:{g}:0",
+                _hash_of(config, g),
+            )
             for g in (0, 1)
         ),
         encoding="utf-8",
     )
-    rc, out = _doctor(link, tmp_path / "skills", approve=False)
-    assert rc == 1, out
-    assert "starts the aelf-session-start-hook command 2 times" in out, out
+
+
+def _check_approvals(rc: int, out: str, counted: bool, home: Path) -> None:
+    """Both copies count when `counted`, and otherwise neither does, and
+    doctor names the key under `home` that Codex reads."""
+    if counted:
+        assert rc == 1, out
+        assert (
+            "[FAIL] SessionStart starts the aelf-session-start-hook command 2 "
+            "times"
+        ) in out, out
+        assert "haven't approved" not in out, out
+    else:
+        assert rc == 0, out
+        assert "times" not in out.replace("twice", ""), out
+        assert (
+            "approves it under the key Codex reads, "
+            f"`{home / 'config.toml'}:session_start:0:0`"
+        ) in out, out
+
+
+def _symlinked_dot_codex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path]:
+    """`~/.codex` as a symlink, as a dotfile manager writes it, with
+    `CODEX_HOME` unset: the home as written, and canonical."""
+    real = tmp_path / "dotfiles" / "codex"
+    real.mkdir(parents=True)
+    home = tmp_path / "home"
+    home.mkdir()
+    written = home / ".codex"
+    written.symlink_to(real, target_is_directory=True)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    return written, real
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("spelling", "counted"), [("as written", True), ("canonical", False)],
+)
+def test_doctor_reads_approvals_through_a_symlinked_home_as_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
+    counted: bool,
+) -> None:
+    """With `CODEX_HOME` unset, Codex keys approvals by `~/.codex` as
+    written, so through a symlinked `~/.codex` an entry under the
+    canonical path approves nothing."""
+    written, real = _symlinked_dot_codex(tmp_path, monkeypatch)
+    config = _two_copies_in(written, tmp_path / "skills")
+    _approve_under(config, written if spelling == "as written" else real)
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    _check_approvals(rc, out, counted, written)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("where", "spelling", "counted"),
+    [
+        ("a symlink", "canonical", True),
+        ("a symlink", "as written", False),
+        ("/tmp", "canonical", True),
+        ("/tmp", "as written", False),
+    ],
+)
+def test_doctor_reads_approvals_under_codex_home_as_canonical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str,
+    spelling: str, counted: bool,
+) -> None:
+    """With `CODEX_HOME` set, Codex canonicalizes it, so for a
+    `CODEX_HOME` through a symlink, or under `/tmp`, which macOS links to
+    `/private/tmp`, it keys approvals by the canonical path."""
+    if where == "/tmp" and sys.platform != "darwin":
+        pytest.skip("only macOS links /tmp to /private/tmp")
+    if where == "/tmp":
+        written = Path(tempfile.mkdtemp(dir="/tmp"))
+    else:
+        (tmp_path / "real").mkdir()
+        written = tmp_path / "link"
+        written.symlink_to(tmp_path / "real", target_is_directory=True)
+    try:
+        real = Path(os.path.realpath(written))
+        assert real != written
+        monkeypatch.setenv("CODEX_HOME", str(written))
+        config = _two_copies_in(written, tmp_path / "skills")
+        _approve_under(config, real if spelling == "canonical" else written)
+        rc, out = _resolved_doctor(tmp_path / "skills")
+        _check_approvals(rc, out, counted, real)
+    finally:
+        if where == "/tmp":
+            shutil.rmtree(written)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("spelling", "disabled"), [("as written", True), ("canonical", False)],
+)
+def test_doctor_reads_enabled_through_a_symlinked_home_as_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
+    disabled: bool,
+) -> None:
+    """`enabled = false` names a handler by the key an approval does, so
+    through a symlinked `~/.codex` with `CODEX_HOME` unset, an entry under
+    the canonical path disables nothing."""
+    written, real = _symlinked_dot_codex(tmp_path, monkeypatch)
+    config = _two_copies_in(written, tmp_path / "skills")
+    _approve_under(config, written)
+    home = written if spelling == "as written" else real
+    # A leading space, which Codex trims, keeps the approval's key apart.
+    key = f" {home / 'config.toml'}:session_start:1:0"
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + f"[hooks.state.{json.dumps(key)}]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    assert rc == (0 if disabled else 1), out
+    assert ("sets `enabled = false` for it" in out) is disabled, out
 
 
 @pytest.mark.timeout(60)

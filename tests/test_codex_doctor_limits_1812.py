@@ -711,10 +711,13 @@ def _state(key: str, enabled: str = "false") -> str:
 
 # `[hooks.state]` keys for the copy of setup's SessionStart handler, and
 # whether Codex may skip it: the file, as an absolute path; `{alias}` is a
-# symlink to the Codex home. `{file}` is the file that holds the copy.
+# symlink to the Codex home, a spelling Codex doesn't key by. `{file}` is
+# the file that holds the copy.
 _STATE_KEYS: dict[str, tuple[str, bool]] = {
     "its key": ("{file}:session_start:{g}:0", True),
-    "its key through a symlinked home": ("{alias}/{name}:session_start:{g}:0", True),
+    "its key through a symlink to the home": (
+        "{alias}/{name}:session_start:{g}:0", False,
+    ),
     "its key with spaces Codex trims": ("  {file}:session_start:{g}:0　", True),
     "another handler's key": ("{file}:session_start:{g}:1", False),
     "another event's key": ("{file}:session_end:{g}:0", False),
@@ -730,9 +733,9 @@ def test_doctor_counts_no_run_for_a_handler_hooks_state_disables(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: str, where: str,
 ) -> None:
     """Codex skips a handler whose `[hooks.state]` entry sets `enabled =
-    false`, so its copy of setup's command is no run. Codex's key holds an
-    absolute path, so a relative one names no handler, even from the Codex
-    home."""
+    false`, so its copy of setup's command is no run. Codex's key holds the
+    absolute path it spells the Codex home by, so a relative one, or one
+    through another symlink to the home, names no handler."""
     codex_dir, hooks, ours = _installed(tmp_path)
     monkeypatch.chdir(codex_dir)
     alias = tmp_path / "alias"
