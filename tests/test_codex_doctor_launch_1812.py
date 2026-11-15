@@ -140,6 +140,13 @@ _PROFILE_ONLY: dict[str, tuple[str, dict[str, str], str]] = {
         "[warn] `codex --profile work` also reads the profile file "
         "{dir}/work.config.toml, and its [hooks] table adds handlers.",
     ),
+    "a profile file's structured [features] table": (
+        "", {"work.config.toml": "[features.code_mode]\nenabled = true\n"},
+        "[warn] `codex --profile work` also reads the profile file "
+        "{dir}/work.config.toml, and doctor doesn't check the value of "
+        "`code_mode` in its [features], so it can't tell whether `codex "
+        "--profile work` starts.",
+    ),
     "a profile file's `profile` key": (
         "", {"work.config.toml": 'profile = "x"\n'},
         "[warn] `codex --profile work` also reads the profile file "
@@ -1061,18 +1068,52 @@ def test_doctor_reads_a_profile_file_with_a_long_integer(
     ) in out, out
 
 
-# `[features]` tables, and the key whose value makes Codex refuse to
-# start, or None when Codex reads the table.
-_FEATURES: dict[str, tuple[str, str | None]] = {
-    "a text value": ('[features]\nweb_search = "live"\n', "web_search"),
-    "a number": ("[features]\nshell_tool = 1\n", "shell_tool"),
-    "a table under a plain key": ("[features.memories]\nx = 1\n", "memories"),
-    "a profile table's text value": (
-        '[profiles.ci.features]\nweb_search = "live"\n', "web_search",
+# `[features]` tables, and what doctor makes of each: Codex reads it,
+# Codex refuses to start because of the key named, or doctor doesn't check
+# the value of the key named, in the table named.
+_FEATURES: dict[str, tuple[str, str, str, str]] = {
+    "a text value": (
+        '[features]\nweb_search = "live"\n', "refuses", "web_search",
+        "[features]",
     ),
-    "true and false": ("[features]\nweb_search = true\nx = false\n", None),
+    "a number": ("[features]\nshell_tool = 1\n", "refuses", "shell_tool", "[features]"),
+    "a table under a plain key": (
+        "[features.memories]\nx = 1\n", "refuses", "memories", "[features]",
+    ),
+    "a profile table's text value": (
+        '[profiles.ci.features]\nweb_search = "live"\n', "refuses",
+        "web_search", "[profiles.ci.features]",
+    ),
+    "true and false": (
+        "[features]\nweb_search = true\nx = false\n", "reads", "", "",
+    ),
+    "true under a structured key": (
+        "[features]\ncode_mode = true\nnetwork_proxy = false\n", "reads", "",
+        "",
+    ),
     "a table under a structured key": (
-        "[features.code_mode]\nenabled = true\n", None,
+        "[features.code_mode]\nenabled = true\n", "unchecked", "code_mode",
+        "[features]",
+    ),
+    "a number under a structured key": (
+        "[features]\ntoken_budget = 100000\n", "unchecked", "token_budget",
+        "[features]",
+    ),
+    "a network_proxy table": (
+        "[features.network_proxy]\nenabled = true\n", "unchecked",
+        "network_proxy", "[features]",
+    ),
+    "a profile table's structured table": (
+        "[profiles.ci.features.code_mode]\nenabled = true\n", "unchecked",
+        "code_mode", "[profiles.ci.features]",
+    ),
+    "tool_registry set to true": (
+        "[features]\ntool_registry = true\n", "refuses", "tool_registry",
+        "[features]",
+    ),
+    "a tool_registry table": (
+        "[features.tool_registry]\nerror_on_tool_collisions = true\n",
+        "unchecked", "tool_registry", "[features]",
     ),
 }
 
@@ -1083,25 +1124,37 @@ def test_doctor_reads_every_features_key_as_codex_does(
     tmp_path: Path, shape: str,
 ) -> None:
     """`FeaturesToml` reads each `[features]` key outside its own fields as
-    true or false, so any other value makes Codex refuse to start, and
-    doctor counts no run."""
+    true or false, and `tool_registry` as a table only, so another value
+    makes Codex refuse to start. It reads each other field of its own as
+    true, false, or a table, which doctor doesn't check. Doctor counts no
+    run when Codex refuses to start or when it doesn't check a value."""
     codex_dir, config, _ours = _two_toml_copies(tmp_path)
-    table, bad = _FEATURES[shape]
+    table, kind, key, where = _FEATURES[shape]
     _approve(config, 0, 1)
     config.write_text(
         config.read_text(encoding="utf-8") + table, encoding="utf-8",
     )
     rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
-    if bad is None:
+    if kind == "reads":
         assert rc == 1, out
         assert "starts the aelf-session-start-hook command 2 times" in out, out
-    else:
-        assert rc == 0, out
-        assert "times" not in out, out
+        assert "refuses to start" not in out, out
+        assert "doesn't check the value" not in out, out
+        return
+    assert rc == 0, out
+    assert "times" not in out, out
+    if kind == "refuses":
         assert (
-            f"[warn] doctor counts no duplicate run, because `{bad}` in "
+            f"[warn] doctor counts no duplicate run, because `{key}` in "
+            f"{where} in {config} "
         ) in out, out
-        assert "isn't true or false, so Codex refuses to start\n" in out, out
+        assert ", so Codex refuses to start\n" in out, out
+    else:
+        assert (
+            "[warn] doctor counts no duplicate run, because doctor doesn't "
+            f"check the value of `{key}` in {where} in {config} against the "
+            "type Codex reads it as, so it can't tell whether Codex starts\n"
+        ) in out, out
 
 
 @pytest.mark.timeout(60)
