@@ -576,6 +576,25 @@ def test_doctor_reads_enabled_through_a_symlinked_home_as_written(
 
 
 @pytest.mark.timeout(60)
+def test_doctor_reads_the_last_enabled_of_a_key(tmp_path: Path) -> None:
+    """Codex lets a later entry's `enabled` win, so `enabled = true` under
+    one spaced spelling of the key, after `enabled = false` under another,
+    leaves the copy enabled."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    _approve(config, 0, 1)
+    key = f"{config}:session_start:1:0"
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + f"[hooks.state.{json.dumps(chr(9) + key)}]\nenabled = false\n"
+        + f"[hooks.state.{json.dumps(' ' + key)}]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 1, out
+    assert "starts the aelf-session-start-hook command 2 times" in out, out
+
+
+@pytest.mark.timeout(60)
 def test_doctor_reads_the_last_trusted_hash_of_a_key(tmp_path: Path) -> None:
     """Codex trims each key and lets a later entry's `trusted_hash` win, so
     a stale hash under a spaced spelling of the key, after the right one,
