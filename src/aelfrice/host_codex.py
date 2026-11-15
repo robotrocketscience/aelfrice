@@ -110,7 +110,11 @@ def resolve_codex_home() -> Path:
 
     `~` is expanded and the result is made absolute, so a relative
     `$CODEX_HOME` resolves against the process cwd exactly once, here,
-    rather than differently at each use site.
+    rather than differently at each use site. Codex doesn't expand `~`
+    (`find_codex_home` in codex-rs/utils/home-dir/src/lib.rs, lines 24-50,
+    at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9), so for a
+    value that starts with `~` this names a folder Codex doesn't read, and
+    `doctor_codex` counts no run and says why.
 
     An explicitly configured value raises `CodexHomeError` rather than
     reverting to the conventional path when it does not exist, or exists
@@ -128,7 +132,9 @@ def resolve_codex_home() -> Path:
     most: Codex refuses to start there, so creating it and reporting
     success would leave `aelf setup --host codex` claiming a directory
     Codex will not read — the same failure #1427 was filed about, one
-    typo away.
+    typo away. A path it can't stat, such as one under a folder you can't
+    search, raises too, as Codex fails to read it (lines 26-35 of the
+    file cited above).
     """
     raw = os.environ.get(CODEX_HOME_ENV)
     if not raw:
@@ -3616,8 +3622,17 @@ def doctor_codex(
             f"{unlisted}. Doctor scores a plain `codex` launch, which "
             "doesn't read one",
         )
+    raw_home = os.environ.get(CODEX_HOME_ENV) or ""
     hooks_off = (
-        f"Codex refuses to start with {config_path}" if (
+        # #1812: Codex doesn't expand `~` in CODEX_HOME, so it reads
+        # another path than the one doctor scans (`find_codex_home` in
+        # codex-rs/utils/home-dir/src/lib.rs, lines 24-50, at the commit
+        # `_EVENT_KEY_LABELS` cites).
+        f"`{CODEX_HOME_ENV}` is {raw_home!r}, and Codex doesn't expand `~` "
+        "in it: it reads the value as a path under the folder you start "
+        "Codex in, and refuses to start where no such folder exists"
+        if os.path.expanduser(raw_home) != raw_home
+        else f"Codex refuses to start with {config_path}" if (
             report.config_rejected is not None
             or report.config_hooks_rejected is not None
         )

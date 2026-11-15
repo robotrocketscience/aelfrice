@@ -537,6 +537,29 @@ def test_doctor_reads_an_empty_codex_home_as_unset(
 
 
 @pytest.mark.timeout(60)
+def test_doctor_counts_no_run_under_a_codex_home_that_starts_with_a_tilde(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex doesn't expand `~` in `CODEX_HOME`, so it doesn't read the
+    folder doctor scans, and doctor counts no run there."""
+    home = tmp_path / "home"
+    (home / "c").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", "~/c")
+    config = _two_copies_in(home / "c", tmp_path / "skills")
+    _approve_under(config, Path(os.path.realpath(home / "c")))
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    assert rc == 0, out
+    assert "times" not in out, out
+    assert (
+        "[warn] doctor counts no duplicate run, because `CODEX_HOME` is "
+        "'~/c', and Codex doesn't expand `~` in it: it reads the value as a "
+        "path under the folder you start Codex in, and refuses to start "
+        "where no such folder exists\n"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
 @pytest.mark.parametrize(
     ("spelling", "counted"), [("made absolute", True), ("as written", False)],
 )
