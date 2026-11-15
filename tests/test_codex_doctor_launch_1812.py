@@ -595,6 +595,30 @@ def test_doctor_reads_the_last_enabled_of_a_key(tmp_path: Path) -> None:
 
 
 @pytest.mark.timeout(60)
+def test_doctor_keeps_a_trusted_hash_key_codex_keeps_whole(
+    tmp_path: Path,
+) -> None:
+    """Rust's `str::trim` keeps U+001C to U+001F, which Python's
+    `str.strip()` removes, so an approval under a key that ends in U+001F
+    approves no handler, and neither copy counts a run."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    config.write_text(
+        config.read_text(encoding="utf-8") + "".join(
+            f'[hooks.state."{config}:session_start:{g}:0\\u001f"]\n'
+            f"trusted_hash = {json.dumps(_hash_of(config, g))}\n"
+            for g in (0, 1)
+        ),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 0, out
+    assert "times" not in out.replace("twice", ""), out
+    assert (
+        f"approves it under the key Codex reads, `{config}:session_start:1:0`"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
 def test_doctor_reads_the_last_trusted_hash_of_a_key(tmp_path: Path) -> None:
     """Codex trims each key and lets a later entry's `trusted_hash` win, so
     a stale hash under a spaced spelling of the key, after the right one,
