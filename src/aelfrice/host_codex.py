@@ -2745,16 +2745,25 @@ _PROFILE_FILE: Final[re.Pattern[str]] = re.compile(
 )
 
 
-def _profile_files(codex_dir: Path) -> list[tuple[Path, str, _TomlFile]]:
+def _profile_files(
+    codex_dir: Path,
+) -> tuple[list[tuple[Path, str, _TomlFile]], str | None]:
     """Each profile file in `codex_dir`, in name order: its path, its
-    profile name, and the file as doctor reads it."""
+    profile name, and the file as doctor reads it; and why doctor can't
+    list `codex_dir`, or None."""
+    try:
+        paths = sorted(codex_dir.iterdir())
+    except OSError as exc:
+        return [], str(exc)
     found: list[tuple[Path, str, _TomlFile]] = []
-    for path in sorted(codex_dir.iterdir()):
+    for path in paths:
         named = _PROFILE_FILE.fullmatch(path.name)
-        if named is None or not path.is_file():
+        # `os.path.isfile` reads a failed `stat` as False, where
+        # `Path.is_file` raises on Python 3.12.
+        if named is None or not os.path.isfile(path):
             continue
         found.append((path, named[1], _load_toml(path)))
-    return found
+    return found, None
 
 
 def _feature_value(
@@ -3160,7 +3169,10 @@ def doctor_codex(
         return report
 
     hooks_path = codex_hooks_path(cdir)
-    report.hooks_file_present = hooks_path.is_file()
+    # `os.path.isfile` reads a failed `stat`, such as in a Codex home you
+    # can list but not search, as False, where `Path.is_file` raises on
+    # Python 3.12 (#1812).
+    report.hooks_file_present = os.path.isfile(hooks_path)
     hooks_map: dict[str, object] = {}
     # The whole hooks.json when Codex loads it, for the last check (#1812).
     hooks_doc: object = None
@@ -3278,7 +3290,7 @@ def doctor_codex(
     cfg: dict[str, object] = {}
     cfg_error: str | None = None
     config_text: str | None = None
-    if config_path.is_file():
+    if os.path.isfile(config_path):
         loaded = _load_toml(config_path)
         cfg, cfg_error = loaded.data, loaded.unparsed
         config_text = loaded.text
@@ -3304,7 +3316,16 @@ def doctor_codex(
     # refuses to start, its `hooks` feature is off, or doctor can't read the
     # approvals. It warns about each profile that changes the hooks
     # `--profile` starts.
-    profiles = _profile_files(cdir)
+    profiles, unlisted = _profile_files(cdir)
+    if unlisted is not None:
+        # #1812: a plain launch reads no profile file, so this changes no
+        # count, as for a profile file doctor can't read.
+        report.warnings.append(
+            f"doctor can't list the files in {cdir}, so it reads no profile "
+            "file that `codex --profile NAME` reads: "
+            f"{unlisted}. Doctor scores a plain `codex` launch, which "
+            "doesn't read one",
+        )
     hooks_off = (
         f"Codex refuses to start with {config_path}" if (
             report.config_rejected is not None
@@ -3878,7 +3899,7 @@ def doctor_codex(
                 "(run `aelf setup --host codex`)",
             )
 
-    if config_path.is_file():
+    if os.path.isfile(config_path):
         if cfg_error is not None:
             report.warnings.append(cfg_error)
         # Codex 0.145+ names the feature `hooks` (stage: stable, enabled

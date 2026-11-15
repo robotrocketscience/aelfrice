@@ -846,3 +846,32 @@ def test_doctor_reads_a_profile_file_with_a_long_integer(
         "--profile ci` reads: its TOML parser rejects the whole file: it "
         f"holds an integer of more than {sys.get_int_max_str_digits()} digits"
     ) in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+@pytest.mark.parametrize(
+    ("mode", "warns"),
+    [(0o311, True), (0o644, False)],
+    ids=["listed no", "searched no"],
+)
+def test_doctor_reads_a_codex_home_it_can_not_list_or_search(
+    tmp_path: Path, mode: int, warns: bool,
+) -> None:
+    """Doctor doesn't raise on a Codex home it can't list, which only
+    hides profile files, or can't search, where Python 3.12's
+    `Path.is_file` raises."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    codex_dir.chmod(mode)
+    try:
+        rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    finally:
+        codex_dir.chmod(0o755)
+    assert rc in (0, 1), out
+    listed = (
+        f"[warn] doctor can't list the files in {codex_dir}, so it reads no "
+        "profile file that `codex --profile NAME` reads: "
+    )
+    assert (listed in out) is warns, out
