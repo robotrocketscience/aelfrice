@@ -2140,24 +2140,66 @@ def _toml_nesting_error(text: str) -> str | None:
     return None
 
 
-def _load_toml(
-    path: Path,
-) -> tuple[dict[str, object], str | None, str | None]:
-    """A TOML file as `tomllib` reads it, why `tomllib` couldn't read it,
-    and why Codex's TOML parser rejects it for its nesting
-    (`_toml_nesting_error`). `tomllib` doesn't read a file Codex rejects,
-    so no nesting depth can exhaust Python's recursion limit."""
+def _read_utf8(path: Path) -> tuple[str | None, str | None]:
+    """A file's text, or None and why Codex can't read it.
+
+    Codex reads hooks.json with `fs::read_to_string` and each config file
+    with `String::from_utf8` (`load_hooks_json` in
+    codex-rs/hooks/src/engine/discovery.rs, lines 390-408, and
+    `read_file_text` in codex-rs/file-system/src/lib.rs, lines 684-695, at
+    openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9). Both fail on a
+    read error and on bytes that aren't UTF-8, and neither translates line
+    endings, so doctor decodes the bytes itself (#1812).
+    """
     try:
-        text = path.read_text(encoding="utf-8")
+        data = path.read_bytes()
     except OSError as exc:
-        return {}, f"could not parse {path}: {exc}", None
+        return None, f"Codex can't read the file: {exc}"
+    try:
+        return data.decode("utf-8"), None
+    except UnicodeDecodeError as exc:
+        return None, (
+            f"the file isn't UTF-8 text: byte {exc.start} is "
+            f"{data[exc.start]:#04x}"
+        )
+
+
+@dataclass(frozen=True)
+class _TomlFile:
+    """A TOML file as doctor reads it (#1812)."""
+
+    #: The file as `tomllib` reads it, or empty when it can't.
+    data: dict[str, object]
+    #: The text, or None when Codex can't read the file.
+    text: str | None = None
+    #: Why Codex loads none of the file, or None: it can't read it as
+    #: UTF-8 text, or its TOML parser rejects the nesting
+    #: (`_toml_nesting_error`).
+    rejected: str | None = None
+    #: Why `tomllib` can't parse a file Codex may still load, or None.
+    unparsed: str | None = None
+
+
+def _load_toml(path: Path) -> _TomlFile:
+    """A TOML file as `tomllib` reads it, and why Codex or `tomllib`
+    can't read it. `tomllib` doesn't read a file Codex rejects, so no
+    nesting depth can exhaust Python's recursion limit."""
+    text, error = _read_utf8(path)
+    if text is None:
+        return _TomlFile({}, rejected=error)
     nesting = _toml_nesting_error(text)
     if nesting is not None:
-        return {}, None, nesting
+        return _TomlFile(
+            {}, text,
+            rejected=(
+                f"its TOML parser rejects the whole file: {nesting}, past "
+                f"the limit of {_TOML_DEPTH_LIMIT}"
+            ),
+        )
     try:
-        return tomllib.loads(text), None, None
+        return _TomlFile(tomllib.loads(text), text)
     except tomllib.TOMLDecodeError as exc:
-        return {}, f"could not parse {path}: {exc}", None
+        return _TomlFile({}, text, unparsed=f"could not parse {path}: {exc}")
 
 
 #: The fields of a `[hooks.state]` entry and the type each one takes
@@ -2663,8 +2705,10 @@ def _profile_files(
         named = _PROFILE_FILE.fullmatch(path.name)
         if named is None or not path.is_file():
             continue
-        data, error, nesting = _load_toml(path)
-        found.append((path, named[1], data, error or nesting))
+        loaded = _load_toml(path)
+        found.append((
+            path, named[1], loaded.data, loaded.rejected or loaded.unparsed,
+        ))
     return found
 
 
@@ -2850,11 +2894,16 @@ def doctor_codex(
     # #1812: values that nest past serde_json's limit where Codex skips
     # them, which doctor cuts before `json.loads` reads the file.
     json_cuts: list[tuple[object, ...]] = []
-    if report.hooks_file_present:
+    raw_json, unread = (
+        _read_utf8(hooks_path) if report.hooks_file_present else (None, None)
+    )
+    if unread is not None:
+        # #1812: Codex logs that it failed to read the file and loads no
+        # hook from it, as it does for a file that isn't JSON.
+        report.parse_error = unread
+    if raw_json is not None:
         try:
-            text, json_cuts, too_deep = _scan_json_depth(
-                hooks_path.read_text(encoding="utf-8"),
-            )
+            text, json_cuts, too_deep = _scan_json_depth(raw_json)
             parsed = (
                 None if too_deep is not None
                 else json.loads(text, object_pairs_hook=_json_object)
@@ -2894,6 +2943,7 @@ def doctor_codex(
                 report.parse_error = "top-level JSON is not an object"
         except json.JSONDecodeError as exc:
             report.parse_error = str(exc)
+    if report.hooks_file_present:
         if report.hooks_file_rejected is not None:
             report.warnings.append(
                 f"Codex loads no hook from {hooks_path}, because it rejects "
@@ -2948,12 +2998,13 @@ def doctor_codex(
     cfg: dict[str, object] = {}
     cfg_error: str | None = None
     if config_path.is_file():
-        cfg, cfg_error, report.config_rejected = _load_toml(config_path)
+        loaded = _load_toml(config_path)
+        cfg, cfg_error = loaded.data, loaded.unparsed
+        report.config_rejected = loaded.rejected
         if report.config_rejected is not None:
             report.warnings.append(
-                f"Codex loads no hook from {config_path}, because its TOML "
-                f"parser rejects the whole file: {report.config_rejected}, "
-                f"past the limit of {_TOML_DEPTH_LIMIT}",
+                f"Codex loads no hook from {config_path}, because "
+                f"{report.config_rejected}",
             )
     toml_events: dict[str, object] = {}
     if "hooks" in cfg:
