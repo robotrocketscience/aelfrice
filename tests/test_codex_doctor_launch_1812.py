@@ -10,15 +10,28 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from aelfrice.cli import _cmd_doctor_codex
-from aelfrice.host_codex import install_codex_hooks, install_codex_skills
+from aelfrice.host_codex import (
+    _run_command,
+    _trust_hash,
+    install_codex_hooks,
+    install_codex_skills,
+)
+from tests.codex_approvals import approve_codex_hooks
 
 
-def _doctor(codex_dir: Path, skills: Path) -> tuple[int, str]:
+def _doctor(
+    codex_dir: Path, skills: Path, *, approve: bool = True,
+) -> tuple[int, str]:
+    """Doctor's exit code and output, after approving every handler as
+    `/hooks` does, unless `approve` is False."""
+    if approve:
+        approve_codex_hooks(codex_dir)
     out = io.StringIO()
     rc = _cmd_doctor_codex(
         argparse.Namespace(host="codex"), out,
@@ -215,3 +228,229 @@ def test_doctor_says_nothing_about_a_profile_that_changes_no_hook(
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert "work.config.toml" not in out, out
+
+
+# --- approvals ---------------------------------------------------------------
+
+_SS = "/opt/aelf/bin/aelf-session-start-hook --host codex"
+# Handlers whose hash Codex's own code computed, with `hook_hash` and
+# `version_for_toml` at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9
+# copied into a Rust build with serde 1.0.228, serde_json 1.0.149, toml
+# 0.9.11, and sha2 0.10.9: (event, group, handler, hash with `command`,
+# hash with `commandWindows`).
+_GOLDEN: dict[str, tuple[str, dict[str, object], dict[str, object], str, str]] = {
+    "setup's SessionStart handler": (
+        "SessionStart", {"matcher": "startup|resume|clear|compact|fork"},
+        {"type": "command", "command": _SS, "timeout": 30,
+         "statusMessage": "aelfrice", "additionalContextLimit": 9500},
+        "sha256:18fc543fef9367ab5a4b414a33b6e7cb06419326010da69c200c27c84be90ebd",
+        "sha256:18fc543fef9367ab5a4b414a33b6e7cb06419326010da69c200c27c84be90ebd",
+    ),
+    "the default timeout and context limit": (
+        "SessionStart", {"matcher": "startup"},
+        {"type": "command", "command": _SS, "additionalContextLimit": 2500},
+        "sha256:60f4f235542c39019826f694c2bf4ad0c38f3257cad08a87cecdb0243bb69326",
+        "sha256:60f4f235542c39019826f694c2bf4ad0c38f3257cad08a87cecdb0243bb69326",
+    ),
+    "an event whose matcher Codex ignores": (
+        "Stop", {"matcher": "ignored"},
+        {"type": "command", "command": "/opt/aelf/bin/aelf-stop-hook",
+         "timeout": 0},
+        "sha256:8d4ec4dca7fc2571332d652e5d36f21be315b87704028360827b38485367bb5b",
+        "sha256:8d4ec4dca7fc2571332d652e5d36f21be315b87704028360827b38485367bb5b",
+    ),
+    "a SessionEnd timeout past its cap": (
+        "SessionEnd", {},
+        {"type": "command", "command": "/opt/aelf/bin/aelf-stop-hook",
+         "timeout": 9},
+        "sha256:3e0c9cf5f84ec3a036358abc7620f11d570f3cff58e9dbdc98865b40b735efc8",
+        "sha256:3e0c9cf5f84ec3a036358abc7620f11d570f3cff58e9dbdc98865b40b735efc8",
+    ),
+    "a context limit the event drops": (
+        "PostCompact", {"matcher": "auto"},
+        {"type": "command", "command": "/opt/aelf/bin/aelf-transcript-logger",
+         "additionalContextLimit": 7, "async": True},
+        "sha256:f7b80ca55162d2df39635d72dd777568b95d04dc03c04acf4617aee250aa31b8",
+        "sha256:f7b80ca55162d2df39635d72dd777568b95d04dc03c04acf4617aee250aa31b8",
+    ),
+    "a Windows command and a non-ASCII status": (
+        "UserPromptSubmit", {},
+        {"type": "command", "command": "/opt/aelf/bin/aelf-hook",
+         "commandWindows": "C:\\aelf\\aelf-hook.exe", "statusMessage": "\u00e9\n"},
+        "sha256:814ef22baaeaeee943c7b58692077840e039ecdbd637726167b970dfe8bbb3ba",
+        "sha256:eb61f3843d384a445ea1e2bdc1338db8a23c46bb726a17cf55801082a00d11b8",
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("case", sorted(_GOLDEN))
+def test_doctor_hashes_a_handler_as_codex_does(case: str) -> None:
+    event, group, handler, posix, windows = _GOLDEN[case]
+    for win, want in ((False, posix), (True, windows)):
+        command = _run_command(handler, windows=win)
+        assert command is not None
+        assert _trust_hash(event, group, handler, command) == (want, ""), win
+
+
+def _state_entry(key: str, digest: str) -> str:
+    return f"[hooks.state.{json.dumps(key)}]\ntrusted_hash = {json.dumps(digest)}\n"
+
+
+def _hash_of(config: Path, g: int) -> str:
+    """The hash Codex approves group `g` of config.toml's SessionStart by."""
+    doc = tomllib.loads(config.read_text(encoding="utf-8"))
+    group = doc["hooks"]["SessionStart"][g]
+    handler = group["hooks"][0]
+    digest, _why = _trust_hash("SessionStart", group, handler, handler["command"])
+    assert digest is not None
+    return digest
+
+
+def _two_toml_copies(tmp_path: Path, extra: str = "") -> tuple[Path, Path, str]:
+    """Setup's files, with hooks.json removed and two copies of setup's
+    SessionStart handler in config.toml whose matchers share `startup`."""
+    codex_dir, hooks, ours = _installed(tmp_path)
+    hooks.unlink()
+    config = codex_dir / "config.toml"
+    config.write_text(
+        _toml_copy(ours) + _toml_copy(ours, "startup|resume") + extra,
+        encoding="utf-8",
+    )
+    return codex_dir, config, ours
+
+
+def _approve(config: Path, *groups: int, digest: str | None = None) -> None:
+    config.write_text(
+        config.read_text(encoding="utf-8") + "".join(
+            _state_entry(
+                f"{config}:session_start:{g}:0", digest or _hash_of(config, g),
+            )
+            for g in groups
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.timeout(60)
+def test_doctor_fails_two_approved_copies(tmp_path: Path) -> None:
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    _approve(config, 0, 1)
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 1, out
+    assert (
+        "[FAIL] SessionStart starts the aelf-session-start-hook command 2 "
+        "times"
+    ) in out, out
+
+
+# Approval states that leave a copy unapproved: (groups approved, the hash
+# they hold, why doctor counts no run for group 1).
+_UNAPPROVED: dict[str, tuple[tuple[int, ...], str | None, str]] = {
+    "no entry": ((0,), None, "no [hooks.state] entry in {config} approves it"),
+    "neither has an entry": (
+        (), None, "no [hooks.state] entry in {config} approves it",
+    ),
+    "a stale hash": (
+        (0, 1), "sha256:" + "0" * 64,
+        "its [hooks.state] `trusted_hash` in {config} isn't the hash of the "
+        "handler as it is now, so Codex skips it as modified",
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("state", sorted(_UNAPPROVED))
+def test_doctor_counts_no_run_for_a_copy_codex_has_not_approved(
+    tmp_path: Path, state: str,
+) -> None:
+    """Codex skips a user handler whose [hooks.state] entry doesn't hold
+    the hash it computes for it now, so the copy is no second run. Doctor
+    says that approving both copies starts the command twice."""
+    codex_dir, config, ours = _two_toml_copies(tmp_path)
+    groups, digest, reason = _UNAPPROVED[state]
+    for g in groups:
+        _approve(config, g, digest=digest)
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 0, out
+    assert "times" not in out.replace("twice", ""), out
+    assert (
+        "[warn] SessionStart handler at `hooks.SessionStart[1].hooks[0]` in "
+        f"the [hooks] table of {config} is a copy of the "
+        "aelf-session-start-hook command `aelf setup --host codex` writes, "
+        f"and doctor counts no run for it, because {reason.format(config=config)}. "
+        "Codex skips a handler you haven't approved, but once both copies are "
+        "approved, Codex starts the command twice on one fire; keep one copy "
+        f"and delete the others: {ours}\n"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_counts_no_run_for_a_copy_it_can_not_hash(tmp_path: Path) -> None:
+    """Codex reads a TOML date `statusMessage` as its text, which doctor
+    doesn't render, so doctor can't compute the hash and counts no run."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    text = config.read_text(encoding="utf-8")
+    config.write_text(
+        text.rstrip("\n") + "\nstatusMessage = 1979-05-27\n", encoding="utf-8",
+    )
+    _approve(config, 0, digest=_hash_of(config, 0))
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + _state_entry(f"{config}:session_start:1:0", "sha256:" + "1" * 64),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 0, out
+    assert (
+        "and doctor counts no run for it, because doctor can't compute the "
+        "hash Codex approves it by, because its `statusMessage` isn't a string."
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_counts_no_run_for_an_approval_under_one_path_spelling(
+    tmp_path: Path,
+) -> None:
+    """Codex keys an approval by the Codex home as written, or canonical
+    when `CODEX_HOME` is set. Through a link the two differ, and doctor
+    counts a run only when both spellings hold the approval."""
+    real, config, _ours = _two_toml_copies(tmp_path)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    _approve(config, 0, 1)
+    rc, out = _doctor(link, tmp_path / "skills", approve=False)
+    assert rc == 0, out
+    assert (
+        "because its [hooks.state] approval is keyed by one spelling of the "
+        "file's path and not by another Codex may use"
+    ) in out, out
+    linked = link / "config.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + "".join(
+            _state_entry(f"{linked}:session_start:{g}:0", _hash_of(config, g))
+            for g in (0, 1)
+        ),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(link, tmp_path / "skills", approve=False)
+    assert rc == 1, out
+    assert "starts the aelf-session-start-hook command 2 times" in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_the_last_trusted_hash_of_a_key(tmp_path: Path) -> None:
+    """Codex trims each key and lets a later entry's `trusted_hash` win, so
+    a stale hash under a spaced spelling of the key, after the right one,
+    leaves the copy unapproved."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    _approve(config, 0, 1)
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + _state_entry(f" {config}:session_start:1:0\t", "sha256:" + "2" * 64),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 0, out
+    assert "isn't the hash of the handler as it is now" in out, out
+

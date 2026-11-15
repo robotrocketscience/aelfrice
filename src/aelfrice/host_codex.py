@@ -2964,6 +2964,144 @@ def _disabling_entry(
     return None
 
 
+#: The events whose group matcher Codex reads, and so hashes
+#: (`matcher_pattern_for_event` in codex-rs/hooks/src/events/common.rs,
+#: lines 129-149, at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9).
+#: Python joins the two names split across string literals.
+_MATCHER_EVENTS: Final[frozenset[str]] = frozenset({
+    "PreToolUse", "PermissionRequest", "PostToolUse", "SessionStart",
+    "SessionEnd", "Sub" "agentStart", "Sub" "agentStop", "PreCompact",
+    "PostCompact",
+})
+#: The events that keep a handler's `additionalContextLimit`, and the
+#: limit Codex drops from the hash as its default (`append_matcher_groups`
+#: in codex-rs/hooks/src/engine/discovery.rs, lines 686-705, and
+#: `DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT` in codex-rs/hooks/src/output_spill.rs,
+#: line 13, at the commit `_MATCHER_EVENTS` cites).
+_CONTEXT_LIMIT_EVENTS: Final[frozenset[str]] = frozenset({
+    "PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit",
+    "Sub" "agentStart",
+})
+_DEFAULT_CONTEXT_LIMIT: Final[int] = 2_500
+
+
+def _trust_hash(
+    event: str, group: object, handler: object, command: str,
+) -> tuple[str | None, str]:
+    """The hash Codex approves a `command` handler by, or None and why
+    doctor can't compute it with certainty (#1812).
+
+    Codex hashes the handler as it normalizes it: the command it runs on
+    this platform, the timeout with its default and bounds applied,
+    `async`, `statusMessage`, and `additionalContextLimit` unless the event
+    drops it or it equals the default, beside the event's label and the
+    group's matcher where Codex reads one. It serializes that through TOML
+    to JSON with sorted keys and takes the SHA-256 of the bytes
+    (`append_matcher_groups` and `hook_hash` in
+    codex-rs/hooks/src/engine/discovery.rs, lines 651-728 and 972-998,
+    `normalize_command_hook` at lines 948-970, and `version_for_toml` in
+    codex-rs/config/src/fingerprint.rs, lines 54-66, at the commit
+    `_MATCHER_EVENTS` cites).
+    """
+    hd = cast(dict[str, object], handler)
+    gd = cast(dict[str, object], group) if isinstance(group, dict) else {}
+    matcher = gd.get("matcher") if event in _MATCHER_EVENTS else None
+    if matcher is not None and not isinstance(matcher, str):
+        return None, "its group's matcher isn't a string"
+    status = hd.get("statusMessage")
+    if status is not None and not isinstance(status, str):
+        return None, "its `statusMessage` isn't a string"
+    is_async = hd.get("async", False)
+    if not isinstance(is_async, bool):
+        return None, "its `async` isn't true or false"
+    timeout = hd.get("timeout")
+    if timeout is not None and not _is_u64(timeout):
+        return None, "its `timeout` isn't an unsigned integer"
+    if event in ("SessionEnd", "Interrupt"):
+        seconds = min(max(1 if timeout is None else cast(int, timeout), 1), 3)
+    else:
+        seconds = max(600 if timeout is None else cast(int, timeout), 1)
+    limit = (
+        hd.get("additionalContextLimit")
+        if event in _CONTEXT_LIMIT_EVENTS else None
+    )
+    if limit is not None and not _is_u64(limit):
+        return None, "its `additionalContextLimit` isn't an unsigned integer"
+    if limit == _DEFAULT_CONTEXT_LIMIT:
+        limit = None
+    if seconds > _I64_MAX or (limit is not None and cast(int, limit) > _I64_MAX):
+        # TOML holds no integer that large, so Codex can't hash it.
+        return None, "it holds an integer too large for TOML"
+    normalized: dict[str, object] = {
+        "type": "command", "command": command, "timeout": seconds,
+        "async": is_async,
+    }
+    if status is not None:
+        normalized["statusMessage"] = status
+    if limit is not None:
+        normalized["additionalContextLimit"] = limit
+    identity: dict[str, object] = {
+        "event_name": _EVENT_KEY_LABELS[event], "hooks": [normalized],
+    }
+    if matcher is not None:
+        identity["matcher"] = matcher
+    try:
+        data = json.dumps(
+            identity, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    except UnicodeEncodeError:
+        # A lone surrogate, which no Rust string holds.
+        return None, "it holds a lone UTF-16 surrogate"
+    return "sha256:" + hashlib.sha256(data).hexdigest(), ""
+
+
+#: A `trusted_hash` doctor can't read as text, a TOML date or time, which
+#: no hash Codex computes equals.
+_UNREAD_HASH: Final[str] = "a TOML date or time"
+
+
+def _trusted_hashes(data: dict[str, object]) -> dict[str, str]:
+    """The `trusted_hash` each `[hooks.state]` key ends with in a config
+    file, keyed as Codex trims it.
+
+    Codex reads the entries in file order, and a later entry's field wins
+    (`hook_states_from_stack` in codex-rs/hooks/src/config_rules.rs, lines
+    15-69, at the commit `_MATCHER_EVENTS` cites, whose TOML tables keep
+    file order).
+    """
+    hooks = data.get("hooks")
+    state = (
+        cast(dict[str, object], hooks).get("state")
+        if isinstance(hooks, dict) else None
+    )
+    found: dict[str, str] = {}
+    if not isinstance(state, dict):
+        return found
+    for key, entry in cast(dict[str, object], state).items():
+        trimmed = key.strip(_RUST_WHITESPACE)
+        value = (
+            cast(dict[str, object], entry).get("trusted_hash")
+            if isinstance(entry, dict) else None
+        )
+        if trimmed and value is not None:
+            found[trimmed] = value if isinstance(value, str) else _UNREAD_HASH
+    return found
+
+
+def _state_key_files(codex_dir: Path, name: str) -> list[str]:
+    """Every spelling of the path of `name` in `codex_dir` that Codex may
+    key a `[hooks.state]` entry by: as written, as Codex normalizes it,
+    and canonical (`_disabling_entry`). An empty list when doctor can't
+    resolve the path."""
+    written = codex_dir / name
+    try:
+        canonical = Path(os.path.realpath(codex_dir)) / name
+    except (OSError, ValueError):
+        return []
+    return sorted({str(written), os.path.normpath(written), str(canonical)})
+
+
 def doctor_codex(
     codex_dir: Path | None = None, *, windows: bool | None = None,
 ) -> CodexDoctorReport:
@@ -3126,8 +3264,43 @@ def doctor_codex(
     for warning in _profile_warnings(cfg, config_path, profiles):
         report.warnings.append(warning)
     # #1812: and it starts no handler whose [hooks.state] entry in
-    # config.toml sets `enabled = false`.
+    # config.toml sets `enabled = false`, and none you haven't approved.
     disabled = _disabled_entries(cfg, str(config_path))
+    trusted = _trusted_hashes(cfg)
+    key_files = {
+        tag: _state_key_files(cdir, name) for tag, name in (
+            ("json", CODEX_HOOKS_FILENAME), ("toml", CODEX_CONFIG_FILENAME),
+        )
+    }
+
+    def unapproved(
+        tag: str, event: str, g: int, h: int, group: object, item: object,
+        command: str,
+    ) -> str | None:
+        """None when Codex has approved the handler, or why it hasn't."""
+        current, why = _trust_hash(event, group, item, command)
+        if current is None:
+            return (
+                "doctor can't compute the hash Codex approves it by, because "
+                + why
+            )
+        if not key_files[tag]:
+            return "doctor can't resolve the path Codex keys its approval by"
+        suffix = f":{_EVENT_KEY_LABELS[event]}:{g}:{h}"
+        found = [trusted.get(f + suffix) for f in key_files[tag]]
+        if all(value == current for value in found):
+            return None
+        if current in found:
+            return (
+                "its [hooks.state] approval is keyed by one spelling of the "
+                "file's path and not by another Codex may use"
+            )
+        if all(value is None for value in found):
+            return f"no [hooks.state] entry in {config_path} approves it"
+        return (
+            f"its [hooks.state] `trusted_hash` in {config_path} isn't the hash "
+            "of the handler as it is now, so Codex skips it as modified"
+        )
     if hooks_off is not None:
         report.warnings.append(
             f"doctor counts no duplicate run, because {hooks_off}",
@@ -3152,6 +3325,19 @@ def doctor_codex(
     # copy of setup's command while the `hooks` feature may be off.
     toml_runs: set[tuple[str, str]] = set()
     json_runs: set[tuple[str, str]] = set()
+    # True once config.toml holds a copy of setup's command.
+    toml_copies = False
+    # The values, the file, the path of the field that holds the command,
+    # the command, the file phrase, the handler's path, and why Codex
+    # hasn't approved it, for each copy of setup's command that Codex
+    # skips until you approve it (#1812).
+    pending: dict[
+        tuple[str, str],
+        list[tuple[
+            frozenset[str], str, tuple[object, ...], str, str,
+            tuple[object, ...], str,
+        ]],
+    ] = {}
     # The command, the file, and the path of each run of a program in an
     # event where setup writes no handler of that program.
     misplaced: dict[
@@ -3341,13 +3527,24 @@ def doctor_codex(
                         field_path = (
                             *path, str(_run_field(item, windows=win)),
                         )
-                        runs.setdefault((event, run), []).append(values)
-                        run_fields.setdefault((event, run), []).append(
-                            (tag, field_path, command),
+                        toml_copies = toml_copies or tag == "toml"
+                        why_not = unapproved(
+                            tag, event, g, cast(int, sub[1]),
+                            cast(object, group), item, command,
                         )
-                        (toml_runs if tag == "toml" else json_runs).add(
-                            (event, run),
-                        )
+                        if why_not is not None:
+                            pending.setdefault((event, run), []).append((
+                                values, tag, field_path, command, where,
+                                path, why_not,
+                            ))
+                        else:
+                            runs.setdefault((event, run), []).append(values)
+                            run_fields.setdefault((event, run), []).append(
+                                (tag, field_path, command),
+                            )
+                            (toml_runs if tag == "toml" else json_runs).add(
+                                (event, run),
+                            )
                         if run not in expected_keys.get(event, set()):
                             misplaced.setdefault((event, run), []).append(
                                 (command, where, path),
@@ -3422,6 +3619,31 @@ def doctor_codex(
                 f"of the {key} command that `aelf setup --host codex` "
                 f"writes, and Codex runs the handlers in that table{also}",
             )
+    for (event, key), copies_of in sorted(pending.items()):
+        # #1812: a copy Codex hasn't approved counts no run. When one fire
+        # runs it beside another copy, approving both starts it twice.
+        counted = runs.get((event, key), [])
+        fires = _fires(event, counted + [c[0] for c in copies_of])
+        for index, (
+            _values, tag, field_path, command, where, path, why_not,
+        ) in enumerate(copies_of, start=len(counted)):
+            most = max((len(f) for f in fires if index in f), default=0)
+            if most < 2:
+                continue
+            once = (
+                "once both copies are approved, Codex starts the command "
+                "twice" if most == 2 else
+                f"once all {most} copies are approved, Codex starts the "
+                f"command {most} times"
+            )
+            warn(
+                f"{event} handler at `{_render_path(path)}`{where} is a copy "
+                f"of the {key} command `aelf setup --host codex` writes, and "
+                f"doctor counts no run for it, because {why_not}. Codex skips "
+                f"a handler you haven't approved, but {once} on one fire; keep "
+                f"one copy and delete the others: {command}",
+            )
+            accounted.update((tag, field_path, k) for k in _names_in(command))
     for (event, key), copies in sorted(misplaced.items()):
         # #1812: a copy of setup's command is a run, but setup writes it in
         # another event, so it isn't setup's handler here.
@@ -3440,7 +3662,10 @@ def doctor_codex(
         # it gets a warning. One that some fire runs beside another handler
         # of the program may run it twice; any other one may run it in a
         # form setup doesn't write.
-        counted = runs.get((event, key), [])
+        # A copy Codex hasn't approved yet runs once you approve it.
+        counted = runs.get((event, key), []) + [
+            c[0] for c in pending.get((event, key), [])
+        ]
         fires = _fires(
             event, counted + [entry[0] for entry in others],
         )
@@ -3572,8 +3797,8 @@ def doctor_codex(
             # machine that does not use the Codex host.
             # #1812: unless config.toml `[hooks]` holds setup's handler.
             where = (
-                f"only the [hooks] table in {config_path} runs aelfrice "
-                "hooks" if toml_runs
+                f"only the [hooks] table in {config_path} holds aelfrice "
+                "hooks" if toml_copies
                 else "no aelfrice hooks are installed"
             )
             report.warnings.append(

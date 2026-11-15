@@ -23,9 +23,16 @@ from aelfrice.host_codex import (
     install_codex_hooks,
     install_codex_skills,
 )
+from tests.codex_approvals import approve_codex_hooks
 
 
-def _doctor(codex_dir: Path, skills: Path) -> tuple[int, str]:
+def _doctor(
+    codex_dir: Path, skills: Path, *, approve: bool = True,
+) -> tuple[int, str]:
+    """Doctor's exit code and output, after approving every handler as
+    `/hooks` does, unless `approve` is False (#1812)."""
+    if approve:
+        approve_codex_hooks(codex_dir)
     out = io.StringIO()
     rc = _cmd_doctor_codex(
         argparse.Namespace(host="codex"), out,
@@ -373,6 +380,7 @@ def test_doctor_reads_no_toml_date_windows_command_on_windows(
         f"{field} = 1979-05-27\n",
         encoding="utf-8",
     )
+    approve_codex_hooks(codex_dir, windows=windows)
     report = doctor_codex(codex_dir, windows=windows)
     if windows:
         assert report.duplicate_runs == [], report.duplicate_runs
@@ -506,6 +514,7 @@ def test_doctor_reads_a_lone_surrogate_where_serde_skips_it(
         doc["hooks"]["SessionStart"].append(_session_start_copy(ours))
 
     _edit_hooks(hooks, edit)
+    approve_codex_hooks(codex_dir)
     buffer = io.BytesIO()
     stream = io.TextIOWrapper(buffer, encoding="utf-8")
     rc = _cmd_doctor_codex(

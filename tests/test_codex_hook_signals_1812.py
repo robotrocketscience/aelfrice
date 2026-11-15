@@ -48,6 +48,7 @@ from aelfrice.host_codex import (
 from aelfrice.launcher import command_launcher_key
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
+from tests.codex_approvals import approve_codex_hooks
 
 _SUMMARY_ENVS = (ENV_HOOK_SUMMARY_LINE, "AELFRICE_SESSIONSTART_RECAP")
 
@@ -199,7 +200,13 @@ def test_host_from_argv(argv: list[str], host: str) -> None:
 # --- doctor (#1430) -------------------------------------------------------------
 
 
-def _doctor(codex_dir: Path, skills: Path) -> tuple[int, str]:
+def _doctor(
+    codex_dir: Path, skills: Path, *, approve: bool = True,
+) -> tuple[int, str]:
+    """Doctor's exit code and output, after approving every handler as
+    `/hooks` does, unless `approve` is False (#1812)."""
+    if approve:
+        approve_codex_hooks(codex_dir)
     out = io.StringIO()
     rc = _cmd_doctor_codex(
         argparse.Namespace(host="codex"), out,
@@ -720,7 +727,7 @@ def test_doctor_faults_copies_of_setup_handler_only_in_config_toml(
     if doc is None:
         assert (
             f"[warn] {hooks} does not exist; only the [hooks] table in "
-            f"{config} runs aelfrice hooks for the Codex host" in out
+            f"{config} holds aelfrice hooks for the Codex host" in out
         ), out
         assert "no aelfrice hooks are installed" not in out
 
@@ -1009,6 +1016,7 @@ def _windows_report(
         {"type": "command", **extra},
     )
     hooks.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    approve_codex_hooks(codex_dir, windows=True)
     report = doctor_codex(codex_dir, windows=True)
     return report.duplicate_runs, report.warnings
 
