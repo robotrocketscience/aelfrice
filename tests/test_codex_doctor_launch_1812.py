@@ -77,7 +77,7 @@ def test_doctor_reads_a_latin1_config_toml_as_codex_does(tmp_path: Path) -> None
     config.toml Codex's TOML parser rejects."""
     codex_dir, _hooks, _ours = _installed(tmp_path)
     config = codex_dir / "config.toml"
-    config.write_bytes(b'notify = ["caf\xe9"]\n')
+    config.write_bytes(b'notify = ["abc\xe9"]\n')
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 1, out
     assert (
@@ -92,7 +92,7 @@ def test_doctor_reads_a_latin1_profile_file_without_raising(
     """A profile file that isn't UTF-8 gets a warning that names it."""
     codex_dir, _hooks, _ours = _installed(tmp_path)
     profile = codex_dir / "work.config.toml"
-    profile.write_bytes(b'notify = ["caf\xe9"]\n')
+    profile.write_bytes(b'notify = ["abc\xe9"]\n')
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert f"the profile file {profile}" in out, out
