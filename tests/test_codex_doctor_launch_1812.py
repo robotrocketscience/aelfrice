@@ -792,6 +792,39 @@ def test_doctor_reads_a_long_integer_in_hooks_json_as_unreadable(
 # A top-level value in config.toml, and why Codex's TOML parser rejects
 # the file, or None when it reads it.
 _TOML_NUMBERS: dict[str, tuple[str, str | None]] = {
+    "the largest i64": ("9223372036854775807", None),
+    "the smallest i64": ("-9223372036854775808", None),
+    "past the largest i64": (
+        "9223372036854775808",
+        "the integer at `x` is outside the range of a 64-bit signed integer",
+    ),
+    "past the smallest i64": (
+        "-9223372036854775809",
+        "the integer at `x` is outside the range of a 64-bit signed integer",
+    ),
+    "a hex u64": (
+        "0xffffffffffffffff",
+        "the integer at `x` is outside the range of a 64-bit signed integer",
+    ),
+    "in a nested array": (
+        "[[1, 9223372036854775808]]",
+        "the integer at `x[0][1]` is outside the range of a 64-bit signed "
+        "integer",
+    ),
+    "in an inline table": (
+        "{ a = { b = -9223372036854775809 } }",
+        "the integer at `x.a.b` is outside the range of a 64-bit signed "
+        "integer",
+    ),
+    "a float that overflows": (
+        "1e400", "the float `1e400` overflows a 64-bit float",
+    ),
+    "a negative float that overflows": (
+        "-1_0e400", "the float `-1_0e400` overflows a 64-bit float",
+    ),
+    "inf": ("inf", None),
+    "-inf": ("-inf", None),
+    "a float that underflows": ("1e-400", None),
     "a long integer": (
         _LONG_INT,
         "it holds an integer of more than "
@@ -807,9 +840,8 @@ def test_doctor_reads_toml_numbers_as_codex_does(
     tmp_path: Path, shape: str,
 ) -> None:
     """toml 0.9 rejects the whole config.toml over an integer an `i64`
-    can't hold, which `tomllib` raises a plain ValueError for when it
-    has more digits than Python's `int` reads, so Codex refuses to start
-    and doctor counts no run."""
+    can't hold or a float literal that overflows, so Codex refuses to
+    start and doctor counts no run. `inf` and an underflow are fine."""
     codex_dir, config, _ours = _two_toml_copies(tmp_path)
     value, why = _TOML_NUMBERS[shape]
     _approve(config, 0, 1)
