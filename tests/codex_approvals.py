@@ -41,8 +41,8 @@ def approval_entries(
             text = path.read_text(encoding="utf-8").split(MARKER)[0]
             if name == "hooks.json":
                 # Cut what nests past serde_json's limit, as doctor does.
-                text, _cuts, too_deep = _scan_json_depth(text)
-                doc = None if too_deep else json.loads(text)
+                scan = _scan_json_depth(text)
+                doc = None if scan.too_deep else json.loads(scan.text)
             else:
                 doc = None if _toml_nesting_error(text) else tomllib.loads(text)
         except (OSError, ValueError, RecursionError):
