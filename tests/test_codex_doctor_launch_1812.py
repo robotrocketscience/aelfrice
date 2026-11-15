@@ -789,6 +789,31 @@ def test_doctor_reads_a_long_integer_in_hooks_json_as_unreadable(
     ) in out, out
 
 
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("name", ["NaN", "Infinity", "-Infinity"])
+def test_doctor_rejects_a_hooks_json_with_a_json_constant(
+    tmp_path: Path, name: str,
+) -> None:
+    """serde_json rejects `NaN`, `Infinity`, and `-Infinity` anywhere in a
+    file, even under a key Codex skips, so Codex loads no hook from it and
+    the two copies in it never run."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    _two_in_hooks_json(hooks)
+    text = hooks.read_text(encoding="utf-8")
+    hooks.write_text(
+        text.replace('"hooks": {', f'"hooks": {{"Foo": {name}, ', 1),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "times" not in out, out
+    assert (
+        f"[warn] {hooks} is unreadable as hooks config (it holds `{name}`, "
+        "which serde_json, which Codex reads the file with, rejects anywhere "
+        "in a file); Codex will ignore or reject it\n"
+    ) in out, out
+
+
 # A top-level value in config.toml, and why Codex's TOML parser rejects
 # the file, or None when it reads it.
 _TOML_NUMBERS: dict[str, tuple[str, str | None]] = {
