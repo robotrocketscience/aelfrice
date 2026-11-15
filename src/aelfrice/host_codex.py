@@ -45,6 +45,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
 import tomllib
 from collections.abc import Callable
@@ -2204,6 +2205,17 @@ def _load_toml(path: Path) -> _TomlFile:
         return _TomlFile(tomllib.loads(text), text)
     except tomllib.TOMLDecodeError as exc:
         return _TomlFile({}, text, unparsed=f"could not parse {path}: {exc}")
+    except ValueError:
+        # `int` refuses a decimal string longer than Python's limit, which
+        # is far past what an `i64` holds.
+        return _TomlFile(
+            {}, text,
+            rejected=(
+                "its TOML parser rejects the whole file: it holds an integer "
+                f"of more than {sys.get_int_max_str_digits()} digits, outside "
+                "the range of a 64-bit signed integer"
+            ),
+        )
 
 
 #: The fields of a `[hooks.state]` entry and the type each one takes
@@ -3202,8 +3214,15 @@ def doctor_codex(
                     hooks_map = cast(dict[str, object], obj)
             else:
                 report.parse_error = "top-level JSON is not an object"
-        except json.JSONDecodeError as exc:
-            report.parse_error = str(exc)
+        except ValueError as exc:
+            # #1812: an integer too long for Python's `int`, which `json`
+            # raises as a plain ValueError.
+            report.parse_error = (
+                str(exc) if isinstance(exc, json.JSONDecodeError)
+                else "it holds an integer of more than "
+                f"{sys.get_int_max_str_digits()} digits, which doctor "
+                "doesn't read"
+            )
     if report.hooks_file_present:
         if report.hooks_file_rejected is not None:
             report.warnings.append(

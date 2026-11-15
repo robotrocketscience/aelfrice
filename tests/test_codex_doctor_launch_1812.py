@@ -753,3 +753,96 @@ def test_doctor_does_not_claim_no_hooks_when_config_toml_names_one(
         f"{hooks} does not exist; {config} names an aelfrice program, as the "
         "lines above say, in no handler `aelf setup --host codex` writes"
     ) in out, out
+
+
+# --- numbers and keys Codex rejects ------------------------------------------
+
+
+#: A decimal integer longer than Python's `int` reads.
+_LONG_INT = "1" * (sys.get_int_max_str_digits() + 1)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("where", ["an event Codex skips", "a timeout"])
+def test_doctor_reads_a_long_integer_in_hooks_json_as_unreadable(
+    tmp_path: Path, where: str,
+) -> None:
+    """Python's `json` raises a plain ValueError for an integer longer
+    than `int` reads. Doctor reads such a hooks.json as one it can't read,
+    exits 1, and doesn't raise."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    text = hooks.read_text(encoding="utf-8")
+    if where == "a timeout":
+        text = text.replace(
+            '"type": "command"', f'"type": "command", "timeout": {_LONG_INT}',
+            1,
+        )
+    else:
+        text = text.replace('"hooks": {', f'"hooks": {{"Foo": {_LONG_INT}, ', 1)
+    hooks.write_text(text, encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert (
+        f"[warn] {hooks} is unreadable as hooks config (it holds an integer "
+        f"of more than {sys.get_int_max_str_digits()} digits, which doctor "
+        "doesn't read); Codex will ignore or reject it\n"
+    ) in out, out
+
+
+# A top-level value in config.toml, and why Codex's TOML parser rejects
+# the file, or None when it reads it.
+_TOML_NUMBERS: dict[str, tuple[str, str | None]] = {
+    "a long integer": (
+        _LONG_INT,
+        "it holds an integer of more than "
+        f"{sys.get_int_max_str_digits()} digits, outside the range of a "
+        "64-bit signed integer",
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_TOML_NUMBERS))
+def test_doctor_reads_toml_numbers_as_codex_does(
+    tmp_path: Path, shape: str,
+) -> None:
+    """toml 0.9 rejects the whole config.toml over an integer an `i64`
+    can't hold, which `tomllib` raises a plain ValueError for when it
+    has more digits than Python's `int` reads, so Codex refuses to start
+    and doctor counts no run."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    value, why = _TOML_NUMBERS[shape]
+    _approve(config, 0, 1)
+    config.write_text(
+        f"x = {value}\n" + config.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 1, out
+    if why is None:
+        assert "starts the aelf-session-start-hook command 2 times" in out, out
+        assert "refuses to start" not in out, out
+    else:
+        assert "times" not in out, out
+        assert (
+            f"[warn] Codex refuses to start with {config}, because its TOML "
+            f"parser rejects the whole file: {why}\n"
+        ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_a_profile_file_with_a_long_integer(
+    tmp_path: Path,
+) -> None:
+    """A profile file `tomllib` can't read an integer of doesn't stop
+    doctor: the plain launch doesn't read it, and doctor names it."""
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    profile = codex_dir / "ci.config.toml"
+    profile.write_text(f"x = {_LONG_INT}\n", encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert (
+        f"[warn] doctor can't read the profile file {profile}, which `codex "
+        "--profile ci` reads: its TOML parser rejects the whole file: it "
+        f"holds an integer of more than {sys.get_int_max_str_digits()} digits"
+    ) in out, out
