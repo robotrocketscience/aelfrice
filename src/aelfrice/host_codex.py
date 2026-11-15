@@ -2668,6 +2668,40 @@ def _names_in(text: str) -> list[str]:
     return [key for key in sorted(_OWNED_BASENAMES) if key in folded]
 
 
+def _names_by_line(text: str) -> list[tuple[int, str, str]]:
+    """Each line of a file that names an owned program, read as
+    `_names_in` reads a string: the line number, the program, and the line.
+
+    For a file `tomllib` can't parse, which Codex may still load (#1812).
+    A name split by a backslash-newline counts on the line it starts on.
+    """
+    folded: list[str] = []
+    origin: list[int] = []
+    pos = 0
+    while pos < len(text):
+        if text.startswith("\\\n", pos):
+            pos += 2
+            continue
+        char = text[pos]
+        if ord(char) not in _NAME_SPLITTERS:
+            for part in char.casefold():
+                folded.append(part)
+                origin.append(pos)
+        pos += 1
+    joined = "".join(folded)
+    lines = text.split("\n")
+    found: set[tuple[int, str]] = set()
+    for key in sorted(_OWNED_BASENAMES):
+        start = joined.find(key)
+        while start >= 0:
+            found.add((text.count("\n", 0, origin[start]) + 1, key))
+            start = joined.find(key, start + 1)
+    return [
+        (number, key, lines[number - 1].rstrip("\r"))
+        for number, key in sorted(found)
+    ]
+
+
 def _program_path(cmd: str, key: str, *, windows: bool | None = None) -> str:
     """The program path of an owned handler's command, without arguments.
 
@@ -2834,6 +2868,14 @@ def _profile_warnings(
                 f"reads: {why}. Doctor scores a plain `codex` launch, which "
                 "doesn't read it",
             )
+            if loaded.unparsed is not None and loaded.text is not None:
+                warnings.extend(
+                    f"Line {number} of the profile file {path} names {key}, "
+                    "and doctor can't parse that file, which "
+                    f"{launch} reads. Check what Codex runs from this line: "
+                    f"{line}"
+                    for number, key, line in _names_by_line(loaded.text)
+                )
             continue
         changes: list[str] = []
         if "profile" in loaded.data:
@@ -3229,9 +3271,11 @@ def doctor_codex(
     config_path = codex_config_path(cdir)
     cfg: dict[str, object] = {}
     cfg_error: str | None = None
+    config_text: str | None = None
     if config_path.is_file():
         loaded = _load_toml(config_path)
         cfg, cfg_error = loaded.data, loaded.unparsed
+        config_text = loaded.text
         report.config_rejected = loaded.rejected
         if report.config_rejected is not None:
             report.warnings.append(
@@ -3259,8 +3303,21 @@ def doctor_codex(
             report.config_rejected is not None
             or report.config_hooks_rejected is not None
         )
+        # #1812: Codex may load a file `tomllib` rejects, such as one in
+        # TOML 1.1, and doctor can't read its approvals.
+        else (
+            f"doctor can't parse {config_path}, which holds the [hooks] "
+            "table and the [hooks.state] approvals Codex reads"
+        ) if cfg_error is not None
         else _launch_off_reason(cfg, config_path)
     )
+    if cfg_error is not None and config_text is not None:
+        for number, key, line in _names_by_line(config_text):
+            report.warnings.append(
+                f"Line {number} of {config_path} names {key}, and doctor "
+                "counts no run from that file, because it can't parse it. "
+                f"Check what Codex runs from this line: {line}",
+            )
     for warning in _profile_warnings(cfg, config_path, profiles):
         report.warnings.append(warning)
     # #1812: and it starts no handler whose [hooks.state] entry in
@@ -3797,8 +3854,15 @@ def doctor_codex(
             # machine that does not use the Codex host.
             # #1812: unless config.toml `[hooks]` holds setup's handler.
             where = (
-                f"only the [hooks] table in {config_path} holds aelfrice "
+                f"Codex refuses to start with {config_path}, so no aelfrice "
+                "hook runs" if report.config_rejected is not None
+                else f"doctor can't parse {config_path}, so it can't tell "
+                "whether aelfrice hooks are installed" if cfg_error is not None
+                else f"only the [hooks] table in {config_path} holds aelfrice "
                 "hooks" if toml_copies
+                else f"{config_path} names an aelfrice program, as the lines "
+                "above say, in no handler `aelf setup --host codex` writes"
+                if config_text is not None and _names_in(config_text)
                 else "no aelfrice hooks are installed"
             )
             report.warnings.append(

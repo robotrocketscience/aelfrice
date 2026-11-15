@@ -471,3 +471,105 @@ def test_doctor_keeps_a_state_key_codex_keeps_whole(tmp_path: Path) -> None:
     rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
     assert rc == 1, out
     assert "starts the aelf-session-start-hook command 2 times" in out, out
+
+
+# --- a config.toml tomllib can't parse ---------------------------------------
+
+
+@pytest.mark.timeout(60)
+def test_doctor_names_programs_in_a_config_toml_tomllib_rejects(
+    tmp_path: Path,
+) -> None:
+    """Codex's toml reads TOML 1.1, such as a newline inside an inline
+    table, which `tomllib` rejects. Doctor can't read the file's approvals,
+    so it counts no run anywhere, and it names each line that names a
+    program, the way it reads a string."""
+    codex_dir, hooks, ours = _installed(tmp_path)
+    hooks.unlink()
+    config = codex_dir / "config.toml"
+    config.write_text(
+        '[mcp_servers.mem]\ncommand = "aelf-hook"\nenv = {\n  A = "1"\n}\n'
+        'notify = ["Aelf-Stop-Ho\\\nok"]\n'
+        + _toml_copy(ours) + _toml_copy(ours, "startup|resume"),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 0, out
+    assert "times" not in out, out
+    for number, key, line in (
+        (2, "aelf-hook", 'command = "aelf-hook"'),
+        (6, "aelf-stop-hook", 'notify = ["Aelf-Stop-Ho\\'),
+        (12, "aelf-session-start-hook", f"command = {json.dumps(ours)}"),
+        (17, "aelf-session-start-hook", f"command = {json.dumps(ours)}"),
+    ):
+        assert (
+            f"[warn] Line {number} of {config} names {key}, and doctor counts "
+            "no run from that file, because it can't parse it. Check what "
+            f"Codex runs from this line: {line}\n"
+        ) in out, out
+    assert (
+        f"[warn] doctor counts no duplicate run, because doctor can't parse "
+        f"{config}, which holds the [hooks] table and the [hooks.state] "
+        "approvals Codex reads\n"
+    ) in out, out
+    assert "no aelfrice hooks are installed" not in out, out
+    assert (
+        f"{hooks} does not exist; doctor can't parse {config}, so it can't "
+        "tell whether aelfrice hooks are installed"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_counts_no_run_in_hooks_json_beside_a_config_toml_it_can_not_parse(
+    tmp_path: Path,
+) -> None:
+    """The approvals of hooks.json handlers live in config.toml, so doctor
+    can't count them either."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    _two_in_hooks_json(hooks)
+    approve_codex_hooks(codex_dir)
+    config = codex_dir / "config.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + "x = { a = 1, }\n", encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 0, out
+    assert "times" not in out, out
+    assert (
+        "[warn] doctor counts no duplicate run, because doctor can't parse "
+        f"{config}, which holds the [hooks] table and the [hooks.state] "
+        "approvals Codex reads\n"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_names_programs_in_a_profile_file_tomllib_rejects(
+    tmp_path: Path,
+) -> None:
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    profile = codex_dir / "ci.config.toml"
+    profile.write_text('x = { a = 1, }\nnotify = ["aelf-hook"]\n', encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert (
+        f"[warn] Line 2 of the profile file {profile} names aelf-hook, and "
+        "doctor can't parse that file, which `codex --profile ci` reads. "
+        'Check what Codex runs from this line: notify = ["aelf-hook"]\n'
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_does_not_claim_no_hooks_when_config_toml_names_one(
+    tmp_path: Path,
+) -> None:
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    hooks.unlink()
+    config = codex_dir / "config.toml"
+    config.write_text('notify = ["aelf-transcript-logger"]\n', encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "no aelfrice hooks are installed" not in out, out
+    assert (
+        f"{hooks} does not exist; {config} names an aelfrice program, as the "
+        "lines above say, in no handler `aelf setup --host codex` writes"
+    ) in out, out
