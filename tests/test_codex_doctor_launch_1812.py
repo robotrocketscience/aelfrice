@@ -454,3 +454,20 @@ def test_doctor_reads_the_last_trusted_hash_of_a_key(tmp_path: Path) -> None:
     assert rc == 0, out
     assert "isn't the hash of the handler as it is now" in out, out
 
+
+@pytest.mark.timeout(60)
+def test_doctor_keeps_a_state_key_codex_keeps_whole(tmp_path: Path) -> None:
+    """Rust's `str::trim` removes Unicode White_Space, which leaves out
+    U+001C to U+001F that Python's `str.strip()` removes. A `[hooks.state]`
+    key that ends in U+001F matches no handler, so its `enabled = false`
+    disables nothing and both approved copies run."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    _approve(config, 0, 1)
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + f'[hooks.state."{config}:session_start:1:0\\u001f"]\nenabled = false\n',
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 1, out
+    assert "starts the aelf-session-start-hook command 2 times" in out, out
