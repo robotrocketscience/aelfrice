@@ -1938,11 +1938,12 @@ def _scan_json_depth(
         if token.startswith('"'):
             if frames and frames[-1][0] == "{" and frames[-1][2]:
                 try:
-                    key: object = json.decoder.scanstring(
-                        text, found.start() + 1,
-                    )[0]
+                    decoded = json.loads(token)
                 except ValueError:
-                    key = _UNREAD_KEY
+                    decoded = None
+                key: object = (
+                    decoded if isinstance(decoded, str) else _UNREAD_KEY
+                )
                 frames[-1][1] = key
                 frames[-1][2] = False
         elif token in ("[", "{"):
@@ -2606,7 +2607,9 @@ def _strings_with_paths(
 #: The characters `_names_in` deletes before it looks for a name: the
 #: quotes and the escape character of sh, bash, and zsh, the command
 #: substitution quote, and cmd's escape character.
-_NAME_SPLITTERS: Final[dict[int, None]] = str.maketrans("", "", "'\"\\`^")
+_NAME_SPLITTERS: Final[dict[int, int | None]] = str.maketrans(
+    "", "", "'\"\\`^",
+)
 
 
 def _names_in(text: str) -> list[str]:
