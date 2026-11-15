@@ -1456,9 +1456,11 @@ class CodexDoctorReport:
     #: so handlers whose matchers share no value, such as a SessionStart
     #: `startup` group and a `resume` group, don't add up. Doctor counts a
     #: run only in a group whose matcher it reads (`_matched_values`), and
-    #: only for a handler Codex starts: none while a setting can turn the
-    #: `hooks` feature off (`_launch_off_reason`), and none for a handler a
-    #: `[hooks.state]` entry disables (`_disabling_entry`).
+    #: only for a handler a plain `codex` launch starts: none while that
+    #: launch starts no hook (`_launch_off_reason`), none for a handler a
+    #: `[hooks.state]` entry disables (`_disabling_entry`), and none for one
+    #: whose approval doesn't hold the hash Codex computes for it now
+    #: (`_trust_hash`).
     duplicate_runs: list[tuple[str, str, int]] = field(
         default_factory=list[tuple[str, str, int]],
     )
@@ -1485,9 +1487,9 @@ class CodexDoctorReport:
 
         Every condition here but a duplicate run is therefore gated on our
         handlers actually being installed in hooks.json. A duplicate run
-        counts only copies of a command setup writes, byte for byte, so it
-        is installed wiring wherever it is, including config.toml `[hooks]`
-        with no hooks.json (#1812). None of them requires a reachable Codex model, which
+        counts only approved copies of a command setup writes, byte for
+        byte, so it is installed wiring wherever it is, including
+        config.toml `[hooks]` with no hooks.json (#1812). None of them requires a reachable Codex model, which
         is what parked the rest of #1430 — they are all filesystem and config
         states, provable by fixture.
 
@@ -1495,7 +1497,9 @@ class CodexDoctorReport:
         keying is positional today and slated to change upstream, so a count
         of zero does not distinguish "unapproved" from "keyed differently";
         the issue itself asks for ``unknown`` rather than unhealthy when trust
-        cannot be established authoritatively.
+        cannot be established authoritatively. The duplicate count reads
+        approvals per handler instead, and counts no run where it can't
+        establish one (#1812).
         """
         # #1812: a duplicate run of setup's command is a fault wherever it
         # is, so a copy in config.toml `[hooks]` fails doctor with no
@@ -3293,10 +3297,11 @@ def doctor_codex(
             )
         elif isinstance(cfg["hooks"], dict):
             toml_events = cast(dict[str, object], cfg["hooks"])
-    # #1812: a launch whose `hooks` feature is off starts no handler, so
-    # doctor counts no run when any setting it reads can turn it off.
-    # Doctor scores a plain `codex` launch, which reads no profile file, and
-    # warns about each profile that changes the hooks `--profile` starts.
+    # #1812: doctor scores a plain `codex` launch, which reads no profile
+    # file, and counts no run while that launch starts no hook: Codex
+    # refuses to start, its `hooks` feature is off, or doctor can't read the
+    # approvals. It warns about each profile that changes the hooks
+    # `--profile` starts.
     profiles = _profile_files(cdir)
     hooks_off = (
         f"Codex refuses to start with {config_path}" if (
@@ -3379,7 +3384,7 @@ def doctor_codex(
         list[tuple[frozenset[str], str, str, bool, tuple[object, ...]]],
     ] = {}
     # (event, program) pairs with a counted run in each file, or with a
-    # copy of setup's command while the `hooks` feature may be off.
+    # copy of setup's command while a plain launch starts no hook.
     toml_runs: set[tuple[str, str]] = set()
     json_runs: set[tuple[str, str]] = set()
     # True once config.toml holds a copy of setup's command.
