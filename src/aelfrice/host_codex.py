@@ -2953,13 +2953,14 @@ _RUST_WHITESPACE: Final[str] = (
 
 def _disabled_entries(data: dict[str, object], where: str) -> dict[str, str]:
     """Each `[hooks.state]` key in a config file, trimmed as Codex trims
-    it, whose entry sets `enabled = false`, and a phrase that names the
-    entry and `where` it is.
+    it, whose last `enabled` is false, and a phrase that names the entry
+    that sets it and `where` it is.
 
-    Codex merges these entries from config.toml and from the profile
-    file `--profile` selects, later ones winning (`hook_states_from_stack`
-    in codex-rs/hooks/src/config_rules.rs, lines 15-69, at the commit
-    `_EVENT_KEY_LABELS` cites), and skips a handler whose entry ends with
+    Codex reads the entries in file order, merges them from config.toml
+    and from the profile file `--profile` selects, and lets a later
+    entry's field win (`hook_states_from_stack` in
+    codex-rs/hooks/src/config_rules.rs, lines 15-69, at the commit
+    `_EVENT_KEY_LABELS` cites). It skips a handler whose entry ends with
     `enabled = false` (`hook_enabled` in
     codex-rs/hooks/src/engine/discovery.rs, lines 1019-1021, and its use
     at lines 842 and 917-940).
@@ -2971,13 +2972,18 @@ def _disabled_entries(data: dict[str, object], where: str) -> dict[str, str]:
     )
     if not isinstance(state, dict):
         return {}
-    return {
-        key.strip(_RUST_WHITESPACE):
-            f"the [hooks.state] entry {key!r} in {where}"
-        for key, entry in cast(dict[str, object], state).items()
-        if isinstance(entry, dict)
-        and cast(dict[str, object], entry).get("enabled") is False
-    }
+    last: dict[str, tuple[bool, str]] = {}
+    for key, entry in cast(dict[str, object], state).items():
+        trimmed = key.strip(_RUST_WHITESPACE)
+        value = (
+            cast(dict[str, object], entry).get("enabled")
+            if isinstance(entry, dict) else None
+        )
+        if trimmed and isinstance(value, bool):
+            last[trimmed] = (
+                value, f"the [hooks.state] entry {key!r} in {where}",
+            )
+    return {key: phrase for key, (on, phrase) in last.items() if not on}
 
 
 def _state_key(key_file: str, event: str, group: int, handler: int) -> str:
