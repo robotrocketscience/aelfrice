@@ -2408,8 +2408,8 @@ _TOOL_MATCHER_INPUTS: Final[tuple[frozenset[str], ...]] = (
     frozenset({"apply_patch", "Write", "Edit"}),
     frozenset({"spawn_agent", "Agent"}),
 )
-#: The events whose `matcher` Codex reads. Codex ignores the matcher on
-#: the others (`matcher_pattern_for_event` in
+#: The events whose `matcher` Codex reads, and so hashes. Codex ignores the
+#: matcher on the others (`matcher_pattern_for_event` in
 #: codex-rs/hooks/src/events/common.rs, lines 129-149, at
 #: openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9). Doctor counts no
 #: run in such an event that is in neither `_MATCHER_VALUES` nor
@@ -3010,15 +3010,6 @@ def _disabling_entry(
     return None
 
 
-#: The events whose group matcher Codex reads, and so hashes
-#: (`matcher_pattern_for_event` in codex-rs/hooks/src/events/common.rs,
-#: lines 129-149, at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9).
-#: Python joins the two names split across string literals.
-_MATCHER_EVENTS: Final[frozenset[str]] = frozenset({
-    "PreToolUse", "PermissionRequest", "PostToolUse", "SessionStart",
-    "SessionEnd", "Sub" "agentStart", "Sub" "agentStop", "PreCompact",
-    "PostCompact",
-})
 #: The events that keep a handler's `additionalContextLimit`, and the
 #: limit Codex drops from the hash as its default (`append_matcher_groups`
 #: in codex-rs/hooks/src/engine/discovery.rs, lines 686-705, and
