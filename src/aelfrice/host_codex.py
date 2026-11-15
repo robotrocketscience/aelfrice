@@ -3254,22 +3254,75 @@ def _trusted_hashes(data: dict[str, object]) -> dict[str, str]:
     return found
 
 
-def _state_key_home(codex_dir: Path) -> str | None:
+#: `PATH_MAX` on macOS, the size of the buffer realpath(3) fills.
+_DARWIN_PATH_MAX: Final[int] = 1024
+
+
+def _darwin_realpath(path: str) -> str:
+    """`path` as macOS realpath(3) gives it, which also corrects each
+    name's letter case to the case on disk, as `os.path.realpath` doesn't.
+    Raises OSError when the call fails."""
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    realpath = libc.realpath
+    realpath.argtypes = (ctypes.c_char_p, ctypes.c_char_p)
+    realpath.restype = ctypes.c_char_p
+    buffer = ctypes.create_string_buffer(_DARWIN_PATH_MAX)
+    if realpath(os.fsencode(path), buffer) is None:
+        errno = ctypes.get_errno()
+        raise OSError(errno, os.strerror(errno), path)
+    return os.fsdecode(buffer.value)
+
+
+def _canonical_path(path: str) -> tuple[str, str | None]:
+    """`path` as Rust's `std::fs::canonicalize` gives it, and why doctor
+    fell back to `os.path.realpath`, or None.
+
+    On macOS, `canonicalize` calls realpath(3), which corrects letter case
+    on a case-insensitive volume, so doctor calls it too. Elsewhere,
+    `os.path.realpath` gives the same path: realpath(3) on Linux, and on
+    Windows the final path without the `\\\\?\\` prefix, which Codex drops
+    (`normalize_path_for_platform` in
+    codex-rs/utils/absolute-path/src/lib.rs, lines 147-156, at the commit
+    `_EVENT_KEY_LABELS` cites).
+    """
+    if sys.platform != "darwin":
+        return os.path.realpath(path), None
+    try:
+        return _darwin_realpath(path), None
+    except (OSError, AttributeError, ValueError) as exc:
+        return os.path.realpath(path), (
+            f"doctor can't canonicalize {path} with realpath(3), as Codex "
+            f"does ({exc}), so it reads [hooks.state] keys under "
+            f"{os.path.realpath(path)}, which can differ in letter case from "
+            "the key Codex reads"
+        )
+
+
+def _state_key_home(
+    codex_dir: Path, warnings: list[str] | None = None,
+) -> str | None:
     """The Codex home as Codex spells it in a `[hooks.state]` key, or None
-    when doctor can't resolve it.
+    when doctor can't resolve it. A warning about the spelling goes to
+    `warnings`.
 
     Codex spells it one way: canonical when `CODEX_HOME` is set, and as
     written, made absolute with `.` and `..` removed, when it isn't
     (`find_codex_home` in codex-rs/utils/home-dir/src/lib.rs, lines 13-62,
     and `AbsolutePathBuf::from_absolute_path` in
     codex-rs/utils/absolute-path/src/lib.rs, lines 59-63, at the commit
-    `_EVENT_KEY_LABELS` cites). So through a symlinked `~/.codex`, or a
-    `CODEX_HOME` under `/tmp` on macOS, an entry under the other spelling
-    names no handler.
+    `_EVENT_KEY_LABELS` cites). So through a symlinked `~/.codex`, a
+    `CODEX_HOME` under `/tmp` on macOS, or one whose letter case differs
+    from the folder's on a macOS volume that ignores case, an entry under
+    the other spelling names no handler.
     """
     try:
         if os.environ.get(CODEX_HOME_ENV):
-            return os.path.realpath(codex_dir)
+            home, why = _canonical_path(str(codex_dir))
+            if why is not None and warnings is not None:
+                warnings.append(why)
+            return home
         return os.path.abspath(codex_dir)
     except (OSError, ValueError):
         return None
@@ -3480,7 +3533,7 @@ def doctor_codex(
     # config.toml sets `enabled = false`, and none you haven't approved.
     disabled = _disabled_entries(cfg, str(config_path))
     trusted = _trusted_hashes(cfg)
-    key_home = _state_key_home(cdir)
+    key_home = _state_key_home(cdir, report.warnings)
     key_files = {
         tag: None if key_home is None else os.path.join(key_home, name)
         for tag, name in (
