@@ -2936,9 +2936,10 @@ def _profile_files(
 
 
 #: The `[features]` keys `FeaturesToml` reads into a field of its own,
-#: whose value may be a table (codex-rs/features/src/lib.rs, lines
-#: 959-999, at the commit `_PROFILE_FILE` cites). It reads every other key
-#: into a map of true or false.
+#: whose value may be a table, and for `tool_registry` must be one
+#: (codex-rs/features/src/lib.rs, lines 959-999, at the commit
+#: `_PROFILE_FILE` cites). It reads every other key into a map of true or
+#: false.
 _STRUCTURED_FEATURES: Final[frozenset[str]] = frozenset({
     "tool_registry", "code_mode", "code_mode_host",
     "non_prefixed_mcp_tool_names", "guardianv2", "guardianv3",
@@ -2951,10 +2952,11 @@ _STRUCTURED_FEATURES: Final[frozenset[str]] = frozenset({
 
 def _feature_value(
     features: object, where: str,
-) -> tuple[tuple[str, bool] | None, str | None]:
+) -> tuple[tuple[str, bool] | None, str | None, str | None]:
     """The key and value that set Codex's `hooks` feature in the
-    `[features]` table at `where`, or None when it sets neither, and why
-    Codex refuses to start on the table, or None.
+    `[features]` table at `where`, or None when it sets neither; why Codex
+    refuses to start on the table, or None; and the first key in
+    `_STRUCTURED_FEATURES` whose value doctor doesn't check, or None.
 
     Codex reads the feature as `hooks`, and as its earlier name
     `codex_hooks`, applying the keys in sorted order, so `hooks` wins
@@ -2963,22 +2965,36 @@ def _feature_value(
     alias in codex-rs/features/src/legacy.rs, lines 48-51, at the commit
     `_PROFILE_FILE` cites). `FeaturesToml` reads each key outside
     `_STRUCTURED_FEATURES` as true or false, so Codex rejects the whole
-    config when one of them holds another value. Doctor doesn't check the
-    value of a key in `_STRUCTURED_FEATURES`.
+    config when one of them holds another value. It reads `tool_registry`
+    as a table only (`ToolRegistryConfigToml` in
+    codex-rs/features/src/feature_configs.rs, lines 25-34), so Codex
+    rejects true or false there, and each other key in
+    `_STRUCTURED_FEATURES` as true, false, or a table of that feature's
+    own settings (`FeatureToml`, lines 1094-1099 of lib.rs). Doctor checks
+    only true and false against these types, and no table.
     """
     if features is None:
-        return None, None
+        return None, None, None
     if not isinstance(features, dict):
-        return None, f"{where} isn't a table"
+        return None, f"{where} isn't a table", None
     table = cast(dict[str, object], features)
+    unchecked: str | None = None
     for key, value in table.items():
-        if key not in _STRUCTURED_FEATURES and not isinstance(value, bool):
-            return None, f"`{key}` in {where} isn't true or false"
+        if key not in _STRUCTURED_FEATURES:
+            if not isinstance(value, bool):
+                return None, f"`{key}` in {where} isn't true or false", None
+        elif key == "tool_registry" and isinstance(value, bool):
+            return None, (
+                f"`tool_registry` in {where} is {str(value).lower()}, where "
+                "Codex reads only a table"
+            ), None
+        elif not isinstance(value, bool):
+            unchecked = unchecked or key
     last: tuple[str, bool] | None = None
     for key in ("codex_hooks", "hooks"):
         if key in table:
             last = (key, cast(bool, table[key]))
-    return last, None
+    return last, None, unchecked
 
 
 def _launch_off_reason(cfg: dict[str, object], config_path: Path) -> str | None:
@@ -2991,7 +3007,8 @@ def _launch_off_reason(cfg: dict[str, object], config_path: Path) -> str | None:
     codex-rs/core/src/config/mod.rs, lines 3545-3552, at the commit
     `_PROFILE_FILE` cites), or a `[features]` table, in config.toml or in a
     `[profiles.<name>]` table, that `FeaturesToml` can't read
-    (`_feature_value`). It takes the
+    (`_feature_value`). Doctor can't tell whether it starts while such a
+    table holds a value doctor doesn't check. It takes the
     feature from config.toml's `[features]` alone, since it passes no
     profile features (lines 3559-3568), and starts no hook of yours while
     the feature is off: it keeps only the built-in ones
@@ -3003,7 +3020,7 @@ def _launch_off_reason(cfg: dict[str, object], config_path: Path) -> str | None:
             f"{config_path} sets the top-level `profile` key, which Codex no "
             "longer supports, so Codex refuses to start"
         )
-    value, error = _feature_value(
+    value, error, unchecked = _feature_value(
         cfg.get("features"), f"[features] in {config_path}",
     )
     if error is not None:
@@ -3014,18 +3031,30 @@ def _launch_off_reason(cfg: dict[str, object], config_path: Path) -> str | None:
             f"`profiles` in {config_path} isn't a table, so Codex refuses to "
             "start"
         )
+    unread = (
+        f"[features] in {config_path}" if unchecked is not None else None,
+        unchecked,
+    )
     for name, profile in sorted(cast(dict[str, object], named or {}).items()):
         if not isinstance(profile, dict):
             return (
                 f"[profiles.{name}] in {config_path} isn't a table, so Codex "
                 "refuses to start"
             )
-        _value, error = _feature_value(
-            cast(dict[str, object], profile).get("features"),
-            f"[profiles.{name}.features] in {config_path}",
+        where = f"[profiles.{name}.features] in {config_path}"
+        _value, error, unchecked = _feature_value(
+            cast(dict[str, object], profile).get("features"), where,
         )
         if error is not None:
             return f"{error}, so Codex refuses to start"
+        if unread[1] is None and unchecked is not None:
+            unread = (where, unchecked)
+    if unread[1] is not None:
+        return (
+            f"doctor doesn't check the value of `{unread[1]}` in {unread[0]} "
+            "against the type Codex reads it as, so it can't tell whether "
+            "Codex starts"
+        )
     if value is not None and value[1] is False:
         return (
             f"[features] in {config_path} sets `{value[0]}` to false, and "
@@ -3058,9 +3087,9 @@ def _profile_warnings(
             cast(dict[str, object], profile).get("features")
             if isinstance(profile, dict) else None
         )
-        value, _error = _feature_value(
+        value = _feature_value(
             features, f"[profiles.{name}.features] in {config_path}",
-        )
+        )[0]
         if value is not None:
             warnings.append(
                 f"[profiles.{name}.features] in {config_path} sets "
@@ -3069,7 +3098,7 @@ def _profile_warnings(
                 f"--profile {name}` refuses to start while config.toml has "
                 f"[profiles.{name}]",
             )
-    base, _error = _feature_value(cfg.get("features"), "")
+    base = _feature_value(cfg.get("features"), "")[0]
     for path, name, loaded in profiles:
         launch = f"`codex --profile {name}`"
         why = loaded.rejected or loaded.unparsed
@@ -3104,14 +3133,24 @@ def _profile_warnings(
                     **cast(dict[str, object], cfg["features"]),
                     **cast(dict[str, object], prof_features),
                 }
-            value, error = _feature_value(merged, f"[features] in {path}")
+            value, error, _unchecked = _feature_value(
+                merged, f"[features] in {path}",
+            )
+            own = _feature_value(prof_features, "")[2]
             if error is not None:
                 changes.append(f"{error}, so {launch} refuses to start")
-            elif (value is None or value[1]) != (base is None or base[1]):
-                changes.append(
-                    "its [features] turns Codex's `hooks` feature "
-                    + ("on" if value is None or value[1] else "off"),
-                )
+            else:
+                if own is not None:
+                    changes.append(
+                        f"doctor doesn't check the value of `{own}` in its "
+                        f"[features], so it can't tell whether {launch} "
+                        "starts",
+                    )
+                if (value is None or value[1]) != (base is None or base[1]):
+                    changes.append(
+                        "its [features] turns Codex's `hooks` feature "
+                        + ("on" if value is None or value[1] else "off"),
+                    )
         hooks = loaded.data.get("hooks")
         if isinstance(hooks, dict):
             hd = cast(dict[str, object], hooks)
