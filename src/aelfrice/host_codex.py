@@ -46,6 +46,7 @@ import json
 import math
 import os
 import re
+import stat
 import sys
 import tempfile
 import tomllib
@@ -141,14 +142,25 @@ def resolve_codex_home() -> Path:
             f"${CODEX_HOME_ENV} is set to {raw!r}, which is not a usable "
             f"path ({exc}); fix or unset it"
         ) from exc
-    if not home.exists():
+    # #1812: `os.stat` instead of `Path.exists` and `Path.is_dir`, which
+    # raise on Python 3.12 for a path under a folder you can't search.
+    # Codex reports any error but a missing path as one it can't read.
+    try:
+        mode = os.stat(home).st_mode
+    except FileNotFoundError:
         raise CodexHomeError(
             f"${CODEX_HOME_ENV} points to {home}, but that path does not "
             "exist; Codex refuses to start against it, so aelfrice will "
             "not create it. Create the directory, fix the value, or unset "
             "it to use the conventional ~/.codex"
-        )
-    if not home.is_dir():
+        ) from None
+    except (OSError, ValueError) as exc:
+        raise CodexHomeError(
+            f"${CODEX_HOME_ENV} points to {home}, which aelfrice can't read "
+            f"({exc}); Codex refuses to start against it too. Fix the "
+            "permissions, fix the value, or unset it"
+        ) from exc
+    if not stat.S_ISDIR(mode):
         raise CodexHomeError(
             f"${CODEX_HOME_ENV} points to {home}, but that path is not a "
             "directory; fix or unset it"
@@ -1217,15 +1229,23 @@ def _is_owned_skill_dir(skill_dir: Path) -> bool:
 
     Gated on both the ``aelf-`` name prefix AND the marker inside its
     SKILL.md, so a user's own ``aelf-*`` skill (no marker) is left alone.
+
+    `os.path.isdir` and `os.path.isfile` read a failed `stat` as False,
+    where `Path.is_dir` and `Path.is_file` raise on Python 3.12 in a
+    folder you can't search, and a SKILL.md that isn't UTF-8 reads as not
+    ours, so doctor never raises here (#1812).
     """
-    if not skill_dir.name.startswith(_SKILL_PREFIX) or not skill_dir.is_dir():
+    if (
+        not skill_dir.name.startswith(_SKILL_PREFIX)
+        or not os.path.isdir(skill_dir)
+    ):
         return False
     skill_md = skill_dir / _SKILL_FILENAME
-    if not skill_md.is_file():
+    if not os.path.isfile(skill_md):
         return False
     try:
         return _SKILL_MARKER in skill_md.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
@@ -1265,9 +1285,21 @@ def _orphan_skill_dirs(target: Path, bundle: dict[str, str]) -> list[Path]:
     """
     return [
         child
-        for child in sorted(target.glob(f"{_SKILL_PREFIX}*"))
+        for child in _skill_dir_children(target)
         if child.name not in bundle and _is_owned_skill_dir(child)
     ]
+
+
+def _skill_dir_children(target: Path) -> list[Path]:
+    """The ``aelf-*`` entries of ``target`` in name order, or none when it
+    isn't a folder doctor can list (#1812). `os.path.isdir` reads a failed
+    `stat` as False, where `Path.is_dir` raises on Python 3.12."""
+    if not os.path.isdir(target):
+        return []
+    try:
+        return sorted(target.glob(f"{_SKILL_PREFIX}*"))
+    except OSError:
+        return []
 
 
 def _remove_owned_skill_dir(
@@ -1413,10 +1445,8 @@ def remove_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
 def count_installed_codex_skills(dest_dir: Path | None = None) -> int:
     """Count marker-carrying ``aelf-*`` skills present under ``dest_dir``."""
     target = dest_dir if dest_dir is not None else resolve_agents_skills_dir()
-    if not target.is_dir():
-        return 0
     return sum(
-        1 for child in target.glob(f"{_SKILL_PREFIX}*")
+        1 for child in _skill_dir_children(target)
         if _is_owned_skill_dir(child)
     )
 
@@ -1577,7 +1607,7 @@ def modified_codex_skills(dest_dir: Path | None = None) -> list[str]:
             continue
         try:
             actual = (skill_dir / _SKILL_FILENAME).read_text(encoding="utf-8")
-        except OSError:  # pragma: no cover - raced with the marker read
+        except (OSError, ValueError):  # pragma: no cover - raced with the marker read
             modified.append(skill_name)
             continue
         if actual != expected:
@@ -1603,8 +1633,6 @@ def orphaned_codex_skills(dest_dir: Path | None = None) -> list[str]:
     rather than deletes: doctor is read-only.
     """
     target = dest_dir if dest_dir is not None else resolve_agents_skills_dir()
-    if not target.is_dir():
-        return []
     return [
         child.name
         for child in _orphan_skill_dirs(target, _bundled_codex_skills())
@@ -3257,7 +3285,7 @@ def doctor_codex(
     cdir = codex_dir if codex_dir is not None else resolve_codex_home()
     win = os.name == "nt" if windows is None else windows
     report = CodexDoctorReport(
-        codex_dir_present=cdir.is_dir(), codex_dir=cdir,
+        codex_dir_present=os.path.isdir(cdir), codex_dir=cdir,
     )
     if not report.codex_dir_present:
         report.warnings.append(f"{cdir} not found — Codex not installed?")
