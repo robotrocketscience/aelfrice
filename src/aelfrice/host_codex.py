@@ -53,7 +53,7 @@ import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, NamedTuple, cast
 
 from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT
 from aelfrice.launcher import (
@@ -1699,20 +1699,6 @@ class _JsonObject(dict[str, object]):
     pairs: tuple[tuple[str, object], ...] = ()
 
 
-class _JsonConstantError(ValueError):
-    """A `NaN`, `Infinity`, or `-Infinity` in a JSON file (#1812)."""
-
-
-def _json_constant(name: str) -> object:
-    """Refuse `NaN`, `Infinity`, and `-Infinity`, which Python's `json`
-    reads and serde_json, which Codex reads hooks.json with, rejects as
-    invalid JSON anywhere in a file (#1812)."""
-    raise _JsonConstantError(
-        f"it holds `{name}`, which serde_json, which Codex reads the file "
-        "with, rejects anywhere in a file",
-    )
-
-
 def _json_object(pairs: list[tuple[str, object]]) -> _JsonObject:
     """`json.loads` object hook: Codex rejects a repeated field."""
     obj = _JsonObject(pairs)
@@ -1909,10 +1895,20 @@ def _rejected_hooks_file(doc: dict[str, object]) -> str | None:
 #: 1102-1215).
 _JSON_DEPTH_LIMIT: Final[int] = 128
 #: Where the scan finds an array or an object, the start of a JSON string,
-#: or a comma. A string runs to its closing quote or to the end of the text.
+#: a comma, a number, or a constant Python's `json` reads. A string runs to
+#: its closing quote or to the end of the text.
 _JSON_TOKEN: Final[re.Pattern[str]] = re.compile(
-    r'"(?:[^"\\]|\\.)*"?|[\[\]{},]', re.DOTALL,
+    r'"(?:[^"\\]|\\.)*"?|[\[\]{},]'
+    r"|-?Infinity|NaN|-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?",
+    re.DOTALL,
 )
+#: The constants Python's `json` reads and serde_json, which Codex reads
+#: hooks.json with, rejects at any place in a file, a value it skips
+#: included (`ignore_value` in serde_json 1.0.149's src/de.rs, lines
+#: 1102-1215) (#1812).
+_JSON_CONSTANTS: Final[frozenset[str]] = frozenset({
+    "NaN", "Infinity", "-Infinity",
+})
 #: A key `_scan_json_depth` couldn't decode, which no event name equals.
 _UNREAD_KEY: Final[object] = object()
 
@@ -1960,23 +1956,83 @@ def _json_container_end(text: str, start: int) -> int:
     return len(text)
 
 
-def _scan_json_depth(
-    text: str,
-) -> tuple[str, list[tuple[object, ...]], tuple[object, ...] | None]:
+def _doubtful_number(token: str) -> bool:
+    """True for a number or constant token that Python's `json` reads and
+    serde_json may not: `NaN`, `Infinity`, `-Infinity`, or a number that a
+    64-bit float can't hold, such as `1e400` or an integer of 309 digits.
+    serde_json reads an integer outside u64 and i64 as a float, and fails
+    with "number out of range" when that float is infinite, but only where
+    it reads the value (`parse_long_integer` and `f64_from_parts` in
+    serde_json 1.0.149's src/de.rs). `ignore_value` skips a number
+    without reading it."""
+    return token in _JSON_CONSTANTS or math.isinf(float(token))
+
+
+def _doubtful_in(text: str, start: int, end: int) -> str | None:
+    """The first doubtful number token (`_doubtful_number`) in
+    `text[start:end]`, or None."""
+    pos = start
+    for _ in range(end - start + 1):
+        found = _JSON_TOKEN.search(text, pos, end)
+        if found is None:
+            return None
+        pos = found.end()
+        token = found.group()
+        if token[0] not in '"[]{},' and _doubtful_number(token):
+            return token
+    return None
+
+
+def _doubt_place(doubt: tuple[tuple[object, ...], str, bool]) -> str:
+    """Where a doubtful number is, for a warning: its path, or the path of
+    the value doctor cut that holds it."""
+    path, _token, cut = doubt
+    shown = f"`{_render_path(path[:6])}{'...' if len(path) > 6 else ''}`"
+    return (
+        f"{shown}, in a value nested {_JSON_DEPTH_LIMIT} levels deep" if cut
+        else shown
+    )
+
+
+def _shown_number(token: str) -> str:
+    """A number token for a warning, shortened when it's long."""
+    if len(token) <= 24:
+        return f"`{token}`"
+    return f"a number {len(token)} characters long that starts `{token[:12]}`"
+
+
+class _JsonScan(NamedTuple):
+    """hooks.json as `_scan_json_depth` reads it (#1812)."""
+
+    #: The text for `json.loads`.
+    text: str
+    #: The path of each value doctor cut from the text for its depth.
+    cuts: list[tuple[object, ...]]
+    #: The path of the first array or object that serde_json rejects for
+    #: its depth (`_JSON_DEPTH_LIMIT`), or None.
+    too_deep: tuple[object, ...] | None
+    #: The path and the token of each doubtful number (`_doubtful_number`),
+    #: and whether it's in a value doctor cut, where the path is the cut's.
+    doubts: list[tuple[tuple[object, ...], str, bool]]
+
+
+def _scan_json_depth(text: str) -> _JsonScan:
     """Read hooks.json's nesting the way serde_json does, without recursion.
 
-    Returns the text for `json.loads`, the path of each value doctor cut
-    from it, and the path of the first array or object that serde_json
-    rejects for its depth (`_JSON_DEPTH_LIMIT`), or None. A container that
-    deep in a value serde skips (`_serde_skips`) becomes `null` in the
-    returned text and its path is listed, so `json.loads` never nests more
-    than `_JSON_DEPTH_LIMIT - 1` levels. The scan reads strings, brackets,
-    and commas only. On a file that isn't JSON it can misplace a key, but
-    `json.loads` then rejects that file anyway.
+    A container nested `_JSON_DEPTH_LIMIT` levels deep in a value serde
+    skips (`_serde_skips`) becomes `null` in the returned text and its path
+    is listed, so `json.loads` never nests more than
+    `_JSON_DEPTH_LIMIT - 1` levels. Each doubtful number outside such a
+    container becomes `null` too, so `json.loads` neither reads `NaN` nor
+    raises on an integer longer than Python's `int` reads. The scan reads
+    strings, brackets, commas, numbers, and constants only. On a file that
+    isn't JSON it can misplace a key, but `json.loads` then rejects that
+    file anyway.
     """
     frames: list[list[object]] = []
     pieces: list[str] = []
     cuts: list[tuple[object, ...]] = []
+    doubts: list[tuple[tuple[object, ...], str, bool]] = []
     copied = 0
     pos = 0
     for _ in range(len(text) + 1):
@@ -2000,8 +2056,11 @@ def _scan_json_depth(
             if len(frames) + 1 >= _JSON_DEPTH_LIMIT:
                 path = tuple(f[1] for f in frames)
                 if not _serde_skips(frames):
-                    return text, cuts, path
+                    return _JsonScan(text, cuts, path, doubts)
                 end = _json_container_end(text, found.start())
+                inner = _doubtful_in(text, found.start(), end)
+                if inner is not None:
+                    doubts.append((path, inner, True))
                 pieces += [text[copied:found.start()], "null"]
                 copied = pos = end
                 cuts.append(path)
@@ -2010,13 +2069,17 @@ def _scan_json_depth(
         elif token in ("]", "}"):
             if frames:
                 frames.pop()
-        elif frames:
-            if frames[-1][0] == "[":
+        elif token == ",":
+            if frames and frames[-1][0] == "[":
                 frames[-1][1] = cast(int, frames[-1][1]) + 1
-            else:
+            elif frames:
                 frames[-1][2] = True
+        elif _doubtful_number(token):
+            doubts.append((tuple(f[1] for f in frames), token, False))
+            pieces += [text[copied:found.start()], "null"]
+            copied = pos
     pieces.append(text[copied:])
-    return "".join(pieces), cuts, None
+    return _JsonScan("".join(pieces), cuts, None, doubts)
 
 
 #: The nesting limit of the toml crate Codex reads config.toml with
@@ -3362,15 +3425,23 @@ def doctor_codex(
         # #1812: Codex logs that it failed to read the file and loads no
         # hook from it, as it does for a file that isn't JSON.
         report.parse_error = unread
+    # #1812: the numbers a 64-bit float can't hold, which serde_json rejects
+    # where Codex reads them and skips where it doesn't, so doctor can't
+    # tell whether Codex loads the file.
+    json_doubts: list[tuple[tuple[object, ...], str, bool]] = []
     if raw_json is not None:
         try:
-            text, json_cuts, too_deep = _scan_json_depth(raw_json)
+            scan = _scan_json_depth(raw_json)
+            json_cuts, too_deep = scan.cuts, scan.too_deep
+            constant = next(
+                (d for d in scan.doubts if d[1] in _JSON_CONSTANTS), None,
+            )
+            json_doubts = [
+                d for d in scan.doubts if d[1] not in _JSON_CONSTANTS
+            ]
             parsed = (
-                None if too_deep is not None
-                else json.loads(
-                    text, object_pairs_hook=_json_object,
-                    parse_constant=_json_constant,
-                )
+                None if too_deep is not None or constant is not None
+                else json.loads(scan.text, object_pairs_hook=_json_object)
             )
             if too_deep is not None:
                 # #1812: serde_json stops at its depth limit, so Codex
@@ -3380,6 +3451,14 @@ def doctor_codex(
                     f"{'...' if len(too_deep) > 6 else ''}` nests "
                     f"{_JSON_DEPTH_LIMIT} levels deep, where serde_json, "
                     "which Codex reads the file with, stops"
+                )
+            elif constant is not None:
+                # #1812: serde_json rejects the constant in a value it skips
+                # too, so Codex loads no hook from the file.
+                report.hooks_file_rejected = (
+                    f"it holds `{constant[1]}` at {_doubt_place(constant)}, "
+                    "which serde_json, which Codex reads the file with, "
+                    "rejects at any place in a file"
                 )
             elif isinstance(parsed, dict):
                 doc = cast(dict[str, object], parsed)
@@ -3406,16 +3485,7 @@ def doctor_codex(
             else:
                 report.parse_error = "top-level JSON is not an object"
         except ValueError as exc:
-            # #1812: also `_json_constant`, and an integer too long for
-            # Python's `int`, which `json` raises as a plain ValueError.
-            report.parse_error = (
-                str(exc) if isinstance(
-                    exc, json.JSONDecodeError | _JsonConstantError,
-                )
-                else "it holds an integer of more than "
-                f"{sys.get_int_max_str_digits()} digits, which doctor "
-                "doesn't read"
-            )
+            report.parse_error = str(exc)
     if report.hooks_file_present:
         if report.hooks_file_rejected is not None:
             report.warnings.append(
@@ -3659,6 +3729,23 @@ def doctor_codex(
                 "so doctor can't tell whether Codex loads the file and "
                 "counts no duplicate run in it",
             )
+    # #1812: the same for a number a 64-bit float can't hold, which
+    # serde_json rejects where Codex reads it and skips where it doesn't.
+    # Doctor counts no run in hooks.json while it holds one.
+    unsure = {"json": bool(json_doubts and hooks_doc is not None), "toml": False}
+    if unsure["json"]:
+        more = len(json_doubts) - 1
+        warn(
+            f"{hooks_path} holds {_shown_number(json_doubts[0][1])} at "
+            f"{_doubt_place(json_doubts[0])}"
+            + (f", and {more} more such number{'s' if more > 1 else ''}"
+               if more else "")
+            + ", which a 64-bit float can't hold. serde_json, which Codex "
+            "reads the file with, rejects the whole file over such a number "
+            "where Codex reads the value and loads the file where Codex "
+            "skips it, so doctor can't tell whether Codex loads the file "
+            "and counts no duplicate run in it",
+        )
     for tag, where, events in sources:
         for event, groups in events.items():
             if not isinstance(groups, list):
@@ -3789,7 +3876,7 @@ def doctor_codex(
                     )
                     if (
                         run and command is not None
-                        and positional[tag] is None
+                        and positional[tag] is None and not unsure[tag]
                     ):
                         field_path = (
                             *path, str(_run_field(item, windows=win)),

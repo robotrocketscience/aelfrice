@@ -16,6 +16,7 @@ import sys
 import tempfile
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -859,55 +860,113 @@ def test_doctor_does_not_claim_no_hooks_when_config_toml_names_one(
 _LONG_INT = "1" * (sys.get_int_max_str_digits() + 1)
 
 
+#: Places in hooks.json for a value: the path of a field that two copies of
+#: setup's SessionStart handler hold, and the path doctor names, which for
+#: a value nested past serde_json's limit is the path of the value it cuts.
+_PLACES: dict[str, tuple[tuple[object, ...], str]] = {
+    "a key Codex skips": (("Foo",), "`hooks.Foo`"),
+    "a field Codex doesn't read": (
+        ("SessionStart", 0, "hooks", 1, "x"),
+        "`hooks.SessionStart[0].hooks[1].x`",
+    ),
+    "a timeout": (
+        ("SessionStart", 0, "hooks", 1, "timeout"),
+        "`hooks.SessionStart[0].hooks[1].timeout`",
+    ),
+    "a value nested deep under a key Codex skips": (
+        ("Foo",),
+        "`hooks.Foo[0][0][0][0]...`, in a value nested 128 levels deep",
+    ),
+}
+
+
+def _hooks_with(hooks: Path, place: str, value: str) -> None:
+    """Two copies of setup's SessionStart handler, and `value`, a JSON
+    token, at `place` (`_PLACES`)."""
+    _two_in_hooks_json(hooks)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    path, _shown = _PLACES[place]
+    parent: Any = doc["hooks"]
+    for part in path[:-1]:
+        parent = parent[part]
+    parent[path[-1]] = "@@VALUE@@"
+    if place.startswith("a value nested deep"):
+        value = "[" * 140 + value + "]" * 140
+    hooks.write_text(
+        json.dumps(doc).replace('"@@VALUE@@"', value), encoding="utf-8",
+    )
+
+
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("where", ["an event Codex skips", "a timeout"])
-def test_doctor_reads_a_long_integer_in_hooks_json_as_unreadable(
-    tmp_path: Path, where: str,
+@pytest.mark.parametrize("place", sorted(_PLACES))
+@pytest.mark.parametrize(
+    ("value", "shown"),
+    [
+        ("1e400", "`1e400`"),
+        ("-1e400", "`-1e400`"),
+        ("1" + "0" * 400, "a number 401 characters long that starts "
+         "`100000000000`"),
+        (_LONG_INT, f"a number {len(_LONG_INT)} characters long that starts "
+         "`111111111111`"),
+    ],
+    ids=["1e400", "-1e400", "401 digits", "past the digit limit"],
+)
+def test_doctor_counts_no_run_beside_a_number_a_float_can_not_hold(
+    tmp_path: Path, place: str, value: str, shown: str,
 ) -> None:
-    """Python's `json` raises a plain ValueError for an integer longer
-    than `int` reads. Doctor reads such a hooks.json as one it can't read,
-    exits 1, and doesn't raise."""
+    """serde_json rejects hooks.json over a number a 64-bit float can't
+    hold where Codex reads the value, and skips it where Codex doesn't, so
+    doctor can't tell whether Codex loads the file. It counts no run in
+    the file, names the number's path, and doesn't raise on an integer
+    longer than Python's `int` reads."""
     codex_dir, hooks, _ours = _installed(tmp_path)
-    text = hooks.read_text(encoding="utf-8")
-    if where == "a timeout":
-        text = text.replace(
-            '"type": "command"', f'"type": "command", "timeout": {_LONG_INT}',
-            1,
-        )
-    else:
-        text = text.replace('"hooks": {', f'"hooks": {{"Foo": {_LONG_INT}, ', 1)
-    hooks.write_text(text, encoding="utf-8")
+    _hooks_with(hooks, place, value)
     rc, out = _doctor(codex_dir, tmp_path / "skills")
-    assert rc == 1, out
+    assert rc == 0, out
+    assert "times" not in out, out
     assert (
-        f"[warn] {hooks} is unreadable as hooks config (it holds an integer "
-        f"of more than {sys.get_int_max_str_digits()} digits, which doctor "
-        "doesn't read); Codex will ignore or reject it\n"
+        f"[warn] {hooks} holds {shown} at {_PLACES[place][1]}, which a 64-bit "
+        "float can't hold. serde_json, which Codex reads the file with, "
+        "rejects the whole file over such a number where Codex reads the "
+        "value and loads the file where Codex skips it, so doctor can't tell "
+        "whether Codex loads the file and counts no duplicate run in it\n"
     ) in out, out
 
 
 @pytest.mark.timeout(60)
+@pytest.mark.parametrize("value", ["1e308", "-1e308", "1e-400", "1" * 308])
+def test_doctor_counts_runs_beside_a_number_a_float_holds(
+    tmp_path: Path, value: str,
+) -> None:
+    """A number a 64-bit float holds, or one that underflows to 0, which
+    serde_json reads, leaves the count as it is."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    _hooks_with(hooks, "a field Codex doesn't read", value)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "starts the aelf-session-start-hook command 2 times" in out, out
+    assert "64-bit float" not in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("place", sorted(_PLACES))
 @pytest.mark.parametrize("name", ["NaN", "Infinity", "-Infinity"])
 def test_doctor_rejects_a_hooks_json_with_a_json_constant(
-    tmp_path: Path, name: str,
+    tmp_path: Path, place: str, name: str,
 ) -> None:
-    """serde_json rejects `NaN`, `Infinity`, and `-Infinity` anywhere in a
-    file, even under a key Codex skips, so Codex loads no hook from it and
-    the two copies in it never run."""
+    """serde_json rejects `NaN`, `Infinity`, and `-Infinity` at any place in
+    a file, in a value Codex skips or nested past its depth limit too, so
+    Codex loads no hook from it and the two copies in it never run."""
     codex_dir, hooks, _ours = _installed(tmp_path)
-    _two_in_hooks_json(hooks)
-    text = hooks.read_text(encoding="utf-8")
-    hooks.write_text(
-        text.replace('"hooks": {', f'"hooks": {{"Foo": {name}, ', 1),
-        encoding="utf-8",
-    )
+    _hooks_with(hooks, place, name)
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 1, out
     assert "times" not in out, out
     assert (
-        f"[warn] {hooks} is unreadable as hooks config (it holds `{name}`, "
-        "which serde_json, which Codex reads the file with, rejects anywhere "
-        "in a file); Codex will ignore or reject it\n"
+        f"[warn] Codex loads no hook from {hooks}, because it rejects the "
+        f"whole file: it holds `{name}` at {_PLACES[place][1]}, which "
+        "serde_json, which Codex reads the file with, rejects at any place "
+        "in a file\n"
     ) in out, out
 
 
