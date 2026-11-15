@@ -975,3 +975,74 @@ def test_doctor_reads_a_codex_home_it_can_not_list_or_search(
         "profile file that `codex --profile NAME` reads: "
     )
     assert (listed in out) is warns, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+@pytest.mark.parametrize(
+    ("locked", "mode"), [("agents", 0), ("agents/skills", 0o444)],
+)
+def test_doctor_reads_a_skills_folder_it_can_not_search(
+    tmp_path: Path, locked: str, mode: int,
+) -> None:
+    """Doctor doesn't raise on a `~/.agents`, or a `~/.agents/skills`, it
+    can't search, where Python 3.12's `Path.is_dir` raises, and counts no
+    skill there."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    agents = tmp_path / "agents"
+    install_codex_skills(agents / "skills")
+    (tmp_path / locked).chmod(mode)
+    try:
+        rc, out = _doctor(codex_dir, agents / "skills")
+    finally:
+        (tmp_path / locked).chmod(0o755)
+    assert rc == 0, out
+    assert (
+        "[i] codex skills ($aelf-*): 0 installed (0 orphaned) in "
+        f"{agents / 'skills'}\n"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_a_skill_file_that_is_not_utf8(tmp_path: Path) -> None:
+    """A SKILL.md that isn't UTF-8 reads as a skill that isn't aelfrice's,
+    and doctor doesn't raise."""
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    skill = tmp_path / "skills" / "aelf-local"
+    skill.mkdir()
+    (skill / "SKILL.md").write_bytes(b"AELFRICE-CODEX-SKILL \xff\n")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "(0 orphaned)" in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+def test_doctor_reports_a_codex_home_under_a_folder_it_can_not_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `CODEX_HOME` under a folder doctor can't search is one Codex can't
+    read either, so doctor reports it and exits 1, where Python 3.12's
+    `Path.exists` raises."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    locked = tmp_path / "locked"
+    (locked / "codex").mkdir(parents=True)
+    monkeypatch.setenv("CODEX_HOME", str(locked / "codex"))
+    err = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", err)
+    locked.chmod(0)
+    try:
+        rc = _cmd_doctor_codex(
+            argparse.Namespace(host="codex"), io.StringIO(),
+            skills_dest=tmp_path / "skills",
+        )
+    finally:
+        locked.chmod(0o755)
+    assert rc == 1, err.getvalue()
+    assert (
+        f"doctor --host codex: $CODEX_HOME points to {locked / 'codex'}, "
+        "which aelfrice can't read ("
+    ) in err.getvalue(), err.getvalue()
