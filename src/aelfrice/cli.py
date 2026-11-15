@@ -6398,7 +6398,7 @@ def _cmd_doctor_codex(
     is present but unparseable or isn't UTF-8, on a `hooks.json` or a
     config.toml `[hooks]` table that Codex rejects whole, or a config.toml
     that isn't UTF-8 or that Codex's TOML parser rejects for its nesting
-    (#1812), or on wiring that is installed and broken: a hook command not
+    or for a number out of range (#1812), or on wiring that is installed and broken: a hook command not
     present on disk, a partially installed hook set, a SessionStart group
     under the matcher an earlier release wrote, an event whose fire on a
     plain `codex` launch starts a command setup writes more than once,
@@ -6545,8 +6545,8 @@ def _cmd_doctor_codex(
     # state as a hooks.json that doesn't parse.
     if report.config_hooks_rejected is not None:
         return 1
-    # #1812: the same for a config.toml that Codex's TOML parser rejects
-    # whole for its nesting.
+    # #1812: the same for a config.toml that isn't UTF-8 or that Codex's
+    # TOML parser rejects whole for its nesting or a number out of range.
     if report.config_rejected is not None:
         return 1
     return 1 if faults else 0
