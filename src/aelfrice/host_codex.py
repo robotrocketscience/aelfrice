@@ -1439,8 +1439,10 @@ class CodexDoctorReport:
     #: Why Codex rejects the `[hooks]` table of config.toml whole, so it
     #: loads no hook from it, or None (#1812).
     config_hooks_rejected: str | None = None
-    #: Why Codex's TOML parser rejects all of config.toml for its nesting,
-    #: so Codex loads no hook from it, or None (#1812).
+    #: Why Codex refuses to start with config.toml, so it loads no hook
+    #: from it, or None (#1812): it can't read the file as UTF-8 text, or
+    #: its TOML parser rejects the file whole for its nesting or for a
+    #: number out of range (`_load_toml`).
     config_rejected: str | None = None
     owned_handler_count: int = 0
     missing_events: list[str] = field(default_factory=list[str])
