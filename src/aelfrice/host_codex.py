@@ -1669,6 +1669,20 @@ class _JsonObject(dict[str, object]):
     pairs: tuple[tuple[str, object], ...] = ()
 
 
+class _JsonConstantError(ValueError):
+    """A `NaN`, `Infinity`, or `-Infinity` in a JSON file (#1812)."""
+
+
+def _json_constant(name: str) -> object:
+    """Refuse `NaN`, `Infinity`, and `-Infinity`, which Python's `json`
+    reads and serde_json, which Codex reads hooks.json with, rejects as
+    invalid JSON anywhere in a file (#1812)."""
+    raise _JsonConstantError(
+        f"it holds `{name}`, which serde_json, which Codex reads the file "
+        "with, rejects anywhere in a file",
+    )
+
+
 def _json_object(pairs: list[tuple[str, object]]) -> _JsonObject:
     """`json.loads` object hook: Codex rejects a repeated field."""
     obj = _JsonObject(pairs)
@@ -3270,7 +3284,10 @@ def doctor_codex(
             text, json_cuts, too_deep = _scan_json_depth(raw_json)
             parsed = (
                 None if too_deep is not None
-                else json.loads(text, object_pairs_hook=_json_object)
+                else json.loads(
+                    text, object_pairs_hook=_json_object,
+                    parse_constant=_json_constant,
+                )
             )
             if too_deep is not None:
                 # #1812: serde_json stops at its depth limit, so Codex
@@ -3306,10 +3323,12 @@ def doctor_codex(
             else:
                 report.parse_error = "top-level JSON is not an object"
         except ValueError as exc:
-            # #1812: an integer too long for Python's `int`, which `json`
-            # raises as a plain ValueError.
+            # #1812: also `_json_constant`, and an integer too long for
+            # Python's `int`, which `json` raises as a plain ValueError.
             report.parse_error = (
-                str(exc) if isinstance(exc, json.JSONDecodeError)
+                str(exc) if isinstance(
+                    exc, json.JSONDecodeError | _JsonConstantError,
+                )
                 else "it holds an integer of more than "
                 f"{sys.get_int_max_str_digits()} digits, which doctor "
                 "doesn't read"
