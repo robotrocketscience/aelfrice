@@ -903,6 +903,10 @@ _PLACES: dict[str, tuple[tuple[object, ...], str]] = {
         ("SessionStart", 0, "hooks", 1, "timeout"),
         "`hooks.SessionStart[0].hooks[1].timeout`",
     ),
+    "an mcp_tool input": (
+        ("SessionStart", 0, "hooks", 2, "input", "x"),
+        "`hooks.SessionStart[0].hooks[2].input.x`",
+    ),
     "a value nested deep under a key Codex skips": (
         ("Foo",),
         "`hooks.Foo[0][0][0][0]...`, in a value nested 128 levels deep",
@@ -915,6 +919,9 @@ def _hooks_with(hooks: Path, place: str, value: str) -> None:
     token, at `place` (`_PLACES`)."""
     _two_in_hooks_json(hooks)
     doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["SessionStart"][0]["hooks"].append(
+        {"type": "mcp_tool", "server": "s", "tool": "t", "input": {}},
+    )
     path, _shown = _PLACES[place]
     parent: Any = doc["hooks"]
     for part in path[:-1]:
@@ -954,12 +961,40 @@ def test_doctor_counts_no_run_beside_a_number_a_float_can_not_hold(
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert "times" not in out, out
+    # The copies of setup's own handler need no line of their own.
+    assert "outside the handlers" not in out, out
     assert (
         f"[warn] {hooks} holds {shown} at {_PLACES[place][1]}, which a 64-bit "
         "float can't hold. serde_json, which Codex reads the file with, "
         "rejects the whole file over such a number where Codex reads the "
         "value and loads the file where Codex skips it, so doctor can't tell "
         "whether Codex loads the file and counts no duplicate run in it\n"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_says_why_it_counts_no_run_for_a_wrapper_beside_such_a_number(
+    tmp_path: Path,
+) -> None:
+    """A handler that names an aelfrice program in a hooks.json doctor
+    can't tell Codex loads gets a line that says why it counts no run."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["SessionStart"][0]["hooks"].append({
+        "type": "command", "command": "/usr/bin/env aelf-session-start-hook",
+    })
+    doc["hooks"]["Foo"] = "@@VALUE@@"
+    hooks.write_text(
+        json.dumps(doc).replace('"@@VALUE@@"', "1e400"), encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert (
+        "[warn] SessionStart handler at `hooks.SessionStart[0].hooks[1]` names "
+        "aelf-session-start-hook, and doctor counts no run for it, because "
+        f"doctor can't tell whether Codex loads {hooks}, which holds a number "
+        "a 64-bit float can't hold. Handler: /usr/bin/env "
+        "aelf-session-start-hook\n"
     ) in out, out
 
 
