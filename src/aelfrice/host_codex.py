@@ -1455,7 +1455,10 @@ class CodexDoctorReport:
     #: codex` writes for that program (#1812). The count is for one fire,
     #: so handlers whose matchers share no value, such as a SessionStart
     #: `startup` group and a `resume` group, don't add up. Doctor counts a
-    #: run only in a group whose matcher it reads (`_matched_values`).
+    #: run only in a group whose matcher it reads (`_matched_values`), and
+    #: only for a handler Codex starts: none while a setting can turn the
+    #: `hooks` feature off (`_hooks_off_reason`), and none for a handler a
+    #: `[hooks.state]` entry disables (`_disabling_entry`).
     duplicate_runs: list[tuple[str, str, int]] = field(
         default_factory=list[tuple[str, str, int]],
     )
@@ -1853,7 +1856,7 @@ def _rejected_hooks_file(doc: dict[str, object]) -> str | None:
 #: the version Codex locks). So with the top-level object at depth 1, an
 #: array or object at depth 128 rejects the file. `ignore_value`, which
 #: skips a value the type doesn't read, keeps no count (src/de.rs, lines
-#: 1102-1200).
+#: 1102-1215).
 _JSON_DEPTH_LIMIT: Final[int] = 128
 #: Where the scan finds an array or an object, the start of a JSON string,
 #: or a comma. A string runs to its closing quote or to the end of the text.
@@ -1987,7 +1990,7 @@ def _lone_surrogate_path(doc: dict[str, object]) -> tuple[object, ...] | None:
     serde_json rejects a lone surrogate escape in a string it reads as a
     Rust `String`, a key or a value, and accepts one in a value it skips
     with `ignore_value` (`parse_unicode_escape` and `ignore_escape` in
-    serde_json 1.0.149's src/read.rs, lines 897-970 and 1025-1048). serde
+    serde_json 1.0.149's src/read.rs, lines 897-973 and 1025-1048). serde
     skips the value of a key under `hooks` that isn't an event name, and
     of a group key other than `matcher` and `hooks` (`_serde_skips`), and
     reads that key itself. It reads every member of a JSON object, the
@@ -2700,7 +2703,7 @@ def _hooks_off_reason(
 
     Codex starts no hook of yours while the feature is off: it keeps only
     the built-in ones (`ClaudeHooksEngine::new` in
-    codex-rs/hooks/src/engine/mod.rs, lines 290-321, at the commit
+    codex-rs/hooks/src/engine/mod.rs, lines 290-325, at the commit
     `_PROFILE_FILE` cites). It reads `[features]` from config.toml, then
     from the profile that `profile = "..."` or `--profile` selects: a
     `[profiles.<name>]` table in config.toml or a profile file
@@ -2774,7 +2777,7 @@ def _disabled_entries(
     `_EVENT_KEY_LABELS` cites), and skips a handler whose entry ends with
     `enabled = false` (`hook_enabled` in
     codex-rs/hooks/src/engine/discovery.rs, lines 1019-1021, and its use
-    at lines 842 and 917-925).
+    at lines 842 and 917-940).
     """
     hooks = data.get("hooks")
     state = (
