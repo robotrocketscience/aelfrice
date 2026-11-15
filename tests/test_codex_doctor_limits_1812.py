@@ -676,6 +676,31 @@ def test_doctor_gives_setup_handler_no_line_of_its_own_while_hooks_are_off(
     ), out
 
 
+@pytest.mark.timeout(60)
+def test_doctor_warns_about_another_name_in_setup_handler_while_hooks_are_off(
+    tmp_path: Path,
+) -> None:
+    """Setup's own handler gets no line for the program its command runs,
+    but a `commandWindows` that names another program still gets one."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    (codex_dir / "config.toml").write_text(
+        "[features]\nhooks = false\n", encoding="utf-8",
+    )
+    other = "/opt/bin/aelf-session-start-hook"
+    _edit_hooks(hooks, lambda d: d["hooks"]["Stop"][0]["hooks"][0].__setitem__(
+        "commandWindows", other,
+    ))
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    lines = [ln for ln in out.splitlines() if "doctor counts no run for it" in ln]
+    assert len(lines) == 1, out
+    assert lines[0].startswith(
+        "[warn] Stop handler at `hooks.Stop[0].hooks[0]` names "
+        "aelf-session-start-hook",
+    ), out
+    assert lines[0].endswith(f"Handler: {other}"), out
+
+
 def _state(key: str, enabled: str = "false") -> str:
     return f"[hooks.state.{json.dumps(key)}]\nenabled = {enabled}\n"
 

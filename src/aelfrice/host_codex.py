@@ -3099,7 +3099,9 @@ def doctor_codex(
                         continue
                     if hooks_off is not None:
                         # #1812: no run counts, and setup's own handler in
-                        # the group setup writes needs no line of its own.
+                        # the group setup writes needs no line of its own
+                        # for the program its command runs. Another name
+                        # in it, such as in `commandWindows`, still gets one.
                         command = _run_command(item, windows=win)
                         own = (
                             command is not None and command in setup_runs
@@ -3110,8 +3112,12 @@ def doctor_codex(
                             (toml_runs if tag == "toml" else json_runs).add(
                                 (event, setup_runs[command]),
                             )
+                        own_keys = (
+                            _names_in(command)
+                            if own and command is not None else []
+                        )
                         for key, cmd in sorted(named.items()):
-                            if not own:
+                            if key not in own_keys:
                                 warn(
                                     f"{event} handler {at}{where} names "
                                     f"{key}, and doctor counts no run for "
