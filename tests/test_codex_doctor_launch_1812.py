@@ -549,6 +549,64 @@ def test_doctor_reads_approvals_under_codex_home_as_canonical(
 
 
 @pytest.mark.timeout(60)
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS realpath(3)")
+@pytest.mark.parametrize(
+    ("spelling", "counted"), [("canonical", True), ("as written", False)],
+)
+def test_doctor_reads_approvals_under_codex_home_in_the_case_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
+    counted: bool,
+) -> None:
+    """Codex canonicalizes `CODEX_HOME` with realpath(3), which on macOS
+    corrects its letter case to the folder's, so for a `CODEX_HOME` in
+    another case it keys approvals by the case on disk."""
+    (tmp_path / "real").mkdir()
+    written = tmp_path / "REAL"
+    if not written.is_dir():
+        pytest.skip("this volume tells letter case apart")
+    real = Path(os.path.realpath(tmp_path / "real"))
+    monkeypatch.setenv("CODEX_HOME", str(written))
+    config = _two_copies_in(written, tmp_path / "skills")
+    _approve_under(
+        config,
+        real if spelling == "canonical"
+        else Path(os.path.realpath(tmp_path)) / "REAL",
+    )
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    _check_approvals(rc, out, counted, real)
+    assert "can't canonicalize" not in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS realpath(3)")
+def test_doctor_says_when_it_can_not_call_realpath(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the realpath(3) call fails, doctor keys approvals as
+    `os.path.realpath` spells the home and says the letter case can
+    differ from Codex's key."""
+    import aelfrice.host_codex as host_codex
+
+    def fail(path: str) -> str:
+        raise OSError(5, "Input/output error", path)
+
+    monkeypatch.setattr(host_codex, "_darwin_realpath", fail)
+    (tmp_path / "real").mkdir()
+    real = Path(os.path.realpath(tmp_path / "real"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "real"))
+    config = _two_copies_in(tmp_path / "real", tmp_path / "skills")
+    _approve_under(config, real)
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    _check_approvals(rc, out, True, real)
+    assert (
+        f"[warn] doctor can't canonicalize {tmp_path / 'real'} with "
+        "realpath(3), as Codex does ([Errno 5] Input/output error: "
+        f"'{tmp_path / 'real'}'), so it reads [hooks.state] keys under {real}, "
+        "which can differ in letter case from the key Codex reads\n"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
 @pytest.mark.parametrize(
     ("spelling", "disabled"), [("as written", True), ("canonical", False)],
 )
