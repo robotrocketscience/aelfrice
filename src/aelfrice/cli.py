@@ -6282,13 +6282,14 @@ def _cmd_doctor_codex(
     """`aelf doctor --host codex`: scan the Codex host (#1052).
 
     Exit contract, stable for CI (#1430). **Exit 1** on a `hooks.json` that
-    is present but unparseable, on a `hooks.json` or a config.toml `[hooks]`
-    table that Codex rejects whole, or a config.toml that Codex's TOML
-    parser rejects for its nesting (#1812), or on wiring that is installed
-    and broken: a hook command not present on disk, a partially installed
-    hook set, a SessionStart group under the matcher an earlier release
-    wrote, an event whose fire starts a command setup writes more than once
-    (#1812), the Codex ``hooks`` feature disabled while our handlers are
+    is present but unparseable or isn't UTF-8, on a `hooks.json` or a
+    config.toml `[hooks]` table that Codex rejects whole, or a config.toml
+    that isn't UTF-8 or that Codex's TOML parser rejects for its nesting
+    (#1812), or on wiring that is installed and broken: a hook command not
+    present on disk, a partially installed hook set, a SessionStart group
+    under the matcher an earlier release wrote, an event whose fire on a
+    plain `codex` launch starts a command setup writes more than once,
+    counting only handlers you have approved (#1812), the Codex ``hooks`` feature disabled while our handlers are
     installed, an installed ``$aelf-*`` skill that does not match what this
     build generates, or an ``aelf`` that does not resolve on ``PATH``
     (#1413).
