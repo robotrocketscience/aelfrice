@@ -2331,7 +2331,7 @@ def _load_toml(path: Path) -> _TomlFile:
 
     Codex reads config.toml with toml 0.9.11, which rejects the whole file
     when an integer is out of the range of an `i64` (`visit_u64` in
-    `src/value.rs`, lines 441-447) or when a float literal other than
+    `src/value.rs`, lines 442-448) or when a float literal other than
     `inf` overflows to infinity (`DeFloat::to_f64` in
     `src/de/parser/devalue.rs`, lines 88-95). `tomllib` reads an integer
     of any size and such a float as infinity, so doctor checks both, and

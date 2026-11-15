@@ -6281,10 +6281,12 @@ def _cmd_doctor_codex(
 ) -> int:
     """`aelf doctor --host codex`: scan the Codex host (#1052).
 
-    Exit contract, stable for CI (#1430). **Exit 1** on a `hooks.json` that
-    is present but unparseable or isn't UTF-8, on a `hooks.json` or a
-    config.toml `[hooks]` table that Codex rejects whole, or a config.toml
-    that isn't UTF-8 or that Codex's TOML parser rejects for its nesting
+    Exit contract, stable for CI (#1430). **Exit 1** on a `$CODEX_HOME`
+    that doesn't exist, isn't a directory, or can't be read (#1427), on a
+    `hooks.json` that is present but unparseable or isn't UTF-8, on a
+    `hooks.json` that holds `NaN`, `Infinity`, or `-Infinity`, on a
+    `hooks.json` or a config.toml `[hooks]` table that Codex rejects
+    whole, or a config.toml that isn't UTF-8 or that Codex's TOML parser rejects for its nesting
     or for a number out of range (#1812), or on wiring that is installed and broken: a hook command not
     present on disk, a partially installed hook set, a SessionStart group
     under the matcher an earlier release wrote, an event whose fire on a
