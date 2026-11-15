@@ -2828,6 +2828,20 @@ def _profile_files(
     return found, None
 
 
+#: The `[features]` keys `FeaturesToml` reads into a field of its own,
+#: whose value may be a table (codex-rs/features/src/lib.rs, lines
+#: 959-999, at the commit `_PROFILE_FILE` cites). It reads every other key
+#: into a map of true or false.
+_STRUCTURED_FEATURES: Final[frozenset[str]] = frozenset({
+    "tool_registry", "code_mode", "code_mode_host",
+    "non_prefixed_mcp_tool_names", "guardianv2", "guardianv3",
+    "multi_agent_v2", "token_budget", "async_compaction",
+    "context_management", "rollout_budget", "current_time_reminder",
+    "sleep_tool", "runtime_agent_instances", "apps_mcp_path_override",
+    "network_proxy",
+})
+
+
 def _feature_value(
     features: object, where: str,
 ) -> tuple[tuple[str, bool] | None, str | None]:
@@ -2840,21 +2854,23 @@ def _feature_value(
     (`Features::apply_map` and `FeaturesToml` in
     codex-rs/features/src/lib.rs, lines 732-833 and 957-1081, and the
     alias in codex-rs/features/src/legacy.rs, lines 48-51, at the commit
-    `_PROFILE_FILE` cites). `FeaturesToml` reads each as true or false,
-    so Codex rejects the whole config otherwise.
+    `_PROFILE_FILE` cites). `FeaturesToml` reads each key outside
+    `_STRUCTURED_FEATURES` as true or false, so Codex rejects the whole
+    config when one of them holds another value. Doctor doesn't check the
+    value of a key in `_STRUCTURED_FEATURES`.
     """
     if features is None:
         return None, None
     if not isinstance(features, dict):
         return None, f"{where} isn't a table"
     table = cast(dict[str, object], features)
+    for key, value in table.items():
+        if key not in _STRUCTURED_FEATURES and not isinstance(value, bool):
+            return None, f"`{key}` in {where} isn't true or false"
     last: tuple[str, bool] | None = None
     for key in ("codex_hooks", "hooks"):
         if key in table:
-            value = table[key]
-            if not isinstance(value, bool):
-                return None, f"`{key}` in {where} isn't true or false"
-            last = (key, value)
+            last = (key, cast(bool, table[key]))
     return last, None
 
 
@@ -2867,7 +2883,8 @@ def _launch_off_reason(cfg: dict[str, object], config_path: Path) -> str | None:
     (`Config::load_config_with_layer_stack` in
     codex-rs/core/src/config/mod.rs, lines 3545-3552, at the commit
     `_PROFILE_FILE` cites), or a `[features]` table, in config.toml or in a
-    `[profiles.<name>]` table, that `FeaturesToml` can't read. It takes the
+    `[profiles.<name>]` table, that `FeaturesToml` can't read
+    (`_feature_value`). It takes the
     feature from config.toml's `[features]` alone, since it passes no
     profile features (lines 3559-3568), and starts no hook of yours while
     the feature is off: it keeps only the built-in ones

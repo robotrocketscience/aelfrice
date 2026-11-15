@@ -880,6 +880,49 @@ def test_doctor_reads_a_profile_file_with_a_long_integer(
     ) in out, out
 
 
+# `[features]` tables, and the key whose value makes Codex refuse to
+# start, or None when Codex reads the table.
+_FEATURES: dict[str, tuple[str, str | None]] = {
+    "a text value": ('[features]\nweb_search = "live"\n', "web_search"),
+    "a number": ("[features]\nshell_tool = 1\n", "shell_tool"),
+    "a table under a plain key": ("[features.memories]\nx = 1\n", "memories"),
+    "a profile table's text value": (
+        '[profiles.ci.features]\nweb_search = "live"\n', "web_search",
+    ),
+    "true and false": ("[features]\nweb_search = true\nx = false\n", None),
+    "a table under a structured key": (
+        "[features.code_mode]\nenabled = true\n", None,
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_FEATURES))
+def test_doctor_reads_every_features_key_as_codex_does(
+    tmp_path: Path, shape: str,
+) -> None:
+    """`FeaturesToml` reads each `[features]` key outside its own fields as
+    true or false, so any other value makes Codex refuse to start, and
+    doctor counts no run."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    table, bad = _FEATURES[shape]
+    _approve(config, 0, 1)
+    config.write_text(
+        config.read_text(encoding="utf-8") + table, encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    if bad is None:
+        assert rc == 1, out
+        assert "starts the aelf-session-start-hook command 2 times" in out, out
+    else:
+        assert rc == 0, out
+        assert "times" not in out, out
+        assert (
+            f"[warn] doctor counts no duplicate run, because `{bad}` in "
+        ) in out, out
+        assert "isn't true or false, so Codex refuses to start\n" in out, out
+
+
 @pytest.mark.timeout(60)
 @pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
 @pytest.mark.parametrize(
