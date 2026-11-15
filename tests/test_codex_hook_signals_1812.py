@@ -980,7 +980,8 @@ def test_doctor_exits_1_on_a_config_toml_hooks_value_codex_rejects(
     assert rc == 1, out
     assert (
         "[warn] Codex loads no hook from the [hooks] table in "
-        f"{codex_dir / 'config.toml'}, because it rejects the whole table" in out
+        f"{codex_dir / 'config.toml'}, and refuses to start, because it "
+        "rejects the whole table" in out
     ), out
 
 

@@ -237,8 +237,8 @@ def test_doctor_rejects_a_config_toml_past_codex_toml_limits(
     tmp_path: Path, shape: str, depth: int,
 ) -> None:
     """Codex's TOML parser rejects the whole file past its limits, so Codex
-    loads no hook from it, and doctor exits 1. `tomllib` never reads such
-    a file, so no depth can exhaust Python's recursion limit."""
+    refuses to start, and doctor exits 1. `tomllib` never reads such a
+    file, so no depth can exhaust Python's recursion limit."""
     codex_dir, _hooks, ours = _installed(tmp_path)
     config = codex_dir / "config.toml"
     config.write_text(
@@ -251,8 +251,8 @@ def test_doctor_rejects_a_config_toml_past_codex_toml_limits(
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     why = _TOML_TOO_DEEP[shape][1]
     rejected = (
-        f"[warn] Codex loads no hook from {config}, because its TOML parser "
-        f"rejects the whole file: {why}, past the limit of 80"
+        f"[warn] Codex refuses to start with {config}, because its TOML "
+        f"parser rejects the whole file: {why}, past the limit of 80"
     )
     if depth <= 80:
         # Codex loads the file, and its copy of setup's handler is a
@@ -534,48 +534,48 @@ def _toml_copy(command: str, matcher: str = "startup") -> str:
     )
 
 
-# config.toml settings and profile files that turn the `hooks` feature off
-# for some launch, or leave doctor unable to tell: (config.toml text, profile
-# files, the reason doctor gives).
-_HOOKS_OFF: dict[str, tuple[str, dict[str, str], str]] = {
+# config.toml settings that turn the `hooks` feature off for a plain
+# `codex` launch, or make Codex refuse to start: (config.toml text, the
+# reason doctor gives).
+_OFF = "and Codex starts no hook of yours while its `hooks` feature is off"
+_REFUSES = "so Codex refuses to start"
+_HOOKS_OFF: dict[str, tuple[str, str]] = {
     "hooks false": (
-        "[features]\nhooks = false\n", {},
-        "[features] in {config} sets `hooks` to false",
+        "[features]\nhooks = false\n",
+        f"[features] in {{config}} sets `hooks` to false, {_OFF}",
     ),
     "codex_hooks false": (
-        "[features]\ncodex_hooks = false\n", {},
-        "[features] in {config} sets `codex_hooks` to false",
+        "[features]\ncodex_hooks = false\n",
+        f"[features] in {{config}} sets `codex_hooks` to false, {_OFF}",
     ),
     "hooks false over codex_hooks true": (
-        "[features]\ncodex_hooks = true\nhooks = false\n", {},
-        "[features] in {config} sets `hooks` to false",
+        "[features]\ncodex_hooks = true\nhooks = false\n",
+        f"[features] in {{config}} sets `hooks` to false, {_OFF}",
     ),
     "not true or false": (
-        '[features]\nhooks = "off"\n', {},
-        "`hooks` in [features] in {config} isn't true or false",
+        '[features]\nhooks = "off"\n',
+        f"`hooks` in [features] in {{config}} isn't true or false, {_REFUSES}",
     ),
     "features not a table": (
-        "features = 1\n", {},
-        "[features] in {config} isn't a table",
+        "features = 1\n", f"[features] in {{config}} isn't a table, {_REFUSES}",
     ),
-    "a profile table": (
-        "[profiles.work.features]\nhooks = false\n", {},
-        "[profiles.work.features] in {config} sets `hooks` to false",
+    "a profile table not true or false": (
+        '[profiles.work.features]\nhooks = "off"\n',
+        "`hooks` in [profiles.work.features] in {config} isn't true or "
+        f"false, {_REFUSES}",
     ),
-    "a profile file": (
-        "", {"work.config.toml": "[features]\nhooks = false\n"},
-        "[features] in the profile file {dir}/work.config.toml sets `hooks` "
-        "to false",
+    "a profile table that isn't a table": (
+        "[profiles]\nwork = 1\n",
+        f"[profiles.work] in {{config}} isn't a table, {_REFUSES}",
     ),
-    "a profile file's profile table": (
-        "", {"work.config.toml": "[profiles.x.features]\ncodex_hooks = false\n"},
-        "[profiles.x.features] in the profile file {dir}/work.config.toml "
-        "sets `codex_hooks` to false",
+    "profiles not a table": (
+        "profiles = 1\n",
+        f"`profiles` in {{config}} isn't a table, {_REFUSES}",
     ),
-    "an unreadable profile file": (
-        "", {"work.config.toml": "[features\n"},
-        "doctor can't read the profile file {dir}/work.config.toml, which "
-        "Codex reads when you pass `--profile work`",
+    "a legacy profile key": (
+        'profile = "work"\n',
+        "{config} sets the top-level `profile` key, which Codex no longer "
+        f"supports, {_REFUSES}",
     ),
 }
 
@@ -586,26 +586,21 @@ def test_doctor_counts_no_run_while_hooks_may_be_off(
     tmp_path: Path, shape: str,
 ) -> None:
     """Two copies of setup's command that only config.toml holds fail
-    doctor, unless a setting can turn the `hooks` feature off. Then Codex
-    may start neither, so doctor counts no run and warns about each."""
+    doctor, unless a plain `codex` launch starts no hook. Then Codex starts
+    neither, so doctor counts no run and warns about each."""
     codex_dir, hooks, ours = _installed(tmp_path)
     hooks.unlink()
-    settings, files, reason = _HOOKS_OFF[shape]
+    settings, reason = _HOOKS_OFF[shape]
     config = codex_dir / "config.toml"
     config.write_text(
         settings + _toml_copy(ours) + _toml_copy(ours, "startup|resume"),
         encoding="utf-8",
     )
-    for name, text in files.items():
-        (codex_dir / name).write_text(text, encoding="utf-8")
-    why = reason.format(config=config, dir=codex_dir)
+    why = reason.format(config=config)
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert "times" not in out, out
-    assert (
-        f"[warn] doctor counts no duplicate run, because {why}, and Codex "
-        "starts no hook of yours while its `hooks` feature is off\n"
-    ) in out, out
+    assert f"[warn] doctor counts no duplicate run, because {why}\n" in out, out
     for g in (0, 1):
         assert (
             f"[warn] SessionStart handler at `hooks.SessionStart[{g}].hooks[0]`"
@@ -791,8 +786,9 @@ def test_doctor_reads_the_handler_index_of_a_hooks_state_key(
 def test_doctor_reads_hooks_state_in_a_profile_file(
     tmp_path: Path, enabled: str,
 ) -> None:
-    """A profile file's entry applies when `--profile` selects it, so
-    doctor can't tell whether Codex starts the handler."""
+    """A profile file's entry applies only when `--profile` selects it, so
+    the plain launch doctor scores starts both copies, and doctor names the
+    profile."""
     codex_dir, hooks, ours = _installed(tmp_path)
     config = codex_dir / "config.toml"
     config.write_text(_toml_copy(ours), encoding="utf-8")
@@ -801,14 +797,12 @@ def test_doctor_reads_hooks_state_in_a_profile_file(
         _state(f"{config}:session_start:0:0", enabled), encoding="utf-8",
     )
     rc, out = _doctor(codex_dir, tmp_path / "skills")
-    if enabled == "true":
-        assert rc == 1, out
-        assert "starts the aelf-session-start-hook command 2 times" in out
-        return
-    assert rc == 0, out
+    assert rc == 1, out
+    assert "starts the aelf-session-start-hook command 2 times" in out
     assert (
-        f"in the profile file {profile}, which Codex reads when you pass "
-        "`--profile work` sets `enabled = false` for it"
+        f"[warn] `codex --profile work` also reads the profile file {profile}, "
+        "and its [hooks.state] entries change which handlers Codex skips or "
+        "has approved. Doctor scores a plain `codex` launch"
     ) in out, out
 
 
