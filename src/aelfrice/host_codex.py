@@ -1990,14 +1990,15 @@ def _doubtful_in(text: str, start: int, end: int) -> str | None:
 
 
 def _doubt_place(doubt: tuple[tuple[object, ...], str, bool]) -> str:
-    """Where a doubtful number is, for a warning: its path, or the path of
-    the value doctor cut that holds it."""
+    """Where a doubtful number is, for a warning: its path, or the start of
+    the path of the value doctor cut that holds it."""
     path, _token, cut = doubt
-    shown = f"`{_render_path(path[:6])}{'...' if len(path) > 6 else ''}`"
-    return (
-        f"{shown}, in a value nested {_JSON_DEPTH_LIMIT} levels deep" if cut
-        else shown
-    )
+    if cut:
+        return (
+            f"`{_render_path(path[:6])}...`, in a value nested "
+            f"{_JSON_DEPTH_LIMIT} levels deep"
+        )
+    return f"`{_render_path(path[:16])}{'...' if len(path) > 16 else ''}`"
 
 
 def _shown_number(token: str) -> str:
@@ -2029,8 +2030,9 @@ def _scan_json_depth(text: str) -> _JsonScan:
     skips (`_serde_skips`) becomes `null` in the returned text and its path
     is listed, so `json.loads` never nests more than
     `_JSON_DEPTH_LIMIT - 1` levels. Each doubtful number outside such a
-    container becomes `null` too, so `json.loads` neither reads `NaN` nor
-    raises on an integer longer than Python's `int` reads. The scan reads
+    container becomes `0`, so `json.loads` neither reads `NaN` nor raises
+    on an integer longer than Python's `int` reads, and a check of the
+    value's type still finds a number there. The scan reads
     strings, brackets, commas, numbers, and constants only. On a file that
     isn't JSON it can misplace a key, but `json.loads` then rejects that
     file anyway.
@@ -2082,7 +2084,7 @@ def _scan_json_depth(text: str) -> _JsonScan:
                 frames[-1][2] = True
         elif _doubtful_number(token):
             doubts.append((tuple(f[1] for f in frames), token, False))
-            pieces += [text[copied:found.start()], "null"]
+            pieces += [text[copied:found.start()], "0"]
             copied = pos
     pieces.append(text[copied:])
     return _JsonScan("".join(pieces), cuts, None, doubts)
@@ -3786,8 +3788,12 @@ def doctor_codex(
     # #1812: the same for a number a 64-bit float can't hold, which
     # serde_json rejects where Codex reads it and skips where it doesn't.
     # Doctor counts no run in hooks.json while it holds one.
-    unsure = {"json": bool(json_doubts and hooks_doc is not None), "toml": False}
-    if unsure["json"]:
+    json_unsure = (
+        f"doctor can't tell whether Codex loads {hooks_path}, which holds a "
+        "number a 64-bit float can't hold"
+        if json_doubts and hooks_doc is not None else None
+    )
+    if json_unsure is not None:
         more = len(json_doubts) - 1
         warn(
             f"{hooks_path} holds {_shown_number(json_doubts[0][1])} at "
@@ -3839,7 +3845,8 @@ def doctor_codex(
                             )
                             accounted.add((tag, path, key))
                         continue
-                    if hooks_off is not None:
+                    off = hooks_off or (json_unsure if tag == "json" else None)
+                    if off is not None:
                         # #1812: no run counts, and setup's own handler in
                         # the group setup writes needs no line of its own
                         # for the program its command runs. Another name
@@ -3863,7 +3870,7 @@ def doctor_codex(
                                 warn(
                                     f"{event} handler {at}{where} names "
                                     f"{key}, and doctor counts no run for "
-                                    f"it, because {hooks_off}. Handler: {cmd}",
+                                    f"it, because {off}. Handler: {cmd}",
                                 )
                             accounted.add((tag, path, key))
                         continue
@@ -3930,7 +3937,7 @@ def doctor_codex(
                     )
                     if (
                         run and command is not None
-                        and positional[tag] is None and not unsure[tag]
+                        and positional[tag] is None
                     ):
                         field_path = (
                             *path, str(_run_field(item, windows=win)),
