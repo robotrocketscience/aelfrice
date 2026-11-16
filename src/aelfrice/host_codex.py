@@ -3149,7 +3149,7 @@ def _profile_warnings(
             value, error, _unchecked = _feature_value(
                 merged, f"[features] in {path}",
             )
-            own = _feature_value(prof_features, "")[2]
+            own = _feature_value(cast(object, prof_features), "")[2]
             if error is not None:
                 changes.append(f"{error}, so {launch} refuses to start")
             else:
