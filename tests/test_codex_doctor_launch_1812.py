@@ -537,20 +537,32 @@ def test_doctor_reads_an_empty_codex_home_as_unset(
 
 
 @pytest.mark.timeout(60)
+@pytest.mark.parametrize("parsed", [True, False], ids=["parsed", "TOML 1.1"])
 def test_doctor_counts_no_run_under_a_codex_home_that_starts_with_a_tilde(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parsed: bool,
 ) -> None:
     """Codex doesn't expand `~` in `CODEX_HOME`, so it doesn't read the
-    folder doctor scans, and doctor counts no run there."""
+    folder doctor scans, and doctor counts no run there, and doesn't say
+    Codex may start the copies there, even beside a config.toml it can't
+    parse."""
     home = tmp_path / "home"
     (home / "c").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODEX_HOME", "~/c")
-    config = _two_copies_in(home / "c", tmp_path / "skills")
-    _approve_under(config, Path(os.path.realpath(home / "c")))
+    if parsed:
+        config = _two_copies_in(home / "c", tmp_path / "skills")
+        _approve_under(config, Path(os.path.realpath(home / "c")))
+    else:
+        install_codex_hooks(home / "c" / "hooks.json")
+        install_codex_skills(tmp_path / "skills")
+        _two_in_hooks_json(home / "c" / "hooks.json")
+        (home / "c" / "config.toml").write_text(
+            "x = { a = 1, }\n", encoding="utf-8",
+        )
     rc, out = _resolved_doctor(tmp_path / "skills")
     assert rc == 0, out
     assert "times" not in out, out
+    assert "is a copy of" not in out, out
     assert (
         "[warn] doctor counts no duplicate run, because `CODEX_HOME` is "
         "'~/c', and Codex doesn't expand `~` in it: it reads the value as a "
@@ -848,6 +860,17 @@ def test_doctor_counts_no_run_in_hooks_json_beside_a_config_toml_it_can_not_pars
         f"{config}, which holds the [hooks] table and the [hooks.state] "
         "approvals Codex reads\n"
     ) in out, out
+    # Codex may still load both copies, so each one gets a line.
+    for h in (0, 1):
+        assert (
+            f"[warn] SessionStart handler at `hooks.SessionStart[0].hooks[{h}]` "
+            "is a copy of the aelf-session-start-hook command `aelf setup "
+            "--host codex` writes, and doctor counts no run for it, because "
+            f"doctor can't parse {config}, which holds the [hooks] table and "
+            "the [hooks.state] approvals Codex reads. If Codex starts its "
+            "hooks, a fire that runs all 2 copies starts the command once for "
+            "each; keep one copy and delete the others: "
+        ) in out, out
 
 
 @pytest.mark.timeout(60)
@@ -961,8 +984,18 @@ def test_doctor_counts_no_run_beside_a_number_a_float_can_not_hold(
     rc, out = _doctor(codex_dir, tmp_path / "skills")
     assert rc == 0, out
     assert "times" not in out, out
-    # The copies of setup's own handler need no line of their own.
+    # Codex may load the file and start both copies, so each gets a line,
+    # and none gets a last-pass line.
     assert "outside the handlers" not in out, out
+    for h in (0, 1):
+        assert (
+            f"[warn] SessionStart handler at `hooks.SessionStart[0].hooks[{h}]` "
+            "is a copy of the aelf-session-start-hook command `aelf setup "
+            "--host codex` writes, and doctor counts no run for it, because "
+            f"doctor can't tell whether Codex loads {hooks}, which holds a "
+            "number a 64-bit float can't hold. If Codex starts its hooks, a "
+            "fire that runs all 2 copies starts the command once for each"
+        ) in out, out
     assert (
         f"[warn] {hooks} holds {shown} at {_PLACES[place][1]}, which a 64-bit "
         "float can't hold. serde_json, which Codex reads the file with, "
@@ -1201,6 +1234,12 @@ def test_doctor_reads_every_features_key_as_codex_does(
         return
     assert rc == 0, out
     assert "times" not in out, out
+    # Codex may start both copies only when doctor can't tell.
+    copy_line = (
+        "is a copy of the aelf-session-start-hook command `aelf setup --host "
+        "codex` writes, and doctor counts no run for it, because "
+    )
+    assert (out.count(copy_line) == 2) is (kind == "unchecked"), out
     if kind == "refuses":
         assert (
             f"[warn] doctor counts no duplicate run, because `{key}` in "

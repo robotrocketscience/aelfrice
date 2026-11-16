@@ -3005,6 +3005,12 @@ def _feature_value(
     return last, None, unchecked
 
 
+#: How `_launch_off_reason` starts the reason it gives when doctor can't
+#: tell whether Codex starts, as opposed to one where it knows Codex starts
+#: no hook of yours (#1812).
+_UNCHECKED_FEATURE: Final[str] = "doctor doesn't check the value of"
+
+
 def _launch_off_reason(cfg: dict[str, object], config_path: Path) -> str | None:
     """Why a plain `codex` launch starts no hook of yours, or None when
     its `hooks` feature is on.
@@ -3059,9 +3065,8 @@ def _launch_off_reason(cfg: dict[str, object], config_path: Path) -> str | None:
             unread = (where, unchecked)
     if unread[1] is not None:
         return (
-            f"doctor doesn't check the value of `{unread[1]}` in {unread[0]} "
-            "against the type Codex reads it as, so it can't tell whether "
-            "Codex starts"
+            f"{_UNCHECKED_FEATURE} `{unread[1]}` in {unread[0]} against the "
+            "type Codex reads it as, so it can't tell whether Codex starts"
         )
     if value is not None and value[1] is False:
         return (
@@ -3625,6 +3630,7 @@ def doctor_codex(
             "doesn't read one",
         )
     raw_home = os.environ.get(CODEX_HOME_ENV) or ""
+    tilde = os.path.expanduser(raw_home) != raw_home
     hooks_off = (
         # #1812: Codex doesn't expand `~` in CODEX_HOME, so it reads
         # another path than the one doctor scans (`find_codex_home` in
@@ -3633,7 +3639,7 @@ def doctor_codex(
         f"`{CODEX_HOME_ENV}` is {raw_home!r}, and Codex doesn't expand `~` "
         "in it: it reads the value as a path under the folder you start "
         "Codex in, and refuses to start where no such folder exists"
-        if os.path.expanduser(raw_home) != raw_home
+        if tilde
         else f"Codex refuses to start with {config_path}" if (
             report.config_rejected is not None
             or report.config_hooks_rejected is not None
@@ -3645,6 +3651,11 @@ def doctor_codex(
             "table and the [hooks.state] approvals Codex reads"
         ) if cfg_error is not None
         else _launch_off_reason(cfg, config_path)
+    )
+    # #1812: True when Codex may still start the hooks doctor counts no run
+    # for: it can't parse config.toml, or doesn't check a [features] value.
+    hooks_off_unsure = hooks_off is not None and not tilde and (
+        cfg_error is not None or hooks_off.startswith(_UNCHECKED_FEATURE)
     )
     if cfg_error is not None and config_text is not None:
         for number, key, line in _names_by_line(config_text):
@@ -3730,6 +3741,12 @@ def doctor_codex(
             frozenset[str], str, tuple[object, ...], str, str,
             tuple[object, ...], str,
         ]],
+    ] = {}
+    # The path, the file phrase, the command, and why doctor counts no run,
+    # of each copy of setup's command in a file Codex may load while doctor
+    # can't tell whether it does, per event and program (#1812).
+    unsure_copies: dict[
+        tuple[str, str], list[tuple[tuple[object, ...], str, str, str]],
     ] = {}
     # The command, the file, and the path of each run of a program in an
     # event where setup writes no handler of that program.
@@ -3861,6 +3878,10 @@ def doctor_codex(
                             (toml_runs if tag == "toml" else json_runs).add(
                                 (event, setup_runs[command]),
                             )
+                            if hooks_off is None or hooks_off_unsure:
+                                unsure_copies.setdefault(
+                                    (event, setup_runs[command]), [],
+                                ).append((path, where, command, off))
                         own_keys = (
                             _names_in(command)
                             if own and command is not None else []
@@ -4059,6 +4080,20 @@ def doctor_codex(
                 f"one copy and delete the others: {command}",
             )
             accounted.update((tag, field_path, k) for k in _names_in(command))
+    for (event, key), copies_here in sorted(unsure_copies.items()):
+        # #1812: Codex may load the file and start each copy, so each one
+        # gets a line when an event holds more than one.
+        if len(copies_here) < 2:
+            continue
+        for path, where, command, why in copies_here:
+            warn(
+                f"{event} handler at `{_render_path(path)}`{where} is a copy "
+                f"of the {key} command `aelf setup --host codex` writes, and "
+                f"doctor counts no run for it, because {why}. If Codex starts "
+                f"its hooks, a fire that runs all {len(copies_here)} copies "
+                "starts the command once for each; keep one copy and delete "
+                f"the others: {command}",
+            )
     for (event, key), copies in sorted(misplaced.items()):
         # #1812: a copy of setup's command is a run, but setup writes it in
         # another event, so it isn't setup's handler here.
