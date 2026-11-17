@@ -2383,8 +2383,10 @@ def _load_toml(path: Path) -> _TomlFile:
     reads an integer too long for Python's `int` as out of range.
 
     Its parser skips one UTF-8 byte order mark at the start of the file
-    (`Lexer::new` in toml_parser 1.1.5's src/lexer/mod.rs, lines 33-45),
-    and real codex-cli 0.167.1 loads a config.toml that starts with one and
+    (`Lexer::new` in src/lexer/mod.rs, lines 33-45, of toml_parser 1.1.3,
+    the version codex-rs/Cargo.lock locks at
+    openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9), and real
+    codex-cli 0.167.1 loads a config.toml that starts with one and
     refuses to start on one that starts with two. `tomllib` rejects the
     mark, so doctor removes one before it reads the file, and `tomllib`
     still rejects a second (#1812).
