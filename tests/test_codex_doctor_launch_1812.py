@@ -1152,12 +1152,6 @@ def test_doctor_prints_a_fail_line_that_is_not_utf8_on_a_strict_stream(
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.skipif(
-    os.name == "nt", reason="Windows paths are text, not bytes",
-)
-
-
-@pytest.mark.timeout(60)
 @pytest.mark.parametrize(
     ("spelling", "counted"), [("made absolute", True), ("as written", False)],
 )
