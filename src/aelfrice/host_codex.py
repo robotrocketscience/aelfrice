@@ -2900,27 +2900,58 @@ _NAME_SPLITTERS: Final[dict[int, int | None]] = str.maketrans(
 )
 
 
+#: `_NAME_SPLITTERS` with `\` read as a path separator, `/`, instead of
+#: deleted: the second reading in which `_name_starts` looks for the bare
+#: CLI, so that a Windows path such as `C:\bin\aelf.exe` names it (#1812).
+_PATH_SPLITTERS: Final[dict[int, str | None]] = str.maketrans({
+    "'": None, '"': None, "`": None, "^": None, "\\": "/",
+})
+
+
 #: The bare `aelf` CLI as a word in a folded string: no letter, digit,
-#: `_`, or `-` on either side, and no `/` or `\` after it, which would make
-#: it a folder. Each other name in `_PROGRAM_NAMES` starts with `aelf-`, and
-#: the package's own name starts with `aelf` too, so a plain substring test
-#: for `aelf` would match every one of them.
+#: `_`, or `-` on either side, and no `/` after it, which would make it a
+#: folder. Each other name in `_PROGRAM_NAMES` starts with `aelf-`, and the
+#: package's own name starts with `aelf` too, so a plain substring test for
+#: `aelf` would match every one of them.
 _BARE_CLI: Final[re.Pattern[str]] = re.compile(
-    r"(?<![a-z0-9_-])aelf(?![a-z0-9_/\\-])",
+    r"(?<![a-z0-9_-])aelf(?![a-z0-9_/-])",
 )
 
 
-def _name_starts(folded: str) -> list[tuple[int, str]]:
-    """Where each program of `_PROGRAM_NAMES` starts in `folded`, and the
-    program: any substring for a name with a `-`, and `_BARE_CLI` for the
-    bare CLI."""
-    found: list[tuple[int, str]] = [
-        (m.start(), "aelf") for m in _BARE_CLI.finditer(folded)
+def _fold(
+    text: str, table: dict[int, int | None] | dict[int, str | None],
+) -> tuple[str, list[int]]:
+    """`text` as `_names_in` reads it: each backslash-newline pair deleted,
+    each character translated by `table` and folded to lower case, and the
+    index in `text` of each character of the result."""
+    folded: list[str] = []
+    origin: list[int] = []
+    pos = 0
+    while pos < len(text):
+        if text.startswith("\\\n", pos):
+            pos += 2
+            continue
+        for part in text[pos].translate(table).casefold():
+            folded.append(part)
+            origin.append(pos)
+        pos += 1
+    return "".join(folded), origin
+
+
+def _name_starts(folded: str, as_path: str) -> list[tuple[int, int, str]]:
+    """Where each program of `_PROGRAM_NAMES` starts, and the program: in
+    `folded` (reading 0), any substring for a name with a `-` and
+    `_BARE_CLI` for the bare CLI, and in `as_path` (reading 1), `_BARE_CLI`
+    alone."""
+    found: list[tuple[int, int, str]] = [
+        (reading, m.start(), "aelf")
+        for reading, text in enumerate((folded, as_path))
+        for m in _BARE_CLI.finditer(text)
     ]
     for key in sorted(_PROGRAM_NAMES - {"aelf"}):
         start = folded.find(key)
         while start >= 0:
-            found.append((start, key))
+            found.append((0, start, key))
             start = folded.find(key, start + 1)
     return found
 
@@ -2933,10 +2964,14 @@ def _names_in(text: str) -> list[str]:
     `_NAME_SPLITTERS`, which its quote removal deletes. So
     `aelf-sess''ion-start-hook`, `aelf-"session"-start-hook`, and
     `aelf-sess\\ion-start-hook` name the program, as they do to a shell
-    (#1812). Doctor reads no other shell syntax.
+    (#1812). Doctor reads no other shell syntax. The bare CLI also counts
+    in a second reading, `_PATH_SPLITTERS`, which reads `\\` as `/`, so
+    `C:\\bin\\aelf.exe` names it and `C:\\aelf\\bin` doesn't.
     """
-    folded = text.replace("\\\n", "").translate(_NAME_SPLITTERS).casefold()
-    return sorted({key for _start, key in _name_starts(folded)})
+    joined = text.replace("\\\n", "")
+    folded = joined.translate(_NAME_SPLITTERS).casefold()
+    as_path = joined.translate(_PATH_SPLITTERS).casefold()
+    return sorted({key for _r, _s, key in _name_starts(folded, as_path)})
 
 
 def _names_by_line(text: str) -> list[tuple[int, str, str]]:
@@ -2946,23 +2981,13 @@ def _names_by_line(text: str) -> list[tuple[int, str, str]]:
     For a file `tomllib` can't parse, which Codex may still load (#1812).
     A name split by a backslash-newline counts on the line it starts on.
     """
-    folded: list[str] = []
-    origin: list[int] = []
-    pos = 0
-    while pos < len(text):
-        if text.startswith("\\\n", pos):
-            pos += 2
-            continue
-        char = text[pos]
-        if ord(char) not in _NAME_SPLITTERS:
-            for part in char.casefold():
-                folded.append(part)
-                origin.append(pos)
-        pos += 1
+    folded, origin = _fold(text, _NAME_SPLITTERS)
+    as_path, path_origin = _fold(text, _PATH_SPLITTERS)
+    origins = (origin, path_origin)
     lines = text.split("\n")
     found = {
-        (text.count("\n", 0, origin[start]) + 1, key)
-        for start, key in _name_starts("".join(folded))
+        (text.count("\n", 0, origins[reading][start]) + 1, key)
+        for reading, start, key in _name_starts(folded, as_path)
     }
     return [
         (number, key, lines[number - 1].rstrip("\r"))
