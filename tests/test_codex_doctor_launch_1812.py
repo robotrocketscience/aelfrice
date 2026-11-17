@@ -829,8 +829,10 @@ def test_doctor_reads_the_codex_home_codex_reads_for_any_home(
     """With `CODEX_HOME` unset, doctor reads the Codex home Codex reads for
     any `HOME`: the password database's home folder for an empty or unset
     `HOME`, and a folder under the one you run it in for a relative one or
-    one that starts with `~`. Doctor doesn't raise, and reads no skills
-    folder where Codex reads none."""
+    one that starts with `~`. Once the CLI has loaded, doctor doesn't raise,
+    and reads no skills folder where Codex reads none. Under a `HOME` that
+    starts with `~`, the CLI itself raises as it loads, a known limit
+    tracked in #1930, so this test pins the Codex code only."""
     codex_dir, passwd = _home_case(tmp_path, monkeypatch, case)
     codex_dir.mkdir(parents=True)
     install_codex_hooks(codex_dir / "hooks.json")
