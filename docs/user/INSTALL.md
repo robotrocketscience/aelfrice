@@ -170,6 +170,8 @@ Codex reads its configuration from `$CODEX_HOME` when that variable has a non-em
 
 A `$CODEX_HOME` that doesn't exist is an error, not a condition for a fallback, and a `$CODEX_HOME` that names something other than a directory, or that aelfrice can't read, such as one under a folder you can't search, is an error too. In each case, setup, doctor, and unsetup refuse the operation, create nothing, and leave `~/.codex` unchanged.
 
+A Codex home that you can't search, such as one with mode `644` or `000`, is an error as well, whether `$CODEX_HOME` names it or it's `~/.codex`. Setup and unsetup exit 1 with a message that names `hooks.json` and the system error, and write nothing. Doctor exits 1 with a warning that names `hooks.json` and says it can't tell whether the file exists, and it reads `config.toml` as a file Codex can't read, which Codex refuses to start with. A `~/.codex` under a folder you can't search makes doctor exit 1 with a message that names it.
+
 Both refusals match how Codex behaves. `CODEX_HOME=/nowhere codex mcp list` reports `CODEX_HOME points to "/nowhere", but that path does not exist` and then stops.
 
 Codex doesn't expand a `~` at the start of `$CODEX_HOME`. It reads `CODEX_HOME='~/codex'` as the folder `~/codex` under the folder you start Codex in, and refuses to start when no such folder is there. Doctor and unsetup read the value the same way, without expanding `~`, and doctor prints the path it reads on its first line, or names it when it exits 1 because the path doesn't exist. Setup exits 1 for a `$CODEX_HOME` that starts with `~` and writes nothing, because the folder Codex reads depends on where you start it. Set `$CODEX_HOME` to the expanded path, such as `$HOME/codex`, and run setup again.
