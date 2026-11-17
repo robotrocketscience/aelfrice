@@ -1105,6 +1105,78 @@ def test_setup_and_unsetup_print_errors_that_are_not_utf8_on_a_strict_stream(
 @pytest.mark.skipif(
     os.name == "nt", reason="Windows paths are text, not bytes",
 )
+def test_setup_and_unsetup_print_a_codex_home_that_is_not_utf8_on_a_strict_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `CODEX_HOME` that names a missing folder with a byte that isn't
+    UTF-8 prints as an escape in setup's and unsetup's refusal. The folder
+    need not exist, so this runs on every POSIX file system."""
+    raw = os.fsdecode(os.fsencode(str(tmp_path)) + b"/c\xff")
+    monkeypatch.setenv("CODEX_HOME", raw)
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=False,
+    )
+    for verb, call in (
+        ("setup", _cmd_setup_codex), ("unsetup", _cmd_unsetup_codex),
+    ):
+        err = _strict_utf8()
+        monkeypatch.setattr(sys, "stderr", err)
+        rc = call(args, io.StringIO(), skills_dest=tmp_path / "s")
+        assert rc == 1
+        assert _written(err).startswith(
+            f"{verb} --host codex: $CODEX_HOME points to {tmp_path}/c\\udcff, "
+            "but that path does not exist",
+        ), _written(err)
+
+
+@pytest.mark.timeout(60)
+def test_setup_and_unsetup_print_skills_lines_that_are_not_utf8_on_strict_streams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup's up-to-date line and unsetup's failed-removal line name a
+    skills folder that can hold a byte that isn't UTF-8, as on Linux ext4.
+    The skills calls are stubbed to report such a folder, so the case runs
+    on every system."""
+    import aelfrice.host_codex as host_codex
+    from aelfrice.host_codex import CodexSkillsResult
+
+    bad = Path(f"{tmp_path}/s\udcff")
+    monkeypatch.setattr(
+        host_codex, "install_codex_skills",
+        lambda *_a, **_k: CodexSkillsResult(dest_dir=bad),
+    )
+
+    def fail(*_a: object, **_k: object) -> CodexSkillsResult:
+        raise OSError(f"can't remove {bad}")
+
+    monkeypatch.setattr(host_codex, "remove_codex_skills", fail)
+    hooks = tmp_path / "codex" / "hooks.json"
+    hooks.parent.mkdir()
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=True,
+    )
+    out, err = _strict_utf8(), _strict_utf8()
+    monkeypatch.setattr(sys, "stderr", err)
+    assert _cmd_setup_codex(args, out, hooks_path=hooks, skills_dest=bad) == 0
+    assert (
+        f"Codex skills already up to date in {tmp_path}/s\\udcff\n"
+    ) in _written(out), _written(out)
+    err = _strict_utf8()
+    monkeypatch.setattr(sys, "stderr", err)
+    rc = _cmd_unsetup_codex(
+        args, io.StringIO(), hooks_path=hooks, skills_dest=bad,
+    )
+    assert rc == 1
+    assert _written(err) == (
+        "unsetup --host codex: skills removal failed: can't remove "
+        f"{tmp_path}/s\\udcff\n"
+    ), _written(err)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows paths are text, not bytes",
+)
 def test_doctor_prints_a_skills_folder_that_is_not_utf8_on_a_strict_stream(
     tmp_path: Path,
 ) -> None:
