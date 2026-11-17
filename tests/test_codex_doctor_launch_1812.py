@@ -709,6 +709,71 @@ def test_doctor_prints_a_codex_home_that_is_not_utf8_on_a_strict_stream(
 @pytest.mark.skipif(
     os.name == "nt", reason="Windows paths are text, not bytes",
 )
+def test_setup_and_unsetup_print_paths_that_are_not_utf8_on_strict_streams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup and unsetup print each path through the escape doctor uses,
+    on stdout and stderr. The skills folder and the second hooks.json need
+    not exist, so this runs where a name must be UTF-8, such as macOS APFS,
+    where setup's skills install fails and prints the path to stderr."""
+    raw = os.fsencode(str(tmp_path))
+    skills = Path(os.fsdecode(raw + b"/s\xff"))
+    missing = Path(os.fsdecode(raw + b"/c\xff/hooks.json"))
+    hooks = tmp_path / "codex" / "hooks.json"
+    hooks.parent.mkdir()
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=True,
+    )
+    streams: dict[str, tuple[io.TextIOWrapper, io.TextIOWrapper]] = {}
+    for verb, call, path in (
+        ("setup", _cmd_setup_codex, hooks),
+        ("unsetup", _cmd_unsetup_codex, missing),
+    ):
+        out, err = _strict_utf8(), _strict_utf8()
+        monkeypatch.setattr(sys, "stderr", err)
+        call(args, out, hooks_path=path, skills_dest=skills)
+        streams[verb] = (out, err)
+    setup = _written(streams["setup"][0]) + _written(streams["setup"][1])
+    assert f"{tmp_path}/s\\udcff" in setup, setup
+    unsetup = _written(streams["unsetup"][0])
+    assert unsetup == (
+        f"no aelfrice entries in {tmp_path}/c\\udcff/hooks.json\n"
+        f"no aelfrice Codex skills in {tmp_path}/s\\udcff\n"
+    ), unsetup + _written(streams["unsetup"][1])
+
+
+@pytest.mark.timeout(60)
+def test_setup_and_unsetup_print_errors_that_are_not_utf8_on_a_strict_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An error message that names a path with a byte that isn't UTF-8
+    prints as an escape on stderr. The error is stubbed, so the case runs
+    on every system."""
+    import aelfrice.host_codex as host_codex
+    from aelfrice.host_codex import CodexInstallResult
+
+    bad = Path(f"{tmp_path}/c\udcff/hooks.json")
+    failed = CodexInstallResult(path=bad, changed=False, error=f"x {bad}")
+    monkeypatch.setattr(host_codex, "install_codex_hooks", lambda *a, **k: failed)
+    monkeypatch.setattr(host_codex, "remove_codex_hooks", lambda *a, **k: failed)
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=True,
+    )
+    shown = f"x {tmp_path}/c\\udcff/hooks.json\n"
+    for verb, call in (
+        ("setup", _cmd_setup_codex), ("unsetup", _cmd_unsetup_codex),
+    ):
+        err = _strict_utf8()
+        monkeypatch.setattr(sys, "stderr", err)
+        rc = call(args, io.StringIO(), hooks_path=bad, skills_dest=tmp_path)
+        assert rc == 1
+        assert _written(err) == f"{verb} --host codex: {shown}", _written(err)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows paths are text, not bytes",
+)
 
 
 @pytest.mark.timeout(60)
