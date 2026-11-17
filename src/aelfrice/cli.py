@@ -13200,6 +13200,36 @@ def _typed_spelling(
     return fallback
 
 
+def _setup_home_refusal() -> str | None:
+    """The refusal `aelf setup` prints for a `$HOME` it won't write under,
+    or None (#1812).
+
+    For every host, setup writes under your home folder: the Claude
+    settings and slash commands, files under `~/.aelfrice` such as the
+    Claude auto-install opt-out, and the Codex skills. Python reads that
+    folder from `$HOME`, so an empty value puts those files under `/`, and
+    a relative one, such as one that starts with `~`, puts them under the
+    folder you run setup in. Setup refuses both, whatever `$CODEX_HOME`
+    holds. An unset `$HOME` isn't refused here: Python then reads the
+    password database, as Codex does. On Windows, Python reads the home
+    folder from `USERPROFILE`, so nothing is refused there.
+    """
+    if os.name == "nt":  # pragma: no cover - Windows
+        return None
+    home = os.environ.get("HOME")
+    if home is None or home.startswith("/"):
+        return None
+    what = (
+        "$HOME is empty"
+        if home == ""
+        else f"$HOME is {home!r}, which isn't an absolute path"
+    )
+    return (
+        f"aelf setup: {what}. Setup writes under your home folder, so set "
+        "HOME to an absolute path and run setup again; nothing was written"
+    )
+
+
 def _codex_option_rejection(
     parser: argparse.ArgumentParser,
     cmd: str | None,
@@ -13324,6 +13354,13 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
     if codex_rejection is not None:
         print(codex_rejection, file=sys.stderr)
         return 2
+    if cmd == "setup":
+        # #1812: ahead of the update check and every host's executor, so
+        # setup writes nothing under a home folder it refuses.
+        home_refusal = _setup_home_refusal()
+        if home_refusal is not None:
+            print(_doctor_text(home_refusal), file=sys.stderr)
+            return 1
     if cmd not in _AUTO_INSTALL_SKIP_CMDS:
         # Idempotent post-upgrade hook installer (#623). Gated on a
         # version stamp at ~/.aelfrice/installed-manifest-version, so
