@@ -854,6 +854,15 @@ def test_doctor_reads_the_codex_home_codex_reads_for_any_home(
         ) in text, text
 
 
+def _setup_args(*, codex_skills: bool) -> argparse.Namespace:
+    """The namespace `aelf setup --host codex` parses, with or without
+    `--no-codex-skills`."""
+    return argparse.Namespace(
+        host="codex", force=False, status_message=None,
+        codex_skills=codex_skills,
+    )
+
+
 @pytest.mark.timeout(60)
 @pytest.mark.skipif(os.name == "nt", reason="Codex reads HOME on POSIX")
 @pytest.mark.parametrize(
@@ -863,13 +872,13 @@ def test_setup_refuses_a_home_that_is_empty_or_not_absolute(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str], case: str,
 ) -> None:
-    """With `CODEX_HOME` unset, setup exits 1 for an empty `HOME`, a
-    relative one, or one that starts with `~`, asks for an absolute `HOME`
-    or a `CODEX_HOME`, and writes nothing."""
+    """With `CODEX_HOME` unset, the Codex half of setup exits 1 for an
+    empty `HOME`, a relative one, or one that starts with `~`, asks for an
+    absolute `HOME` or a `CODEX_HOME`, and writes nothing."""
     codex_dir, _passwd = _home_case(tmp_path, monkeypatch, case)
     home = _HOME_CASES[case][0]
     before = sorted(tmp_path.rglob("*"))
-    rc = main(["setup", "--host", "codex"])
+    rc = _cmd_setup_codex(_setup_args(codex_skills=True), io.StringIO())
     err = capsys.readouterr().err
     assert rc == 1, err
     what = (
@@ -915,16 +924,14 @@ def test_setup_refuses_skills_under_a_home_codex_reads_none_under(
     capsys: pytest.CaptureFixture[str], skills: bool,
 ) -> None:
     """With `CODEX_HOME` set and `HOME` relative, Codex reads no user
-    skills folder. Setup exits 1 and writes nothing unless you pass
-    `--no-codex-skills`, and then writes hooks.json only."""
+    skills folder. The Codex half of setup exits 1 and writes nothing
+    unless it is told to skip the skills, and then writes hooks.json only."""
     _codex_dir, _passwd = _home_case(tmp_path, monkeypatch, "tilde user")
     codex_dir = tmp_path / "codex"
     codex_dir.mkdir()
     monkeypatch.setenv("CODEX_HOME", str(codex_dir))
     before = sorted(tmp_path.rglob("*"))
-    rc = main(
-        ["setup", "--host", "codex"] + ([] if skills else ["--no-codex-skills"]),
-    )
+    rc = _cmd_setup_codex(_setup_args(codex_skills=skills), io.StringIO())
     captured = capsys.readouterr()
     if skills:
         assert rc == 1, captured.err
