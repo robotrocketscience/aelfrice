@@ -20,7 +20,12 @@ from typing import Any, Final, cast
 
 import pytest
 
-from aelfrice.cli import _cmd_doctor_codex, main
+from aelfrice.cli import (
+    _cmd_doctor_codex,
+    _cmd_setup_codex,
+    _cmd_unsetup_codex,
+    main,
+)
 from aelfrice.host_codex import (
     _PROGRAM_NAMES,
     _names_by_line,
@@ -698,6 +703,12 @@ def test_doctor_prints_a_codex_home_that_is_not_utf8_on_a_strict_stream(
         ) in _written(err), _written(err)
     else:
         assert f"[i] codex home: {shown}\n" in _written(out), _written(out)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows paths are text, not bytes",
+)
 
 
 @pytest.mark.timeout(60)
@@ -1539,6 +1550,116 @@ def test_doctor_reports_a_codex_home_under_a_folder_it_can_not_search(
         f"doctor --host codex: $CODEX_HOME points to {locked / 'codex'}, "
         "which aelfrice can't read ("
     ) in err.getvalue(), err.getvalue()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+@pytest.mark.parametrize("mode", [0o644, 0], ids=["644", "000"])
+def test_setup_and_unsetup_refuse_a_codex_home_they_can_not_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], mode: int,
+) -> None:
+    """In a Codex home you can't search, setup and unsetup exit 1 with a
+    message that names hooks.json and the system error, where Python 3.12
+    and 3.13 raise `PermissionError`, and write nothing."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    hooks = codex_dir / "hooks.json"
+    install_codex_hooks(hooks)
+    before = (sorted(p.name for p in codex_dir.iterdir()), hooks.read_bytes())
+    monkeypatch.setenv("CODEX_HOME", str(codex_dir))
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=True,
+    )
+    codex_dir.chmod(mode)
+    try:
+        rcs = {
+            "setup": _cmd_setup_codex(
+                args, io.StringIO(), skills_dest=tmp_path / "skills",
+            ),
+            "unsetup": _cmd_unsetup_codex(
+                args, io.StringIO(), skills_dest=tmp_path / "skills",
+            ),
+        }
+    finally:
+        codex_dir.chmod(0o755)
+    err = capsys.readouterr().err
+    assert rcs == {"setup": 1, "unsetup": 1}, err
+    assert err == (
+        f"setup --host codex: can't read {hooks} ([Errno 13] Permission "
+        f"denied: '{hooks}'); nothing was written\n"
+        f"unsetup --host codex: can't read {hooks} ([Errno 13] Permission "
+        f"denied: '{hooks}'); nothing was changed\n"
+    ), err
+    assert (sorted(p.name for p in codex_dir.iterdir()), hooks.read_bytes()) == before
+    assert not (tmp_path / "skills").exists()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+@pytest.mark.parametrize("mode", [0o644, 0], ids=["644", "000"])
+def test_doctor_names_the_files_in_a_codex_home_it_can_not_search(
+    tmp_path: Path, mode: int,
+) -> None:
+    """Doctor can't tell whether hooks.json exists in a Codex home it can't
+    search, so it says so, names the file, and exits 1, and it reads
+    config.toml as a file Codex can't read and refuses to start with."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    approve_codex_hooks(codex_dir)
+    codex_dir.chmod(mode)
+    try:
+        rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    finally:
+        codex_dir.chmod(0o755)
+    assert rc == 1, out
+    assert "[-] codex hooks.json: present=unknown valid=False " in out, out
+    assert (
+        f"[warn] {hooks} is unreadable as hooks config (doctor can't tell "
+        "whether the file exists, because a stat of it fails: [Errno 13] "
+        f"Permission denied: '{hooks}'); Codex will ignore or reject it\n"
+    ) in out, out
+    config = codex_dir / "config.toml"
+    assert (
+        f"[warn] Codex refuses to start with {config}, because Codex can't "
+        f"read the file: [Errno 13] Permission denied: '{config}'\n"
+    ) in out, out
+    assert "does not exist" not in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+def test_doctor_reports_a_default_codex_home_under_a_folder_it_can_not_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With `CODEX_HOME` unset, a `~/.codex` under a folder doctor can't
+    search is one Codex can't read either, so doctor names it and exits 1
+    instead of saying that Codex isn't installed."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    locked = tmp_path / "locked"
+    (locked / "home" / ".codex").mkdir(parents=True)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(locked / "home"))
+    out, err = io.StringIO(), io.StringIO()
+    monkeypatch.setattr(sys, "stderr", err)
+    locked.chmod(0)
+    try:
+        rc = _cmd_doctor_codex(
+            argparse.Namespace(host="codex"), out,
+            skills_dest=tmp_path / "skills",
+        )
+    finally:
+        locked.chmod(0o755)
+    assert rc == 1, out.getvalue() + err.getvalue()
+    assert err.getvalue().startswith(
+        "doctor --host codex: doctor can't tell whether "
+        f"{locked / 'home' / '.codex'} exists ([Errno 13] Permission denied",
+    ), err.getvalue()
+    assert "not found" not in out.getvalue(), out.getvalue()
 
 
 # --- the programs doctor names ----------------------------------------------
