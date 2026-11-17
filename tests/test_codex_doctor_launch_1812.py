@@ -16,7 +16,7 @@ import sys
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -957,78 +957,68 @@ def _hooks_with(hooks: Path, place: str, value: str) -> None:
     )
 
 
+#: Numbers a 64-bit float can't hold. The codex binary builds serde_json
+#: with `arbitrary_precision`, so none of them fails the parse.
+_WIDE_NUMBERS: Final[list[str]] = ["1e400", "-1e400", "1" + "0" * 400, _LONG_INT]
+_WIDE_IDS: Final[list[str]] = ["1e400", "-1e400", "401 digits", "past the digit limit"]
+
+
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("place", sorted(_PLACES))
 @pytest.mark.parametrize(
-    ("value", "shown"),
-    [
-        ("1e400", "`1e400`"),
-        ("-1e400", "`-1e400`"),
-        ("1" + "0" * 400, "a number 401 characters long that starts "
-         "`100000000000`"),
-        (_LONG_INT, f"a number {len(_LONG_INT)} characters long that starts "
-         "`111111111111`"),
-    ],
-    ids=["1e400", "-1e400", "401 digits", "past the digit limit"],
+    "place", sorted(p for p in _PLACES if p != "a timeout"),
 )
-def test_doctor_counts_no_run_beside_a_number_a_float_can_not_hold(
-    tmp_path: Path, place: str, value: str, shown: str,
+@pytest.mark.parametrize("value", _WIDE_NUMBERS, ids=_WIDE_IDS)
+def test_doctor_counts_runs_beside_a_number_a_float_can_not_hold(
+    tmp_path: Path, place: str, value: str,
 ) -> None:
-    """serde_json rejects hooks.json over a number a 64-bit float can't
-    hold where Codex reads the value, and skips it where Codex doesn't, so
-    doctor can't tell whether Codex loads the file. It counts no run in
-    the file, names the number's path, and doesn't raise on an integer
-    longer than Python's `int` reads."""
+    """Codex loads hooks.json with a number a 64-bit float can't hold in a
+    value it skips or doesn't read as a typed field, so doctor counts the
+    two copies there, and doesn't raise on an integer longer than Python's
+    `int` reads."""
     codex_dir, hooks, _ours = _installed(tmp_path)
     _hooks_with(hooks, place, value)
     rc, out = _doctor(codex_dir, tmp_path / "skills")
-    assert rc == 0, out
-    assert "times" not in out, out
-    # Codex may load the file and start both copies, so each gets a line,
-    # and none gets a last-pass line.
-    assert "outside the handlers" not in out, out
-    for h in (0, 1):
-        assert (
-            f"[warn] SessionStart handler at `hooks.SessionStart[0].hooks[{h}]` "
-            "is a copy of the aelf-session-start-hook command `aelf setup "
-            "--host codex` writes, and doctor counts no run for it, because "
-            f"doctor can't tell whether Codex loads {hooks}, which holds a "
-            "number a 64-bit float can't hold. If Codex starts its hooks, a "
-            "fire that runs all 2 copies starts the command once for each"
-        ) in out, out
+    assert rc == 1, out
     assert (
-        f"[warn] {hooks} holds {shown} at {_PLACES[place][1]}, which a 64-bit "
-        "float can't hold. serde_json, which Codex reads the file with, "
-        "rejects the whole file over such a number where Codex reads the "
-        "value and loads the file where Codex skips it, so doctor can't tell "
-        "whether Codex loads the file and counts no duplicate run in it\n"
+        "[FAIL] SessionStart starts the aelf-session-start-hook command 2 "
+        "times"
     ) in out, out
+    assert "Codex loads no hook" not in out, out
+    assert "float" not in out, out
 
 
 @pytest.mark.timeout(60)
-def test_doctor_says_why_it_counts_no_run_for_a_wrapper_beside_such_a_number(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    [
+        ("timeout", "has a `timeout` that isn't a count of seconds"),
+        (
+            "additionalContextLimit",
+            "has an `additionalContextLimit` that isn't a count",
+        ),
+    ],
+)
+@pytest.mark.parametrize("value", _WIDE_NUMBERS, ids=_WIDE_IDS)
+def test_doctor_rejects_a_hooks_json_with_such_a_number_in_a_typed_field(
+    tmp_path: Path, field: str, reason: str, value: str,
 ) -> None:
-    """A handler that names an aelfrice program in a hooks.json doctor
-    can't tell Codex loads gets a line that says why it counts no run."""
+    """Such a number reaches a typed field of a handler as a map, which the
+    field rejects, so Codex loads no hook from the file. Doctor exits 1
+    and names the handler, and counts neither copy."""
     codex_dir, hooks, _ours = _installed(tmp_path)
+    _two_in_hooks_json(hooks)
     doc = json.loads(hooks.read_text(encoding="utf-8"))
-    doc["hooks"]["SessionStart"][0]["hooks"].append({
-        "type": "command", "command": "/usr/bin/env aelf-session-start-hook",
-    })
-    doc["hooks"]["Foo"] = "@@VALUE@@"
+    doc["hooks"]["SessionStart"][0]["hooks"][1][field] = "@@VALUE@@"
     hooks.write_text(
-        json.dumps(doc).replace('"@@VALUE@@"', "1e400"), encoding="utf-8",
+        json.dumps(doc).replace('"@@VALUE@@"', value), encoding="utf-8",
     )
     rc, out = _doctor(codex_dir, tmp_path / "skills")
-    assert rc == 0, out
+    assert rc == 1, out
     assert (
-        "[warn] SessionStart handler at `hooks.SessionStart[0].hooks[1]` names "
-        "aelf-session-start-hook, and doctor counts no run for it, because "
-        f"doctor can't tell whether Codex loads {hooks}, which holds a number "
-        "a 64-bit float can't hold. Handler: /usr/bin/env "
-        "aelf-session-start-hook\n"
+        f"[warn] Codex loads no hook from {hooks}, because it rejects the "
+        f"whole file: SessionStart group 1, handler 2 {reason}\n"
     ) in out, out
+    assert "times" not in out, out
 
 
 @pytest.mark.timeout(60)

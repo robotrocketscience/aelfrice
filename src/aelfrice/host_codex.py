@@ -1962,21 +1962,35 @@ def _json_container_end(text: str, start: int) -> int:
     return len(text)
 
 
-def _doubtful_number(token: str) -> bool:
-    """True for a number or constant token that Python's `json` reads and
-    serde_json may not: `NaN`, `Infinity`, `-Infinity`, or a number that a
-    64-bit float can't hold, such as `1e400` or an integer of 309 digits.
-    serde_json reads an integer outside u64 and i64 as a float, and fails
-    with "number out of range" when that float is infinite, but only where
-    it reads the value (`parse_long_integer` and `f64_from_parts` in
-    serde_json 1.0.149's src/de.rs). `ignore_value` skips a number
-    without reading it."""
-    return token in _JSON_CONSTANTS or math.isinf(float(token))
+def _wide_number(token: str) -> bool:
+    """True for a number token that a 64-bit float can't hold, such as
+    `1e400` or an integer of 309 digits or more.
+
+    The codex binary builds serde_json with `arbitrary_precision`
+    (codex-rs/exec-server-protocol/Cargo.toml, line 25, at
+    openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9, which Cargo
+    unifies across the binary), so no number's size fails the parse. A
+    number that isn't an integer in the range of a u64, or of an i64 when
+    it's negative, reaches a typed field as a map, which the field rejects
+    ("invalid type: map, expected u64"), and loads where Codex skips the
+    value (`parse_any_number` and `ParserNumber::visit` in serde_json
+    1.0.149's src/de.rs, lines 937-954 and 117-129). Real codex-cli
+    0.167.1 loads a hooks.json with `"x": 1e400` in a handler, and rejects
+    one with `"timeout": 1e400`. Doctor's checks reject a float in each
+    such field too (#1812)."""
+    return math.isinf(float(token))
 
 
-def _doubtful_in(text: str, start: int, end: int) -> str | None:
-    """The first doubtful number token (`_doubtful_number`) in
-    `text[start:end]`, or None."""
+#: What `_scan_json_depth` puts in place of a number `_wide_number` finds,
+#: so that `json.loads` doesn't raise on an integer longer than Python's
+#: `int` reads. It's a float, which each typed field that Codex reads
+#: rejects as serde_json rejects the number, and which no check reads as a
+#: count.
+_WIDE_NUMBER_STANDIN: Final[str] = "0.5"
+
+
+def _constant_in(text: str, start: int, end: int) -> str | None:
+    """The first `_JSON_CONSTANTS` token in `text[start:end]`, or None."""
     pos = start
     for _ in range(end - start + 1):
         found = _JSON_TOKEN.search(text, pos, end)
@@ -1984,28 +1998,21 @@ def _doubtful_in(text: str, start: int, end: int) -> str | None:
             return None
         pos = found.end()
         token = found.group()
-        if token[0] not in '"[]{},' and _doubtful_number(token):
+        if token in _JSON_CONSTANTS:
             return token
     return None
 
 
-def _doubt_place(doubt: tuple[tuple[object, ...], str, bool]) -> str:
-    """Where a doubtful number is, for a warning: its path, or the start of
-    the path of the value doctor cut that holds it."""
-    path, _token, cut = doubt
+def _constant_place(constant: tuple[tuple[object, ...], str, bool]) -> str:
+    """Where a `_JSON_CONSTANTS` token is, for a warning: its path, or the
+    start of the path of the value doctor cut that holds it."""
+    path, _token, cut = constant
     if cut:
         return (
             f"`{_render_path(path[:6])}...`, in a value nested "
             f"{_JSON_DEPTH_LIMIT} levels deep"
         )
     return f"`{_render_path(path[:16])}{'...' if len(path) > 16 else ''}`"
-
-
-def _shown_number(token: str) -> str:
-    """A number token for a warning, shortened when it's long."""
-    if len(token) <= 24:
-        return f"`{token}`"
-    return f"a number {len(token)} characters long that starts `{token[:12]}`"
 
 
 class _JsonScan(NamedTuple):
@@ -2018,9 +2025,9 @@ class _JsonScan(NamedTuple):
     #: The path of the first array or object that serde_json rejects for
     #: its depth (`_JSON_DEPTH_LIMIT`), or None.
     too_deep: tuple[object, ...] | None
-    #: The path and the token of each doubtful number (`_doubtful_number`),
-    #: and whether it's in a value doctor cut, where the path is the cut's.
-    doubts: list[tuple[tuple[object, ...], str, bool]]
+    #: The path and the token of each `_JSON_CONSTANTS` token, and whether
+    #: it's in a value doctor cut, where the path is the cut's.
+    constants: list[tuple[tuple[object, ...], str, bool]]
 
 
 def _scan_json_depth(text: str) -> _JsonScan:
@@ -2029,10 +2036,11 @@ def _scan_json_depth(text: str) -> _JsonScan:
     A container nested `_JSON_DEPTH_LIMIT` levels deep in a value serde
     skips (`_serde_skips`) becomes `null` in the returned text and its path
     is listed, so `json.loads` never nests more than
-    `_JSON_DEPTH_LIMIT - 1` levels. Each doubtful number outside such a
-    container becomes `0`, so `json.loads` neither reads `NaN` nor raises
-    on an integer longer than Python's `int` reads, and a check of the
-    value's type still finds a number there. The scan reads
+    `_JSON_DEPTH_LIMIT - 1` levels. Each `_JSON_CONSTANTS` token outside
+    such a container is listed and becomes `0`, so `json.loads` doesn't
+    read `NaN`, and each number `_wide_number` finds becomes
+    `_WIDE_NUMBER_STANDIN`, so `json.loads` doesn't raise on an integer
+    longer than Python's `int` reads. The scan reads
     strings, brackets, commas, numbers, and constants only. On a file that
     isn't JSON it can misplace a key, but `json.loads` then rejects that
     file anyway.
@@ -2040,7 +2048,7 @@ def _scan_json_depth(text: str) -> _JsonScan:
     frames: list[list[object]] = []
     pieces: list[str] = []
     cuts: list[tuple[object, ...]] = []
-    doubts: list[tuple[tuple[object, ...], str, bool]] = []
+    constants: list[tuple[tuple[object, ...], str, bool]] = []
     copied = 0
     pos = 0
     for _ in range(len(text) + 1):
@@ -2064,11 +2072,11 @@ def _scan_json_depth(text: str) -> _JsonScan:
             if len(frames) + 1 >= _JSON_DEPTH_LIMIT:
                 path = tuple(f[1] for f in frames)
                 if not _serde_skips(frames):
-                    return _JsonScan(text, cuts, path, doubts)
+                    return _JsonScan(text, cuts, path, constants)
                 end = _json_container_end(text, found.start())
-                inner = _doubtful_in(text, found.start(), end)
+                inner = _constant_in(text, found.start(), end)
                 if inner is not None:
-                    doubts.append((path, inner, True))
+                    constants.append((path, inner, True))
                 pieces += [text[copied:found.start()], "null"]
                 copied = pos = end
                 cuts.append(path)
@@ -2082,12 +2090,15 @@ def _scan_json_depth(text: str) -> _JsonScan:
                 frames[-1][1] = cast(int, frames[-1][1]) + 1
             elif frames:
                 frames[-1][2] = True
-        elif _doubtful_number(token):
-            doubts.append((tuple(f[1] for f in frames), token, False))
+        elif token in _JSON_CONSTANTS:
+            constants.append((tuple(f[1] for f in frames), token, False))
             pieces += [text[copied:found.start()], "0"]
             copied = pos
+        elif _wide_number(token):
+            pieces += [text[copied:found.start()], _WIDE_NUMBER_STANDIN]
+            copied = pos
     pieces.append(text[copied:])
-    return _JsonScan("".join(pieces), cuts, None, doubts)
+    return _JsonScan("".join(pieces), cuts, None, constants)
 
 
 #: The nesting limit of the toml crate Codex reads config.toml with
@@ -3477,20 +3488,11 @@ def doctor_codex(
         # #1812: Codex logs that it failed to read the file and loads no
         # hook from it, as it does for a file that isn't JSON.
         report.parse_error = unread
-    # #1812: the numbers a 64-bit float can't hold, which serde_json rejects
-    # where Codex reads them and skips where it doesn't, so doctor can't
-    # tell whether Codex loads the file.
-    json_doubts: list[tuple[tuple[object, ...], str, bool]] = []
     if raw_json is not None:
         try:
             scan = _scan_json_depth(raw_json)
             json_cuts, too_deep = scan.cuts, scan.too_deep
-            constant = next(
-                (d for d in scan.doubts if d[1] in _JSON_CONSTANTS), None,
-            )
-            json_doubts = [
-                d for d in scan.doubts if d[1] not in _JSON_CONSTANTS
-            ]
+            constant = scan.constants[0] if scan.constants else None
             parsed = (
                 None if too_deep is not None or constant is not None
                 else json.loads(scan.text, object_pairs_hook=_json_object)
@@ -3508,7 +3510,7 @@ def doctor_codex(
                 # #1812: serde_json rejects the constant in a value it skips
                 # too, so Codex loads no hook from the file.
                 report.hooks_file_rejected = (
-                    f"it holds `{constant[1]}` at {_doubt_place(constant)}, "
+                    f"it holds `{constant[1]}` at {_constant_place(constant)}, "
                     "which serde_json, which Codex reads the file with, "
                     "rejects at any place in a file"
                 )
@@ -3802,27 +3804,6 @@ def doctor_codex(
                 "so doctor can't tell whether Codex loads the file and "
                 "counts no duplicate run in it",
             )
-    # #1812: the same for a number a 64-bit float can't hold, which
-    # serde_json rejects where Codex reads it and skips where it doesn't.
-    # Doctor counts no run in hooks.json while it holds one.
-    json_unsure = (
-        f"doctor can't tell whether Codex loads {hooks_path}, which holds a "
-        "number a 64-bit float can't hold"
-        if json_doubts and hooks_doc is not None else None
-    )
-    if json_unsure is not None:
-        more = len(json_doubts) - 1
-        warn(
-            f"{hooks_path} holds {_shown_number(json_doubts[0][1])} at "
-            f"{_doubt_place(json_doubts[0])}"
-            + (f", and {more} more such number{'s' if more > 1 else ''}"
-               if more else "")
-            + ", which a 64-bit float can't hold. serde_json, which Codex "
-            "reads the file with, rejects the whole file over such a number "
-            "where Codex reads the value and loads the file where Codex "
-            "skips it, so doctor can't tell whether Codex loads the file "
-            "and counts no duplicate run in it",
-        )
     for tag, where, events in sources:
         for event, groups in events.items():
             if not isinstance(groups, list):
@@ -3862,7 +3843,7 @@ def doctor_codex(
                             )
                             accounted.add((tag, path, key))
                         continue
-                    off = hooks_off or (json_unsure if tag == "json" else None)
+                    off = hooks_off
                     if off is not None:
                         # #1812: no run counts, and setup's own handler in
                         # the group setup writes needs no line of its own
