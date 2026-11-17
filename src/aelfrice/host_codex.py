@@ -2910,6 +2910,12 @@ _PATH_SPLITTERS: Final[dict[int, str | None]] = str.maketrans({
 })
 
 
+#: A `\` and the one character after it, which the third reading in which
+#: `_name_starts` looks for the bare CLI reads as a space, so that an
+#: escape such as `\n` or `\t` right before it leaves it a word (#1812).
+_ESCAPE_PAIR: Final[re.Pattern[str]] = re.compile(r"\\.", re.DOTALL)
+
+
 #: The bare `aelf` CLI as a word in a folded string: no letter, digit,
 #: `_`, or `-` on either side, and no `/` after it, which would make it a
 #: folder. Each other name in `_PROGRAM_NAMES` starts with `aelf-`, and the
@@ -2922,32 +2928,47 @@ _BARE_CLI: Final[re.Pattern[str]] = re.compile(
 
 def _fold(
     text: str, table: dict[int, int | None] | dict[int, str | None],
+    *, escapes: bool = False,
 ) -> tuple[str, list[int]]:
     """`text` as `_names_in` reads it: each backslash-newline pair deleted,
-    each character translated by `table` and folded to lower case, and the
-    index in `text` of each character of the result."""
-    folded: list[str] = []
-    origin: list[int] = []
+    then, with `escapes`, each `_ESCAPE_PAIR` read as a space, and each
+    other character translated by `table` and folded to lower case; and
+    the index in `text` of each character of the result."""
+    joined: list[tuple[str, int]] = []
     pos = 0
     while pos < len(text):
         if text.startswith("\\\n", pos):
             pos += 2
             continue
-        for part in text[pos].translate(table).casefold():
+        joined.append((text[pos], pos))
+        pos += 1
+    folded: list[str] = []
+    origin: list[int] = []
+    at = 0
+    while at < len(joined):
+        char, pos = joined[at]
+        if escapes and char == "\\" and at + 1 < len(joined):
+            folded.append(" ")
+            origin.append(pos)
+            at += 2
+            continue
+        for part in char.translate(table).casefold():
             folded.append(part)
             origin.append(pos)
-        pos += 1
+        at += 1
     return "".join(folded), origin
 
 
-def _name_starts(folded: str, as_path: str) -> list[tuple[int, int, str]]:
+def _name_starts(
+    folded: str, as_path: str, escaped: str,
+) -> list[tuple[int, int, str]]:
     """Where each program of `_PROGRAM_NAMES` starts, and the program: in
     `folded` (reading 0), any substring for a name with a `-` and
-    `_BARE_CLI` for the bare CLI, and in `as_path` (reading 1), `_BARE_CLI`
-    alone."""
+    `_BARE_CLI` for the bare CLI, and in `as_path` (reading 1) and
+    `escaped` (reading 2), `_BARE_CLI` alone."""
     found: list[tuple[int, int, str]] = [
         (reading, m.start(), "aelf")
-        for reading, text in enumerate((folded, as_path))
+        for reading, text in enumerate((folded, as_path, escaped))
         for m in _BARE_CLI.finditer(text)
     ]
     for key in sorted(_PROGRAM_NAMES - {"aelf"}):
@@ -2966,14 +2987,22 @@ def _names_in(text: str) -> list[str]:
     `_NAME_SPLITTERS`, which its quote removal deletes. So
     `aelf-sess''ion-start-hook`, `aelf-"session"-start-hook`, and
     `aelf-sess\\ion-start-hook` name the program, as they do to a shell
-    (#1812). Doctor reads no other shell syntax. The bare CLI also counts
-    in a second reading, `_PATH_SPLITTERS`, which reads `\\` as `/`, so
-    `C:\\bin\\aelf.exe` names it and `C:\\aelf\\bin` doesn't.
+    (#1812). The bare CLI also counts in a second reading,
+    `_PATH_SPLITTERS`, which reads `\\` as `/`, so `C:\\bin\\aelf.exe`
+    names it and `C:\\aelf\\bin` doesn't, and in a third, which reads a `\\`
+    and the one character after it as a space (`_ESCAPE_PAIR`), so
+    `true\\naelf search` and `x\\taelf` name it. Doctor reads no other
+    shell syntax, so `env -Saelf search` doesn't name the CLI.
     """
     joined = text.replace("\\\n", "")
     folded = joined.translate(_NAME_SPLITTERS).casefold()
     as_path = joined.translate(_PATH_SPLITTERS).casefold()
-    return sorted({key for _r, _s, key in _name_starts(folded, as_path)})
+    escaped = (
+        _ESCAPE_PAIR.sub(" ", joined).translate(_NAME_SPLITTERS).casefold()
+    )
+    return sorted({
+        key for _r, _s, key in _name_starts(folded, as_path, escaped)
+    })
 
 
 def _names_by_line(text: str) -> list[tuple[int, str, str]]:
@@ -2985,11 +3014,12 @@ def _names_by_line(text: str) -> list[tuple[int, str, str]]:
     """
     folded, origin = _fold(text, _NAME_SPLITTERS)
     as_path, path_origin = _fold(text, _PATH_SPLITTERS)
-    origins = (origin, path_origin)
+    escaped, escaped_origin = _fold(text, _NAME_SPLITTERS, escapes=True)
+    origins = (origin, path_origin, escaped_origin)
     lines = text.split("\n")
     found = {
         (text.count("\n", 0, origins[reading][start]) + 1, key)
-        for reading, start, key in _name_starts(folded, as_path)
+        for reading, start, key in _name_starts(folded, as_path, escaped)
     }
     return [
         (number, key, lines[number - 1].rstrip("\r"))
