@@ -874,7 +874,10 @@ def test_setup_refuses_a_home_that_is_empty_or_not_absolute(
 ) -> None:
     """With `CODEX_HOME` unset, the Codex half of setup exits 1 for an
     empty `HOME`, a relative one, or one that starts with `~`, asks for an
-    absolute `HOME` or a `CODEX_HOME`, and writes nothing."""
+    absolute `HOME` or a `CODEX_HOME`, and writes nothing. `aelf setup`
+    refuses these values before this half runs, as
+    `test_setup_refuses_a_home_that_is_empty_or_not_absolute_for_any_host`
+    shows."""
     codex_dir, _passwd = _home_case(tmp_path, monkeypatch, case)
     home = _HOME_CASES[case][0]
     before = sorted(tmp_path.rglob("*"))
@@ -925,7 +928,8 @@ def test_setup_refuses_skills_under_a_home_codex_reads_none_under(
 ) -> None:
     """With `CODEX_HOME` set and `HOME` relative, Codex reads no user
     skills folder. The Codex half of setup exits 1 and writes nothing
-    unless it is told to skip the skills, and then writes hooks.json only."""
+    unless it is told to skip the skills, and then writes hooks.json only.
+    `aelf setup` refuses such a `HOME` before this half runs."""
     _codex_dir, _passwd = _home_case(tmp_path, monkeypatch, "tilde user")
     codex_dir = tmp_path / "codex"
     codex_dir.mkdir()
@@ -947,6 +951,83 @@ def test_setup_refuses_skills_under_a_home_codex_reads_none_under(
         assert sorted(p.name for p in codex_dir.iterdir()) == [
             "hooks.json", "hooks.json.lock",
         ]
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    os.name == "nt", reason="Python reads USERPROFILE on Windows",
+)
+@pytest.mark.parametrize("codex_home", [False, True], ids=["unset", "set"])
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["setup"],
+        ["setup", "--host", "codex"],
+        ["setup", "--host", "codex", "--no-codex-skills"],
+    ],
+    ids=["claude", "codex", "codex no skills"],
+)
+@pytest.mark.parametrize("case", sorted(set(_HOME_CASES) - {"unset"}))
+def test_setup_refuses_a_home_that_is_empty_or_not_absolute_for_any_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], case: str, argv: list[str],
+    codex_home: bool,
+) -> None:
+    """`aelf setup` exits 1 for an empty `HOME`, a relative one, or one
+    that starts with `~`, for each host and whether or not `CODEX_HOME` is
+    set. It names the value, asks for an absolute `HOME`, starts no update
+    check and no host's setup, and writes nothing: no hooks.json, and no
+    Claude opt-out file under the `.aelfrice` folder that such a `HOME`
+    names under the folder you run setup in."""
+    import aelfrice.auto_install as auto_install
+    import aelfrice.cli as cli
+
+    _codex_dir, _passwd = _home_case(tmp_path, monkeypatch, case)
+    home = _HOME_CASES[case][0]
+    assert home is not None
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    if codex_home:
+        monkeypatch.setenv("CODEX_HOME", str(codex_dir))
+    # The `.aelfrice` folder Python binds from this `HOME` as the CLI loads:
+    # a relative path, so under the folder setup runs in. An empty `HOME`
+    # binds `/.aelfrice`, which `tmp_path / "root"` stands in for.
+    dotdir = (
+        tmp_path / "root" / ".aelfrice" if home == ""
+        else Path(home) / ".aelfrice"
+    )
+    assert _inside(dotdir, tmp_path), dotdir
+    monkeypatch.setattr(auto_install, "AELFRICE_DOTDIR", dotdir)
+    monkeypatch.setattr(
+        auto_install, "OPT_OUT_PATH", dotdir / "opt-out-hooks.json",
+    )
+    started: list[str] = []
+
+    def claude_setup(_args: argparse.Namespace, _out: object) -> int:
+        started.append("claude setup")
+        return 0
+
+    monkeypatch.setitem(cli._SETUP_BY_HOST, "claude", claude_setup)  # noqa: SLF001
+    monkeypatch.delenv("AELF_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        cli, "maybe_check_for_update_async",
+        lambda *_a, **_k: started.append("update check"),
+    )
+    before = sorted(tmp_path.rglob("*"))
+    rc = main(argv)
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    what = (
+        "$HOME is empty" if home == ""
+        else f"$HOME is {home!r}, which isn't an absolute path"
+    )
+    assert err == (
+        f"aelf setup: {what}. Setup writes under your home folder, so set "
+        "HOME to an absolute path and run setup again; nothing was written\n"
+    ), err
+    assert started == []
+    assert sorted(tmp_path.rglob("*")) == before
+    assert not dotdir.exists()
 
 
 @pytest.mark.timeout(60)
