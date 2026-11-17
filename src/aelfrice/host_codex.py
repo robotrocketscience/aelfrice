@@ -89,7 +89,158 @@ class CodexHomeError(RuntimeError):
     configured home that we silently ignore is exactly the failure this
     issue is about — setup reports success against a directory the
     running Codex never reads.
+
+    #1812: also raised for a `$HOME` that leaves Codex no home, or, for
+    setup, one that isn't an absolute path.
     """
+
+
+# #1812: Codex finds its home and the user skills folder from the home
+# folder `dirs::home_dir` gives it, and doctor, setup and unsetup read the
+# same folder. The citations below are to the commit `_EVENT_KEY_LABELS`
+# cites and to the crates its codex-rs/Cargo.lock locks there, dirs 6.0.0
+# and dirs-sys 0.5.0.
+
+
+def _user_home() -> str | None:
+    """The home folder `dirs::home_dir` gives Codex, or None.
+
+    On Linux and macOS that is `$HOME` when it is set and not empty, and
+    otherwise the home folder that the password database names for your
+    user ID, when that isn't empty (`home_dir` in dirs-sys 0.5.0
+    src/lib.rs, lines 33-70). Python's `Path.home` reads an empty `HOME`
+    as `/` and raises for one that starts with `~`, so doctor doesn't call
+    it here. On Windows, doctor reads `Path.home`.
+    """
+    if os.name == "nt":  # pragma: no cover - Windows
+        try:
+            return str(Path.home())
+        except (RuntimeError, KeyError, OSError):
+            return None
+    raw = os.environ.get("HOME")
+    if raw:
+        return raw
+    try:
+        import pwd
+
+        entry = pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError, OSError):
+        return None
+    return entry or None
+
+
+def _rust_join(base: str, tail: str) -> str:
+    """`base` joined with the relative path `tail`, as Rust's
+    `Path::join` joins them on Linux and macOS."""
+    if not tail:
+        return base if base.endswith("/") else base + "/"
+    return base + tail if base.endswith("/") else f"{base}/{tail}"
+
+
+def _codex_expand_tilde(path: str, home: str) -> str:
+    """`path`, the home folder with `.codex` after it, after
+    `AbsolutePathBuf::maybe_expand_home_directory`
+    (codex-rs/utils/absolute-path/src/lib.rs, lines 28-44): when it is
+    UTF-8 text and starts with `~/`, the `~` and the slashes after it are
+    replaced with `home`, the value `_user_home` gives, which Codex reads
+    again for the expansion. Any other path stays as it is. The function's
+    case for `~` alone can't arise, because `.codex` follows the home."""
+    try:
+        os.fsencode(path).decode("utf-8")
+    except (UnicodeError, ValueError):
+        # Rust's `Path::to_str` is None for a path that isn't UTF-8.
+        return path
+    if path.startswith("~/"):
+        return _rust_join(home, path[1:].lstrip("/"))
+    return path
+
+
+def _codex_normalize(path: str) -> str:
+    """`path` with `.` removed and each `..` removing the name before it,
+    without looking at the file system, as `normalize_path` in
+    codex-rs/utils/absolute-path/src/absolutize.rs, lines 26-45, does."""
+    rooted = path.startswith("/")
+    names: list[str] = []
+    for name in path.split("/"):
+        if name in ("", "."):
+            continue
+        if name == "..":
+            if names:
+                names.pop()
+            continue
+        names.append(name)
+    joined = "/".join(names)
+    if rooted:
+        return "/" + joined
+    return joined or "."
+
+
+def _default_codex_home(*, for_setup: bool) -> Path:
+    """The Codex home when `$CODEX_HOME` is unset or empty.
+
+    Codex takes the folder `_user_home` gives, adds `.codex`, expands a
+    leading `~` (`_codex_expand_tilde`), joins a relative result to the
+    folder you start Codex in, and removes `.` and `..` (`find_codex_home`
+    in codex-rs/utils/home-dir/src/lib.rs, lines 52-61, and
+    `AbsolutePathBuf::from_absolute_path`, lines 59-63 of
+    codex-rs/utils/absolute-path/src/lib.rs, and `absolutize`, lines
+    14-20 of absolutize.rs). With no home folder, Codex refuses to start
+    ("Could not find home directory"). So with `$HOME` empty or unset,
+    doctor and unsetup read the home folder of the password database,
+    and with a relative `$HOME`, or one that starts with `~`, a folder
+    under the folder you run them in.
+
+    With `for_setup`, an empty `$HOME`, or a home folder that isn't an
+    absolute path, raises `CodexHomeError` before anything is read: setup
+    won't install hooks where they depend on where you start Codex, or
+    under a home that `$HOME` doesn't name.
+    """
+    if os.name == "nt":  # pragma: no cover - Windows
+        home_nt = _user_home()
+        if home_nt is None:
+            raise CodexHomeError(
+                "doctor can't find your home folder, so it can't find the "
+                f"Codex home; set {CODEX_HOME_ENV}"
+            )
+        return Path(home_nt) / CODEX_DEFAULT_DIRNAME
+    env_home = os.environ.get("HOME")
+    home = _user_home()
+    if home is None:
+        raise CodexHomeError(
+            "$HOME is unset or empty, and the password database names no "
+            "home folder for your user, so Codex can't find its home and "
+            "refuses to start. Set HOME to an absolute path, or set "
+            f"{CODEX_HOME_ENV}"
+        )
+    if for_setup and (env_home == "" or not home.startswith("/")):
+        what = (
+            "$HOME is empty, which Codex reads as unset, so Codex reads "
+            f"its home under {home}, the home folder the password database "
+            "names for your user"
+            if env_home == ""
+            else f"$HOME is {env_home!r}, which isn't an absolute path, so "
+            "Codex reads its home as a path under the folder you start "
+            "Codex in"
+            if env_home is not None
+            else "$HOME is unset, and the password database names "
+            f"{home!r} as your home folder, which isn't an absolute path"
+        )
+        raise CodexHomeError(
+            f"{what}, and ${CODEX_HOME_ENV} is unset. Set HOME to an "
+            f"absolute path, or set {CODEX_HOME_ENV} to the folder Codex "
+            "reads, and run setup again"
+        )
+    path = _codex_expand_tilde(_rust_join(home, CODEX_DEFAULT_DIRNAME), home)
+    if not path.startswith("/"):
+        try:
+            path = _rust_join(os.getcwd(), path)
+        except OSError as exc:
+            raise CodexHomeError(
+                f"$HOME is {home!r}, which isn't an absolute path, and "
+                f"aelfrice can't read the folder you run it in ({exc}), "
+                "which Codex reads the path under"
+            ) from exc
+    return Path(_codex_normalize(path))
 
 
 def resolve_codex_home(*, for_setup: bool = False) -> Path:
@@ -107,6 +258,12 @@ def resolve_codex_home(*, for_setup: bool = False) -> Path:
     so a test or a wrapper that changes the environment between two
     calls gets the stale answer (#1320 is the same smell on another
     path).
+
+    With `$CODEX_HOME` unset or empty, the home is `.codex` under the
+    folder `_default_codex_home` resolves as Codex does: `$HOME` when it
+    isn't empty, and the home folder that the password database names for
+    your user when `$HOME` is empty or unset (#1812). Python's
+    `Path.home` reads an empty `$HOME` as `/`, which Codex doesn't.
 
     The value is made absolute, so a relative `$CODEX_HOME` resolves
     against the process cwd exactly once, here, rather than differently at
@@ -132,7 +289,7 @@ def resolve_codex_home(*, for_setup: bool = False) -> Path:
             path does not exist
 
     with the identical shape for a non-directory, and an empty value
-    falling back to the real `~/.codex`. The non-existent case matters
+    falling back to the default home. The non-existent case matters
     most: Codex refuses to start there, so creating it and reporting
     success would leave `aelf setup --host codex` claiming a directory
     Codex will not read — the same failure #1427 was filed about, one
@@ -142,9 +299,8 @@ def resolve_codex_home(*, for_setup: bool = False) -> Path:
     """
     raw = os.environ.get(CODEX_HOME_ENV)
     if not raw:
-        # Unset or empty: Codex's own fallback, and the pre-#1427
-        # behaviour, byte for byte.
-        return Path.home() / CODEX_DEFAULT_DIRNAME
+        # Unset or empty: Codex's own fallback (#1812).
+        return _default_codex_home(for_setup=for_setup)
     if for_setup and raw.startswith("~"):
         raise CodexHomeError(
             f"${CODEX_HOME_ENV} is {raw!r}, which starts with `~`. Codex "
@@ -1111,8 +1267,39 @@ def remove_codex_hooks(
 # configuration home must not move it. Late-bound for the same reason
 # `resolve_codex_home` is: an import-time `Path.home()` freezes `$HOME`.
 def resolve_agents_skills_dir() -> Path:
-    """The user-scope agent-skills root, `~/.agents/skills` (#1427)."""
-    return Path.home() / ".agents" / "skills"
+    """The user-scope agent-skills root, `~/.agents/skills` (#1427).
+
+    Codex reads it under the folder `_user_home` gives, with `.` and `..`
+    removed, and reads no user skills folder when that isn't an absolute
+    path (`resolve_skill_roots` in
+    codex-rs/ext/skills/src/host_roots.rs, lines 70-71 and 159-165, and
+    `AbsolutePathBuf::from_absolute_path_checked`, lines 65-79 of
+    codex-rs/utils/absolute-path/src/lib.rs). Codex expands a leading `~`
+    first, but the folder it expands to starts with `~` too, so it is never
+    absolute. Then this raises `CodexHomeError`, and setup, unsetup and
+    doctor touch no skills folder (#1812).
+    """
+    if os.name == "nt":  # pragma: no cover - Windows
+        home_nt = _user_home()
+        if home_nt is None:
+            raise CodexHomeError("aelfrice can't find your home folder")
+        return Path(home_nt) / ".agents" / "skills"
+    home = _user_home()
+    if home is None:
+        raise CodexHomeError(
+            "$HOME is unset or empty, and the password database names no "
+            "home folder for your user, so Codex reads no user skills folder"
+        )
+    if not home.startswith("/"):
+        raise CodexHomeError(
+            f"$HOME is {os.environ.get('HOME')!r}, which isn't an absolute "
+            "path, so Codex reads no user skills folder under it"
+            if os.environ.get("HOME")
+            else f"the password database names {home!r} as your home "
+            "folder, which isn't an absolute path, so Codex reads no user "
+            "skills folder under it"
+        )
+    return Path(_codex_normalize(home)) / ".agents" / "skills"
 
 
 # Every generated SKILL.md carries this marker on its first body line. It
@@ -1430,9 +1617,14 @@ def onboard_skill_installed(dest_dir: Path | None = None) -> bool:
     False after `--no-codex-skills` on a clean home, and when a skill of
     another origin holds the name, which the installer leaves in place.
     """
-    target = dest_dir if dest_dir is not None else resolve_agents_skills_dir()
     try:
+        target = (
+            dest_dir if dest_dir is not None else resolve_agents_skills_dir()
+        )
         return _is_owned_skill_dir(target / f"{_SKILL_PREFIX}onboard")
+    except CodexHomeError:
+        # #1812: Codex reads no user skills folder under this home.
+        return False
     except (OSError, ValueError):
         # The hooks are already written, and this only picks a line of
         # text. A SKILL.md that isn't UTF-8 raises UnicodeDecodeError, and

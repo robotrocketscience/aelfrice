@@ -6219,6 +6219,7 @@ def _cmd_setup_codex(
         CodexHomeError,
         codex_hooks_path,
         install_codex_hooks,
+        resolve_agents_skills_dir,
     )
 
     try:
@@ -6229,6 +6230,20 @@ def _cmd_setup_codex(
     except CodexHomeError as exc:
         print(_doctor_text(f"setup --host codex: {exc}"), file=sys.stderr)
         return 1
+    if skills_dest is None and getattr(args, "codex_skills", True):
+        # #1812: a home with no skills folder Codex reads is refused
+        # before anything is written.
+        try:
+            skills_dest = resolve_agents_skills_dir()
+        except CodexHomeError as exc:
+            print(
+                _doctor_text(
+                    f"setup --host codex: {exc}; nothing was written. Set "
+                    "HOME to an absolute path, or pass --no-codex-skills",
+                ),
+                file=sys.stderr,
+            )
+            return 1
     result = install_codex_hooks(
         target,
         scope="user",
@@ -6382,6 +6397,13 @@ def _cmd_unsetup_codex(
 
     try:
         sk = remove_codex_skills(skills_dest)
+    except CodexHomeError as exc:
+        # #1812: Codex reads no user skills folder, so unsetup touches none.
+        print(
+            _doctor_text(f"no aelfrice Codex skills to remove: {exc}"),
+            file=out,  # type: ignore[arg-type]
+        )
+        return 0
     except OSError as exc:
         print(
             _doctor_text(
@@ -6495,25 +6517,39 @@ def _cmd_doctor_codex(
         resolve_agents_skills_dir,
     )
 
-    skills_dir = (
-        skills_dest if skills_dest is not None
-        else resolve_agents_skills_dir()
+    try:
+        skills_dir: Path | None = (
+            skills_dest if skills_dest is not None
+            else resolve_agents_skills_dir()
+        )
+    except CodexHomeError as exc:
+        # #1812: Codex reads no user skills folder, so doctor reads none.
+        skills_dir = None
+        print(
+            _doctor_text(f"[i] codex skills ($aelf-*): none read: {exc}"),
+            file=out,  # type: ignore[arg-type]
+        )
+    n_skills = (
+        count_installed_codex_skills(skills_dir)
+        if skills_dir is not None else 0
     )
-    n_skills = count_installed_codex_skills(skills_dir)
     # #1486: the count globs `aelf-*`, so it includes skills for commands
     # this build no longer ships — which the bundle-driven integrity scan
     # cannot see. Reporting the orphan count on the same line is what makes
     # the two numbers reconcilable. Computed unconditionally because this
     # line describes the directory rather than judging it; the FAIL below
     # is the part gated on wiring.
-    orphaned = orphaned_codex_skills(skills_dir)
-    print(
-        _doctor_text(
-            f"[i] codex skills ($aelf-*): {n_skills} installed "
-            f"({len(orphaned)} orphaned) in {skills_dir}",
-        ),
-        file=out,  # type: ignore[arg-type]
+    orphaned = (
+        orphaned_codex_skills(skills_dir) if skills_dir is not None else []
     )
+    if skills_dir is not None:
+        print(
+            _doctor_text(
+                f"[i] codex skills ($aelf-*): {n_skills} installed "
+                f"({len(orphaned)} orphaned) in {skills_dir}",
+            ),
+            file=out,  # type: ignore[arg-type]
+        )
     for warning in report.warnings:
         print(
             _doctor_text(f"[warn] {warning}"),
@@ -6534,7 +6570,7 @@ def _cmd_doctor_codex(
     # message, which contradicts the "absent wiring stays 0" ruling.
     modified = (
         modified_codex_skills(skills_dir)
-        if report.owned_handler_count else []
+        if report.owned_handler_count and skills_dir is not None else []
     )
     if modified:
         faults.append(

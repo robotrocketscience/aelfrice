@@ -698,6 +698,265 @@ def test_unsetup_reads_a_codex_home_that_starts_with_a_tilde_as_codex_does(
     assert (expanded / "hooks.json").read_bytes() == untouched
 
 
+# --- the home folder Codex starts from ---------------------------------------
+
+
+class _Passwd:
+    """The one field of a password database entry that Codex reads."""
+
+    def __init__(self, pw_dir: str) -> None:
+        self.pw_dir = pw_dir
+
+
+def _pin_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, home: str | None,
+) -> Path:
+    """Set `HOME` to `home`, or unset it for None, with every way Python
+    finds a home folder pinned under `tmp_path`, so no case can reach the
+    real home: the password database entry for your user names
+    `tmp_path / "passwd"`, it knows no user by name, and `Path.home` and
+    `os.path.expanduser` read only those. Returns that folder."""
+    import pwd
+
+    passwd = tmp_path / "passwd"
+    passwd.mkdir(exist_ok=True)
+    monkeypatch.setattr(pwd, "getpwuid", lambda _uid: _Passwd(str(passwd)))
+
+    def no_user(name: str) -> object:
+        raise KeyError(name)
+
+    monkeypatch.setattr(pwd, "getpwnam", no_user)
+    expanduser = os.path.expanduser
+
+    def pinned_expanduser(path: str) -> str:
+        expanded = expanduser(path)
+        assert not os.path.isabs(expanded) or _inside(Path(expanded), tmp_path) or (
+            expanded == "/"
+        ), expanded
+        return expanded
+
+    def pinned_home(cls: type[Path]) -> Path:
+        # `Path.home` as Python 3.12 and 3.13 write it.
+        expanded = os.path.expanduser("~")
+        if expanded[:1] == "~":
+            raise RuntimeError("Could not determine home directory.")
+        return cls(expanded)
+
+    monkeypatch.setattr(os.path, "expanduser", pinned_expanduser)
+    monkeypatch.setattr(Path, "home", classmethod(pinned_home))
+    if home is None:
+        monkeypatch.delenv("HOME", raising=False)
+    else:
+        monkeypatch.setenv("HOME", home)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    return passwd
+
+
+def _inside(path: Path, root: Path) -> bool:
+    """Whether `path` is under `root`, with both made canonical."""
+    return Path(os.path.realpath(path)).is_relative_to(os.path.realpath(root))
+
+
+#: `HOME` values, None for unset, and where Codex reads its home for each,
+#: under the folder you start it in or the password database's home folder.
+#: `~/h` reads `~/h/h/.codex`: Codex expands the `~` of `~/h/.codex` to
+#: `$HOME` itself (`AbsolutePathBuf::maybe_expand_home_directory`).
+_HOME_CASES: Final[dict[str, tuple[str | None, str]]] = {
+    "unset": (None, "passwd/.codex"),
+    "empty": ("", "passwd/.codex"),
+    "tilde": ("~", "work/~/.codex"),
+    "tilde slash": ("~/h", "work/~/h/h/.codex"),
+    "tilde user": ("~nosuchuser1812", "work/~nosuchuser1812/.codex"),
+    "relative": ("rel", "work/rel/.codex"),
+    "dot dot": ("rel/../h", "work/h/.codex"),
+}
+
+
+def _home_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> tuple[Path, Path]:
+    """Pin `HOME` for `case`, run from `tmp_path / "work"`, and return the
+    Codex home Codex reads, and the password database's home folder."""
+    home, codex_rel = _HOME_CASES[case]
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    passwd = _pin_home(tmp_path, monkeypatch, home)
+    codex_dir = tmp_path / codex_rel
+    from aelfrice.host_codex import resolve_codex_home
+
+    resolved = resolve_codex_home()
+    assert resolved == codex_dir and _inside(resolved, tmp_path), resolved
+    return codex_dir, passwd
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="Codex reads HOME on POSIX")
+@pytest.mark.parametrize("case", sorted(_HOME_CASES))
+def test_doctor_reads_the_codex_home_codex_reads_for_any_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    """With `CODEX_HOME` unset, doctor reads the Codex home Codex reads for
+    any `HOME`: the password database's home folder for an empty or unset
+    `HOME`, and a folder under the one you run it in for a relative one or
+    one that starts with `~`. Doctor doesn't raise, and reads no skills
+    folder where Codex reads none."""
+    codex_dir, passwd = _home_case(tmp_path, monkeypatch, case)
+    codex_dir.mkdir(parents=True)
+    install_codex_hooks(codex_dir / "hooks.json")
+    out = io.StringIO()
+    rc = _cmd_doctor_codex(argparse.Namespace(host="codex"), out)
+    text = out.getvalue()
+    assert rc in (0, 1), text
+    assert f"[i] codex home: {codex_dir}\n" in text, text
+    assert "present=True valid=True" in text, text
+    if case in ("unset", "empty"):
+        skills = passwd / ".agents" / "skills"
+        assert (
+            "[i] codex skills ($aelf-*): 0 installed (0 orphaned) in "
+            f"{skills}\n"
+        ) in text, text
+    else:
+        assert (
+            "[i] codex skills ($aelf-*): none read: $HOME is "
+            f"{_HOME_CASES[case][0]!r}, which isn't an absolute path, so "
+            "Codex reads no user skills folder under it\n"
+        ) in text, text
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="Codex reads HOME on POSIX")
+@pytest.mark.parametrize(
+    "case", sorted(set(_HOME_CASES) - {"unset"}),
+)
+def test_setup_refuses_a_home_that_is_empty_or_not_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    """With `CODEX_HOME` unset, setup exits 1 for an empty `HOME`, a
+    relative one, or one that starts with `~`, asks for an absolute `HOME`
+    or a `CODEX_HOME`, and writes nothing."""
+    codex_dir, _passwd = _home_case(tmp_path, monkeypatch, case)
+    home = _HOME_CASES[case][0]
+    before = sorted(tmp_path.rglob("*"))
+    rc = main(["setup", "--host", "codex"])
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    what = (
+        "$HOME is empty, which Codex reads as unset, so Codex reads its home "
+        f"under {tmp_path / 'passwd'}, the home folder the password database "
+        "names for your user"
+        if home == ""
+        else f"$HOME is {home!r}, which isn't an absolute path, so Codex "
+        "reads its home as a path under the folder you start Codex in"
+    )
+    assert err == (
+        f"setup --host codex: {what}, and $CODEX_HOME is unset. Set HOME to "
+        "an absolute path, or set CODEX_HOME to the folder Codex reads, and "
+        "run setup again\n"
+    ), err
+    assert sorted(tmp_path.rglob("*")) == before
+    assert not codex_dir.exists()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="Codex reads HOME on POSIX")
+def test_setup_installs_under_the_password_database_home_for_an_unset_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With `HOME` and `CODEX_HOME` unset, setup writes hooks.json and the
+    skills under the home folder the password database names, as Codex
+    reads them."""
+    codex_dir, passwd = _home_case(tmp_path, monkeypatch, "unset")
+    codex_dir.mkdir(parents=True)
+    rc = main(["setup", "--host", "codex"])
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert (codex_dir / "hooks.json").is_file()
+    assert (passwd / ".agents" / "skills" / "aelf-onboard" / "SKILL.md").is_file()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="Codex reads HOME on POSIX")
+@pytest.mark.parametrize("skills", [True, False], ids=["skills", "no skills"])
+def test_setup_refuses_skills_under_a_home_codex_reads_none_under(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], skills: bool,
+) -> None:
+    """With `CODEX_HOME` set and `HOME` relative, Codex reads no user
+    skills folder. Setup exits 1 and writes nothing unless you pass
+    `--no-codex-skills`, and then writes hooks.json only."""
+    _codex_dir, _passwd = _home_case(tmp_path, monkeypatch, "tilde user")
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_dir))
+    before = sorted(tmp_path.rglob("*"))
+    rc = main(
+        ["setup", "--host", "codex"] + ([] if skills else ["--no-codex-skills"]),
+    )
+    captured = capsys.readouterr()
+    if skills:
+        assert rc == 1, captured.err
+        assert captured.err == (
+            "setup --host codex: $HOME is '~nosuchuser1812', which isn't an "
+            "absolute path, so Codex reads no user skills folder under it; "
+            "nothing was written. Set HOME to an absolute path, or pass "
+            "--no-codex-skills\n"
+        ), captured.err
+        assert sorted(tmp_path.rglob("*")) == before
+    else:
+        assert rc == 0, captured.err
+        assert sorted(p.name for p in codex_dir.iterdir()) == [
+            "hooks.json", "hooks.json.lock",
+        ]
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="Codex reads HOME on POSIX")
+@pytest.mark.parametrize("case", sorted(_HOME_CASES))
+def test_unsetup_reads_the_codex_home_doctor_reads_for_any_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    """Unsetup removes setup's handlers from the Codex home doctor reads,
+    removes skills only from a skills folder Codex reads, and changes no
+    other file under `tmp_path`."""
+    codex_dir, passwd = _home_case(tmp_path, monkeypatch, case)
+    codex_dir.mkdir(parents=True)
+    install_codex_hooks(codex_dir / "hooks.json")
+    skills = passwd / ".agents" / "skills"
+    install_codex_skills(skills)
+    # A copy where Python's `Path.home` reads `~` for a relative `HOME`.
+    decoy = tmp_path / "work" / "~" / ".agents" / "skills"
+    install_codex_skills(decoy)
+
+    def files() -> dict[str, bytes]:
+        return {
+            str(p): p.read_bytes() for p in sorted(tmp_path.rglob("*"))
+            if p.is_file() and not _inside(p, codex_dir)
+            and (case not in ("unset", "empty") or not _inside(p, skills))
+        }
+
+    before = files()
+    rc = main(["unsetup", "--host", "codex"])
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert (
+        f"removed aelfrice entries from {codex_dir / 'hooks.json'} "
+    ) in captured.out, captured.out
+    if case in ("unset", "empty"):
+        assert f"Codex skill(s) from {skills}: " in captured.out, captured.out
+        assert not (skills / "aelf-onboard").exists()
+    else:
+        assert captured.out.endswith(
+            "no aelfrice Codex skills to remove: $HOME is "
+            f"{_HOME_CASES[case][0]!r}, which isn't an absolute path, so "
+            "Codex reads no user skills folder under it\n",
+        ), captured.out
+    assert files() == before
+
+
 def _strict_utf8() -> io.TextIOWrapper:
     """A text stream that raises on any character UTF-8 can't encode, as
     a Linux stdout under a UTF-8 locale does."""
