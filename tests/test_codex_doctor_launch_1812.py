@@ -1674,3 +1674,61 @@ def test_doctor_names_the_line_of_a_windows_path_to_the_bare_cli() -> None:
     assert _names_by_line(text) == [
         (3, "aelf", "notify = ['C:\\bin\\aelf.exe']"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("text", "names"),
+    [
+        ("true\\naelf search", ["aelf"]),
+        ("x\\taelf", ["aelf"]),
+        ("bash -c $'\\raelf search'", ["aelf"]),
+        ("env -Saelf search", []),
+        ("C:\\aelf\\bin\\tool.exe", []),
+    ],
+)
+def test_doctor_reads_an_escape_before_the_bare_cli_as_a_space(
+    text: str, names: list[str],
+) -> None:
+    """A `\\` and the one character after it, such as the escape `\\n`,
+    leave a bare `aelf` after them a word, and doctor reads no other shell
+    syntax, so an option glued to the name hides it."""
+    assert _names_in(text) == names
+
+
+def test_doctor_names_the_line_of_an_escape_before_the_bare_cli() -> None:
+    """In a file `tomllib` can't parse, the bare CLI after an escape counts
+    on the line it is on, after a line that a backslash-newline joins and a
+    line of backslashes, which each reading shortens by its own count."""
+    text = (
+        'x = "a\\\nb"\n'
+        'w = "' + "\\" * 40 + '"\n'
+        "y = = 1\n"
+        "notify = ['true\\naelf']\n"
+        "z = 2\n"
+        "v = 3\n"
+    )
+    assert _names_by_line(text) == [
+        (5, "aelf", "notify = ['true\\naelf']"),
+    ]
+
+
+@pytest.mark.timeout(60)
+def test_doctor_warns_about_the_bare_cli_after_an_escape(
+    tmp_path: Path,
+) -> None:
+    """A handler whose command runs the CLI after an escape that a shell
+    reads as a newline gets the warning that names it."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["Stop"][0]["hooks"].append({
+        "type": "command", "command": "bash -c $'true\\naelf search'",
+    })
+    hooks.write_text(json.dumps(doc), encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    lines = [
+        line for line in out.splitlines()
+        if line.startswith("[warn] Stop handler ")
+        and "`hooks.Stop[0].hooks[2]`" in line and " names aelf, " in line
+    ]
+    assert len(lines) == 1, out
