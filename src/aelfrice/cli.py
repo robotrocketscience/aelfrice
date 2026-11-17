@@ -6227,7 +6227,7 @@ def _cmd_setup_codex(
             else codex_hooks_path(for_setup=True)
         )
     except CodexHomeError as exc:
-        print(f"setup --host codex: {exc}", file=sys.stderr)
+        print(_doctor_text(f"setup --host codex: {exc}"), file=sys.stderr)
         return 1
     result = install_codex_hooks(
         target,
@@ -6236,16 +6236,18 @@ def _cmd_setup_codex(
         status_message=getattr(args, "status_message", None),
     )
     if result.error:
-        print(f"setup --host codex: {result.error}", file=sys.stderr)
+        print(_doctor_text(f"setup --host codex: {result.error}"), file=sys.stderr)
         return 1
     verb = "wrote" if result.changed else "already current:"
     print(
-        f"{verb} {result.path} "
-        f"(events: {', '.join(result.installed_events)})",
+        _doctor_text(
+            f"{verb} {result.path} "
+            f"(events: {', '.join(result.installed_events)})",
+        ),
         file=out,  # type: ignore[arg-type]
     )
     for line in result.guidance:
-        print(f"  next: {line}", file=out)  # type: ignore[arg-type]
+        print(_doctor_text(f"  next: {line}"), file=out)  # type: ignore[arg-type]
 
     # Codex skills: the `$aelf-*` port of the `/aelf:*` slash commands.
     if getattr(args, "codex_skills", True):
@@ -6257,35 +6259,45 @@ def _cmd_setup_codex(
             # hooks.json is already written; fail the skills half with a
             # clear message instead of a raw traceback (#1136).
             print(
-                f"setup --host codex: hooks written, but the skills "
-                f"install failed: {exc}",
+                _doctor_text(
+                    f"setup --host codex: hooks written, but the skills "
+                    f"install failed: {exc}",
+                ),
                 file=sys.stderr,
             )
             return 1
         if sk.written:
             print(
-                f"installed {len(sk.written)} Codex skill(s) in "
-                f"{sk.dest_dir}: invoke as ${', $'.join(sk.written)}",
+                _doctor_text(
+                    f"installed {len(sk.written)} Codex skill(s) in "
+                    f"{sk.dest_dir}: invoke as ${', $'.join(sk.written)}",
+                ),
                 file=out,  # type: ignore[arg-type]
             )
         if sk.pruned:
             print(
-                f"removed {len(sk.pruned)} stale Codex skill(s) from "
-                f"{sk.dest_dir}: {', '.join(sk.pruned)}",
+                _doctor_text(
+                    f"removed {len(sk.pruned)} stale Codex skill(s) from "
+                    f"{sk.dest_dir}: {', '.join(sk.pruned)}",
+                ),
                 file=out,  # type: ignore[arg-type]
             )
         if sk.skipped:
             print(
-                f"skipped {len(sk.skipped)} skill name(s) already taken "
-                f"by non-aelfrice skills in {sk.dest_dir} (not "
-                f"overwritten): {', '.join(sk.skipped)}",
+                _doctor_text(
+                    f"skipped {len(sk.skipped)} skill name(s) already taken "
+                    f"by non-aelfrice skills in {sk.dest_dir} (not "
+                    f"overwritten): {', '.join(sk.skipped)}",
+                ),
                 file=out,  # type: ignore[arg-type]
             )
         for msg in sk.failed:
-            print(f"[warn] codex skill: {msg}", file=out)  # type: ignore[arg-type]
+            print(_doctor_text(f"[warn] codex skill: {msg}"), file=out)  # type: ignore[arg-type]
         if not (sk.written or sk.pruned or sk.skipped or sk.failed):
             print(
-                f"Codex skills already up to date in {sk.dest_dir}",
+                _doctor_text(
+                    f"Codex skills already up to date in {sk.dest_dir}",
+                ),
                 file=out,  # type: ignore[arg-type]
             )
     # #1053: Codex-only user (no aelfrice hooks on the Claude host) ->
@@ -6344,21 +6356,25 @@ def _cmd_unsetup_codex(
     try:
         target = hooks_path if hooks_path is not None else codex_hooks_path()
     except CodexHomeError as exc:
-        print(f"unsetup --host codex: {exc}", file=sys.stderr)
+        print(_doctor_text(f"unsetup --host codex: {exc}"), file=sys.stderr)
         return 1
     result = remove_codex_hooks(target)
     if result.error:
-        print(f"unsetup --host codex: {result.error}", file=sys.stderr)
+        print(_doctor_text(f"unsetup --host codex: {result.error}"), file=sys.stderr)
         return 1
     if result.changed:
         print(
-            f"removed aelfrice entries from {result.path} "
-            f"(events: {', '.join(result.installed_events)})",
+            _doctor_text(
+                f"removed aelfrice entries from {result.path} "
+                f"(events: {', '.join(result.installed_events)})",
+            ),
             file=out,  # type: ignore[arg-type]
         )
     else:
         print(
-            f"no aelfrice entries in {result.path}",
+            _doctor_text(
+                f"no aelfrice entries in {result.path}",
+            ),
             file=out,  # type: ignore[arg-type]
         )
 
@@ -6368,23 +6384,29 @@ def _cmd_unsetup_codex(
         sk = remove_codex_skills(skills_dest)
     except OSError as exc:
         print(
-            f"unsetup --host codex: skills removal failed: {exc}",
+            _doctor_text(
+                f"unsetup --host codex: skills removal failed: {exc}",
+            ),
             file=sys.stderr,
         )
         return 1
     if sk.pruned:
         print(
-            f"removed {len(sk.pruned)} Codex skill(s) from {sk.dest_dir}: "
-            f"{', '.join(sk.pruned)}",
+            _doctor_text(
+                f"removed {len(sk.pruned)} Codex skill(s) from {sk.dest_dir}: "
+                f"{', '.join(sk.pruned)}",
+            ),
             file=out,  # type: ignore[arg-type]
         )
     else:
         print(
-            f"no aelfrice Codex skills in {sk.dest_dir}",
+            _doctor_text(
+                f"no aelfrice Codex skills in {sk.dest_dir}",
+            ),
             file=out,  # type: ignore[arg-type]
         )
     for msg in sk.failed:
-        print(f"[warn] codex skill: {msg}", file=out)  # type: ignore[arg-type]
+        print(_doctor_text(f"[warn] codex skill: {msg}"), file=out)  # type: ignore[arg-type]
     return 0
 
 
