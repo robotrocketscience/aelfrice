@@ -987,6 +987,34 @@ def test_unsetup_reads_the_codex_home_doctor_reads_for_any_home(
     assert files() == before
 
 
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="Codex reads HOME on POSIX")
+def test_doctor_setup_and_unsetup_exit_1_with_no_home_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With `HOME` and `CODEX_HOME` unset and no password database entry
+    for your user, Codex can't find its home and refuses to start, so
+    doctor, setup and unsetup exit 1 and say so, and write nothing."""
+    import pwd
+
+    _codex_dir, _passwd = _home_case(tmp_path, monkeypatch, "unset")
+
+    def no_entry(uid: int) -> object:
+        raise KeyError(uid)
+
+    monkeypatch.setattr(pwd, "getpwuid", no_entry)
+    before = sorted(tmp_path.rglob("*"))
+    for verb in ("doctor", "setup", "unsetup"):
+        assert main([verb, "--host", "codex"]) == 1, verb
+        assert capsys.readouterr().err.startswith(
+            f"{verb} --host codex: $HOME is unset or empty, and the password "
+            "database names no home folder for your user, so Codex can't "
+            "find its home and refuses to start.",
+        ), verb
+    assert sorted(tmp_path.rglob("*")) == before
+
+
 def _strict_utf8() -> io.TextIOWrapper:
     """A text stream that raises on any character UTF-8 can't encode, as
     a Linux stdout under a UTF-8 locale does."""
