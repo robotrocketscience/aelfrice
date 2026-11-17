@@ -23,6 +23,7 @@ import pytest
 from aelfrice.cli import _cmd_doctor_codex, main
 from aelfrice.host_codex import (
     _PROGRAM_NAMES,
+    _names_by_line,
     _names_in,
     _run_command,
     _trust_hash,
@@ -1520,3 +1521,37 @@ def test_doctor_reads_the_bare_cli_as_a_word(
     """The bare `aelf` counts only as a word, so a folder named `aelf`, the
     package name, and the other programs don't name it."""
     assert _names_in(text) == names
+
+
+@pytest.mark.parametrize(
+    ("text", "names"),
+    [
+        ("C:\\Users\\me\\.local\\bin\\aelf.exe search", ["aelf"]),
+        ("C:\\tools\\aelf search", ["aelf"]),
+        ("aelf\\ x", ["aelf"]),
+        ("C:\\aelf\\bin\\tool.exe", []),
+        ("C:\\bin\\myaelf.exe", []),
+    ],
+)
+def test_doctor_reads_a_backslash_as_a_path_separator_for_the_bare_cli(
+    text: str, names: list[str],
+) -> None:
+    """A bare `aelf` counts as a word in the string with `\\` deleted or in
+    the string with `\\` read as `/`, so a Windows path to the CLI names it,
+    and a Windows folder named `aelf` doesn't."""
+    assert _names_in(text) == names
+
+
+def test_doctor_names_the_line_of_a_windows_path_to_the_bare_cli() -> None:
+    """In a file `tomllib` can't parse, the bare CLI in a Windows path
+    counts on the line it is on, after a line of backslashes that the
+    first reading deletes."""
+    text = (
+        'x = "' + "\\" * 12 + '"\n'
+        "y = = 1\n"
+        "notify = ['C:\\bin\\aelf.exe']\n"
+        "z = 2\n"
+    )
+    assert _names_by_line(text) == [
+        (3, "aelf", "notify = ['C:\\bin\\aelf.exe']"),
+    ]
