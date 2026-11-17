@@ -126,6 +126,36 @@ def test_setup_and_unsetup_treat_a_hooks_json_that_is_not_utf8_as_invalid(
 
 
 @pytest.mark.timeout(60)
+@pytest.mark.parametrize("name", ["hooks.json", "config.toml"])
+def test_doctor_reads_a_directory_in_place_of_a_file_as_unreadable(
+    tmp_path: Path, name: str,
+) -> None:
+    """A hooks.json that is a directory loads no hook, and codex-cli
+    0.167.1 refuses to start on a config.toml that is one. Doctor names
+    the file as one Codex can't read, doesn't say it doesn't exist, and
+    exits 1."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    if name == "hooks.json":
+        hooks.unlink()
+    (codex_dir / name).mkdir()
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "does not exist" not in out, out
+    why = "Codex can't read the file: it is a directory, not a file"
+    if name == "hooks.json":
+        assert "[-] codex hooks.json: present=True valid=False " in out, out
+        assert (
+            f"[warn] {hooks} is unreadable as hooks config ({why}); Codex "
+            "will ignore or reject it\n"
+        ) in out, out
+    else:
+        assert (
+            f"[warn] Codex refuses to start with {codex_dir / name}, because "
+            f"{why}\n"
+        ) in out, out
+
+
+@pytest.mark.timeout(60)
 def test_doctor_reads_a_latin1_config_toml_as_codex_does(tmp_path: Path) -> None:
     """Codex reads config.toml with `String::from_utf8` and fails on bytes
     that aren't UTF-8. Doctor names the byte and exits 1, as it does for a

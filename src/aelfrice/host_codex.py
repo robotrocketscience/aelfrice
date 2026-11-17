@@ -2577,6 +2577,21 @@ def _stat_failure(path: Path) -> str | None:
     return None
 
 
+def _not_a_file(path: Path) -> str | None:
+    """Why `path`, which exists, isn't a regular file, such as a
+    directory, or None. Doctor doesn't open such a path, which for a named
+    pipe would wait for a writer."""
+    try:
+        mode = os.stat(path).st_mode
+    except (OSError, ValueError):
+        return None
+    if stat.S_ISREG(mode):
+        return None
+    if stat.S_ISDIR(mode):
+        return "it is a directory, not a file"
+    return "it isn't a regular file"
+
+
 def _read_utf8(path: Path) -> tuple[str | None, str | None]:
     """A file's text, or None and why Codex can't read it.
 
@@ -2587,7 +2602,15 @@ def _read_utf8(path: Path) -> tuple[str | None, str | None]:
     openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9). Both fail on a
     read error and on bytes that aren't UTF-8, and neither translates line
     endings, so doctor decodes the bytes itself (#1812).
+
+    A path that is a directory or another file that isn't a regular file
+    is one Codex can't read: codex-cli 0.167.1 refuses to start on such a
+    config.toml ("path ... is not a file"), and loads no hook from such a
+    hooks.json, which it skips (`load_hooks_json`, lines 395-397).
     """
+    not_file = _not_a_file(path)
+    if not_file is not None:
+        return None, f"Codex can't read the file: {not_file}"
     try:
         data = path.read_bytes()
     except OSError as exc:
@@ -3880,8 +3903,10 @@ def doctor_codex(
     # missing path leaves doctor unable to tell whether the file exists,
     # so the file counts as present and unreadable, and doctor exits 1.
     report.hooks_file_unknown = _stat_failure(hooks_path)
+    # #1812: and a hooks.json that is a directory is present and unreadable.
     report.hooks_file_present = (
         report.hooks_file_unknown is not None or os.path.isfile(hooks_path)
+        or _not_a_file(hooks_path) is not None
     )
     hooks_map: dict[str, object] = {}
     # The whole hooks.json when Codex loads it, for the last check (#1812).
@@ -4013,7 +4038,11 @@ def doctor_codex(
     # any reason but a missing file (`load_config_toml_for_required_layer_raw`
     # in codex-rs/config/src/loader/mod.rs, lines 615-662, at the commit
     # `_EVENT_KEY_LABELS` cites), such as one it can't `stat`.
-    if _stat_failure(config_path) is not None or os.path.isfile(config_path):
+    # A config.toml that is a directory is one too (#1812).
+    if (
+        _stat_failure(config_path) is not None or os.path.isfile(config_path)
+        or _not_a_file(config_path) is not None
+    ):
         loaded = _load_toml(config_path)
         cfg, cfg_error = loaded.data, loaded.unparsed
         config_text = loaded.text
