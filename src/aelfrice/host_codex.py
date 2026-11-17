@@ -201,6 +201,17 @@ _OWNED_BASENAMES: Final[frozenset[str]] = frozenset({
     "aelf-pre-issue-hook",
     "aelf-commit-ingest",
 })
+#: Every program the aelfrice package installs, the `[project.scripts]` of
+#: pyproject.toml: the owned handler programs, the hook programs setup
+#: doesn't write for Codex, and the `aelf` CLI. Doctor warns about each
+#: handler and string that names one of them (`_names_in`), and a test
+#: fails when pyproject.toml adds a script this set leaves out (#1812).
+_PROGRAM_NAMES: Final[frozenset[str]] = _OWNED_BASENAMES | frozenset({
+    "aelf",
+    "aelf-pre-compact-hook",
+    "aelf-agent-context-hook",
+    "aelf-claude-memory-mirror",
+})
 
 
 def codex_hooks_path(codex_dir: Path | None = None) -> Path:
@@ -2858,8 +2869,33 @@ _NAME_SPLITTERS: Final[dict[int, int | None]] = str.maketrans(
 )
 
 
+#: The bare `aelf` CLI as a word in a folded string: no letter, digit,
+#: `_`, or `-` on either side, and no `/` or `\` after it, which would make
+#: it a folder. Each other name in `_PROGRAM_NAMES` starts with `aelf-`, and
+#: the package's own name starts with `aelf` too, so a plain substring test
+#: for `aelf` would match every one of them.
+_BARE_CLI: Final[re.Pattern[str]] = re.compile(
+    r"(?<![a-z0-9_-])aelf(?![a-z0-9_/\\-])",
+)
+
+
+def _name_starts(folded: str) -> list[tuple[int, str]]:
+    """Where each program of `_PROGRAM_NAMES` starts in `folded`, and the
+    program: any substring for a name with a `-`, and `_BARE_CLI` for the
+    bare CLI."""
+    found: list[tuple[int, str]] = [
+        (m.start(), "aelf") for m in _BARE_CLI.finditer(folded)
+    ]
+    for key in sorted(_PROGRAM_NAMES - {"aelf"}):
+        start = folded.find(key)
+        while start >= 0:
+            found.append((start, key))
+            start = folded.find(key, start + 1)
+    return found
+
+
 def _names_in(text: str) -> list[str]:
-    """The owned programs a string names, as substrings in any case.
+    """The aelfrice programs a string names, in any case (`_name_starts`).
 
     Before the test, doctor deletes each backslash-newline pair, which a
     shell's line joining deletes, and then each character of
@@ -2869,11 +2905,11 @@ def _names_in(text: str) -> list[str]:
     (#1812). Doctor reads no other shell syntax.
     """
     folded = text.replace("\\\n", "").translate(_NAME_SPLITTERS).casefold()
-    return [key for key in sorted(_OWNED_BASENAMES) if key in folded]
+    return sorted({key for _start, key in _name_starts(folded)})
 
 
 def _names_by_line(text: str) -> list[tuple[int, str, str]]:
-    """Each line of a file that names an owned program, read as
+    """Each line of a file that names an aelfrice program, read as
     `_names_in` reads a string: the line number, the program, and the line.
 
     For a file `tomllib` can't parse, which Codex may still load (#1812).
@@ -2892,14 +2928,11 @@ def _names_by_line(text: str) -> list[tuple[int, str, str]]:
                 folded.append(part)
                 origin.append(pos)
         pos += 1
-    joined = "".join(folded)
     lines = text.split("\n")
-    found: set[tuple[int, str]] = set()
-    for key in sorted(_OWNED_BASENAMES):
-        start = joined.find(key)
-        while start >= 0:
-            found.add((text.count("\n", 0, origin[start]) + 1, key))
-            start = joined.find(key, start + 1)
+    found = {
+        (text.count("\n", 0, origin[start]) + 1, key)
+        for start, key in _name_starts("".join(folded))
+    }
     return [
         (number, key, lines[number - 1].rstrip("\r"))
         for number, key in sorted(found)

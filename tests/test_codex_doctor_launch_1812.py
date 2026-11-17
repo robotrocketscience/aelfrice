@@ -22,6 +22,8 @@ import pytest
 
 from aelfrice.cli import _cmd_doctor_codex
 from aelfrice.host_codex import (
+    _PROGRAM_NAMES,
+    _names_in,
     _run_command,
     _trust_hash,
     install_codex_hooks,
@@ -1342,3 +1344,64 @@ def test_doctor_reports_a_codex_home_under_a_folder_it_can_not_search(
         f"doctor --host codex: $CODEX_HOME points to {locked / 'codex'}, "
         "which aelfrice can't read ("
     ) in err.getvalue(), err.getvalue()
+
+
+# --- the programs doctor names ----------------------------------------------
+
+
+def _package_scripts() -> list[str]:
+    """The console scripts in pyproject.toml's `[project.scripts]`."""
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    return sorted(data["project"]["scripts"])
+
+
+def test_doctor_names_every_program_the_package_installs() -> None:
+    """A script pyproject.toml adds is a program doctor must name."""
+    scripts = _package_scripts()
+    assert "aelf" in scripts and len(scripts) >= 11, scripts
+    assert sorted(set(scripts) - _PROGRAM_NAMES) == []
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("name", _package_scripts())
+def test_doctor_warns_about_a_handler_that_runs_any_package_program(
+    tmp_path: Path, name: str,
+) -> None:
+    """A handler of your own that runs any program the package installs
+    gets a `[warn]` line that names the program, and doctor exits 0."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["Stop"][0]["hooks"].append(
+        {"type": "command", "command": f"/usr/bin/env {name} --flag"},
+    )
+    hooks.write_text(json.dumps(doc), encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    lines = [
+        line for line in out.splitlines()
+        if line.startswith("[warn] Stop handler ")
+        and "`hooks.Stop[0].hooks[2]`" in line
+        and f" {name}. " in line
+    ]
+    assert len(lines) == 1, out
+
+
+@pytest.mark.parametrize(
+    ("text", "names"),
+    [
+        ("/opt/aelf/bin/aelf-hook", ["aelf-hook"]),
+        ("/home/me/aelfrice/.venv/bin/aelf-stop-hook", ["aelf-stop-hook"]),
+        ("aelf search x", ["aelf"]),
+        ("AELF.exe status", ["aelf"]),
+        ("uv run a'el'f session-delta", ["aelf"]),
+        ("python -m aelfrice.cli", []),
+        ("myaelf x_aelf aelf_x aelfx", []),
+    ],
+)
+def test_doctor_reads_the_bare_cli_as_a_word(
+    text: str, names: list[str],
+) -> None:
+    """The bare `aelf` counts only as a word, so a folder named `aelf`, the
+    package name, and the other programs don't name it."""
+    assert _names_in(text) == names
