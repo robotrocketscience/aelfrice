@@ -3899,6 +3899,28 @@ def doctor_codex(
                     path = ("hooks", event, g, *sub)
                     at = f"at `{_render_path(path)}`"
                     named = _named_owned_keys(item, windows=win)
+                    # #1812: a handler whose command is byte-identical to
+                    # one setup writes is setup's handler to doctor, so the
+                    # names in its `statusMessage`, such as the text that
+                    # `--status-message` writes, get no line of their own.
+                    ran = _run_command(item, windows=win)
+                    status = (
+                        cast(dict[str, object], item).get("statusMessage")
+                        if ran is not None and ran in setup_runs else None
+                    )
+                    if isinstance(status, str):
+                        named = _named_owned_keys(
+                            {
+                                k: v for k, v in cast(
+                                    dict[str, object], item,
+                                ).items() if k != "statusMessage"
+                            },
+                            windows=win,
+                        )
+                        accounted.update(
+                            (tag, (*path, "statusMessage"), key)
+                            for key in _names_in(status)
+                        )
                     # Setup rewrites the events it writes in hooks.json and
                     # drops each aelfrice handler there (`_plan_install`).
                     replaced = (
