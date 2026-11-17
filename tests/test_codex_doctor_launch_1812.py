@@ -774,6 +774,56 @@ def test_setup_and_unsetup_print_errors_that_are_not_utf8_on_a_strict_stream(
 @pytest.mark.skipif(
     os.name == "nt", reason="Windows paths are text, not bytes",
 )
+def test_doctor_prints_a_skills_folder_that_is_not_utf8_on_a_strict_stream(
+    tmp_path: Path,
+) -> None:
+    """The skills line names the skills folder, which can hold a byte that
+    isn't UTF-8. The folder need not exist, so this runs on a file system
+    that stores only UTF-8 names, such as macOS APFS."""
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    skills = Path(os.fsdecode(os.fsencode(str(tmp_path)) + b"/s\xff"))
+    out = _strict_utf8()
+    rc = _cmd_doctor_codex(
+        argparse.Namespace(host="codex"), out,
+        codex_dir=codex_dir, skills_dest=skills,
+    )
+    assert rc in (0, 1), _written(out)
+    assert (
+        "[i] codex skills ($aelf-*): 0 installed (0 orphaned) in "
+        f"{tmp_path}/s\\udcff\n"
+    ) in _written(out), _written(out)
+
+
+@pytest.mark.timeout(60)
+def test_doctor_prints_a_fail_line_that_is_not_utf8_on_a_strict_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `[FAIL]` line can name a skill folder that holds a byte that isn't
+    UTF-8, as on Linux ext4. The scan is stubbed to report such a name, so
+    the case runs on every system."""
+    import aelfrice.host_codex as host_codex
+
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    approve_codex_hooks(codex_dir)
+    monkeypatch.setattr(
+        host_codex, "modified_codex_skills", lambda _dir: ["aelf-x\udcff"],
+    )
+    out = _strict_utf8()
+    rc = _cmd_doctor_codex(
+        argparse.Namespace(host="codex"), out,
+        codex_dir=codex_dir, skills_dest=tmp_path / "skills",
+    )
+    assert rc == 1, _written(out)
+    assert (
+        "[FAIL] installed $aelf-* skill(s) do not match what this build "
+        "generates (edited, or left stale by an upgrade): aelf-x\\udcff "
+    ) in _written(out), _written(out)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows paths are text, not bytes",
+)
 
 
 @pytest.mark.timeout(60)
@@ -1826,6 +1876,36 @@ def test_doctor_reads_the_status_message_of_a_handler_of_your_own(
         and "`hooks.Stop[0].hooks[2]`" in line and " names aelf, " in line
     ]
     assert len(lines) == 1, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_keeps_the_command_of_a_setup_handler_with_a_status_message(
+    tmp_path: Path,
+) -> None:
+    """The exemption drops only the names in the `statusMessage` of setup's
+    handler. A copy of that handler under a key that isn't a Codex event
+    still gets the line that names the program its command runs."""
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    hooks = codex_dir / "hooks.json"
+    install_codex_hooks(hooks, status_message="aelf memory")
+    install_codex_skills(tmp_path / "skills")
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["NotAnEvent"] = [doc["hooks"]["Stop"][0]]
+    hooks.write_text(json.dumps(doc), encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    lines = [
+        line for line in out.splitlines()
+        if line.startswith(
+            "[warn] 'NotAnEvent' handler at `hooks.NotAnEvent[0].hooks[",
+        )
+        and " but Codex reads no hook event by that name" in line
+    ]
+    named = sorted(
+        line.split(" names ", 1)[1].split(",", 1)[0] for line in lines
+    )
+    assert named == ["aelf-stop-hook", "aelf-transcript-logger"], out
 
 
 @pytest.mark.parametrize(
