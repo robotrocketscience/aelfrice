@@ -1553,6 +1553,46 @@ def test_doctor_reads_the_bare_cli_as_a_word(
     assert _names_in(text) == names
 
 
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("text", ["aelf memory", "aelf-hook memory"])
+def test_doctor_reads_no_name_in_the_status_message_of_setup_handlers(
+    tmp_path: Path, text: str,
+) -> None:
+    """`aelf setup --host codex --status-message TEXT` writes TEXT on its
+    own handlers. Doctor reads a handler whose command is byte-identical to
+    setup's as setup's, so a program name in TEXT gets no line."""
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    install_codex_hooks(codex_dir / "hooks.json", status_message=text)
+    install_codex_skills(tmp_path / "skills")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "[warn]" not in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_the_status_message_of_a_handler_of_your_own(
+    tmp_path: Path,
+) -> None:
+    """A handler whose command setup doesn't write keeps the line for a
+    program its `statusMessage` names."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["Stop"][0]["hooks"].append({
+        "type": "command", "command": "/usr/bin/true",
+        "statusMessage": "aelf memory",
+    })
+    hooks.write_text(json.dumps(doc), encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    lines = [
+        line for line in out.splitlines()
+        if line.startswith("[warn] Stop handler ")
+        and "`hooks.Stop[0].hooks[2]`" in line and " names aelf, " in line
+    ]
+    assert len(lines) == 1, out
+
+
 @pytest.mark.parametrize(
     ("text", "names"),
     [
