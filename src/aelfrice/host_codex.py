@@ -92,7 +92,7 @@ class CodexHomeError(RuntimeError):
     """
 
 
-def resolve_codex_home() -> Path:
+def resolve_codex_home(*, for_setup: bool = False) -> Path:
     """The directory Codex reads its configuration from (#1427).
 
     Codex resolves its home from `$CODEX_HOME` when that variable holds
@@ -108,13 +108,17 @@ def resolve_codex_home() -> Path:
     calls gets the stale answer (#1320 is the same smell on another
     path).
 
-    `~` is expanded and the result is made absolute, so a relative
-    `$CODEX_HOME` resolves against the process cwd exactly once, here,
-    rather than differently at each use site. Codex doesn't expand `~`
-    (`find_codex_home` in codex-rs/utils/home-dir/src/lib.rs, lines 24-50,
-    at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9), so for a
-    value that starts with `~` this names a folder Codex doesn't read, and
-    `doctor_codex` counts no run and says why.
+    The value is made absolute, so a relative `$CODEX_HOME` resolves
+    against the process cwd exactly once, here, rather than differently at
+    each use site. `~` is not expanded: Codex reads a value that starts
+    with `~` as a path under the folder you start it in (`find_codex_home`
+    in codex-rs/utils/home-dir/src/lib.rs, lines 24-50, at
+    openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9), so doctor and
+    unsetup read the folder Codex reads, and no value can make
+    `Path.expanduser` raise for a user that doesn't exist (#1812). With
+    `for_setup`, such a value raises `CodexHomeError` before anything is
+    read: setup won't install hooks in a folder that depends on where you
+    start Codex.
 
     An explicitly configured value raises `CodexHomeError` rather than
     reverting to the conventional path when it does not exist, or exists
@@ -141,8 +145,15 @@ def resolve_codex_home() -> Path:
         # Unset or empty: Codex's own fallback, and the pre-#1427
         # behaviour, byte for byte.
         return Path.home() / CODEX_DEFAULT_DIRNAME
+    if for_setup and raw.startswith("~"):
+        raise CodexHomeError(
+            f"${CODEX_HOME_ENV} is {raw!r}, which starts with `~`. Codex "
+            "doesn't expand `~` in it: it reads the value as a path under "
+            f"the folder you start Codex in. Set {CODEX_HOME_ENV} to the "
+            "expanded path, and run setup again"
+        )
     try:
-        home = Path(raw).expanduser().absolute()
+        home = Path(raw).absolute()
     except (OSError, ValueError) as exc:  # pragma: no cover - platform-dep
         raise CodexHomeError(
             f"${CODEX_HOME_ENV} is set to {raw!r}, which is not a usable "
@@ -214,8 +225,13 @@ _PROGRAM_NAMES: Final[frozenset[str]] = _OWNED_BASENAMES | frozenset({
 })
 
 
-def codex_hooks_path(codex_dir: Path | None = None) -> Path:
-    cdir = codex_dir if codex_dir is not None else resolve_codex_home()
+def codex_hooks_path(
+    codex_dir: Path | None = None, *, for_setup: bool = False,
+) -> Path:
+    cdir = (
+        codex_dir if codex_dir is not None
+        else resolve_codex_home(for_setup=for_setup)
+    )
     return cdir / CODEX_HOOKS_FILENAME
 
 
@@ -3664,18 +3680,8 @@ def doctor_codex(
             f"{unlisted}. Doctor scores a plain `codex` launch, which "
             "doesn't read one",
         )
-    raw_home = os.environ.get(CODEX_HOME_ENV) or ""
-    tilde = os.path.expanduser(raw_home) != raw_home
     hooks_off = (
-        # #1812: Codex doesn't expand `~` in CODEX_HOME, so it reads
-        # another path than the one doctor scans (`find_codex_home` in
-        # codex-rs/utils/home-dir/src/lib.rs, lines 24-50, at the commit
-        # `_EVENT_KEY_LABELS` cites).
-        f"`{CODEX_HOME_ENV}` is {raw_home!r}, and Codex doesn't expand `~` "
-        "in it: it reads the value as a path under the folder you start "
-        "Codex in, and refuses to start where no such folder exists"
-        if tilde
-        else f"Codex refuses to start with {config_path}" if (
+        f"Codex refuses to start with {config_path}" if (
             report.config_rejected is not None
             or report.config_hooks_rejected is not None
         )
@@ -3689,7 +3695,7 @@ def doctor_codex(
     )
     # #1812: True when Codex may still start the hooks doctor counts no run
     # for: it can't parse config.toml, or doesn't check a [features] value.
-    hooks_off_unsure = hooks_off is not None and not tilde and (
+    hooks_off_unsure = hooks_off is not None and (
         cfg_error is not None or hooks_off.startswith(_UNCHECKED_FEATURE)
     )
     if cfg_error is not None and config_text is not None:
