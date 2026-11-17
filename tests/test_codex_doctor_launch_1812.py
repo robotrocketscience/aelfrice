@@ -83,6 +83,48 @@ def test_doctor_reads_a_utf16_hooks_json_as_codex_does(tmp_path: Path) -> None:
     ) in out, out
 
 
+#: hooks.json contents that aren't UTF-8, and the first bad byte: setup's
+#: file as Windows PowerShell 5.1 saves it (UTF-16 with a byte order
+#: mark), and a JSON file with one Latin-1 byte in a string.
+_NOT_UTF8: Final[dict[str, tuple[bytes, int, int]]] = {
+    "utf-16": ('{"hooks": {}}'.encode("utf-16"), 0, 0xFF),
+    "latin-1": (b'{"hooks": {}, "description": "x\xe9"}', 31, 0xE9),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("case", sorted(_NOT_UTF8))
+def test_setup_and_unsetup_treat_a_hooks_json_that_is_not_utf8_as_invalid(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    """Setup and unsetup treat a hooks.json that isn't UTF-8 as one that
+    isn't JSON: setup and unsetup exit 1, name the file and the first bad
+    byte, and leave it as it is, and `setup --force` replaces it."""
+    data, offset, byte = _NOT_UTF8[case]
+    hooks = tmp_path / "codex" / "hooks.json"
+    hooks.parent.mkdir()
+    hooks.write_bytes(data)
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=False,
+    )
+    bad = f"{hooks} isn't UTF-8 text: byte {offset} is {byte:#04x}"
+    assert _cmd_setup_codex(args, io.StringIO(), hooks_path=hooks) == 1
+    assert _cmd_unsetup_codex(
+        args, io.StringIO(), hooks_path=hooks, skills_dest=tmp_path / "s",
+    ) == 1
+    assert capsys.readouterr().err == (
+        f"setup --host codex: existing {bad}; re-run with --force to "
+        "replace it\n"
+        f"unsetup --host codex: {bad}; not modified\n"
+    )
+    assert hooks.read_bytes() == data
+    args.force = True
+    assert _cmd_setup_codex(args, io.StringIO(), hooks_path=hooks) == 0
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    assert sorted(doc) == ["hooks"], doc
+    assert "SessionStart" in doc["hooks"], doc
+
+
 @pytest.mark.timeout(60)
 def test_doctor_reads_a_latin1_config_toml_as_codex_does(tmp_path: Path) -> None:
     """Codex reads config.toml with `String::from_utf8` and fails on bytes
