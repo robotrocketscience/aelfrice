@@ -16,7 +16,7 @@ import sys
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import pytest
 
@@ -649,6 +649,55 @@ def test_unsetup_reads_a_codex_home_that_starts_with_a_tilde_as_codex_does(
         f"removed aelfrice entries from {literal / 'hooks.json'} "
     ) in captured.out, captured.out
     assert (expanded / "hooks.json").read_bytes() == untouched
+
+
+def _strict_utf8() -> io.TextIOWrapper:
+    """A text stream that raises on any character UTF-8 can't encode, as
+    a Linux stdout under a UTF-8 locale does."""
+    return io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+
+
+def _written(stream: io.TextIOWrapper) -> str:
+    stream.flush()
+    return cast(io.BytesIO, stream.buffer).getvalue().decode("utf-8")
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows paths are text, not bytes",
+)
+@pytest.mark.parametrize("given", ["argument", "missing", "existing"])
+def test_doctor_prints_a_codex_home_that_is_not_utf8_on_a_strict_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, given: str,
+) -> None:
+    """A path can hold a byte that isn't UTF-8, which Python reads as a
+    lone surrogate (`os.fsdecode`), and a strict UTF-8 stream can't encode
+    that. Doctor writes the byte as an escape instead of raising."""
+    raw = os.fsdecode(os.fsencode(str(tmp_path)) + b"/c\xff")
+    shown = f"{tmp_path}/c\\udcff"
+    out, err = _strict_utf8(), _strict_utf8()
+    monkeypatch.setattr(sys, "stderr", err)
+    codex_dir: Path | None = Path(raw)
+    if given != "argument":
+        if given == "existing":
+            try:
+                os.mkdir(os.fsencode(raw))
+            except OSError:
+                pytest.skip("this file system stores only UTF-8 names")
+        monkeypatch.setenv("CODEX_HOME", raw)
+        codex_dir = None
+    rc = _cmd_doctor_codex(
+        argparse.Namespace(host="codex"), out,
+        codex_dir=codex_dir, skills_dest=tmp_path / "skills",
+    )
+    if given == "missing":
+        assert rc == 1
+        assert (
+            f"doctor --host codex: $CODEX_HOME points to {shown}, but that "
+            "path does not exist"
+        ) in _written(err), _written(err)
+    else:
+        assert f"[i] codex home: {shown}\n" in _written(out), _written(out)
 
 
 @pytest.mark.timeout(60)
