@@ -596,6 +596,26 @@ _UNPARSEABLE: Final[object] = object()
 _ABSENT: Final[object] = object()
 
 
+class _NotUtf8(NamedTuple):
+    """A hooks.json whose bytes aren't UTF-8, such as one Windows
+    PowerShell 5.1 saved as UTF-16 (#1812). Setup and unsetup treat it as
+    they treat a file that isn't valid JSON."""
+
+    #: The offset of the first byte that isn't valid UTF-8.
+    offset: int
+    #: That byte.
+    byte: int
+
+    def describe(self) -> str:
+        """The wording doctor uses for the same file (`_read_utf8`)."""
+        return f"isn't UTF-8 text: byte {self.offset} is {self.byte:#04x}"
+
+
+#: One read of hooks.json for a plan: its text, a `_NotUtf8` when its
+#: bytes aren't UTF-8, or None when it doesn't exist.
+_HooksText = str | _NotUtf8 | None
+
+
 def _json_type_name(value: object) -> str:
     """Name `value`'s type as JSON names it, for a message about JSON.
 
@@ -629,18 +649,23 @@ def _fingerprint(path: Path) -> str:
         return ""
 
 
-def _read_hooks_snapshot(path: Path) -> tuple[str | None, str]:
+def _read_hooks_snapshot(path: Path) -> tuple[_HooksText, str]:
     """Return `(text, fingerprint)` for one read of `path`.
 
-    `text` is None when the file does not exist. Both values come from
-    the *same* `read_bytes`, so nothing can slip between the content we
-    merge and the fingerprint we later check it against.
+    `text` is None when the file does not exist, and a `_NotUtf8` naming
+    the first bad byte when its bytes aren't UTF-8 (#1812). Both values
+    come from the *same* `read_bytes`, so nothing can slip between the
+    content we merge and the fingerprint we later check it against.
     """
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
         return None, ""
-    return raw.decode("utf-8"), hashlib.sha256(raw).hexdigest()
+    fingerprint = hashlib.sha256(raw).hexdigest()
+    try:
+        return raw.decode("utf-8"), fingerprint
+    except UnicodeDecodeError as exc:
+        return _NotUtf8(exc.start, raw[exc.start]), fingerprint
 
 
 def _atomic_replace_hooks(path: Path, text: str, expected: str) -> bool:
@@ -688,7 +713,7 @@ def _atomic_replace_hooks(path: Path, text: str, expected: str) -> bool:
 
 
 def _plan_install(
-    text: str | None, scope: SettingsScope, force: bool, hooks_path: Path,
+    text: _HooksText, scope: SettingsScope, force: bool, hooks_path: Path,
     *, windows: bool | None = None, status_message: str | None = None,
 ) -> tuple[str | None, CodexInstallResult]:
     """Merge our hook set into one snapshot. Pure — touches no file.
@@ -718,7 +743,15 @@ def _plan_install(
         )
 
     existing: dict[str, object] = {}
-    if text is not None:
+    if isinstance(text, _NotUtf8):
+        # #1812: refused, or replaced with `--force`, as a file that isn't
+        # valid JSON is.
+        if not force:
+            return refuse(
+                f"existing {hooks_path} {text.describe()}; re-run with "
+                "--force to replace it"
+            )
+    elif text is not None:
         # `_UNPARSEABLE`, not None: `null` is a legal JSON document, so
         # reusing None as the "could not parse" sentinel made a file
         # holding `null` indistinguishable from a syntax error — and the
@@ -815,7 +848,7 @@ def _plan_install(
 
 
 def _plan_remove(
-    text: str | None, hooks_path: Path, *, windows: bool | None = None,
+    text: _HooksText, hooks_path: Path, *, windows: bool | None = None,
 ) -> tuple[str | None, CodexInstallResult]:
     """Strip aelfrice-owned groups from one snapshot. Pure.
 
@@ -826,6 +859,12 @@ def _plan_remove(
     """
     if text is None:
         return None, CodexInstallResult(path=hooks_path, changed=False)
+    if isinstance(text, _NotUtf8):
+        # #1812: left as it is, as a file that isn't valid JSON is.
+        return None, CodexInstallResult(
+            path=hooks_path, changed=False,
+            error=f"{hooks_path} {text.describe()}; not modified",
+        )
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -876,7 +915,7 @@ def _plan_remove(
 
 def _commit_hooks_transaction(
     hooks_path: Path,
-    plan: Callable[[str | None], tuple[str | None, CodexInstallResult]],
+    plan: Callable[[_HooksText], tuple[str | None, CodexInstallResult]],
 ) -> CodexInstallResult:
     """Run `plan` against `hooks_path` under lock, and commit atomically.
 
@@ -921,7 +960,7 @@ def _commit_hooks_transaction(
 
 def _commit_under_lock(
     hooks_path: Path,
-    plan: Callable[[str | None], tuple[str | None, CodexInstallResult]],
+    plan: Callable[[_HooksText], tuple[str | None, CodexInstallResult]],
 ) -> CodexInstallResult:
     """The bounded read-plan-commit loop. Caller holds the lock."""
     for _ in range(_HOOKS_COMMIT_ATTEMPTS):
