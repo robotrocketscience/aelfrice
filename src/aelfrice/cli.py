@@ -6328,8 +6328,13 @@ def _cmd_doctor_codex(
         _doctor_text(f"[i] codex home: {report.codex_dir}"),
         file=out,  # type: ignore[arg-type]
     )
+    # #1812: doctor doesn't say a file it can't look up is there or not.
+    present = (
+        "unknown" if report.hooks_file_unknown is not None
+        else report.hooks_file_present
+    )
     print(
-        f"[{ok}] codex hooks.json: present={report.hooks_file_present} "
+        f"[{ok}] codex hooks.json: present={present} "
         f"valid={report.hooks_file_valid} "
         f"aelfrice_handlers={report.owned_handler_count}",
         file=out,  # type: ignore[arg-type]

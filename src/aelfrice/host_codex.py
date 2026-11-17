@@ -925,7 +925,15 @@ def _commit_under_lock(
 ) -> CodexInstallResult:
     """The bounded read-plan-commit loop. Caller holds the lock."""
     for _ in range(_HOOKS_COMMIT_ATTEMPTS):
-        text, fingerprint = _read_hooks_snapshot(hooks_path)
+        try:
+            text, fingerprint = _read_hooks_snapshot(hooks_path)
+        except OSError as exc:
+            # #1812: such as in a Codex home you can't search, where
+            # `read_bytes` raises PermissionError. Nothing is written yet.
+            return CodexInstallResult(
+                path=hooks_path, changed=False,
+                error=f"can't read {hooks_path} ({exc}); nothing was written",
+            )
         serialized, result = plan(text)
         if serialized is None:
             return result
@@ -1009,8 +1017,21 @@ def remove_codex_hooks(
     is not a correctness problem: nothing of ours existed to strip at the
     instant we looked, and the plan is re-read under the lock in every
     path that does take it.
+
+    A `stat` that fails for another reason, such as in a Codex home you
+    can't search, is an error that names the path, and nothing is changed
+    (#1812). `Path.is_file` raises it on Python 3.12 and 3.13.
     """
-    if not hooks_path.is_file():
+    try:
+        mode = os.stat(hooks_path).st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return CodexInstallResult(path=hooks_path, changed=False)
+    except (OSError, ValueError) as exc:
+        return CodexInstallResult(
+            path=hooks_path, changed=False,
+            error=f"can't read {hooks_path} ({exc}); nothing was changed",
+        )
+    if not stat.S_ISREG(mode):
         return CodexInstallResult(path=hooks_path, changed=False)
     return _commit_hooks_transaction(
         hooks_path,
@@ -1495,6 +1516,10 @@ class CodexDoctorReport:
     codex_dir: Path | None = None
     hooks_file_present: bool = False
     hooks_file_valid: bool = False
+    #: Why doctor can't tell whether hooks.json exists, such as a Codex
+    #: home you can't search, or None. The file then counts as present
+    #: and not valid, so doctor exits 1 (#1812).
+    hooks_file_unknown: str | None = None
     parse_error: str | None = None
     #: Why Codex rejects hooks.json whole, so it loads no hook from it, or
     #: None. The file then counts as not valid (#1812).
@@ -2302,6 +2327,23 @@ def _toml_nesting_error(text: str) -> str | None:
 #: The UTF-8 byte order mark as text, which some editors write at the start
 #: of a file, such as Windows PowerShell 5.1's `Set-Content -Encoding UTF8`.
 _BOM: Final[str] = "﻿"
+
+
+def _stat_failure(path: Path) -> str | None:
+    """Why `os.stat` fails on `path` for a reason other than a missing
+    path, such as a folder above it that you can't search, or None.
+
+    `os.path.isfile` and `os.path.isdir` read any failed `stat` as no
+    file, so doctor asks this first and doesn't say that a file it can't
+    look up doesn't exist (#1812).
+    """
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except (OSError, ValueError) as exc:
+        return str(exc)
+    return None
 
 
 def _read_utf8(path: Path) -> tuple[str | None, str | None]:
@@ -3584,6 +3626,15 @@ def doctor_codex(
     """
     cdir = codex_dir if codex_dir is not None else resolve_codex_home()
     win = os.name == "nt" if windows is None else windows
+    unknown_home = _stat_failure(cdir)
+    if unknown_home is not None:
+        # #1812: such as a `~/.codex` under a folder you can't search,
+        # where Codex can't read config.toml and refuses to start.
+        raise CodexHomeError(
+            f"doctor can't tell whether {cdir} exists ({unknown_home}); "
+            "Codex can't read it either. Fix the permissions of the "
+            "folders above it"
+        )
     report = CodexDoctorReport(
         codex_dir_present=os.path.isdir(cdir), codex_dir=cdir,
     )
@@ -3594,8 +3645,13 @@ def doctor_codex(
     hooks_path = codex_hooks_path(cdir)
     # `os.path.isfile` reads a failed `stat`, such as in a Codex home you
     # can list but not search, as False, where `Path.is_file` raises on
-    # Python 3.12 (#1812).
-    report.hooks_file_present = os.path.isfile(hooks_path)
+    # Python 3.12 (#1812). A `stat` that fails for another reason than a
+    # missing path leaves doctor unable to tell whether the file exists,
+    # so the file counts as present and unreadable, and doctor exits 1.
+    report.hooks_file_unknown = _stat_failure(hooks_path)
+    report.hooks_file_present = (
+        report.hooks_file_unknown is not None or os.path.isfile(hooks_path)
+    )
     hooks_map: dict[str, object] = {}
     # The whole hooks.json when Codex loads it, for the last check (#1812).
     hooks_doc: object = None
@@ -3603,7 +3659,13 @@ def doctor_codex(
     # them, which doctor cuts before `json.loads` reads the file.
     json_cuts: list[tuple[object, ...]] = []
     raw_json, unread = (
-        _read_utf8(hooks_path) if report.hooks_file_present else (None, None)
+        (
+            None,
+            "doctor can't tell whether the file exists, because a stat of "
+            f"it fails: {report.hooks_file_unknown}",
+        ) if report.hooks_file_unknown is not None
+        else _read_utf8(hooks_path) if report.hooks_file_present
+        else (None, None)
     )
     if unread is not None:
         # #1812: Codex logs that it failed to read the file and loads no
@@ -3716,7 +3778,11 @@ def doctor_codex(
     cfg: dict[str, object] = {}
     cfg_error: str | None = None
     config_text: str | None = None
-    if os.path.isfile(config_path):
+    # #1812: Codex refuses to start on a config.toml it fails to read for
+    # any reason but a missing file (`load_config_toml_for_required_layer_raw`
+    # in codex-rs/config/src/loader/mod.rs, lines 615-662, at the commit
+    # `_EVENT_KEY_LABELS` cites), such as one it can't `stat`.
+    if _stat_failure(config_path) is not None or os.path.isfile(config_path):
         loaded = _load_toml(config_path)
         cfg, cfg_error = loaded.data, loaded.unparsed
         config_text = loaded.text
