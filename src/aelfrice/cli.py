@@ -6109,7 +6109,10 @@ def _cmd_setup_codex(
     )
 
     try:
-        target = hooks_path if hooks_path is not None else codex_hooks_path()
+        target = (
+            hooks_path if hooks_path is not None
+            else codex_hooks_path(for_setup=True)
+        )
     except CodexHomeError as exc:
         print(f"setup --host codex: {exc}", file=sys.stderr)
         return 1

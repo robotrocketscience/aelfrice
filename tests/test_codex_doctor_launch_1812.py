@@ -20,7 +20,7 @@ from typing import Any, Final
 
 import pytest
 
-from aelfrice.cli import _cmd_doctor_codex
+from aelfrice.cli import _cmd_doctor_codex, main
 from aelfrice.host_codex import (
     _PROGRAM_NAMES,
     _names_in,
@@ -538,39 +538,86 @@ def test_doctor_reads_an_empty_codex_home_as_unset(
     _check_approvals(rc, out, counted, written)
 
 
+#: `CODEX_HOME` values that start with `~`. `Path.expanduser` raises on the
+#: second, which names no user.
+_TILDE_HOMES: Final[list[str]] = ["~/c", "~nosuchuser1812/c"]
+
+
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("parsed", [True, False], ids=["parsed", "TOML 1.1"])
-def test_doctor_counts_no_run_under_a_codex_home_that_starts_with_a_tilde(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parsed: bool,
+@pytest.mark.parametrize("raw", _TILDE_HOMES)
+def test_doctor_reads_a_codex_home_that_starts_with_a_tilde_as_codex_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str,
 ) -> None:
-    """Codex doesn't expand `~` in `CODEX_HOME`, so it doesn't read the
-    folder doctor scans, and doctor counts no run there, and doesn't say
-    Codex may start the copies there, even beside a config.toml it can't
-    parse."""
+    """Codex doesn't expand `~` in `CODEX_HOME`: it reads the value as a
+    path under the folder you start it in. So doctor reads that folder,
+    and counts the two approved copies there, not the ones under `$HOME`."""
     home = tmp_path / "home"
     (home / "c").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("CODEX_HOME", "~/c")
-    if parsed:
-        config = _two_copies_in(home / "c", tmp_path / "skills")
-        _approve_under(config, Path(os.path.realpath(home / "c")))
-    else:
-        install_codex_hooks(home / "c" / "hooks.json")
-        install_codex_skills(tmp_path / "skills")
-        _two_in_hooks_json(home / "c" / "hooks.json")
-        (home / "c" / "config.toml").write_text(
-            "x = { a = 1, }\n", encoding="utf-8",
-        )
+    _two_copies_in(home / "c", tmp_path / "skills")
+    work = tmp_path / "work"
+    literal = work / raw
+    literal.mkdir(parents=True)
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("CODEX_HOME", raw)
+    config = _two_copies_in(literal, tmp_path / "skills")
+    _approve_under(config, Path(os.path.realpath(literal)))
     rc, out = _resolved_doctor(tmp_path / "skills")
-    assert rc == 0, out
-    assert "times" not in out, out
-    assert "is a copy of" not in out, out
+    assert f"[i] codex home: {literal}\n" in out, out
+    _check_approvals(rc, out, True, literal)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("raw", _TILDE_HOMES)
+def test_doctor_reports_a_missing_codex_home_that_starts_with_a_tilde(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], raw: str,
+) -> None:
+    """Where no folder by that name is under the folder you start Codex
+    in, Codex refuses to start, so doctor names that path and exits 1,
+    even when `$HOME` holds the folder `~` would expand to."""
+    home = tmp_path / "home"
+    (home / "c").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODEX_HOME", raw)
+    rc = _cmd_doctor_codex(
+        argparse.Namespace(host="codex"), io.StringIO(),
+        skills_dest=tmp_path / "skills",
+    )
+    assert rc == 1
     assert (
-        "[warn] doctor counts no duplicate run, because `CODEX_HOME` is "
-        "'~/c', and Codex doesn't expand `~` in it: it reads the value as a "
-        "path under the folder you start Codex in, and refuses to start "
-        "where no such folder exists\n"
-    ) in out, out
+        f"doctor --host codex: $CODEX_HOME points to {tmp_path / raw}, but "
+        "that path does not exist"
+    ) in capsys.readouterr().err
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("raw", _TILDE_HOMES)
+@pytest.mark.parametrize("exists", [True, False], ids=["folder", "no folder"])
+def test_setup_refuses_a_codex_home_that_starts_with_a_tilde(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], raw: str, exists: bool,
+) -> None:
+    """Setup exits 1 and writes nothing for a `CODEX_HOME` that starts with
+    `~`, which Codex doesn't expand, and asks for the expanded path."""
+    home = tmp_path / "home"
+    (home / "c").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    if exists:
+        (tmp_path / raw).mkdir(parents=True)
+    monkeypatch.setenv("CODEX_HOME", raw)
+    before = sorted(p for p in tmp_path.rglob("*"))
+    rc = main(["setup", "--host", "codex", "--no-codex-skills"])
+    assert rc == 1
+    assert (
+        f"setup --host codex: $CODEX_HOME is {raw!r}, which starts with `~`. "
+        "Codex doesn't expand `~` in it: it reads the value as a path under "
+        "the folder you start Codex in. Set CODEX_HOME to the expanded path, "
+        "and run setup again\n"
+    ) in capsys.readouterr().err
+    assert sorted(p for p in tmp_path.rglob("*")) == before
 
 
 @pytest.mark.timeout(60)
