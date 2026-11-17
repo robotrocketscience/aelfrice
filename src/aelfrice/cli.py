@@ -6275,6 +6275,14 @@ def _cmd_unsetup_codex(
     return 0
 
 
+def _doctor_text(text: str) -> str:
+    """`text` with each character a UTF-8 stream can't encode written as a
+    backslash escape. On Linux a path can hold a byte that isn't UTF-8,
+    which `os.fsdecode` reads as a lone surrogate, so doctor prints each line
+    through this to run on a strict UTF-8 stdout or stderr (#1812)."""
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
 def _cmd_doctor_codex(
     args: argparse.Namespace,
     out: object,
@@ -6313,11 +6321,11 @@ def _cmd_doctor_codex(
     try:
         report = doctor_codex(codex_dir)
     except CodexHomeError as exc:
-        print(f"doctor --host codex: {exc}", file=sys.stderr)
+        print(_doctor_text(f"doctor --host codex: {exc}"), file=sys.stderr)
         return 1
     ok = "ok" if report.hooks_file_valid else "-"
     print(
-        f"[i] codex home: {report.codex_dir}",
+        _doctor_text(f"[i] codex home: {report.codex_dir}"),
         file=out,  # type: ignore[arg-type]
     )
     print(
@@ -6360,12 +6368,17 @@ def _cmd_doctor_codex(
     # is the part gated on wiring.
     orphaned = orphaned_codex_skills(skills_dir)
     print(
-        f"[i] codex skills ($aelf-*): {n_skills} installed "
-        f"({len(orphaned)} orphaned) in {skills_dir}",
+        _doctor_text(
+            f"[i] codex skills ($aelf-*): {n_skills} installed "
+            f"({len(orphaned)} orphaned) in {skills_dir}",
+        ),
         file=out,  # type: ignore[arg-type]
     )
     for warning in report.warnings:
-        print(f"[warn] {warning}", file=out)  # type: ignore[arg-type]
+        print(
+            _doctor_text(f"[warn] {warning}"),
+            file=out,  # type: ignore[arg-type]
+        )
 
     # #1430: a green exit on broken-but-parseable wiring is a false green.
     # Absent wiring stays exit 0 per the ruling on that issue — never having
@@ -6429,7 +6442,7 @@ def _cmd_doctor_codex(
             "directory on PATH with `uv tool update-shell`",
         )
     for fault in faults:
-        print(f"[FAIL] {fault}", file=out)  # type: ignore[arg-type]
+        print(_doctor_text(f"[FAIL] {fault}"), file=out)  # type: ignore[arg-type]
 
     if report.hooks_file_present and not report.hooks_file_valid:
         return 1
