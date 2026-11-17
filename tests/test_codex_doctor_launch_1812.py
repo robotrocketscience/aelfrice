@@ -955,6 +955,74 @@ def test_doctor_does_not_claim_no_hooks_when_config_toml_names_one(
     ) in out, out
 
 
+# --- a byte order mark ---------------------------------------------------------
+
+#: The UTF-8 byte order mark, as bytes.
+_BOM_BYTES: Final[bytes] = b"\xef\xbb\xbf"
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("marks", [1, 2])
+def test_doctor_reads_a_config_toml_that_starts_with_a_byte_order_mark(
+    tmp_path: Path, marks: int,
+) -> None:
+    """Codex's TOML parser skips one UTF-8 byte order mark, so doctor reads
+    the approvals in a config.toml that starts with one and counts both
+    copies there. With a second mark, Codex refuses to start and `tomllib`
+    can't parse the file, so doctor counts no run."""
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    config = _two_copies_in(codex_dir, tmp_path / "skills")
+    approve_codex_hooks(codex_dir)
+    config.write_bytes(_BOM_BYTES * marks + config.read_bytes())
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    if marks == 1:
+        assert rc == 1, out
+        assert (
+            "[FAIL] SessionStart starts the aelf-session-start-hook command 2 "
+            "times"
+        ) in out, out
+        assert "parse" not in out, out
+    else:
+        assert rc == 0, out
+        assert "times" not in out, out
+        assert f"doctor can't parse {config}, which holds" in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_a_profile_file_that_starts_with_a_byte_order_mark(
+    tmp_path: Path,
+) -> None:
+    """A profile file goes through the same reader as config.toml."""
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    profile = codex_dir / "work.config.toml"
+    profile.write_bytes(_BOM_BYTES + b"[features]\nhooks = false\n")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert (
+        f"[warn] `codex --profile work` also reads the profile file {profile}, "
+        "and its [features] turns Codex's `hooks` feature off."
+    ) in out, out
+    assert "can't" not in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_rejects_a_hooks_json_that_starts_with_a_byte_order_mark(
+    tmp_path: Path,
+) -> None:
+    """serde_json reads no byte order mark, so Codex loads no hook from a
+    hooks.json that starts with one, and doctor exits 1 and counts neither
+    copy in it."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    _two_in_hooks_json(hooks)
+    approve_codex_hooks(codex_dir)
+    hooks.write_bytes(_BOM_BYTES + hooks.read_bytes())
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 1, out
+    assert f"[warn] {hooks} is unreadable as hooks config (" in out, out
+    assert "times" not in out, out
+
+
 # --- numbers and keys Codex rejects ------------------------------------------
 
 

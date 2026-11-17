@@ -2299,6 +2299,11 @@ def _toml_nesting_error(text: str) -> str | None:
     return None
 
 
+#: The UTF-8 byte order mark as text, which some editors write at the start
+#: of a file, such as Windows PowerShell 5.1's `Set-Content -Encoding UTF8`.
+_BOM: Final[str] = "﻿"
+
+
 def _read_utf8(path: Path) -> tuple[str | None, str | None]:
     """A file's text, or None and why Codex can't read it.
 
@@ -2376,10 +2381,18 @@ def _load_toml(path: Path) -> _TomlFile:
     `src/de/parser/devalue.rs`, lines 88-95). `tomllib` reads an integer
     of any size and such a float as infinity, so doctor checks both, and
     reads an integer too long for Python's `int` as out of range.
+
+    Its parser skips one UTF-8 byte order mark at the start of the file
+    (`Lexer::new` in toml_parser 1.1.5's src/lexer/mod.rs, lines 33-45),
+    and real codex-cli 0.167.1 loads a config.toml that starts with one and
+    refuses to start on one that starts with two. `tomllib` rejects the
+    mark, so doctor removes one before it reads the file, and `tomllib`
+    still rejects a second (#1812).
     """
     text, error = _read_utf8(path)
     if text is None:
         return _TomlFile({}, rejected=error)
+    text = text.removeprefix(_BOM)
     nesting = _toml_nesting_error(text)
     if nesting is not None:
         return _TomlFile(
