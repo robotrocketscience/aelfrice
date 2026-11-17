@@ -2641,9 +2641,10 @@ _OPEN_EVENTS: Final[frozenset[str]] = _TOOL_EVENTS | frozenset({
 })
 #: The names one tool call is matched by, for each tool that carries more
 #: than its own name. Codex tests a matcher against the tool's name and its
-#: matcher aliases (`matcher_inputs` in codex-rs/hooks/src/events/common.rs
-#: at openai/codex@c0cc9fc82), and only `apply_patch` and `spawn_agent`
-#: have aliases (`HookToolName` in codex-rs/core/src/tools/hook_names.rs).
+#: matcher aliases (`matcher_inputs` in codex-rs/hooks/src/events/common.rs,
+#: lines 158-167, at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9),
+#: and only `apply_patch` and `spawn_agent` have aliases (`HookToolName` in
+#: codex-rs/core/src/tools/hook_names.rs, lines 34-51, at the same commit).
 _TOOL_MATCHER_INPUTS: Final[tuple[frozenset[str], ...]] = (
     frozenset({"apply_patch", "Write", "Edit"}),
     frozenset({"spawn_agent", "Agent"}),
@@ -2666,8 +2667,9 @@ _EVERY_FIRE: Final[frozenset[str]] = frozenset({""})
 #: matcher, and `.*` is a regex that matches any value.
 _EVERY_VALUE_MATCHERS: Final[frozenset[str]] = frozenset({"", "*", ".*"})
 #: A matcher of only these characters is a list of exact names to Codex
-#: (`HookMatcher::new` in codex-rs/hooks/src/engine/matcher.rs at
-#: openai/codex@c0cc9fc82), which never compiles it as a regex.
+#: (`HookMatcher::new` in codex-rs/hooks/src/engine/matcher.rs, lines
+#: 12-23, at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9), which
+#: never compiles it as a regex.
 _EXACT_MATCHER: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_|]+")
 #: One branch of an anchored list: a name of ASCII letters, digits, and
 #: `_`, with an optional `^` before it and an optional `$` after it.
