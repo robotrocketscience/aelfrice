@@ -622,6 +622,36 @@ def test_setup_refuses_a_codex_home_that_starts_with_a_tilde(
 
 
 @pytest.mark.timeout(60)
+@pytest.mark.parametrize("raw", _TILDE_HOMES)
+def test_unsetup_reads_a_codex_home_that_starts_with_a_tilde_as_codex_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], raw: str,
+) -> None:
+    """Unsetup reads a `CODEX_HOME` that starts with `~` as Codex and
+    doctor do, as a path under the folder you run it in. It removes setup's
+    handlers there and leaves the folder that `~` expands to alone."""
+    home = tmp_path / "home"
+    expanded = home / "c"
+    expanded.mkdir(parents=True)
+    install_codex_hooks(expanded / "hooks.json")
+    untouched = (expanded / "hooks.json").read_bytes()
+    monkeypatch.setenv("HOME", str(home))
+    work = tmp_path / "work"
+    literal = work / raw
+    literal.mkdir(parents=True)
+    install_codex_hooks(literal / "hooks.json")
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("CODEX_HOME", raw)
+    rc = main(["unsetup", "--host", "codex"])
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert (
+        f"removed aelfrice entries from {literal / 'hooks.json'} "
+    ) in captured.out, captured.out
+    assert (expanded / "hooks.json").read_bytes() == untouched
+
+
+@pytest.mark.timeout(60)
 @pytest.mark.parametrize(
     ("spelling", "counted"), [("made absolute", True), ("as written", False)],
 )
