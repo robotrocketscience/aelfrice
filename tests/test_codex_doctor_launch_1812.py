@@ -2536,6 +2536,45 @@ _LATIN1_LEDGER: Final[bytes] = b'{"opt_out": ["\xff"]}'
 _CLAUDE_OPTED_OUT: Final[str] = '{"opt_out": [], "opt_out_hosts": ["claude"]}\n'
 #: A ledger that opts the transcript-ingest hook out.
 _INGEST_OPTED_OUT: Final[str] = '{"opt_out": ["transcript_ingest"]}\n'
+#: JSON that Python's `json` can't read, or that holds a lone surrogate,
+#: with the cause setup names after the file (#1812), keyed by the name of
+#: the state that puts it in the Claude settings; the ledger states put the
+#: same text under `opt_out`.
+_UNREADABLE_JSON: Final[dict[str, tuple[bytes, str]]] = {
+    "deep": (
+        b'{"hooks": {}, "x": ' + b"[" * 100_000 + b"]" * 100_000 + b"}",
+        "nests arrays or objects too deeply for setup to read",
+    ),
+    "long integer": (
+        b'{"hooks": {}, "x": ' + b"1" * 5000 + b"}",
+        f"holds an integer of more than {sys.get_int_max_str_digits()} "
+        "digits, which setup can't read",
+    ),
+    "lone surrogate": (
+        b'{"hooks": {}, "x": ["a", "b\\ud800"]}',
+        "holds a lone UTF-16 surrogate escape in the string at `x[1]`, which "
+        "setup can't write back as UTF-8 text",
+    ),
+    "surrogate key": (
+        b'{"hooks": {"\\udc00": []}}',
+        "holds a lone UTF-16 surrogate escape in a key in `hooks`, which "
+        "setup can't write back as UTF-8 text",
+    ),
+}
+_LEDGER_JSON: Final[dict[str, tuple[bytes, str]]] = {
+    "ledger deep": (
+        b'{"opt_out": ' + b"[" * 100_000 + b"]" * 100_000 + b"}",
+        _UNREADABLE_JSON["deep"][1],
+    ),
+    "ledger long integer": (
+        b'{"opt_out": [' + b"1" * 5000 + b"]}", _UNREADABLE_JSON["long integer"][1],
+    ),
+    "ledger surrogate": (
+        b'{"opt_out": ["\\ud800"], "opt_out_hosts": []}',
+        "holds a lone UTF-16 surrogate escape in the string at `opt_out[0]`, "
+        "which setup can't write back as UTF-8 text",
+    ),
+}
 
 
 def _setup_files(
@@ -2736,13 +2775,16 @@ def _codex_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
 #: Codex setup states that don't depend on the skills, and those that do,
 #: which only `--codex-skills` reads.
 #: Claude settings states that both halves of setup refuse (2026-11-18
-#: ruling), applied by `_claude_state`.
+#: ruling), and opt-out ledger states that both refuse, applied by
+#: `_claude_state`.
 _SHARED_SETTINGS_STATES: Final[tuple[str, ...]] = (
-    "bom", "not json", "array", "folder", "claude file", "fifo", "hooks array",
-    "hooks repeated", "event object", "event string", "entry number",
-    "inner number", "inner true", "inner object", "inner string",
-    "claude dangling", "claude loop", "settings loop", "claude link to fifo",
-    "settings link to fifo",
+    "bom", "not json", "array", "folder", "claude file", "fifo",
+    "hooks array", "hooks repeated", "event object", "event string",
+    "entry number", "inner number", "inner true", "inner object",
+    "inner string", "claude dangling", "claude loop", "settings loop",
+    "claude link to fifo", "settings link to fifo", "deep", "long integer",
+    "lone surrogate", "surrogate key", "ledger deep", "ledger long integer",
+    "ledger surrogate",
 )
 _CODEX_STATES: Final[tuple[str, ...]] = (
     "settings latin-1", "settings utf-16", "claude unsearchable",
@@ -3268,6 +3310,14 @@ def _claude_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
         data, cause = _SHAPE_STATES[name]
         _write_settings(p, data)
         return f"{p['settings']} {cause}", _FIX_OR_MOVE
+    if name in _UNREADABLE_JSON:
+        data, cause = _UNREADABLE_JSON[name]
+        _write_settings(p, data)
+        return f"{p['settings']} {cause}", _FIX_OR_MOVE
+    if name in _LEDGER_JSON:
+        data, cause = _LEDGER_JSON[name]
+        p["ledger"].write_bytes(data)
+        return f"{p['ledger']} {cause}", _FIX_OR_MOVE
     if name.startswith(("claude ", "settings ")) and (
         "link" in name or "dangling" in name or "loop" in name
     ):
@@ -3324,16 +3374,18 @@ def _claude_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
 
 
 _CLAUDE_STATES: Final[tuple[str, ...]] = (
-    "bom", "bom, claude opted out", "latin-1", "utf-16", "array", "not json",
-    "folder", "unreadable", "claude unsearchable", "claude file", "fifo",
-    "ledger latin-1", "aelfrice file", "aelfrice read-only", "hooks array",
-    "hooks repeated", "event object", "event string", "entry number",
-    "commands aelf file", "command md latin-1", "command md folder",
-    "command md fifo", "commands read-only", "commands unsearchable",
-    "commands file", "home read-only", "claude read-only", "inner number",
-    "inner true", "inner object", "inner string", "claude dangling",
-    "claude loop", "settings loop", "claude link to fifo",
-    "settings link to fifo",
+    "bom", "bom, claude opted out", "latin-1", "utf-16", "array",
+    "not json", "folder", "unreadable", "claude unsearchable",
+    "claude file", "fifo", "ledger latin-1", "aelfrice file",
+    "aelfrice read-only", "hooks array", "hooks repeated", "event object",
+    "event string", "entry number", "commands aelf file",
+    "command md latin-1", "command md folder", "command md fifo",
+    "commands read-only", "commands unsearchable", "commands file",
+    "home read-only", "claude read-only", "inner number", "inner true",
+    "inner object", "inner string", "claude dangling", "claude loop",
+    "settings loop", "claude link to fifo", "settings link to fifo", "deep",
+    "long integer", "lone surrogate", "surrogate key", "ledger deep",
+    "ledger long integer", "ledger surrogate",
 )
 
 
@@ -3404,6 +3456,7 @@ def test_setup_claude_refuses_a_file_it_can_not_use_and_writes_nothing(
             id="inner list of anything",
         ),
         pytest.param(b'{"hooks": [], "hooks": {}}', id="last hooks object"),
+        pytest.param(b'{"x": "\\ud83d\\ude00"}', id="surrogate pair"),
     ],
 )
 def test_setup_reads_claude_settings_shapes_it_can_edit(
@@ -3412,7 +3465,7 @@ def test_setup_reads_claude_settings_shapes_it_can_edit(
     """The settings check refuses only a shape setup would stop on: a
     `null` it fills in, an event setup doesn't edit, and a list of any
     values inside an entry pass, and the last of two `hooks` keys is the
-    one read."""
+    one read. An escaped surrogate pair is one character and passes."""
     from aelfrice.setup import check_settings_for_setup
 
     path = tmp_path / "settings.json"
@@ -3639,3 +3692,68 @@ def test_both_halves_read_a_settings_link_they_can_follow(
     assert claude_host_has_aelfrice_hooks(p["settings"]) is (want is not None)
     args = cli.build_parser().parse_args(["setup", "--scope", "user"])
     assert cli._setup_input_refusal(args) is None  # noqa: SLF001
+
+
+#: hooks.json contents that are JSON Python's `json` can't read, with the
+#: cause setup and unsetup name after the file (#1812).
+_HOOKS_UNREADABLE: Final[dict[str, tuple[bytes, str]]] = {
+    "deep": (
+        b'{"hooks": ' + b"[" * 100_000 + b"]" * 100_000 + b"}",
+        "nests arrays or objects too deeply for setup to read",
+    ),
+    "long integer": (
+        b'{"hooks": {"x": ' + b"1" * 5000 + b"}}",
+        f"holds an integer of more than {sys.get_int_max_str_digits()} "
+        "digits, which setup can't read",
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("case", sorted(_HOOKS_UNREADABLE))
+def test_setup_and_unsetup_treat_a_hooks_json_python_can_not_read_as_invalid(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    """Setup and unsetup treat a hooks.json that is JSON Python's `json`
+    can't read, nested too deeply or holding an integer too long, as one
+    that isn't JSON: they exit 1, name the cause and leave the file as it
+    is, and `setup --force` replaces it."""
+    data, cause = _HOOKS_UNREADABLE[case]
+    hooks = tmp_path / "codex" / "hooks.json"
+    hooks.parent.mkdir()
+    hooks.write_bytes(data)
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=False,
+    )
+    assert _cmd_setup_codex(args, io.StringIO(), hooks_path=hooks) == 1
+    assert _cmd_unsetup_codex(
+        args, io.StringIO(), hooks_path=hooks, skills_dest=tmp_path / "s",
+    ) == 1
+    assert capsys.readouterr().err == (
+        f"setup --host codex: existing hooks.json {cause}; re-run with "
+        "--force to replace it\n"
+        f"unsetup --host codex: hooks.json {cause}; not modified\n"
+    )
+    assert hooks.read_bytes() == data
+    args.force = True
+    assert _cmd_setup_codex(args, io.StringIO(), hooks_path=hooks) == 0
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    assert sorted(doc) == ["hooks"], doc
+    assert "SessionStart" in doc["hooks"], doc
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("reader", ["read_opt_outs", "read_host_opt_outs"])
+@pytest.mark.parametrize("case", ["ledger deep", "ledger long integer"])
+def test_opt_out_readers_read_a_ledger_python_can_not_read_as_empty(
+    tmp_path: Path, reader: str, case: str,
+) -> None:
+    """The opt-out readers read a ledger that is JSON Python's `json`
+    can't read as they read one that isn't JSON: as empty, so no `aelf`
+    command raises on it. Setup refuses it by name instead
+    (`check_opt_out_ledger`)."""
+    import aelfrice.auto_install as auto_install
+
+    ledger = tmp_path / "opt-out-hooks.json"
+    ledger.write_bytes(_LEDGER_JSON[case][0])
+    assert getattr(auto_install, reader)(ledger) == frozenset()
