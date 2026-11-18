@@ -2758,7 +2758,7 @@ _CHMOD_STATES: Final[frozenset[str]] = frozenset({
     "claude unsearchable", "aelfrice unsearchable", "aelfrice read-only",
     "skills unsearchable", "skills read-only", "skill read-only",
     "home read-only", "unreadable", "aelfrice missing, home read-only",
-    "commands read-only", "commands unsearchable",
+    "commands read-only", "commands unsearchable", "claude read-only",
 })
 
 
@@ -3212,6 +3212,18 @@ def _claude_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
         return f"{p['settings']} {cause}", _FIX_OR_MOVE
     if name.startswith("command"):
         return _slash_state(name, p)
+    if name == "home read-only":
+        os.chmod(p["home"], 0o500)
+        return (
+            f"{p['home']} can't be written to (Permission denied), so setup "
+            f"can't create {p['claude']}", _FIX_PERMS,
+        )
+    if name == "claude read-only":
+        _write_settings(p, b"{}")
+        os.chmod(p["claude"], 0o500)
+        return (
+            f"{p['claude']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
     if name == "unreadable":
         _write_settings(p, b"{}")
         os.chmod(p["settings"], 0)
@@ -3257,6 +3269,7 @@ _CLAUDE_STATES: Final[tuple[str, ...]] = (
     "event string", "entry number", "commands aelf file",
     "command md latin-1", "command md folder", "command md fifo",
     "commands read-only", "commands unsearchable", "commands file",
+    "home read-only", "claude read-only",
 )
 
 
