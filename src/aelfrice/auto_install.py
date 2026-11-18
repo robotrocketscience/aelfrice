@@ -286,7 +286,8 @@ def read_opt_outs(opt_out_path: Path | None = None) -> frozenset[str]:
     """Return the set of hook *names* the user opted out of.
 
     Names match the manifest's `name` field (e.g. "transcript_ingest").
-    Missing or unreadable file returns the empty set — no opt-outs.
+    A missing or unreadable file, or one that isn't UTF-8 text, returns
+    the empty set: no opt-outs.
 
     `opt_out_path` resolves from the module-level `OPT_OUT_PATH` when
     omitted — late-bound so tests monkeypatching the constant are
@@ -294,11 +295,11 @@ def read_opt_outs(opt_out_path: Path | None = None) -> frozenset[str]:
     """
     if opt_out_path is None:
         opt_out_path = OPT_OUT_PATH
-    if not opt_out_path.exists():
-        return frozenset()
     try:
         raw = opt_out_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):
+        # Missing, unreadable, or not UTF-8 text, which raises
+        # UnicodeDecodeError, a ValueError (#1812).
         return frozenset()
     if not raw.strip():
         return frozenset()
@@ -319,20 +320,20 @@ def read_host_opt_outs(opt_out_path: Path | None = None) -> frozenset[str]:
 
     Stored under the sibling `opt_out_hosts` key of the same ledger the
     per-hook opt-outs use (#1053); older aelfrice versions ignore the
-    key. Missing / unreadable / malformed file returns the empty set —
-    a broken marker never blocks capture (fail-open; `aelf doctor
-    --host codex` surfaces the state).
+    key. A missing, unreadable, non-UTF-8 or malformed file returns the
+    empty set, so a broken marker never blocks capture (fail-open;
+    `aelf doctor --host codex` surfaces the state).
 
     `opt_out_path` resolves from the module-level `OPT_OUT_PATH` when
     omitted — late-bound (#1320; see `read_stamp`).
     """
     if opt_out_path is None:
         opt_out_path = OPT_OUT_PATH
-    if not opt_out_path.exists():
-        return frozenset()
     try:
         raw = opt_out_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):
+        # Missing, unreadable, or not UTF-8 text, which raises
+        # UnicodeDecodeError, a ValueError (#1812).
         return frozenset()
     if not raw.strip():
         return frozenset()
