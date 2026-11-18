@@ -5534,6 +5534,75 @@ def _unsetup_commit_ingest_git_hook(out: object) -> bool:
     return True
 
 
+def _setup_claude_preflight(args: argparse.Namespace) -> None:
+    """Read the files `aelf setup` for the claude host edits before it
+    writes anything, and raise `SetupInputError` for one it can't use
+    (#1812): the settings file, and the opt-out ledger it clears the
+    claude host from."""
+    from aelfrice.auto_install import check_opt_out_ledger
+    from aelfrice.setup import check_settings_for_setup
+
+    check_settings_for_setup(_resolve_settings_path(args))
+    check_opt_out_ledger(removing=CLAUDE_HOST)
+
+
+def _setup_codex_preflight(
+    args: argparse.Namespace, skills_dest: Path | None,
+) -> bool:
+    """Read the files `aelf setup --host codex` reads besides hooks.json
+    before it writes anything, and raise `SetupInputError` for one it
+    can't use (#1812). Returns whether the Claude settings wire aelfrice
+    hooks, which decides whether setup writes the Claude opt-out.
+
+    `install_codex_hooks` reads hooks.json and refuses before it writes,
+    so the checks here cover the rest: the skills folder, unless
+    `--no-codex-skills`, the Claude settings, and the opt-out ledger when
+    setup would write it.
+    """
+    from aelfrice.auto_install import check_opt_out_ledger
+    from aelfrice.host_codex import (
+        check_codex_skills_dest,
+        claude_host_has_aelfrice_hooks,
+    )
+    from aelfrice.setup import USER_SETTINGS_PATH
+
+    if skills_dest is not None and getattr(args, "codex_skills", True):
+        check_codex_skills_dest(skills_dest)
+    claude_wired = claude_host_has_aelfrice_hooks(USER_SETTINGS_PATH)
+    if not claude_wired:
+        check_opt_out_ledger(adding=CLAUDE_HOST)
+    return claude_wired
+
+
+def _setup_input_refusal(args: argparse.Namespace) -> str | None:
+    """The refusal `aelf setup` prints for a file it reads and can't use,
+    or None (#1812). `main` calls this ahead of the update check, as it
+    calls `_setup_home_refusal`, and each host's executor reads the same
+    files again before its first write."""
+    from aelfrice.host_codex import CodexHomeError, resolve_agents_skills_dir
+    from aelfrice.setup import SetupInputError
+
+    try:
+        if host_of(args) == CODEX_HOST:
+            skills_dest: Path | None = None
+            if getattr(args, "codex_skills", True):
+                try:
+                    skills_dest = resolve_agents_skills_dir()
+                except CodexHomeError:
+                    # The executor refuses with its own message.
+                    return None
+            _setup_codex_preflight(args, skills_dest)
+        else:
+            _setup_claude_preflight(args)
+    except SetupInputError as exc:
+        prefix = (
+            "setup --host codex" if host_of(args) == CODEX_HOST
+            else "aelf setup"
+        )
+        return f"{prefix}: {exc}"
+    return None
+
+
 def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     """Install the hooks, reporting a contended or foreign-written
     settings.json instead of failing with a traceback (#1161)."""
@@ -5558,6 +5627,14 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
 
 def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
     """`aelf setup` for the claude host: settings.json and slash commands."""
+    from aelfrice.setup import SetupInputError
+
+    # #1812: every file this reads, before its first write.
+    try:
+        _setup_claude_preflight(args)
+    except SetupInputError as exc:
+        print(_doctor_text(f"aelf setup: {exc}"), file=sys.stderr)
+        return 1
     # #1053: an explicit claude-host setup is explicit re-consent —
     # clear any persistent claude auto-install opt-out.
     from aelfrice.auto_install import remove_host_opt_out
@@ -6131,6 +6208,14 @@ def _cmd_setup_codex(
                 file=sys.stderr,
             )
             return 1
+    from aelfrice.setup import SetupInputError
+
+    # #1812: every other file setup reads, before hooks.json is written.
+    try:
+        claude_wired = _setup_codex_preflight(args, skills_dest)
+    except SetupInputError as exc:
+        print(_doctor_text(f"setup --host codex: {exc}"), file=sys.stderr)
+        return 1
     result = install_codex_hooks(
         target,
         scope="user",
@@ -6157,7 +6242,7 @@ def _cmd_setup_codex(
 
         try:
             sk = install_codex_skills(skills_dest)
-        except OSError as exc:
+        except (OSError, SetupInputError) as exc:
             # hooks.json is already written; fail the skills half with a
             # clear message instead of a raw traceback (#1136).
             print(
@@ -6207,17 +6292,26 @@ def _cmd_setup_codex(
     # Codex hooks stop rewriting ~/.claude/settings.json. Dual-host
     # users (Claude hooks present) keep auto-install untouched.
     from aelfrice.auto_install import add_host_opt_out, read_host_opt_outs
-    from aelfrice.host_codex import claude_host_has_aelfrice_hooks
-    from aelfrice.setup import USER_SETTINGS_PATH
 
-    if claude_host_has_aelfrice_hooks(USER_SETTINGS_PATH):
+    if claude_wired:
         print(
             "  note: Claude-host aelfrice hooks detected; leaving "
             "Claude auto-install enabled (dual-host).",
             file=out,  # type: ignore[arg-type]
         )
     elif CLAUDE_HOST not in read_host_opt_outs():
-        add_host_opt_out(CLAUDE_HOST)
+        try:
+            add_host_opt_out(CLAUDE_HOST)
+        except OSError as exc:
+            # #1812: the preflight read this folder; it changed since.
+            print(
+                _doctor_text(
+                    "setup --host codex: hooks written, but the Claude "
+                    f"auto-install opt-out couldn't be written: {exc}",
+                ),
+                file=sys.stderr,
+            )
+            return 1
         print(
             "  note: opted the claude host out of auto-install "
             "(#1053) — aelf will no longer rewrite "
@@ -13360,6 +13454,10 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
         home_refusal = _setup_home_refusal()
         if home_refusal is not None:
             print(_doctor_text(home_refusal), file=sys.stderr)
+            return 1
+        input_refusal = _setup_input_refusal(args)
+        if input_refusal is not None:
+            print(_doctor_text(input_refusal), file=sys.stderr)
             return 1
     if cmd not in _AUTO_INSTALL_SKIP_CMDS:
         # Idempotent post-upgrade hook installer (#623). Gated on a

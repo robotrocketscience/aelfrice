@@ -387,6 +387,42 @@ def remove_host_opt_out(host: str, opt_out_path: Path | None = None) -> bool:
     return True
 
 
+def check_opt_out_ledger(
+    opt_out_path: Path | None = None, *,
+    adding: str | None = None, removing: str | None = None,
+) -> None:
+    """Raise `SetupInputError` unless `aelf setup` can use the opt-out
+    ledger (#1812).
+
+    The readers above treat a ledger they can't read as empty, so a write
+    after them would replace it and drop the opt-outs it holds. Setup
+    reads it first: it refuses a ledger it can't read, such as a folder or
+    one under a `.aelfrice` that is a file or that you can't search, and
+    one that isn't UTF-8 text. When setup will rewrite the ledger, to add
+    the host `adding` that it doesn't name yet or to remove the host
+    `removing` that it names, it also refuses a folder it can't write the
+    ledger in. A ledger that isn't JSON still reads as empty, as the
+    readers read it.
+    """
+    if opt_out_path is None:
+        opt_out_path = OPT_OUT_PATH
+    raw = _setup.read_setup_input(opt_out_path)
+    if raw is not None:
+        _setup.decode_setup_input(opt_out_path, raw)
+    hosts = read_host_opt_outs(opt_out_path)
+    if not (
+        (adding is not None and adding not in hosts)
+        or (removing is not None and removing in hosts)
+    ):
+        return
+    folder = opt_out_path.parent
+    if os.path.isdir(folder) and not os.access(folder, os.W_OK | os.X_OK):
+        raise _setup.SetupInputError(
+            f"{folder} can't be written to (Permission denied)",
+            "Fix its permissions, and run setup again",
+        )
+
+
 def _write_opt_outs(
     hook_names: set[str], opt_out_path: Path | None = None,
 ) -> None:

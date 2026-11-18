@@ -48,6 +48,7 @@ import importlib.resources
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -1969,6 +1970,105 @@ def _read_settings_file(path: Path) -> dict[str, object]:
             f"settings file must contain a JSON object at top level: {path}"
         )
     return cast(dict[str, object], parsed)
+
+
+class SetupInputError(Exception):
+    """A file `aelf setup` reads can't be used, so setup changes nothing
+    (#1812).
+
+    Setup reads every such file before its first write, so a refusal
+    leaves no part of an install behind. `cause` names the file and what
+    is wrong with it, and `remedy` says what to do.
+    """
+
+    def __init__(
+        self, cause: str, remedy: str = "Fix or move it, and run setup again",
+    ) -> None:
+        super().__init__(f"{cause}; nothing was written. {remedy}")
+        self.cause = cause
+        self.remedy = remedy
+
+
+#: The bytes of a UTF-8 byte order mark (BOM) at the start of a file.
+_UTF8_BOM: Final[bytes] = b"\xef\xbb\xbf"
+
+
+def _unreadable_cause(path: Path, exc: OSError) -> str:
+    """Why `path` can't be read, for a `SetupInputError` (#1812)."""
+    if isinstance(exc, NotADirectoryError):
+        for parent in path.parents:
+            if os.path.lexists(parent) and not os.path.isdir(parent):
+                return f"{path} can't be read, because {parent} isn't a folder"
+    return f"{path} can't be read ({exc.strerror or exc})"
+
+
+def read_setup_input(path: Path) -> bytes | None:
+    """The bytes of a file `aelf setup` reads, or None when it doesn't
+    exist (#1812).
+
+    Raises `SetupInputError` naming `path` when it exists and can't be
+    read: a folder, something other than a regular file, such as a FIFO
+    that would block the read, a file or a folder above it that you have no
+    permission for, or a path under a file.
+    """
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise SetupInputError(_unreadable_cause(path, exc)) from exc
+    if stat.S_ISDIR(st.st_mode):
+        raise SetupInputError(f"{path} is a folder, not a file")
+    if not stat.S_ISREG(st.st_mode):
+        raise SetupInputError(f"{path} isn't a regular file")
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise SetupInputError(_unreadable_cause(path, exc)) from exc
+
+
+def decode_setup_input(path: Path, raw: bytes) -> str:
+    """`raw`, the bytes of `path`, as UTF-8 text, or `SetupInputError`
+    naming the first byte that isn't UTF-8, as setup names one in a
+    hooks.json (#1812)."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SetupInputError(
+            f"{path} isn't UTF-8 text: byte {exc.start} is "
+            f"{raw[exc.start]:#04x}"
+        ) from exc
+
+
+def check_settings_for_setup(path: Path) -> None:
+    """Raise `SetupInputError` unless `aelf setup` can edit the settings
+    file at `path` (#1812).
+
+    A missing or empty file is fine. Setup refuses a file it can't read,
+    one that isn't UTF-8 text, one that isn't JSON, and one whose top level
+    isn't an object. It also refuses a file that starts with a UTF-8 byte
+    order mark (BOM), and names the BOM, instead of removing it: the
+    rewrite would drop it without telling you.
+    """
+    raw = read_setup_input(path)
+    if raw is None:
+        return
+    if raw.startswith(_UTF8_BOM):
+        raise SetupInputError(
+            f"{path} starts with a UTF-8 byte order mark (BOM)",
+            "Save it as UTF-8 without a BOM, and run setup again",
+        )
+    text = decode_setup_input(path, raw)
+    if not text.strip():
+        return
+    try:
+        parsed: object = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SetupInputError(f"{path} isn't valid JSON ({exc})") from exc
+    if not isinstance(parsed, dict):
+        raise SetupInputError(
+            f"{path} doesn't hold a JSON object at the top level",
+        )
 
 
 def _settings_fingerprint(path: Path) -> str:

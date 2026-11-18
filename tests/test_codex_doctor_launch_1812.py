@@ -2517,6 +2517,532 @@ def test_doctor_warns_about_the_bare_cli_after_an_escape(
 
 # --- files setup reads before it writes --------------------------------------
 
+#: What setup says after the cause when you can fix or move the file.
+_FIX_OR_MOVE: Final[str] = "Fix or move it, and run setup again"
+#: What setup says after the cause when a folder's permissions stop it.
+_FIX_PERMS: Final[str] = "Fix its permissions, and run setup again"
+#: Whether a test can take a permission away and see setup refused: not on
+#: Windows, and not as root, who reads and writes in any folder.
+_CAN_CHMOD: Final[bool] = os.name != "nt" and os.geteuid() != 0
+_needs_chmod = pytest.mark.skipif(
+    not _CAN_CHMOD, reason="needs POSIX permissions and a user that isn't root",
+)
+#: Claude settings that aren't UTF-8: Latin-1 text, and UTF-16.
+_LATIN1_SETTINGS: Final[bytes] = b'{"hooks": {}, "x": "caf\xe9"}'
+_LATIN1_AT: Final[int] = _LATIN1_SETTINGS.index(b"\xe9")
+_UTF16_SETTINGS: Final[bytes] = '{"hooks": {}}'.encode("utf-16")
+#: An opt-out ledger that isn't UTF-8, and one that opts the claude host out.
+_LATIN1_LEDGER: Final[bytes] = b'{"opt_out": ["\xff"]}'
+_CLAUDE_OPTED_OUT: Final[str] = '{"opt_out": [], "opt_out_hosts": ["claude"]}\n'
+
+
+def _setup_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Path]:
+    """Point the files `aelf setup` reads at `tmp_path / "home"`: the
+    Claude settings and the opt-out ledger. `HOME` itself stays the one
+    pin.sh sets. Returns those paths, the folders around them, a Codex
+    folder and a skills folder, with only `.aelfrice` and the Codex folder
+    made."""
+    import aelfrice.auto_install as auto_install
+    import aelfrice.setup as setup_mod
+
+    home = tmp_path / "home"
+    skills = home / ".agents" / "skills"
+    p = {
+        "home": home,
+        "claude": home / ".claude",
+        "settings": home / ".claude" / "settings.json",
+        "dotdir": home / ".aelfrice",
+        "ledger": home / ".aelfrice" / "opt-out-hooks.json",
+        "agents": home / ".agents",
+        "skills": skills,
+        "skill": skills / "aelf-onboard",
+        "md": skills / "aelf-onboard" / "SKILL.md",
+        "codex": tmp_path / "codex",
+    }
+    p["dotdir"].mkdir(parents=True)
+    p["codex"].mkdir()
+    monkeypatch.setattr(setup_mod, "USER_SETTINGS_PATH", p["settings"])
+    monkeypatch.setattr(auto_install, "AELFRICE_DOTDIR", p["dotdir"])
+    monkeypatch.setattr(auto_install, "OPT_OUT_PATH", p["ledger"])
+    return p
+
+
+def _tree(root: Path) -> dict[str, tuple[int, bytes | None]]:
+    """Each path under `root` that can be listed, with its mode, or -1 in a
+    folder you can't search, and, for a file that can be read, its bytes."""
+    out: dict[str, tuple[int, bytes | None]] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            path = os.path.join(dirpath, name)
+            try:
+                mode = os.lstat(path).st_mode
+            except OSError:
+                out[path] = (-1, None)
+                continue
+            data: bytes | None = None
+            if os.path.isfile(path) and not os.path.islink(path):
+                try:
+                    with open(path, "rb") as f:
+                        data = f.read()
+                except OSError:
+                    data = None
+            out[path] = (mode, data)
+    return out
+
+
+def _restore_modes(root: Path) -> None:
+    """Give back each permission a state took away under `root`, so pytest
+    can remove it."""
+    os.chmod(root, 0o700)
+    for name in os.listdir(root):
+        path = root / name
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            _restore_modes(path)
+        else:
+            os.chmod(path, 0o600)
+
+
+def _write_settings(p: dict[str, Path], data: bytes) -> None:
+    p["claude"].mkdir(parents=True, exist_ok=True)
+    p["settings"].write_bytes(data)
+
+
+def _skills_installed(p: dict[str, Path]) -> None:
+    install_codex_skills(p["skills"])
+
+
+def _codex_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
+    """Apply the Codex setup state `name`, and return the cause and the
+    remedy setup names for it."""
+    if name == "settings latin-1":
+        _write_settings(p, _LATIN1_SETTINGS)
+        return (
+            f"{p['settings']} isn't UTF-8 text: byte {_LATIN1_AT} is 0xe9",
+            _FIX_OR_MOVE,
+        )
+    if name == "settings utf-16":
+        _write_settings(p, _UTF16_SETTINGS)
+        return f"{p['settings']} isn't UTF-8 text: byte 0 is 0xff", _FIX_OR_MOVE
+    if name == "claude unsearchable":
+        _write_settings(p, b"{}")
+        os.chmod(p["claude"], 0o600)
+        return f"{p['settings']} can't be read (Permission denied)", _FIX_OR_MOVE
+    if name == "ledger latin-1":
+        p["ledger"].write_bytes(_LATIN1_LEDGER)
+        return f"{p['ledger']} isn't UTF-8 text: byte 14 is 0xff", _FIX_OR_MOVE
+    if name == "ledger folder":
+        p["ledger"].mkdir()
+        return f"{p['ledger']} is a folder, not a file", _FIX_OR_MOVE
+    if name == "aelfrice file":
+        p["dotdir"].rmdir()
+        p["dotdir"].write_text("x", encoding="utf-8")
+        return (
+            f"{p['ledger']} can't be read, because {p['dotdir']} isn't a "
+            "folder", _FIX_OR_MOVE,
+        )
+    if name == "aelfrice unsearchable":
+        os.chmod(p["dotdir"], 0o600)
+        return f"{p['ledger']} can't be read (Permission denied)", _FIX_OR_MOVE
+    if name == "aelfrice read-only":
+        os.chmod(p["dotdir"], 0o500)
+        return (
+            f"{p['dotdir']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
+    if name == "skill latin-1":
+        _skills_installed(p)
+        p["md"].write_bytes(b"caf\xe9 aelfrice")
+        return f"{p['md']} isn't UTF-8 text: byte 3 is 0xe9", _FIX_OR_MOVE
+    if name == "skill utf-16":
+        _skills_installed(p)
+        p["md"].write_bytes(b"\xff\xfe junk")
+        return f"{p['md']} isn't UTF-8 text: byte 0 is 0xff", _FIX_OR_MOVE
+    if name == "skills file":
+        p["agents"].mkdir()
+        p["skills"].write_text("x", encoding="utf-8")
+        return f"{p['skills']} isn't a folder", _FIX_OR_MOVE
+    if name == "agents file":
+        p["agents"].write_text("x", encoding="utf-8")
+        return (
+            f"{p['agents']} isn't a folder, so setup can't create "
+            f"{p['skills']}", _FIX_OR_MOVE,
+        )
+    if name == "skill path file":
+        _skills_installed(p)
+        shutil.rmtree(p["skill"])
+        p["skill"].write_text("x", encoding="utf-8")
+        return f"{p['skill']} isn't a folder", _FIX_OR_MOVE
+    if name == "skill md folder":
+        _skills_installed(p)
+        p["md"].unlink()
+        p["md"].mkdir()
+        return f"{p['md']} is a folder, not a file", _FIX_OR_MOVE
+    if name == "skills unsearchable":
+        _skills_installed(p)
+        os.chmod(p["skills"], 0o600)
+        return f"{p['skills']} can't be read (Permission denied)", _FIX_PERMS
+    if name == "skills read-only":
+        p["skills"].mkdir(parents=True)
+        os.chmod(p["skills"], 0o500)
+        return (
+            f"{p['skills']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
+    if name == "skill read-only":
+        # Our onboard skill with other text, which setup rewrites.
+        _skills_installed(p)
+        p["md"].write_text(
+            p["md"].read_text(encoding="utf-8") + "\nstale\n",
+            encoding="utf-8",
+        )
+        os.chmod(p["skill"], 0o500)
+        return (
+            f"{p['skill']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
+    if name == "home read-only":
+        os.chmod(p["home"], 0o500)
+        return (
+            f"{p['home']} can't be written to (Permission denied), so setup "
+            f"can't create {p['skills']}", _FIX_PERMS,
+        )
+    raise AssertionError(name)
+
+
+#: Codex setup states that don't depend on the skills, and those that do,
+#: which only `--codex-skills` reads.
+_CODEX_STATES: Final[tuple[str, ...]] = (
+    "settings latin-1", "settings utf-16", "claude unsearchable",
+    "ledger latin-1", "ledger folder", "aelfrice file",
+    "aelfrice unsearchable", "aelfrice read-only",
+)
+_CODEX_SKILL_STATES: Final[tuple[str, ...]] = (
+    "skill latin-1", "skill utf-16", "skills file", "agents file",
+    "skill path file", "skill md folder", "skills unsearchable",
+    "skills read-only", "skill read-only", "home read-only",
+)
+#: States that take a permission away.
+_CHMOD_STATES: Final[frozenset[str]] = frozenset({
+    "claude unsearchable", "aelfrice unsearchable", "aelfrice read-only",
+    "skills unsearchable", "skills read-only", "skill read-only",
+    "home read-only", "unreadable",
+})
+
+
+_needs_fifo = pytest.mark.skipif(
+    not hasattr(os, "mkfifo"), reason="needs os.mkfifo",
+)
+
+
+def _state_params(names: tuple[str, ...]) -> list[Any]:
+    return [
+        pytest.param(n, marks=_needs_chmod) if n in _CHMOD_STATES
+        else pytest.param(n, marks=_needs_fifo) if n == "fifo"
+        else n
+        for n in names
+    ]
+
+
+def _codex_args(*, force: bool, codex_skills: bool) -> argparse.Namespace:
+    return argparse.Namespace(
+        host="codex", force=force, status_message=None,
+        codex_skills=codex_skills,
+    )
+
+
+def _run_codex_setup(
+    p: dict[str, Path], *, force: bool = False, codex_skills: bool = True,
+) -> int:
+    return _cmd_setup_codex(
+        _codex_args(force=force, codex_skills=codex_skills), io.StringIO(),
+        hooks_path=p["codex"] / "hooks.json", skills_dest=p["skills"],
+    )
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "flags",
+    [
+        pytest.param((False, True), id="plain"),
+        pytest.param((True, True), id="force"),
+        pytest.param((False, False), id="no skills"),
+    ],
+)
+@pytest.mark.parametrize("state", _state_params(_CODEX_STATES))
+def test_setup_codex_refuses_a_claude_file_it_can_not_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str,
+    flags: tuple[bool, bool],
+) -> None:
+    """`aelf setup --host codex` reads the Claude settings and the opt-out
+    ledger before it writes hooks.json. For one it can't use, it exits 1
+    with a message that names the file and the cause, and changes nothing:
+    no hooks.json, no skill and no ledger."""
+    force, codex_skills = flags
+    p = _setup_files(tmp_path, monkeypatch)
+    try:
+        cause, remedy = _codex_state(state, p)
+        before = _tree(tmp_path)
+        rc = _run_codex_setup(p, force=force, codex_skills=codex_skills)
+        err = capsys.readouterr().err
+        after = _tree(tmp_path)
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 1, err
+    assert err == (
+        f"setup --host codex: {cause}; nothing was written. {remedy}\n"
+    ), err
+    assert after == before
+    assert not (p["codex"] / "hooks.json").exists()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("force", [False, True], ids=["plain", "force"])
+@pytest.mark.parametrize("state", _state_params(_CODEX_SKILL_STATES))
+def test_setup_codex_refuses_a_skills_folder_it_can_not_install_into(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str, force: bool,
+) -> None:
+    """Setup reads the skills folder before it writes hooks.json. For a
+    SKILL.md that isn't UTF-8 text, or a folder it would stop partway in,
+    it exits 1 with a message that names the path and the cause, and
+    changes nothing."""
+    p = _setup_files(tmp_path, monkeypatch)
+    try:
+        cause, remedy = _codex_state(state, p)
+        before = _tree(tmp_path)
+        rc = _run_codex_setup(p, force=force)
+        err = capsys.readouterr().err
+        after = _tree(tmp_path)
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 1, err
+    assert err == (
+        f"setup --host codex: {cause}; nothing was written. {remedy}\n"
+    ), err
+    assert after == before
+    assert not (p["codex"] / "hooks.json").exists()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("state", _state_params(_CODEX_SKILL_STATES))
+def test_setup_codex_without_skills_reads_no_skills_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str,
+) -> None:
+    """With `--no-codex-skills`, setup reads no skills folder, so a skills
+    state that stops a full setup doesn't stop it writing hooks.json."""
+    p = _setup_files(tmp_path, monkeypatch)
+    try:
+        _codex_state(state, p)
+        rc = _run_codex_setup(p, codex_skills=False)
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 0, err
+    assert (p["codex"] / "hooks.json").is_file()
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+def test_setup_codex_reads_a_ledger_that_names_claude_in_a_read_only_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When the ledger already opts the claude host out, setup doesn't
+    write it, so a `.aelfrice` that you can't write in doesn't stop setup."""
+    p = _setup_files(tmp_path, monkeypatch)
+    p["ledger"].write_text(_CLAUDE_OPTED_OUT, encoding="utf-8")
+    os.chmod(p["dotdir"], 0o500)
+    try:
+        rc = _run_codex_setup(p)
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 0, err
+    assert (p["codex"] / "hooks.json").is_file()
+    assert p["md"].is_file()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("state", ["folder", "claude file", "not json", "bom"])
+def test_setup_codex_reads_claude_settings_that_hold_no_hooks_as_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str,
+) -> None:
+    """A folder where the Claude settings go, a `~/.claude` that is a file,
+    and settings that aren't JSON wire no Claude hook, so setup installs
+    and opts the claude host out of auto-install, as before #1812."""
+    p = _setup_files(tmp_path, monkeypatch)
+    if state == "folder":
+        p["settings"].mkdir(parents=True)
+    elif state == "claude file":
+        p["claude"].write_text("x", encoding="utf-8")
+    else:
+        _write_settings(
+            p, b'{"hooks":' if state == "not json"
+            else b'\xef\xbb\xbf{"hooks": {}}',
+        )
+    rc = _run_codex_setup(p, codex_skills=False)
+    err = capsys.readouterr().err
+    assert rc == 0, err
+    assert (p["codex"] / "hooks.json").is_file()
+    assert json.loads(p["ledger"].read_text(encoding="utf-8")) == {
+        "opt_out": [], "opt_out_hosts": ["claude"],
+    }
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize("skill", ["current", "foreign"])
+def test_setup_codex_leaves_a_skill_it_would_not_write_in_a_read_only_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], skill: str,
+) -> None:
+    """Setup writes no skill that is already current or that another tool
+    wrote, so a folder that you can't write in around such a skill doesn't
+    stop it."""
+    p = _setup_files(tmp_path, monkeypatch)
+    _skills_installed(p)
+    if skill == "foreign":
+        p["md"].write_text("my own onboard skill\n", encoding="utf-8")
+    kept = p["md"].read_bytes()
+    os.chmod(p["skill"], 0o500)
+    try:
+        rc = _run_codex_setup(p)
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 0, err
+    assert (p["codex"] / "hooks.json").is_file()
+    assert p["md"].read_bytes() == kept
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize(
+    ("ledger", "kwargs", "refused"),
+    [
+        pytest.param(None, {"adding": "claude"}, True, id="add to none"),
+        pytest.param(
+            _CLAUDE_OPTED_OUT, {"adding": "claude"}, False, id="add to named",
+        ),
+        pytest.param(
+            None, {"removing": "claude"}, False, id="remove from none",
+        ),
+        pytest.param(
+            _CLAUDE_OPTED_OUT, {"removing": "claude"}, True,
+            id="remove from named",
+        ),
+        pytest.param(None, {}, False, id="read only"),
+    ],
+)
+def test_opt_out_ledger_check_refuses_a_read_only_folder_only_for_a_write(
+    tmp_path: Path, ledger: str | None, kwargs: dict[str, str], refused: bool,
+) -> None:
+    """The ledger check refuses a `.aelfrice` that you can't write in only
+    when setup will rewrite the ledger: to add a host it doesn't name, or
+    to remove one it names."""
+    from aelfrice.auto_install import check_opt_out_ledger
+    from aelfrice.setup import SetupInputError
+
+    dotdir = tmp_path / ".aelfrice"
+    dotdir.mkdir()
+    path = dotdir / "opt-out-hooks.json"
+    if ledger is not None:
+        path.write_text(ledger, encoding="utf-8")
+    os.chmod(dotdir, 0o500)
+    try:
+        if refused:
+            with pytest.raises(SetupInputError) as caught:
+                check_opt_out_ledger(path, **kwargs)
+            assert caught.value.cause == (
+                f"{dotdir} can't be written to (Permission denied)"
+            )
+        else:
+            check_opt_out_ledger(path, **kwargs)
+    finally:
+        os.chmod(dotdir, 0o700)
+
+
+@pytest.mark.timeout(60)
+def test_setup_codex_refuses_before_the_update_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`aelf setup --host codex` reads these files ahead of the update
+    check, as it reads `$HOME`, so a refusal starts nothing."""
+    import aelfrice.cli as cli
+
+    p = _setup_files(tmp_path, monkeypatch)
+    p["ledger"].write_bytes(_LATIN1_LEDGER)
+    monkeypatch.setenv("CODEX_HOME", str(p["codex"]))
+    started: list[str] = []
+    monkeypatch.delenv("AELF_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        cli, "maybe_check_for_update_async",
+        lambda *_a, **_k: started.append("update check"),
+    )
+    before = _tree(tmp_path)
+    rc = main(["setup", "--host", "codex", "--no-codex-skills"])
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert err == (
+        f"setup --host codex: {p['ledger']} isn't UTF-8 text: byte 14 is "
+        f"0xff; nothing was written. {_FIX_OR_MOVE}\n"
+    ), err
+    assert started == []
+    assert _tree(tmp_path) == before
+
+
+@pytest.mark.timeout(60)
+def test_setup_codex_reports_an_opt_out_it_can_not_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When the ledger can't be written after setup read it, setup exits 1
+    with a message instead of a traceback."""
+    import aelfrice.auto_install as auto_install
+
+    p = _setup_files(tmp_path, monkeypatch)
+
+    def fail(_host: str, _path: Path | None = None) -> None:
+        raise PermissionError(13, "Permission denied", str(p["ledger"]))
+
+    monkeypatch.setattr(auto_install, "add_host_opt_out", fail)
+    rc = _run_codex_setup(p, codex_skills=False)
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert err == (
+        "setup --host codex: hooks written, but the Claude auto-install "
+        "opt-out couldn't be written: [Errno 13] Permission denied: "
+        f"'{p['ledger']}'\n"
+    ), err
+
+
+@pytest.mark.timeout(60)
+def test_setup_codex_reports_a_skill_that_is_not_utf8_at_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A SKILL.md that stops being UTF-8 after setup read the skills folder
+    stops the skills install with a message instead of a traceback."""
+    import aelfrice.host_codex as host_codex
+
+    p = _setup_files(tmp_path, monkeypatch)
+    _skills_installed(p)
+    p["md"].write_bytes(b"\xff")
+    monkeypatch.setattr(host_codex, "check_codex_skills_dest", lambda _d: None)
+    rc = _run_codex_setup(p)
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert err == (
+        "setup --host codex: hooks written, but the skills install failed: "
+        f"{p['md']} isn't UTF-8 text: byte 0 is 0xff; nothing was written. "
+        f"{_FIX_OR_MOVE}\n"
+    ), err
+
 
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize("reader", ["read_opt_outs", "read_host_opt_outs"])
@@ -2534,3 +3060,130 @@ def test_opt_out_readers_read_a_ledger_that_is_not_utf8_as_empty(
     )
     assert getattr(auto_install, reader)(ledger) == frozenset()
 
+
+def _claude_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
+    """Apply the Claude setup state `name`, and return the cause and the
+    remedy setup names for it."""
+    if name in ("bom", "bom, claude opted out"):
+        _write_settings(p, b'\xef\xbb\xbf{"hooks": {}}')
+        if name != "bom":
+            p["ledger"].write_text(_CLAUDE_OPTED_OUT, encoding="utf-8")
+        return (
+            f"{p['settings']} starts with a UTF-8 byte order mark (BOM)",
+            "Save it as UTF-8 without a BOM, and run setup again",
+        )
+    if name == "latin-1":
+        _write_settings(p, _LATIN1_SETTINGS)
+        return (
+            f"{p['settings']} isn't UTF-8 text: byte {_LATIN1_AT} is 0xe9",
+            _FIX_OR_MOVE,
+        )
+    if name == "utf-16":
+        _write_settings(p, _UTF16_SETTINGS)
+        return f"{p['settings']} isn't UTF-8 text: byte 0 is 0xff", _FIX_OR_MOVE
+    if name == "array":
+        _write_settings(p, b"[]")
+        return (
+            f"{p['settings']} doesn't hold a JSON object at the top level",
+            _FIX_OR_MOVE,
+        )
+    if name == "not json":
+        _write_settings(p, b'{"hooks":')
+        return (
+            f"{p['settings']} isn't valid JSON (Expecting value: line 1 "
+            "column 10 (char 9))", _FIX_OR_MOVE,
+        )
+    if name == "folder":
+        p["settings"].mkdir(parents=True)
+        return f"{p['settings']} is a folder, not a file", _FIX_OR_MOVE
+    if name == "unreadable":
+        _write_settings(p, b"{}")
+        os.chmod(p["settings"], 0)
+        return f"{p['settings']} can't be read (Permission denied)", _FIX_OR_MOVE
+    if name == "claude unsearchable":
+        _write_settings(p, b"{}")
+        os.chmod(p["claude"], 0o600)
+        return f"{p['settings']} can't be read (Permission denied)", _FIX_OR_MOVE
+    if name == "claude file":
+        p["claude"].write_text("x", encoding="utf-8")
+        return (
+            f"{p['settings']} can't be read, because {p['claude']} isn't a "
+            "folder", _FIX_OR_MOVE,
+        )
+    if name == "fifo":
+        p["claude"].mkdir(parents=True)
+        os.mkfifo(p["settings"])
+        return f"{p['settings']} isn't a regular file", _FIX_OR_MOVE
+    if name == "ledger latin-1":
+        p["ledger"].write_bytes(_LATIN1_LEDGER)
+        return f"{p['ledger']} isn't UTF-8 text: byte 14 is 0xff", _FIX_OR_MOVE
+    if name == "aelfrice file":
+        p["dotdir"].rmdir()
+        p["dotdir"].write_text("x", encoding="utf-8")
+        return (
+            f"{p['ledger']} can't be read, because {p['dotdir']} isn't a "
+            "folder", _FIX_OR_MOVE,
+        )
+    if name == "aelfrice read-only":
+        p["ledger"].write_text(_CLAUDE_OPTED_OUT, encoding="utf-8")
+        os.chmod(p["dotdir"], 0o500)
+        return (
+            f"{p['dotdir']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
+    raise AssertionError(name)
+
+
+_CLAUDE_STATES: Final[tuple[str, ...]] = (
+    "bom", "bom, claude opted out", "latin-1", "utf-16", "array",
+    "not json", "folder", "unreadable", "claude unsearchable",
+    "claude file", "fifo", "ledger latin-1", "aelfrice file",
+    "aelfrice read-only",
+)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("driver", ["main", "executor"])
+@pytest.mark.parametrize("state", _state_params(_CLAUDE_STATES))
+def test_setup_claude_refuses_a_file_it_can_not_use_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str, driver: str,
+) -> None:
+    """`aelf setup` for the claude host reads its settings file and the
+    opt-out ledger before it writes anything. For one it can't use, it
+    exits 1 with a message that names the file and the cause, starts no
+    update check, migration or later step, and changes nothing. It refuses
+    a settings file that starts with a UTF-8 byte order mark by name and
+    doesn't rewrite it without the mark. `main` refuses ahead of the update
+    check, and the executor refuses when it is called directly."""
+    import aelfrice.cli as cli
+
+    p = _setup_files(tmp_path, monkeypatch)
+    started: list[str] = []
+
+    def went_on(*_a: object, **_k: object) -> object:
+        started.append("migration")
+        raise AssertionError("setup went on past a file it can't use")
+
+    monkeypatch.setattr(cli, "maybe_migrate_to_uv", went_on)
+    monkeypatch.delenv("AELF_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        cli, "maybe_check_for_update_async",
+        lambda *_a, **_k: started.append("update check"),
+    )
+    argv = ["setup", "--scope", "user"]
+    try:
+        cause, remedy = _claude_state(state, p)
+        before = _tree(tmp_path)
+        if driver == "main":
+            rc = main(argv)
+        else:
+            args = cli.build_parser().parse_args(argv)
+            rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+        err = capsys.readouterr().err
+        after = _tree(tmp_path)
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 1, err
+    assert err == f"aelf setup: {cause}; nothing was written. {remedy}\n", err
+    assert started == []
+    assert after == before
