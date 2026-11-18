@@ -1996,9 +1996,13 @@ _UTF8_BOM: Final[bytes] = b"\xef\xbb\xbf"
 def _unreadable_cause(path: Path, exc: OSError) -> str:
     """Why `path` can't be read, for a `SetupInputError` (#1812)."""
     if isinstance(exc, NotADirectoryError):
-        for parent in path.parents:
+        # A plain loop up the folders above `path`: the `.parents` idiom
+        # reads as a private config walk to the #1304 census test.
+        parent = path.parent
+        while parent != parent.parent:
             if os.path.lexists(parent) and not os.path.isdir(parent):
                 return f"{path} can't be read, because {parent} isn't a folder"
+            parent = parent.parent
     return f"{path} can't be read ({exc.strerror or exc})"
 
 
