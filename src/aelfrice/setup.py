@@ -2084,6 +2084,31 @@ def check_can_create(folder: Path) -> None:
         )
 
 
+def check_can_write_in(folder: Path) -> None:
+    """Raise `SetupInputError` unless setup can write a file in `folder`,
+    creating the folder when it doesn't exist (#1812).
+
+    It refuses a folder that `mkdir -p` can't create, a path that isn't a
+    folder, such as a file or a symbolic link to a path that doesn't
+    exist, on which `mkdir -p` stops, and a folder you can't write in.
+    """
+    if not os.path.lexists(folder):
+        check_can_create(folder)
+        return
+    if not os.path.isdir(folder):
+        if os.path.islink(folder) and not os.path.exists(folder):
+            raise SetupInputError(
+                f"{folder} is a symbolic link to {os.readlink(folder)}, "
+                "which doesn't exist",
+            )
+        raise SetupInputError(f"{folder} isn't a folder")
+    if not os.access(folder, os.W_OK | os.X_OK):
+        raise SetupInputError(
+            f"{folder} can't be written to (Permission denied)",
+            "Fix its permissions, and run setup again",
+        )
+
+
 #: The events whose entries `aelf setup` reads or writes in the Claude
 #: settings (#1812).
 _SETUP_EVENTS: Final[tuple[str, ...]] = tuple(dict.fromkeys((

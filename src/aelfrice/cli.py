@@ -6416,7 +6416,9 @@ def _cmd_setup_codex(
         try:
             add_host_opt_out(CLAUDE_HOST)
         except OSError as exc:
-            # #1812: the preflight read this folder; it changed since.
+            # #1812: the preflight checked that setup can create or write
+            # in this folder, so this reports a change after that check,
+            # or a failure no check foresees, such as a full disk.
             print(
                 _doctor_text(
                     "setup --host codex: hooks written, but the Claude "

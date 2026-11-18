@@ -2707,6 +2707,22 @@ def _codex_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
             f"{p['home']} can't be written to (Permission denied), so setup "
             f"can't create {p['skills']}", _FIX_PERMS,
         )
+    if name == "aelfrice dangling":
+        p["dotdir"].rmdir()
+        os.symlink(p["home"] / "gone", p["dotdir"])
+        return (
+            f"{p['dotdir']} is a symbolic link to {p['home'] / 'gone'}, which "
+            "doesn't exist", _FIX_OR_MOVE,
+        )
+    if name == "aelfrice missing, home read-only":
+        # The skills are current, so only the ledger folder needs a write.
+        _skills_installed(p)
+        p["dotdir"].rmdir()
+        os.chmod(p["home"], 0o500)
+        return (
+            f"{p['home']} can't be written to (Permission denied), so setup "
+            f"can't create {p['dotdir']}", _FIX_PERMS,
+        )
     if name in _SHARED_SETTINGS_STATES:
         return _claude_state(name, p)
     raise AssertionError(name)
@@ -2724,7 +2740,8 @@ _SHARED_SETTINGS_STATES: Final[tuple[str, ...]] = (
 _CODEX_STATES: Final[tuple[str, ...]] = (
     "settings latin-1", "settings utf-16", "claude unsearchable",
     "ledger latin-1", "ledger folder", "aelfrice file",
-    "aelfrice unsearchable", "aelfrice read-only", *_SHARED_SETTINGS_STATES,
+    "aelfrice unsearchable", "aelfrice read-only", "aelfrice dangling",
+    "aelfrice missing, home read-only", *_SHARED_SETTINGS_STATES,
 )
 _CODEX_SKILL_STATES: Final[tuple[str, ...]] = (
     "skill latin-1", "skill utf-16", "skills file", "agents file",
@@ -2735,7 +2752,7 @@ _CODEX_SKILL_STATES: Final[tuple[str, ...]] = (
 _CHMOD_STATES: Final[frozenset[str]] = frozenset({
     "claude unsearchable", "aelfrice unsearchable", "aelfrice read-only",
     "skills unsearchable", "skills read-only", "skill read-only",
-    "home read-only", "unreadable",
+    "home read-only", "unreadable", "aelfrice missing, home read-only",
 })
 
 
@@ -3253,3 +3270,61 @@ def test_setup_reads_claude_settings_shapes_it_can_edit(
     path = tmp_path / "settings.json"
     path.write_bytes(data)
     assert check_settings_for_setup(path) == json.loads(data)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "state",
+    [
+        "missing", "link to folder", "folder",
+        pytest.param("missing under read-only", marks=_needs_chmod),
+        "missing under file", "dangling link", "file",
+        pytest.param("read-only", marks=_needs_chmod),
+    ],
+)
+def test_setup_write_check_refuses_a_folder_it_can_not_create_or_write_in(
+    tmp_path: Path, state: str,
+) -> None:
+    """`check_can_write_in` passes a folder setup can write a file in,
+    creating it if need be, and refuses, by name and cause, one that
+    `mkdir -p` can't create or stops on and one you can't write in."""
+    from aelfrice.setup import SetupInputError, check_can_write_in
+
+    base = tmp_path / "base"
+    base.mkdir()
+    folder = base / "f"
+    want: str | None = None
+    if state == "link to folder":
+        (base / "real").mkdir()
+        os.symlink(base / "real", folder)
+    elif state == "folder":
+        folder.mkdir()
+    elif state == "missing under read-only":
+        os.chmod(base, 0o500)
+        want = (
+            f"{base} can't be written to (Permission denied), so setup "
+            f"can't create {folder}"
+        )
+    elif state == "missing under file":
+        base.rmdir()
+        base.write_text("x", encoding="utf-8")
+        want = f"{base} isn't a folder, so setup can't create {folder}"
+    elif state == "dangling link":
+        os.symlink(base / "gone", folder)
+        want = f"{folder} is a symbolic link to {base / 'gone'}, which doesn't exist"
+    elif state == "file":
+        folder.write_text("x", encoding="utf-8")
+        want = f"{folder} isn't a folder"
+    elif state == "read-only":
+        folder.mkdir()
+        os.chmod(folder, 0o500)
+        want = f"{folder} can't be written to (Permission denied)"
+    try:
+        if want is None:
+            check_can_write_in(folder)
+        else:
+            with pytest.raises(SetupInputError) as caught:
+                check_can_write_in(folder)
+            assert caught.value.cause == want
+    finally:
+        _restore_modes(tmp_path)
