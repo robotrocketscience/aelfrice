@@ -210,6 +210,15 @@ aelfrice can merge only into the documented `{"hooks": {"<Event>": [...]}}` shap
 
 A `hooks.json` that isn't valid JSON, or isn't UTF-8 text, such as one that Windows PowerShell 5.1 saved as UTF-16, gets the same treatment. Setup and unsetup exit 1 with a message that names the file, and for a file that isn't UTF-8, the offset of the first byte that isn't. They leave the file unchanged, and `setup --force` replaces it.
 
+Setup reads every other file it depends on before it writes anything, so a refusal leaves no part of an install behind:
+
+- `aelf setup --host codex` reads `~/.claude/settings.json`, to tell whether the Claude host runs aelfrice hooks. When it runs none, setup also reads `~/.aelfrice/opt-out-hooks.json`, where it writes the Claude auto-install opt-out. Unless you pass `--no-codex-skills`, it also reads `~/.agents/skills`.
+- `aelf setup` for the Claude host reads its settings file and `~/.aelfrice/opt-out-hooks.json`.
+
+For a file that isn't UTF-8 text, one that setup can't read, such as one in a folder you can't search, a folder where a file goes, a `~/.aelfrice` that is a file, or a folder that setup would write in but can't, setup exits 1 with a message that names the path and the cause, and writes nothing. Under `~/.agents/skills`, an `aelf-*` skill path that isn't a folder and a `SKILL.md` that is a folder get the same refusal. `--force` replaces only `hooks.json`, so it doesn't change these refusals.
+
+`aelf setup` for the Claude host also refuses a settings file that isn't JSON, one whose top level isn't an object, and one that starts with a UTF-8 byte order mark (BOM). Setup names the BOM instead of removing it. Save the file as UTF-8 without a BOM and run setup again. `aelf setup --host codex` reads Claude settings that aren't JSON as running no aelfrice hooks.
+
 One window stays open. A process that takes no lock can still replace the file in the instant between the final check of aelfrice and the rename. Closing that window needs a mutation protocol from Codex, and Codex doesn't offer one today.
 
 ## 3. Verify wiring
