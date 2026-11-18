@@ -2740,6 +2740,7 @@ def _codex_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
 _SHARED_SETTINGS_STATES: Final[tuple[str, ...]] = (
     "bom", "not json", "array", "folder", "claude file", "fifo", "hooks array",
     "hooks repeated", "event object", "event string", "entry number",
+    "inner number", "inner true", "inner object", "inner string",
     "claude dangling", "claude loop", "settings loop", "claude link to fifo",
     "settings link to fifo",
 )
@@ -3133,6 +3134,25 @@ _SHAPE_STATES: Final[dict[str, tuple[bytes, str]]] = {
         b'{"hooks": {"SessionStart": [1]}}',
         "has a non-object entry at `hooks.SessionStart[0]` (number)",
     ),
+    # #1812: the `hooks` list inside an entry, under any event.
+    "inner number": (
+        b'{"hooks": {"Notification": [{"hooks": 1}]}}',
+        "has a non-list `hooks` value in `hooks.Notification[0]` (number)",
+    ),
+    "inner true": (
+        b'{"hooks": {"UserPromptSubmit": [{"hooks": [], "x": 1}, '
+        b'{"hooks": true}]}}',
+        "has a non-list `hooks` value in `hooks.UserPromptSubmit[1]` "
+        "(boolean)",
+    ),
+    "inner object": (
+        b'{"hooks": {"Stop": [{"hooks": {"command": "aelf-hook"}}]}}',
+        "has a non-list `hooks` value in `hooks.Stop[0]` (object)",
+    ),
+    "inner string": (
+        b'{"hooks": {"PreCompact": [{"hooks": "x"}]}}',
+        "has a non-list `hooks` value in `hooks.PreCompact[0]` (string)",
+    ),
 }
 
 
@@ -3310,7 +3330,8 @@ _CLAUDE_STATES: Final[tuple[str, ...]] = (
     "hooks repeated", "event object", "event string", "entry number",
     "commands aelf file", "command md latin-1", "command md folder",
     "command md fifo", "commands read-only", "commands unsearchable",
-    "commands file", "home read-only", "claude read-only", "claude dangling",
+    "commands file", "home read-only", "claude read-only", "inner number",
+    "inner true", "inner object", "inner string", "claude dangling",
     "claude loop", "settings loop", "claude link to fifo",
     "settings link to fifo",
 )
@@ -3374,7 +3395,14 @@ def test_setup_claude_refuses_a_file_it_can_not_use_and_writes_nothing(
         pytest.param(
             b'{"hooks": {"Notification": [1, "x"]}}', id="other event entries",
         ),
-        pytest.param(b'{"hooks": {"PreCompact": [{"hooks": "x"}]}}', id="inner"),
+        pytest.param(
+            b'{"hooks": {"Notification": [{"hooks": null}, {"x": 1}]}}',
+            id="inner null or missing",
+        ),
+        pytest.param(
+            b'{"hooks": {"Stop": [{"hooks": [1, "x", {"command": 2}]}]}}',
+            id="inner list of anything",
+        ),
         pytest.param(b'{"hooks": [], "hooks": {}}', id="last hooks object"),
     ],
 )
@@ -3382,8 +3410,9 @@ def test_setup_reads_claude_settings_shapes_it_can_edit(
     tmp_path: Path, data: bytes,
 ) -> None:
     """The settings check refuses only a shape setup would stop on: a
-    `null` it fills in, an event setup doesn't edit, and a shape inside an
-    entry pass, and the last of two `hooks` keys is the one read."""
+    `null` it fills in, an event setup doesn't edit, and a list of any
+    values inside an entry pass, and the last of two `hooks` keys is the
+    one read."""
     from aelfrice.setup import check_settings_for_setup
 
     path = tmp_path / "settings.json"

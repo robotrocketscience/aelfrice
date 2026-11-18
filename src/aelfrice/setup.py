@@ -2169,6 +2169,11 @@ def _settings_shape_refusal(path: Path, data: dict[str, object]) -> str | None:
     shape: a `hooks` value that is an object, and for each event it
     edits, a list of objects. A missing or `null` value is one setup fills
     in. As with `json.loads`, the last of two `hooks` keys is the one read.
+
+    The `hooks` list inside an entry, which `aelf setup --host codex` reads
+    under every event to find an aelfrice handler, must be a list or
+    `null` under every event, as both halves of setup read the file by one
+    rule.
     """
     hooks = data.get(_HOOKS_KEY)
     if hooks is None:
@@ -2190,6 +2195,18 @@ def _settings_shape_refusal(path: Path, data: dict[str, object]) -> str | None:
                 return (
                     f"{path} has a non-object entry at `hooks.{event}[{index}]` "
                     f"({json_type_name(entry)})"
+                )
+    for event, entries in events.items():
+        if not isinstance(entries, list):
+            continue
+        for index, entry in enumerate(cast(list[object], entries)):
+            if not isinstance(entry, dict):
+                continue
+            inner = cast(dict[str, object], entry).get(_HOOKS_KEY)
+            if inner is not None and not isinstance(inner, list):
+                return (
+                    f"{path} has a non-list `hooks` value in "
+                    f"`hooks.{event}[{index}]` ({json_type_name(inner)})"
                 )
     return None
 
