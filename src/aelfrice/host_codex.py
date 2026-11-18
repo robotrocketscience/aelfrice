@@ -665,11 +665,14 @@ def claude_host_has_aelfrice_hooks(
     #1812: both halves of setup follow one rule for this file. Every
     settings file that `aelf setup` for the Claude host refuses raises
     `SetupInputError` here too (see `check_settings_for_setup`): one that
-    can't be read, a folder, a FIFO, a `~/.claude` that is a file, and one
-    that starts with a UTF-8 byte order mark, isn't UTF-8 text, isn't
-    JSON, isn't an object at the top level, or has a shape setup can't
-    edit. So setup refuses and writes nothing rather than read a Claude
-    install it can't see as none and write the opt-out over it.
+    can't be read, a folder, a FIFO, a `~/.claude` that is a file or a
+    symbolic link to a path that doesn't exist, and one that starts with a
+    UTF-8 byte order mark, isn't UTF-8 text, isn't JSON, is JSON that
+    Python's `json` can't read, holds a lone UTF-16 surrogate escape,
+    isn't an object at the top level, or has a shape setup can't edit,
+    such as an entry whose `hooks` value isn't a list. So setup refuses
+    and writes nothing rather than read a Claude install it can't see as
+    none and write the opt-out over it.
 
     #1412: this is the third consumer of the ownership-key derivation, and
     the one whose failure is silent. On Windows the old basename never
