@@ -2506,6 +2506,31 @@ def settings_transaction(
             _write_settings_file(path, txn.data)
 
 
+@contextmanager
+def settings_dry_run(path: Path) -> Iterator[_SettingsTransaction]:
+    """A `settings_transaction` for `path` that takes no lock and writes
+    nothing (#1812).
+
+    The installers edit the document in memory as they do in a
+    transaction, and the transaction this yields is `dirty` after the
+    block exactly when a `settings_transaction` would have written the
+    file. Setup runs its edits in one to learn whether it would write in
+    a settings folder you can't write in.
+    """
+    open_txn = _active_transaction()
+    if open_txn is not None:
+        raise RuntimeError(
+            "settings_dry_run does not nest: a transaction is already open "
+            f"for {open_txn.path}"
+        )
+    txn = _SettingsTransaction(path=path, fingerprint="")
+    _TXN_STATE.txn = txn
+    try:
+        yield txn
+    finally:
+        _TXN_STATE.txn = None
+
+
 def read_settings(path: Path) -> dict[str, object]:
     """Transaction-aware settings read, for callers outside this module.
 
