@@ -144,7 +144,12 @@ def test_claude_host_detection_foreign_hooks_only(tmp_path: Path) -> None:
     assert claude_host_has_aelfrice_hooks(settings) is False
 
 
-def test_claude_host_detection_broken_json_fails_closed(tmp_path: Path) -> None:
+def test_claude_host_detection_refuses_broken_json(tmp_path: Path) -> None:
+    """#1812: settings that plain `aelf setup` refuses are refused here too,
+    not read as wiring no hooks."""
+    from aelfrice.setup import SetupInputError
+
     settings = tmp_path / "settings.json"
     settings.write_text('{\n  "broken":', encoding="utf-8")
-    assert claude_host_has_aelfrice_hooks(settings) is False
+    with pytest.raises(SetupInputError, match="isn't valid JSON"):
+        claude_host_has_aelfrice_hooks(settings)

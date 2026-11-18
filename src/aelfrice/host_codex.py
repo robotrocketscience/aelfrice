@@ -69,9 +69,9 @@ from aelfrice.setup import (
     SettingsScope,
     SetupInputError,
     check_can_create,
+    check_settings_for_setup,
     decode_setup_input,
     json_type_name,
-    read_setup_input,
     resolve_commit_ingest_command,
     resolve_hook_command,
     resolve_pre_issue_guard_command,
@@ -657,16 +657,18 @@ def claude_host_has_aelfrice_hooks(
 
     Used by `aelf setup --host codex` (#1053) to distinguish a
     Codex-only machine (write the claude auto-install opt-out) from a
-    dual-host one (leave auto-install alone). Shape-tolerant and
-    fail-closed: a missing settings file, a folder or other non-file in
-    its place, and one that isn't JSON count as "no hooks". The worst
-    case of a false negative is an opt-out the user can undo with one
-    explicit `aelf setup`.
+    dual-host one (leave auto-install alone). A missing or empty settings
+    file, and one that holds a JSON object with no aelfrice hook, count
+    as "no hooks".
 
-    #1812: a settings file that is there but can't be read, such as one
-    in a `~/.claude` you can't search, and one that isn't UTF-8 text raise
-    `SetupInputError` instead, so setup refuses and writes nothing rather
-    than read a Claude install it can't see as none.
+    #1812: both halves of setup follow one rule for this file. Every
+    settings file that `aelf setup` for the Claude host refuses raises
+    `SetupInputError` here too (see `check_settings_for_setup`): one that
+    can't be read, a folder, a FIFO, a `~/.claude` that is a file, and one
+    that starts with a UTF-8 byte order mark, isn't UTF-8 text, isn't
+    JSON, isn't an object at the top level, or has a shape setup can't
+    edit. So setup refuses and writes nothing rather than read a Claude
+    install it can't see as none and write the opt-out over it.
 
     #1412: this is the third consumer of the ownership-key derivation, and
     the one whose failure is silent. On Windows the old basename never
@@ -677,24 +679,10 @@ def claude_host_has_aelfrice_hooks(
     keying as the fragment before the space; the probe now reads every
     candidate rather than the first.
     """
-    try:
-        st = os.stat(settings_path)
-    except (FileNotFoundError, NotADirectoryError):
+    parsed = check_settings_for_setup(settings_path)
+    if parsed is None:
         return False
-    except OSError:
-        st = None  # `read_setup_input` names the file and the cause.
-    if st is not None and not stat.S_ISREG(st.st_mode):
-        return False
-    raw = read_setup_input(settings_path)
-    if raw is None:
-        return False
-    try:
-        parsed = json.loads(decode_setup_input(settings_path, raw))
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(parsed, dict):
-        return False
-    hooks = cast(dict[str, object], parsed).get("hooks")
+    hooks = parsed.get("hooks")
     if not isinstance(hooks, dict):
         return False
     for groups in cast(dict[str, object], hooks).values():
