@@ -5537,13 +5537,15 @@ def _unsetup_commit_ingest_git_hook(out: object) -> bool:
 def _setup_claude_preflight(args: argparse.Namespace) -> None:
     """Read the files `aelf setup` for the claude host edits before it
     writes anything, and raise `SetupInputError` for one it can't use
-    (#1812): the settings file, and the opt-out ledger it clears the
-    claude host from and records each `--no-X` flag in
-    (`_sync_setup_opt_outs_and_stamp`)."""
+    (#1812): the settings file, the slash-commands folder, and the opt-out
+    ledger it clears the claude host from and records each `--no-X` flag
+    in (`_sync_setup_opt_outs_and_stamp`)."""
     from aelfrice.auto_install import check_opt_out_ledger
-    from aelfrice.setup import check_settings_for_setup
+    from aelfrice.setup import check_settings_for_setup, check_slash_commands_dest
 
     check_settings_for_setup(_resolve_settings_path(args))
+    slash_dest = getattr(args, "slash_commands_dir", None)
+    check_slash_commands_dest(Path(slash_dest) if slash_dest else None)
     wants = {
         hook_name: bool(getattr(args, flag, True))
         for flag, hook_name in _SETUP_FLAG_TO_HOOK_NAME.items()

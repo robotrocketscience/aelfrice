@@ -2542,7 +2542,7 @@ def _setup_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, Path]:
     """Point the files `aelf setup` reads at `tmp_path / "home"`: the
-    Claude settings and the opt-out ledger. `HOME` itself stays the one
+    Claude settings, the slash-commands folder and the opt-out ledger. `HOME` itself stays the one
     pin.sh sets. Returns those paths, the folders around them, a Codex
     folder and a skills folder, with only `.aelfrice` and the Codex folder
     made."""
@@ -2562,10 +2562,13 @@ def _setup_files(
         "skill": skills / "aelf-onboard",
         "md": skills / "aelf-onboard" / "SKILL.md",
         "codex": tmp_path / "codex",
+        "commands": home / ".claude" / "commands",
+        "slash": home / ".claude" / "commands" / "aelf",
     }
     p["dotdir"].mkdir(parents=True)
     p["codex"].mkdir()
     monkeypatch.setattr(setup_mod, "USER_SETTINGS_PATH", p["settings"])
+    monkeypatch.setattr(setup_mod, "SLASH_COMMANDS_DIR_DEFAULT", p["slash"])
     monkeypatch.setattr(auto_install, "AELFRICE_DOTDIR", p["dotdir"])
     monkeypatch.setattr(auto_install, "OPT_OUT_PATH", p["ledger"])
     return p
@@ -2755,6 +2758,7 @@ _CHMOD_STATES: Final[frozenset[str]] = frozenset({
     "claude unsearchable", "aelfrice unsearchable", "aelfrice read-only",
     "skills unsearchable", "skills read-only", "skill read-only",
     "home read-only", "unreadable", "aelfrice missing, home read-only",
+    "commands read-only", "commands unsearchable",
 })
 
 
@@ -2766,7 +2770,7 @@ _needs_fifo = pytest.mark.skipif(
 def _state_params(names: tuple[str, ...]) -> list[Any]:
     return [
         pytest.param(n, marks=_needs_chmod) if n in _CHMOD_STATES
-        else pytest.param(n, marks=_needs_fifo) if n == "fifo"
+        else pytest.param(n, marks=_needs_fifo) if "fifo" in n
         else n
         for n in names
     ]
@@ -3131,6 +3135,42 @@ _SHAPE_STATES: Final[dict[str, tuple[bytes, str]]] = {
 }
 
 
+def _slash_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
+    """Apply the slash-commands state `name`, and return the cause and the
+    remedy setup names for it."""
+    md = p["slash"] / "setup.md"
+    if name == "commands file":
+        p["claude"].mkdir()
+        p["commands"].write_text("x", encoding="utf-8")
+        return (
+            f"{p['commands']} isn't a folder, so setup can't create "
+            f"{p['slash']}", _FIX_OR_MOVE,
+        )
+    if name == "commands aelf file":
+        p["commands"].mkdir(parents=True)
+        p["slash"].write_text("x", encoding="utf-8")
+        return f"{p['slash']} isn't a folder", _FIX_OR_MOVE
+    p["slash"].mkdir(parents=True)
+    if name == "command md latin-1":
+        md.write_bytes(b"caf\xe9")
+        return f"{md} isn't UTF-8 text: byte 3 is 0xe9", _FIX_OR_MOVE
+    if name == "command md folder":
+        md.mkdir()
+        return f"{md} is a folder, not a file", _FIX_OR_MOVE
+    if name == "command md fifo":
+        os.mkfifo(md)
+        return f"{md} isn't a regular file", _FIX_OR_MOVE
+    if name == "commands read-only":
+        os.chmod(p["slash"], 0o500)
+        return (
+            f"{p['slash']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
+    if name == "commands unsearchable":
+        os.chmod(p["slash"], 0o600)
+        return f"{p['slash']} can't be read (Permission denied)", _FIX_PERMS
+    raise AssertionError(name)
+
+
 def _claude_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
     """Apply the Claude setup state `name`, and return the cause and the
     remedy setup names for it."""
@@ -3170,6 +3210,8 @@ def _claude_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
         data, cause = _SHAPE_STATES[name]
         _write_settings(p, data)
         return f"{p['settings']} {cause}", _FIX_OR_MOVE
+    if name.startswith("command"):
+        return _slash_state(name, p)
     if name == "unreadable":
         _write_settings(p, b"{}")
         os.chmod(p["settings"], 0)
@@ -3212,7 +3254,9 @@ _CLAUDE_STATES: Final[tuple[str, ...]] = (
     "not json", "folder", "unreadable", "claude unsearchable",
     "claude file", "fifo", "ledger latin-1", "aelfrice file",
     "aelfrice read-only", "hooks array", "hooks repeated", "event object",
-    "event string", "entry number",
+    "event string", "entry number", "commands aelf file",
+    "command md latin-1", "command md folder", "command md fifo",
+    "commands read-only", "commands unsearchable", "commands file",
 )
 
 
@@ -3440,3 +3484,29 @@ def test_setup_claude_refuses_a_ledger_write_it_can_not_make(
     assert err == f"aelf setup: {cause}; nothing was written. {remedy}\n", err
     assert started == []
     assert after == before
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize("newlines", ["lf", "crlf"])
+def test_setup_slash_check_reads_current_commands_in_a_read_only_folder(
+    tmp_path: Path, newlines: str,
+) -> None:
+    """Setup writes no slash command that is already current, with
+    newlines read as `install_slash_commands` reads them, so the check
+    passes a read-only folder of current commands, and the install writes
+    nothing there."""
+    from aelfrice.setup import check_slash_commands_dest, install_slash_commands
+
+    target = tmp_path / "aelf"
+    install_slash_commands(target)
+    if newlines == "crlf":
+        md = target / "setup.md"
+        md.write_bytes(md.read_bytes().replace(b"\n", b"\r\n"))
+    os.chmod(target, 0o500)
+    try:
+        check_slash_commands_dest(target)
+        result = install_slash_commands(target)
+    finally:
+        os.chmod(target, 0o700)
+    assert result.written == ()
