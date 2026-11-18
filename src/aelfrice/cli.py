@@ -5644,6 +5644,276 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
     return _host_command(_SETUP_BY_HOST, "setup", args)(args, out)
 
 
+def _setup_timeouts(args: argparse.Namespace) -> Callable[[str], int | None]:
+    """The timeout `aelf setup` gives each installer's entries (#1161): an
+    explicit `--timeout`, or the wall-clock bound its manifest row
+    declares, so `aelf setup` and the auto-install merge agree on the
+    budget."""
+    from aelfrice.auto_install import manifest_timeouts_by_installer
+
+    manifest_timeouts = manifest_timeouts_by_installer()
+
+    def timeout_for(installer: str) -> int | None:
+        if args.timeout is not None:
+            return cast(int, args.timeout)
+        return manifest_timeouts.get(installer)
+
+    return timeout_for
+
+
+def _reconcile_claude_settings(
+    args: argparse.Namespace,
+    path: Path,
+    scope: SettingsScope,
+    command: str,
+    timeout_for: Callable[[str], int | None],
+    out: object,
+    commit_ingest_step: Callable[[], object],
+) -> None:
+    """Every settings edit `aelf setup` for the claude host makes, in the
+    open settings transaction for `path`, with a line on `out` for each.
+    `commit_ingest_step` runs where commit ingest is set up."""
+    prune = prune_broken_aelf_hooks(path)
+    if prune.total_removed:
+        events = ", ".join(
+            f"{event}={count}"
+            for event, count in sorted(prune.removed_per_event.items())
+        )
+        print(
+            f"pruned {prune.total_removed} stale aelf-* hook entr"
+            f"{'y' if prune.total_removed == 1 else 'ies'} "
+            f"({events}) from {prune.settings_path}",
+            file=out,  # type: ignore[arg-type]
+        )
+    if prune.total_duplicates_removed:
+        # #1161: `aelf setup` repairs duplicates here, before reconciling
+        # installs, so the install pass sees a single entry per hook and
+        # its "already installed" report is truthful.
+        dupe_events = ", ".join(
+            f"{event}={count}"
+            for event, count in sorted(prune.duplicates_per_event.items())
+        )
+        print(
+            f"collapsed {prune.total_duplicates_removed} duplicate "
+            f"aelf-* hook entr"
+            f"{'y' if prune.total_duplicates_removed == 1 else 'ies'} "
+            f"({dupe_events}) from {prune.settings_path}",
+            file=out,  # type: ignore[arg-type]
+        )
+    result = install_user_prompt_submit_hook(
+        path,
+        command=command,
+        timeout=timeout_for("user_prompt_submit"),
+        status_message=args.status_message,
+    )
+    if result.already_present:
+        print(
+            f"hook already installed in {result.path} "
+            f"(command={command!r})",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(
+            f"installed UserPromptSubmit hook in {result.path} "
+            f"(command={command!r})",
+            file=out,  # type: ignore[arg-type]
+        )
+    if getattr(args, "transcript_ingest", True):
+        ti_command = resolve_transcript_logger_command(scope)
+        ti_result = install_transcript_ingest_hooks(
+            path, command=ti_command, timeout=timeout_for("transcript_ingest"),
+        )
+        if ti_result.installed:
+            print(
+                f"installed transcript-ingest hooks "
+                f"({', '.join(ti_result.installed)}) in {ti_result.path} "
+                f"(command={ti_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        if ti_result.already:
+            print(
+                f"transcript-ingest hooks already installed for "
+                f"({', '.join(ti_result.already)}) in {ti_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "session_start", True):
+        ss_command = resolve_session_start_hook_command(scope)
+        ss_result = install_session_start_hook(
+            path, command=ss_command, timeout=timeout_for("session_start"),
+            status_message=args.status_message,
+        )
+        if ss_result.already_present:
+            print(
+                f"SessionStart hook already installed in {ss_result.path} "
+                f"(command={ss_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed SessionStart hook in {ss_result.path} "
+                f"(command={ss_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "stop_hook", True):
+        st_command = resolve_stop_hook_command(scope)
+        st_result = install_stop_hook(
+            path, command=st_command, timeout=timeout_for("stop"),
+            status_message=args.status_message,
+        )
+        if st_result.already_present:
+            print(
+                f"Stop hook already installed in {st_result.path} "
+                f"(command={st_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed Stop hook in {st_result.path} "
+                f"(command={st_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+    if not args.no_statusline:
+        sl = install_statusline(path)
+        if sl.mode == "installed":
+            print(
+                f"installed statusline in {sl.path} "
+                f"(command='aelf statusline')",
+                file=out,  # type: ignore[arg-type]
+            )
+        elif sl.mode == "composed":
+            print(
+                f"composed statusline into existing command in {sl.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        elif sl.mode == "already":
+            pass  # silent: already wired
+        elif sl.mode == "skipped":
+            print(
+                f"statusline NOT installed in {sl.path}: existing "
+                f"statusLine looks complex (shell metacharacters). "
+                f"To enable update notifications append "
+                f"' ; aelf statusline 2>/dev/null' to your existing "
+                f"statusLine command manually.",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "rebuilder", False):
+        pc_command = resolve_pre_compact_hook_command(scope)
+        # No manifest budget for this one: `--rebuilder` is opt-in, and
+        # the bundled manifest ships default-on hooks plus commit_ingest,
+        # which is default-off since #1698. It therefore keeps
+        # the pre-#1161 behaviour — a bare `--timeout` or no timeout key at
+        # all. Adding a row here would silently widen the auto-install
+        # surface to a hook the operator opted into explicitly.
+        pc_result = install_pre_compact_hook(
+            path,
+            command=pc_command,
+            timeout=args.timeout,
+            status_message=args.status_message,
+        )
+        if pc_result.already_present:
+            print(
+                f"PreCompact hook already installed in {pc_result.path} "
+                f"(command={pc_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed PreCompact hook in {pc_result.path} "
+                f"(command={pc_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "commit_ingest", True):
+        commit_ingest_step()
+    if getattr(args, "search_tool", True):
+        st_command = resolve_search_tool_command(scope)
+        st_result = install_search_tool_hook(
+            path, command=st_command, timeout=timeout_for("search_tool"),
+        )
+        if st_result.already_present:
+            print(
+                f"search-tool hook already installed in {st_result.path} "
+                f"(command={st_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed search-tool PreToolUse hook in {st_result.path} "
+                f"(command={st_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "search_tool_bash", True):
+        stb_command = resolve_search_tool_bash_command(scope)
+        stb_result = install_search_tool_bash_hook(
+            path, command=stb_command, timeout=timeout_for("search_tool_bash"),
+        )
+        if stb_result.already_present:
+            print(
+                f"search-tool-bash hook already installed in {stb_result.path} "
+                f"(command={stb_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed search-tool-bash PreToolUse:Bash hook in "
+                f"{stb_result.path} (command={stb_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "pre_issue_guard", True):
+        pig_command = resolve_pre_issue_guard_command(scope)
+        pig_result = install_pre_issue_guard_hook(
+            path, command=pig_command, timeout=timeout_for("pre_issue_guard"),
+        )
+        if pig_result.already_present:
+            print(
+                f"pre-issue-guard hook already installed in {pig_result.path} "
+                f"(command={pig_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed pre-issue-guard PreToolUse:Bash hook in "
+                f"{pig_result.path} (command={pig_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "claude_memory_mirror", True):
+        cmm_command = resolve_claude_memory_mirror_command(scope)
+        cmm_result = install_claude_memory_mirror_hook(
+            path, command=cmm_command, timeout=timeout_for("claude_memory_mirror"),
+        )
+        if cmm_result.already_present:
+            print(
+                f"claude-memory-mirror hook already installed in "
+                f"{cmm_result.path} (command={cmm_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed claude-memory-mirror PostToolUse hook in "
+                f"{cmm_result.path} (command={cmm_command!r}); inert until "
+                f"AELFRICE_MIRROR_CLAUDE_MEMORY or [memory] "
+                f"mirror_claude_memory is set",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "agent_context", True):
+        ac_command = resolve_agent_context_command(scope)
+        ac_result = install_agent_context_hook(
+            path, command=ac_command, timeout=timeout_for("agent_context"),
+        )
+        if ac_result.already_present:
+            print(
+                f"agent-context hook already installed in {ac_result.path} "
+                f"(command={ac_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed agent-context PreToolUse:Agent hook in "
+                f"{ac_result.path} (command={ac_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+
+
+
 def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
     """`aelf setup` for the claude host: settings.json and slash commands."""
     from aelfrice.setup import SetupInputError
@@ -5722,18 +5992,6 @@ def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
     scope = _effective_scope(args)
     path = _resolve_settings_path(args)
     command = args.command if args.command is not None else resolve_hook_command(scope)
-    # #1161: every entry gets the wall-clock bound its manifest row
-    # declares, so `aelf setup` and the auto-install merge agree on the
-    # budget. An explicit `--timeout` still overrides all of them.
-    from aelfrice.auto_install import manifest_timeouts_by_installer
-
-    _manifest_timeouts = manifest_timeouts_by_installer()
-
-    def _timeout_for(installer: str) -> int | None:
-        if args.timeout is not None:
-            return cast(int, args.timeout)
-        return _manifest_timeouts.get(installer)
-
     cleanup = clean_dangling_shims()
     for removed_path in cleanup.removed:
         print(
@@ -5752,244 +6010,10 @@ def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
     # prune joins the same transaction (via `setup.write_settings`),
     # so it no longer writes around the installs that follow it.
     with settings_transaction(path):
-        prune = prune_broken_aelf_hooks(path)
-        if prune.total_removed:
-            events = ", ".join(
-                f"{event}={count}"
-                for event, count in sorted(prune.removed_per_event.items())
-            )
-            print(
-                f"pruned {prune.total_removed} stale aelf-* hook entr"
-                f"{'y' if prune.total_removed == 1 else 'ies'} "
-                f"({events}) from {prune.settings_path}",
-                file=out,  # type: ignore[arg-type]
-            )
-        if prune.total_duplicates_removed:
-            # #1161: `aelf setup` repairs duplicates here, before reconciling
-            # installs, so the install pass sees a single entry per hook and
-            # its "already installed" report is truthful.
-            dupe_events = ", ".join(
-                f"{event}={count}"
-                for event, count in sorted(prune.duplicates_per_event.items())
-            )
-            print(
-                f"collapsed {prune.total_duplicates_removed} duplicate "
-                f"aelf-* hook entr"
-                f"{'y' if prune.total_duplicates_removed == 1 else 'ies'} "
-                f"({dupe_events}) from {prune.settings_path}",
-                file=out,  # type: ignore[arg-type]
-            )
-        result = install_user_prompt_submit_hook(
-            path,
-            command=command,
-            timeout=_timeout_for("user_prompt_submit"),
-            status_message=args.status_message,
+        _reconcile_claude_settings(
+            args, path, scope, command, _setup_timeouts(args), out,
+            lambda: _setup_commit_ingest_git_hook(scope, path, out),
         )
-        if result.already_present:
-            print(
-                f"hook already installed in {result.path} "
-                f"(command={command!r})",
-                file=out,  # type: ignore[arg-type]
-            )
-        else:
-            print(
-                f"installed UserPromptSubmit hook in {result.path} "
-                f"(command={command!r})",
-                file=out,  # type: ignore[arg-type]
-            )
-        if getattr(args, "transcript_ingest", True):
-            ti_command = resolve_transcript_logger_command(scope)
-            ti_result = install_transcript_ingest_hooks(
-                path, command=ti_command, timeout=_timeout_for("transcript_ingest"),
-            )
-            if ti_result.installed:
-                print(
-                    f"installed transcript-ingest hooks "
-                    f"({', '.join(ti_result.installed)}) in {ti_result.path} "
-                    f"(command={ti_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            if ti_result.already:
-                print(
-                    f"transcript-ingest hooks already installed for "
-                    f"({', '.join(ti_result.already)}) in {ti_result.path}",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "session_start", True):
-            ss_command = resolve_session_start_hook_command(scope)
-            ss_result = install_session_start_hook(
-                path, command=ss_command, timeout=_timeout_for("session_start"),
-                status_message=args.status_message,
-            )
-            if ss_result.already_present:
-                print(
-                    f"SessionStart hook already installed in {ss_result.path} "
-                    f"(command={ss_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed SessionStart hook in {ss_result.path} "
-                    f"(command={ss_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "stop_hook", True):
-            st_command = resolve_stop_hook_command(scope)
-            st_result = install_stop_hook(
-                path, command=st_command, timeout=_timeout_for("stop"),
-                status_message=args.status_message,
-            )
-            if st_result.already_present:
-                print(
-                    f"Stop hook already installed in {st_result.path} "
-                    f"(command={st_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed Stop hook in {st_result.path} "
-                    f"(command={st_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if not args.no_statusline:
-            sl = install_statusline(path)
-            if sl.mode == "installed":
-                print(
-                    f"installed statusline in {sl.path} "
-                    f"(command='aelf statusline')",
-                    file=out,  # type: ignore[arg-type]
-                )
-            elif sl.mode == "composed":
-                print(
-                    f"composed statusline into existing command in {sl.path}",
-                    file=out,  # type: ignore[arg-type]
-                )
-            elif sl.mode == "already":
-                pass  # silent: already wired
-            elif sl.mode == "skipped":
-                print(
-                    f"statusline NOT installed in {sl.path}: existing "
-                    f"statusLine looks complex (shell metacharacters). "
-                    f"To enable update notifications append "
-                    f"' ; aelf statusline 2>/dev/null' to your existing "
-                    f"statusLine command manually.",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "rebuilder", False):
-            pc_command = resolve_pre_compact_hook_command(scope)
-            # No manifest budget for this one: `--rebuilder` is opt-in, and
-            # the bundled manifest ships default-on hooks plus commit_ingest,
-            # which is default-off since #1698. It therefore keeps
-            # the pre-#1161 behaviour — a bare `--timeout` or no timeout key at
-            # all. Adding a row here would silently widen the auto-install
-            # surface to a hook the operator opted into explicitly.
-            pc_result = install_pre_compact_hook(
-                path,
-                command=pc_command,
-                timeout=args.timeout,
-                status_message=args.status_message,
-            )
-            if pc_result.already_present:
-                print(
-                    f"PreCompact hook already installed in {pc_result.path} "
-                    f"(command={pc_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed PreCompact hook in {pc_result.path} "
-                    f"(command={pc_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "commit_ingest", True):
-            _setup_commit_ingest_git_hook(scope, path, out)
-        if getattr(args, "search_tool", True):
-            st_command = resolve_search_tool_command(scope)
-            st_result = install_search_tool_hook(
-                path, command=st_command, timeout=_timeout_for("search_tool"),
-            )
-            if st_result.already_present:
-                print(
-                    f"search-tool hook already installed in {st_result.path} "
-                    f"(command={st_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed search-tool PreToolUse hook in {st_result.path} "
-                    f"(command={st_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "search_tool_bash", True):
-            stb_command = resolve_search_tool_bash_command(scope)
-            stb_result = install_search_tool_bash_hook(
-                path, command=stb_command, timeout=_timeout_for("search_tool_bash"),
-            )
-            if stb_result.already_present:
-                print(
-                    f"search-tool-bash hook already installed in {stb_result.path} "
-                    f"(command={stb_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed search-tool-bash PreToolUse:Bash hook in "
-                    f"{stb_result.path} (command={stb_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "pre_issue_guard", True):
-            pig_command = resolve_pre_issue_guard_command(scope)
-            pig_result = install_pre_issue_guard_hook(
-                path, command=pig_command, timeout=_timeout_for("pre_issue_guard"),
-            )
-            if pig_result.already_present:
-                print(
-                    f"pre-issue-guard hook already installed in {pig_result.path} "
-                    f"(command={pig_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed pre-issue-guard PreToolUse:Bash hook in "
-                    f"{pig_result.path} (command={pig_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "claude_memory_mirror", True):
-            cmm_command = resolve_claude_memory_mirror_command(scope)
-            cmm_result = install_claude_memory_mirror_hook(
-                path, command=cmm_command, timeout=_timeout_for("claude_memory_mirror"),
-            )
-            if cmm_result.already_present:
-                print(
-                    f"claude-memory-mirror hook already installed in "
-                    f"{cmm_result.path} (command={cmm_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed claude-memory-mirror PostToolUse hook in "
-                    f"{cmm_result.path} (command={cmm_command!r}); inert until "
-                    f"AELFRICE_MIRROR_CLAUDE_MEMORY or [memory] "
-                    f"mirror_claude_memory is set",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "agent_context", True):
-            ac_command = resolve_agent_context_command(scope)
-            ac_result = install_agent_context_hook(
-                path, command=ac_command, timeout=_timeout_for("agent_context"),
-            )
-            if ac_result.already_present:
-                print(
-                    f"agent-context hook already installed in {ac_result.path} "
-                    f"(command={ac_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed agent-context PreToolUse:Agent hook in "
-                    f"{ac_result.path} (command={ac_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
     slash_dest = getattr(args, "slash_commands_dir", None)
     slash_dest_path = Path(slash_dest) if slash_dest else None
     sc_result = install_slash_commands(slash_dest_path)
