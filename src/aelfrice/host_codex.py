@@ -68,7 +68,9 @@ from aelfrice.launcher import (
 from aelfrice.setup import (
     SettingsScope,
     SetupInputError,
+    check_can_create,
     decode_setup_input,
+    json_type_name,
     read_setup_input,
     resolve_commit_ingest_command,
     resolve_hook_command,
@@ -790,27 +792,6 @@ class _NotUtf8(NamedTuple):
 _HooksText = str | _NotUtf8 | None
 
 
-def _json_type_name(value: object) -> str:
-    """Name `value`'s type as JSON names it, for a message about JSON.
-
-    `type(None).__name__` is `NoneType`, which is a Python detail leaking
-    into a refusal the user is meant to act on by editing a `.json` file.
-    """
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, (int, float)):
-        return "number"
-    if isinstance(value, str):
-        return "string"
-    if isinstance(value, list):
-        return "array"
-    if isinstance(value, dict):
-        return "object"
-    return type(value).__name__
-
-
 def _fingerprint(path: Path) -> str:
     """Content hash of `path`; `""` when it does not exist.
 
@@ -963,7 +944,7 @@ def _plan_install(
     else:
         return refuse(
             "existing hooks.json has a non-object `hooks` value "
-            f"({_json_type_name(hooks_obj)}); it is not ours to reshape — "
+            f"({json_type_name(hooks_obj)}); it is not ours to reshape — "
             "fix it, or re-run with --force to replace it"
         )
 
@@ -974,7 +955,7 @@ def _plan_install(
             if current is not _ABSENT and not isinstance(current, list):
                 return refuse(
                     f"existing hooks.json has a non-list value for the "
-                    f"`{event}` event ({_json_type_name(current)}); it is "
+                    f"`{event}` event ({json_type_name(current)}); it is "
                     "not ours to reshape — fix it, or re-run with --force "
                     "to replace it"
                 )
@@ -1666,25 +1647,6 @@ def _existing_skill_text(dest_file: Path) -> str | None:
     return decode_setup_input(dest_file, raw)
 
 
-def _check_can_create(folder: Path) -> None:
-    """Raise `SetupInputError` unless `mkdir -p` can create `folder`,
-    which doesn't exist: the nearest folder above it that does must be a
-    folder you can write in (#1812)."""
-    probe = folder
-    while not os.path.lexists(probe) and probe.parent != probe:
-        probe = probe.parent
-    if not os.path.isdir(probe):
-        raise SetupInputError(
-            f"{probe} isn't a folder, so setup can't create {folder}",
-        )
-    if not os.access(probe, os.W_OK | os.X_OK):
-        raise SetupInputError(
-            f"{probe} can't be written to (Permission denied), so setup "
-            f"can't create {folder}",
-            "Fix its permissions, and run setup again",
-        )
-
-
 def check_codex_skills_dest(dest_dir: Path) -> None:
     """Raise `SetupInputError` where `install_codex_skills(dest_dir)` would
     stop partway, or read a SKILL.md it can't compare (#1812).
@@ -1698,7 +1660,7 @@ def check_codex_skills_dest(dest_dir: Path) -> None:
     does, so it refuses no skill the install would skip or leave as it is.
     """
     if not os.path.lexists(dest_dir):
-        _check_can_create(dest_dir)
+        check_can_create(dest_dir)
         return
     if not os.path.isdir(dest_dir):
         raise SetupInputError(f"{dest_dir} isn't a folder")
