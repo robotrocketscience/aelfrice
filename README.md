@@ -33,7 +33,16 @@ Each belief records its source, type, and Bayesian confidence score. Every 12 lo
 
 ## Installation
 
-aelfrice works with the `claude` CLI and Codex. You install it once on each machine, then onboard each project.
+aelfrice supports the `claude` CLI fully. Codex support works but isn't yet on par with the `claude` CLI:
+
+- Codex keeps hook output over about 2,500 tokens in a file and gives the model only a preview, so a large memory block reaches the model cut short.
+- A forked Codex thread gets no baseline block of your locked rules.
+- Codex shows no status line when aelfrice runs.
+- Codex doesn't get the git hook that reads commit messages.
+
+[#1812](https://github.com/robotrocketscience/aelfrice/issues/1812) tracks these gaps. Gemini CLI and Antigravity aren't supported yet.
+
+You install aelfrice once on each machine, then onboard each project.
 
 ### Install on your machine
 
