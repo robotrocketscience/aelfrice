@@ -47,6 +47,7 @@ import hashlib
 import importlib.resources
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -2044,6 +2045,106 @@ def decode_setup_input(path: Path, raw: bytes) -> str:
         ) from exc
 
 
+class SetupJSONSyntaxError(SetupInputError):
+    """The `SetupInputError` for a file that isn't JSON at all (#1812).
+
+    A caller that reads such a file as empty, as the opt-out ledger's
+    readers do, catches this one and lets the others through.
+    """
+
+
+def json_unreadable_cause(exc: RecursionError | ValueError) -> str:
+    """Why Python's `json` can't read a document that is JSON, from the
+    error `json.loads` raised for it other than `JSONDecodeError` (#1812).
+
+    `json.loads` raises `RecursionError` for arrays or objects nested
+    deeper than the interpreter's recursion limit, and `ValueError` for an
+    integer longer than `sys.get_int_max_str_digits()` digits.
+    """
+    if isinstance(exc, RecursionError):
+        return "nests arrays or objects too deeply for setup to read"
+    return (
+        f"holds an integer of more than {sys.get_int_max_str_digits()} "
+        "digits, which setup can't read"
+    )
+
+
+#: A UTF-16 surrogate code point. Python's `json` reads a `\ud800` escape
+#: that no low surrogate follows, or a lone `\udc00`, as one of these, and
+#: no UTF-8 text can hold it.
+_SURROGATE: Final[re.Pattern[str]] = re.compile("[\ud800-\udfff]")
+
+#: A key `_json_place` writes after a dot, unquoted.
+_PLAIN_KEY: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _json_place(parts: tuple[str | int, ...]) -> str:
+    """`parts`, the keys and indexes from the top of a JSON document, as a
+    path such as `hooks.Stop[0]`, each odd key as an ASCII JSON string."""
+    out = ""
+    for part in parts:
+        if isinstance(part, int):
+            out += f"[{part}]"
+        elif _PLAIN_KEY.fullmatch(part):
+            out += f".{part}" if out else part
+        else:
+            out += f"[{json.dumps(part)}]"
+    return out
+
+
+def _lone_surrogate_place(doc: object) -> str | None:
+    """Where the first key or string of `doc`, in document order, holds a
+    lone UTF-16 surrogate, or None. A loop with a stack, not recursion,
+    so a document `json.loads` could read can't stop it."""
+    stack: list[tuple[tuple[str | int, ...], object]] = [((), doc)]
+    while stack:
+        parts, value = stack.pop()
+        if isinstance(value, str):
+            if _SURROGATE.search(value):
+                return f"the string at `{_json_place(parts)}`" if parts else (
+                    "the string at the top level"
+                )
+        elif isinstance(value, dict):
+            items = list(cast(dict[str, object], value).items())
+            for key, _child in items:
+                if _SURROGATE.search(key):
+                    return f"a key in `{_json_place(parts)}`" if parts else (
+                        "a key at the top level"
+                    )
+            stack.extend(((*parts, key), child) for key, child in reversed(items))
+        elif isinstance(value, list):
+            children = cast(list[object], value)
+            stack.extend(
+                ((*parts, index), children[index])
+                for index in reversed(range(len(children)))
+            )
+    return None
+
+
+def parse_setup_json(path: Path, text: str) -> object:
+    """`text`, the contents of `path`, read as JSON, or `SetupInputError`
+    naming `path` and the cause (#1812).
+
+    It refuses text that isn't JSON (`SetupJSONSyntaxError`), JSON that
+    Python's `json` can't read (see `json_unreadable_cause`), and a key or
+    string that holds a lone UTF-16 surrogate escape, such as `"\\ud800"`,
+    which setup's writers can't write back as UTF-8 text.
+    """
+    try:
+        parsed: object = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SetupJSONSyntaxError(f"{path} isn't valid JSON ({exc})") from exc
+    except (RecursionError, ValueError) as exc:
+        raise SetupInputError(f"{path} {json_unreadable_cause(exc)}") from exc
+    place = _lone_surrogate_place(parsed)
+    if place is not None:
+        raise SetupInputError(
+            f"{path} holds a lone UTF-16 surrogate escape in {place}, which "
+            "setup can't write back as UTF-8 text",
+        )
+    return parsed
+
+
 def json_type_name(value: object) -> str:
     """Name `value`'s type as JSON names it, for a message about JSON.
 
@@ -2261,10 +2362,7 @@ def check_settings_for_setup(path: Path) -> dict[str, object] | None:
     text = decode_setup_input(path, raw)
     if not text.strip():
         return None
-    try:
-        parsed: object = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise SetupInputError(f"{path} isn't valid JSON ({exc})") from exc
+    parsed = parse_setup_json(path, text)
     if not isinstance(parsed, dict):
         raise SetupInputError(
             f"{path} doesn't hold a JSON object at the top level",

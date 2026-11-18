@@ -306,7 +306,9 @@ def read_opt_outs(opt_out_path: Path | None = None) -> frozenset[str]:
         return frozenset()
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError:
+    except (RecursionError, ValueError):
+        # Not JSON, a JSONDecodeError, or JSON that Python's `json` can't
+        # read: nested too deeply or holding an integer too long (#1812).
         return frozenset()
     if not isinstance(parsed, dict):
         return frozenset()
@@ -340,7 +342,8 @@ def read_host_opt_outs(opt_out_path: Path | None = None) -> frozenset[str]:
         return frozenset()
     try:
         parsed: object = json.loads(raw)  # pyright: ignore[reportAny]
-    except json.JSONDecodeError:
+    except (RecursionError, ValueError):
+        # As `read_opt_outs` reads it (#1812).
         return frozenset()
     if not isinstance(parsed, dict):
         return frozenset()
@@ -408,13 +411,22 @@ def check_opt_out_ledger(
     create or write in, such as a missing `~/.aelfrice` in a home you
     can't write in, or a `~/.aelfrice` that is a symbolic link to a path
     that doesn't exist (`setup.check_can_write_in`). A ledger that isn't
-    JSON still reads as empty, as the readers read it.
+    JSON still reads as empty, as the readers read it. One that is JSON
+    but that Python's `json` can't read, nested too deeply or holding an
+    integer too long, or that holds a lone UTF-16 surrogate escape, which
+    the ledger writer can't write back as UTF-8, is refused
+    (`setup.parse_setup_json`).
     """
     if opt_out_path is None:
         opt_out_path = OPT_OUT_PATH
     raw = _setup.read_setup_input(opt_out_path)
     if raw is not None:
-        _setup.decode_setup_input(opt_out_path, raw)
+        text = _setup.decode_setup_input(opt_out_path, raw)
+        if text.strip():
+            try:
+                _setup.parse_setup_json(opt_out_path, text)
+            except _setup.SetupJSONSyntaxError:
+                pass
     hosts = read_host_opt_outs(opt_out_path)
     hooks = read_opt_outs(opt_out_path)
     if not (
