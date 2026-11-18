@@ -2738,9 +2738,10 @@ def _codex_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
 #: Claude settings states that both halves of setup refuse (2026-11-18
 #: ruling), applied by `_claude_state`.
 _SHARED_SETTINGS_STATES: Final[tuple[str, ...]] = (
-    "bom", "not json", "array", "folder", "claude file", "fifo",
-    "hooks array", "hooks repeated", "event object", "event string",
-    "entry number",
+    "bom", "not json", "array", "folder", "claude file", "fifo", "hooks array",
+    "hooks repeated", "event object", "event string", "entry number",
+    "claude dangling", "claude loop", "settings loop", "claude link to fifo",
+    "settings link to fifo",
 )
 _CODEX_STATES: Final[tuple[str, ...]] = (
     "settings latin-1", "settings utf-16", "claude unsearchable",
@@ -3171,6 +3172,43 @@ def _slash_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
     raise AssertionError(name)
 
 
+#: What `strerror` says for ELOOP, on macOS and Linux alike.
+_LOOP: Final[str] = "Too many levels of symbolic links"
+
+
+def _claude_link_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
+    """Apply a state in which `~/.claude` or the settings file is a
+    symbolic link, and return the cause and remedy setup names (#1812)."""
+    if name == "claude dangling":
+        os.symlink(p["home"] / "gone" / "dotfiles", p["claude"])
+        return (
+            f"{p['claude']} is a symbolic link to "
+            f"{p['home'] / 'gone' / 'dotfiles'}, which doesn't exist",
+            _FIX_OR_MOVE,
+        )
+    if name == "claude loop":
+        os.symlink(p["home"] / "loop", p["claude"])
+        os.symlink(p["claude"], p["home"] / "loop")
+        return f"{p['settings']} can't be read ({_LOOP})", _FIX_OR_MOVE
+    if name == "settings loop":
+        p["claude"].mkdir()
+        os.symlink(p["settings"], p["settings"])
+        return f"{p['settings']} can't be read ({_LOOP})", _FIX_OR_MOVE
+    if name == "claude link to fifo":
+        os.mkfifo(p["home"] / "fifo")
+        os.symlink(p["home"] / "fifo", p["claude"])
+        return (
+            f"{p['settings']} can't be read, because {p['claude']} isn't a "
+            "folder", _FIX_OR_MOVE,
+        )
+    if name == "settings link to fifo":
+        p["claude"].mkdir()
+        os.mkfifo(p["home"] / "fifo")
+        os.symlink(p["home"] / "fifo", p["settings"])
+        return f"{p['settings']} isn't a regular file", _FIX_OR_MOVE
+    raise AssertionError(name)
+
+
 def _claude_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
     """Apply the Claude setup state `name`, and return the cause and the
     remedy setup names for it."""
@@ -3210,6 +3248,10 @@ def _claude_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
         data, cause = _SHAPE_STATES[name]
         _write_settings(p, data)
         return f"{p['settings']} {cause}", _FIX_OR_MOVE
+    if name.startswith(("claude ", "settings ")) and (
+        "link" in name or "dangling" in name or "loop" in name
+    ):
+        return _claude_link_state(name, p)
     if name.startswith("command"):
         return _slash_state(name, p)
     if name == "home read-only":
@@ -3262,14 +3304,15 @@ def _claude_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
 
 
 _CLAUDE_STATES: Final[tuple[str, ...]] = (
-    "bom", "bom, claude opted out", "latin-1", "utf-16", "array",
-    "not json", "folder", "unreadable", "claude unsearchable",
-    "claude file", "fifo", "ledger latin-1", "aelfrice file",
-    "aelfrice read-only", "hooks array", "hooks repeated", "event object",
-    "event string", "entry number", "commands aelf file",
-    "command md latin-1", "command md folder", "command md fifo",
-    "commands read-only", "commands unsearchable", "commands file",
-    "home read-only", "claude read-only",
+    "bom", "bom, claude opted out", "latin-1", "utf-16", "array", "not json",
+    "folder", "unreadable", "claude unsearchable", "claude file", "fifo",
+    "ledger latin-1", "aelfrice file", "aelfrice read-only", "hooks array",
+    "hooks repeated", "event object", "event string", "entry number",
+    "commands aelf file", "command md latin-1", "command md folder",
+    "command md fifo", "commands read-only", "commands unsearchable",
+    "commands file", "home read-only", "claude read-only", "claude dangling",
+    "claude loop", "settings loop", "claude link to fifo",
+    "settings link to fifo",
 )
 
 
@@ -3523,3 +3566,47 @@ def test_setup_slash_check_reads_current_commands_in_a_read_only_folder(
     finally:
         os.chmod(target, 0o700)
     assert result.written == ()
+
+
+#: A Claude settings document that wires one aelfrice hook.
+_WIRED_SETTINGS: Final[bytes] = (
+    b'{"hooks": {"Stop": [{"hooks": [{"type": "command", '
+    b'"command": "/opt/aelf/bin/aelf-stop-hook"}]}]}}'
+)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "state", ["settings dangling", "claude link to folder", "settings link to file"],
+)
+def test_both_halves_read_a_settings_link_they_can_follow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    """Both halves of setup read the Claude settings through a symbolic
+    link the same way. A settings file that is a link to a path that
+    doesn't exist reads as no file, as Claude reads it, and a `~/.claude`
+    or settings link to a folder or file that exists reads as its target,
+    so neither half refuses."""
+    import aelfrice.cli as cli
+    from aelfrice.host_codex import claude_host_has_aelfrice_hooks
+    from aelfrice.setup import check_settings_for_setup
+
+    p = _setup_files(tmp_path, monkeypatch)
+    want: object = json.loads(_WIRED_SETTINGS)
+    if state == "settings dangling":
+        p["claude"].mkdir()
+        os.symlink(p["home"] / "gone.json", p["settings"])
+        want = None
+    elif state == "claude link to folder":
+        real = p["home"] / "dotfiles"
+        real.mkdir()
+        (real / "settings.json").write_bytes(_WIRED_SETTINGS)
+        os.symlink(real, p["claude"])
+    else:
+        p["claude"].mkdir()
+        (p["home"] / "s.json").write_bytes(_WIRED_SETTINGS)
+        os.symlink(p["home"] / "s.json", p["settings"])
+    assert check_settings_for_setup(p["settings"]) == want
+    assert claude_host_has_aelfrice_hooks(p["settings"]) is (want is not None)
+    args = cli.build_parser().parse_args(["setup", "--scope", "user"])
+    assert cli._setup_input_refusal(args) is None  # noqa: SLF001

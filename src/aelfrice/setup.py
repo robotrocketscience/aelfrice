@@ -2194,6 +2194,23 @@ def _settings_shape_refusal(path: Path, data: dict[str, object]) -> str | None:
     return None
 
 
+def _dangling_folder_link(path: Path) -> Path | None:
+    """The folder above `path` that is a symbolic link to a path that
+    doesn't exist, or None (#1812).
+
+    `path` itself isn't checked: a settings file that is such a link reads
+    as missing, as Claude reads it, and the settings commit replaces the
+    link with a file. A folder above it that is one leaves `mkdir -p`
+    unable to create the folder the file goes in.
+    """
+    folder = path.parent
+    while folder != folder.parent:
+        if os.path.islink(folder) and not os.path.exists(folder):
+            return folder
+        folder = folder.parent
+    return None
+
+
 def check_settings_for_setup(path: Path) -> dict[str, object] | None:
     """Raise `SetupInputError` unless `aelf setup` can edit the settings
     file at `path`, and return its document, or None for a missing or empty
@@ -2204,10 +2221,20 @@ def check_settings_for_setup(path: Path) -> dict[str, object] | None:
     isn't an object, and one whose shape it can't edit (see
     `_settings_shape_refusal`). It also refuses a file that starts with a
     UTF-8 byte order mark (BOM), and names the BOM, instead of removing it:
-    the rewrite would drop it without telling you.
+    the rewrite would drop it without telling you. A missing file under a
+    folder that is a symbolic link to a path that doesn't exist, such as a
+    `~/.claude` link to a dotfiles folder that is gone, is refused and the
+    link named, as `check_can_write_in` names it, instead of read as no
+    file.
     """
     raw = read_setup_input(path)
     if raw is None:
+        link = _dangling_folder_link(path)
+        if link is not None:
+            raise SetupInputError(
+                f"{link} is a symbolic link to {os.readlink(link)}, "
+                "which doesn't exist",
+            )
         return None
     if raw.startswith(_UTF8_BOM):
         raise SetupInputError(
