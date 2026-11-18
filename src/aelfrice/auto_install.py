@@ -400,9 +400,11 @@ def check_opt_out_ledger(
     one under a `.aelfrice` that is a file or that you can't search, and
     one that isn't UTF-8 text. When setup will rewrite the ledger, to add
     the host `adding` that it doesn't name yet or to remove the host
-    `removing` that it names, it also refuses a folder it can't write the
-    ledger in. A ledger that isn't JSON still reads as empty, as the
-    readers read it.
+    `removing` that it names, it also refuses a ledger folder it can't
+    create or write in, such as a missing `~/.aelfrice` in a home you
+    can't write in, or a `~/.aelfrice` that is a symbolic link to a path
+    that doesn't exist (`setup.check_can_write_in`). A ledger that isn't
+    JSON still reads as empty, as the readers read it.
     """
     if opt_out_path is None:
         opt_out_path = OPT_OUT_PATH
@@ -415,12 +417,7 @@ def check_opt_out_ledger(
         or (removing is not None and removing in hosts)
     ):
         return
-    folder = opt_out_path.parent
-    if os.path.isdir(folder) and not os.access(folder, os.W_OK | os.X_OK):
-        raise _setup.SetupInputError(
-            f"{folder} can't be written to (Permission denied)",
-            "Fix its permissions, and run setup again",
-        )
+    _setup.check_can_write_in(opt_out_path.parent)
 
 
 def _write_opt_outs(
