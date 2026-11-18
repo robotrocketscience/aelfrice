@@ -3152,8 +3152,8 @@ def _slash_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
         return f"{p['slash']} isn't a folder", _FIX_OR_MOVE
     p["slash"].mkdir(parents=True)
     if name == "command md latin-1":
-        md.write_bytes(b"caf\xe9")
-        return f"{md} isn't UTF-8 text: byte 3 is 0xe9", _FIX_OR_MOVE
+        md.write_bytes(b"x\xe9 aelfrice")
+        return f"{md} isn't UTF-8 text: byte 1 is 0xe9", _FIX_OR_MOVE
     if name == "command md folder":
         md.mkdir()
         return f"{md} is a folder, not a file", _FIX_OR_MOVE
