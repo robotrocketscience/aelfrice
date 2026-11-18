@@ -2534,6 +2534,8 @@ _UTF16_SETTINGS: Final[bytes] = '{"hooks": {}}'.encode("utf-16")
 #: An opt-out ledger that isn't UTF-8, and one that opts the claude host out.
 _LATIN1_LEDGER: Final[bytes] = b'{"opt_out": ["\xff"]}'
 _CLAUDE_OPTED_OUT: Final[str] = '{"opt_out": [], "opt_out_hosts": ["claude"]}\n'
+#: A ledger that opts the transcript-ingest hook out.
+_INGEST_OPTED_OUT: Final[str] = '{"opt_out": ["transcript_ingest"]}\n'
 
 
 def _setup_files(
@@ -2966,14 +2968,31 @@ def test_setup_codex_leaves_a_skill_it_would_not_write_in_a_read_only_folder(
             id="remove from named",
         ),
         pytest.param(None, {}, False, id="read only"),
+        pytest.param(
+            None, {"add_hooks": ["transcript_ingest"]}, True,
+            id="add hook to none",
+        ),
+        pytest.param(
+            _INGEST_OPTED_OUT, {"add_hooks": ["transcript_ingest"]}, False,
+            id="add hook to named",
+        ),
+        pytest.param(
+            None, {"remove_hooks": ["transcript_ingest"]}, False,
+            id="remove hook from none",
+        ),
+        pytest.param(
+            _INGEST_OPTED_OUT, {"remove_hooks": ["transcript_ingest"]}, True,
+            id="remove hook from named",
+        ),
     ],
 )
 def test_opt_out_ledger_check_refuses_a_read_only_folder_only_for_a_write(
-    tmp_path: Path, ledger: str | None, kwargs: dict[str, str], refused: bool,
+    tmp_path: Path, ledger: str | None, kwargs: dict[str, object],
+    refused: bool,
 ) -> None:
     """The ledger check refuses a `.aelfrice` that you can't write in only
-    when setup will rewrite the ledger: to add a host it doesn't name, or
-    to remove one it names."""
+    when setup will rewrite the ledger: to add a host or a hook it doesn't
+    name, or to remove one it names."""
     from aelfrice.auto_install import check_opt_out_ledger
     from aelfrice.setup import SetupInputError
 
@@ -3328,3 +3347,96 @@ def test_setup_write_check_refuses_a_folder_it_can_not_create_or_write_in(
             assert caught.value.cause == want
     finally:
         _restore_modes(tmp_path)
+
+
+def _ledger_write_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
+    """Apply the plain-setup ledger state `name`, and return the cause and
+    the remedy setup names for it."""
+    if name in ("read-only", "names ingest, read-only"):
+        if name != "read-only":
+            p["ledger"].write_text(_INGEST_OPTED_OUT, encoding="utf-8")
+        os.chmod(p["dotdir"], 0o500)
+        return (
+            f"{p['dotdir']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
+    if name == "dangling":
+        p["dotdir"].rmdir()
+        os.symlink(p["home"] / "gone", p["dotdir"])
+        return (
+            f"{p['dotdir']} is a symbolic link to {p['home'] / 'gone'}, which "
+            "doesn't exist", _FIX_OR_MOVE,
+        )
+    if name == "missing, home read-only":
+        p["dotdir"].rmdir()
+        p["claude"].mkdir()
+        os.chmod(p["home"], 0o500)
+        return (
+            f"{p['home']} can't be written to (Permission denied), so setup "
+            f"can't create {p['dotdir']}", _FIX_PERMS,
+        )
+    raise AssertionError(name)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("driver", ["main", "executor"])
+@pytest.mark.parametrize(
+    ("state", "flags"),
+    [
+        pytest.param(
+            "read-only", ["--no-transcript-ingest"], marks=_needs_chmod,
+            id="read-only, ingest off",
+        ),
+        pytest.param(
+            "dangling", ["--no-transcript-ingest"], id="dangling, ingest off",
+        ),
+        pytest.param(
+            "missing, home read-only", ["--no-transcript-ingest"],
+            marks=_needs_chmod, id="missing, home read-only, ingest off",
+        ),
+        pytest.param(
+            "names ingest, read-only", [], marks=_needs_chmod,
+            id="names ingest, read-only, ingest on",
+        ),
+    ],
+)
+def test_setup_claude_refuses_a_ledger_write_it_can_not_make(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str, flags: list[str],
+    driver: str,
+) -> None:
+    """`aelf setup` records a `--no-X` flag in the opt-out ledger, and
+    rescinds one the ledger names when the flag is on. When it will write
+    the ledger and can't create or write in its folder, it exits 1 before
+    its first write, names the folder and the cause, and changes nothing."""
+    import aelfrice.cli as cli
+
+    p = _setup_files(tmp_path, monkeypatch)
+    started: list[str] = []
+
+    def went_on(*_a: object, **_k: object) -> object:
+        started.append("migration")
+        raise AssertionError("setup went on past a ledger it can't write")
+
+    monkeypatch.setattr(cli, "maybe_migrate_to_uv", went_on)
+    monkeypatch.delenv("AELF_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        cli, "maybe_check_for_update_async",
+        lambda *_a, **_k: started.append("update check"),
+    )
+    argv = ["setup", "--scope", "user", *flags]
+    try:
+        cause, remedy = _ledger_write_state(state, p)
+        before = _tree(tmp_path)
+        if driver == "main":
+            rc = main(argv)
+        else:
+            args = cli.build_parser().parse_args(argv)
+            rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+        err = capsys.readouterr().err
+        after = _tree(tmp_path)
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 1, err
+    assert err == f"aelf setup: {cause}; nothing was written. {remedy}\n", err
+    assert started == []
+    assert after == before

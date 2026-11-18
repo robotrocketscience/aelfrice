@@ -43,6 +43,7 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Final, cast
@@ -390,6 +391,7 @@ def remove_host_opt_out(host: str, opt_out_path: Path | None = None) -> bool:
 def check_opt_out_ledger(
     opt_out_path: Path | None = None, *,
     adding: str | None = None, removing: str | None = None,
+    add_hooks: Iterable[str] = (), remove_hooks: Iterable[str] = (),
 ) -> None:
     """Raise `SetupInputError` unless `aelf setup` can use the opt-out
     ledger (#1812).
@@ -399,8 +401,10 @@ def check_opt_out_ledger(
     reads it first: it refuses a ledger it can't read, such as a folder or
     one under a `.aelfrice` that is a file or that you can't search, and
     one that isn't UTF-8 text. When setup will rewrite the ledger, to add
-    the host `adding` that it doesn't name yet or to remove the host
-    `removing` that it names, it also refuses a ledger folder it can't
+    the host `adding` that it doesn't name yet, to remove the host
+    `removing` that it names, to add a hook of `add_hooks` that it doesn't
+    name, or to remove a hook of `remove_hooks` that it names, as
+    `add_opt_out` and `remove_opt_out` do, it also refuses a ledger folder it can't
     create or write in, such as a missing `~/.aelfrice` in a home you
     can't write in, or a `~/.aelfrice` that is a symbolic link to a path
     that doesn't exist (`setup.check_can_write_in`). A ledger that isn't
@@ -412,9 +416,12 @@ def check_opt_out_ledger(
     if raw is not None:
         _setup.decode_setup_input(opt_out_path, raw)
     hosts = read_host_opt_outs(opt_out_path)
+    hooks = read_opt_outs(opt_out_path)
     if not (
         (adding is not None and adding not in hosts)
         or (removing is not None and removing in hosts)
+        or any(name not in hooks for name in add_hooks)
+        or any(name in hooks for name in remove_hooks)
     ):
         return
     _setup.check_can_write_in(opt_out_path.parent)
