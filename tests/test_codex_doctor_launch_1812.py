@@ -3760,6 +3760,24 @@ def test_opt_out_readers_read_a_ledger_python_can_not_read_as_empty(
 
 
 @pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "data", [b'{"opt_out": [', b"[1,]", b"\xef\xbb\xbf{}"], ids=["cut", "comma", "bom"],
+)
+def test_opt_out_ledger_check_reads_a_ledger_that_is_not_json_as_empty(
+    tmp_path: Path, data: bytes,
+) -> None:
+    """The ledger check reads a ledger that isn't JSON at all as empty, as
+    the readers read it, so setup rewrites it instead of refusing; only
+    JSON that Python's `json` can't read, or a lone surrogate, is
+    refused."""
+    from aelfrice.auto_install import check_opt_out_ledger
+
+    ledger = tmp_path / "opt-out-hooks.json"
+    ledger.write_bytes(data)
+    check_opt_out_ledger(ledger, adding="claude")
+
+
+@pytest.mark.timeout(60)
 @_needs_chmod
 @pytest.mark.parametrize(
     ("ledger", "flags"),
@@ -3860,9 +3878,13 @@ def test_setup_claude_refuses_a_read_only_claude_folder_only_for_a_write(
     elif state == "migration pending":
         monkeypatch.setattr(lifecycle, "uv_migration_pending", lambda: True)
     elif state == "old commit-ingest entry":
-        install_commit_ingest_hook(
-            p["settings"], command="/opt/aelf/bin/aelf-commit-ingest",
-        )
+        # A program that exists, so the prune of entries whose program is
+        # gone leaves the entry, and only the commit-ingest step drops it.
+        program = tmp_path / "bin" / "aelf-commit-ingest"
+        program.parent.mkdir()
+        program.write_text("#!/bin/sh\n", encoding="utf-8")
+        program.chmod(0o755)
+        install_commit_ingest_hook(p["settings"], command=str(program))
     elif state != "current":
         doc = json.loads(p["settings"].read_bytes())
         if state == "one hook missing":
