@@ -3757,3 +3757,44 @@ def test_opt_out_readers_read_a_ledger_python_can_not_read_as_empty(
     ledger = tmp_path / "opt-out-hooks.json"
     ledger.write_bytes(_LEDGER_JSON[case][0])
     assert getattr(auto_install, reader)(ledger) == frozenset()
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize(
+    ("ledger", "flags"),
+    [
+        pytest.param(None, [], id="no ledger, every hook on"),
+        pytest.param('{"opt_out": [], "opt_out_hosts": []}\n', [], id="empty"),
+        pytest.param(
+            _INGEST_OPTED_OUT, ["--no-transcript-ingest"],
+            id="names ingest, ingest off",
+        ),
+    ],
+)
+def test_setup_claude_reads_a_ledger_it_would_not_change_in_a_read_only_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ledger: str | None,
+    flags: list[str],
+) -> None:
+    """Plain setup records each `--no-X` flag in the opt-out ledger and
+    rescinds each hook the ledger names whose flag is on. When the ledger
+    already says what the flags say, setup has no ledger write to make, so
+    a `~/.aelfrice` you can't write in doesn't stop it."""
+    import aelfrice.cli as cli
+
+    p = _setup_files(tmp_path, monkeypatch)
+    if ledger is not None:
+        p["ledger"].write_text(ledger, encoding="utf-8")
+    args = _setup_parse(flags)
+    os.chmod(p["dotdir"], 0o500)
+    try:
+        refusal = cli._setup_input_refusal(args)  # noqa: SLF001
+    finally:
+        _restore_modes(tmp_path)
+    assert refusal is None
+
+
+def _setup_parse(flags: list[str]) -> argparse.Namespace:
+    import aelfrice.cli as cli
+
+    return cli.build_parser().parse_args(["setup", "--scope", "user", *flags])
