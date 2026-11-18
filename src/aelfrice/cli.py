@@ -5650,13 +5650,21 @@ def _unsetup_commit_ingest_git_hook(out: object) -> bool:
 def _setup_claude_preflight(args: argparse.Namespace) -> None:
     """Read the files `aelf setup` for the claude host edits before it
     writes anything, and raise `SetupInputError` for one it can't use
-    (#1812): the settings file, the slash-commands folder, and the opt-out
-    ledger it clears the claude host from and records each `--no-X` flag
-    in (`_sync_setup_opt_outs_and_stamp`)."""
+    (#1812): the settings file and the folder it is written in, the
+    slash-commands folder, and the opt-out ledger it clears the claude
+    host from and records each `--no-X` flag in
+    (`_sync_setup_opt_outs_and_stamp`)."""
     from aelfrice.auto_install import check_opt_out_ledger
-    from aelfrice.setup import check_settings_for_setup, check_slash_commands_dest
+    from aelfrice.setup import (
+        check_can_write_in,
+        check_settings_for_setup,
+        check_slash_commands_dest,
+    )
 
-    check_settings_for_setup(_resolve_settings_path(args))
+    settings_path = _resolve_settings_path(args)
+    check_settings_for_setup(settings_path)
+    # The settings commit writes a temp file beside settings.json.
+    check_can_write_in(settings_path.parent)
     slash_dest = getattr(args, "slash_commands_dir", None)
     check_slash_commands_dest(Path(slash_dest) if slash_dest else None)
     wants = {
