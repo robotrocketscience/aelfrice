@@ -2044,6 +2044,46 @@ def decode_setup_input(path: Path, raw: bytes) -> str:
         ) from exc
 
 
+def json_type_name(value: object) -> str:
+    """Name `value`'s type as JSON names it, for a message about JSON.
+
+    `type(None).__name__` is `NoneType`, which is a Python detail leaking
+    into a refusal the user is meant to act on by editing a `.json` file.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def check_can_create(folder: Path) -> None:
+    """Raise `SetupInputError` unless `mkdir -p` can create `folder`,
+    which doesn't exist: the nearest folder above it that does must be a
+    folder you can write in (#1812)."""
+    probe = folder
+    while not os.path.lexists(probe) and probe.parent != probe:
+        probe = probe.parent
+    if not os.path.isdir(probe):
+        raise SetupInputError(
+            f"{probe} isn't a folder, so setup can't create {folder}",
+        )
+    if not os.access(probe, os.W_OK | os.X_OK):
+        raise SetupInputError(
+            f"{probe} can't be written to (Permission denied), so setup "
+            f"can't create {folder}",
+            "Fix its permissions, and run setup again",
+        )
+
+
 def check_settings_for_setup(path: Path) -> None:
     """Raise `SetupInputError` unless `aelf setup` can edit the settings
     file at `path` (#1812).
