@@ -2513,3 +2513,24 @@ def test_doctor_warns_about_the_bare_cli_after_an_escape(
         and "`hooks.Stop[0].hooks[2]`" in line and " names aelf, " in line
     ]
     assert len(lines) == 1, out
+
+
+# --- files setup reads before it writes --------------------------------------
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("reader", ["read_opt_outs", "read_host_opt_outs"])
+def test_opt_out_readers_read_a_ledger_that_is_not_utf8_as_empty(
+    tmp_path: Path, reader: str,
+) -> None:
+    """The opt-out readers treat a ledger that isn't UTF-8 text as they
+    treat one they can't read: as empty, so no `aelf` command raises on
+    it."""
+    import aelfrice.auto_install as auto_install
+
+    ledger = tmp_path / "opt-out-hooks.json"
+    ledger.write_bytes(
+        b'{"opt_out": ["x"], "opt_out_hosts": ["claude"], "y": "\xff"}',
+    )
+    assert getattr(auto_install, reader)(ledger) == frozenset()
+
