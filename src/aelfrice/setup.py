@@ -2109,6 +2109,42 @@ def check_can_write_in(folder: Path) -> None:
         )
 
 
+def check_slash_commands_dest(dest_dir: Path | None = None) -> None:
+    """Raise `SetupInputError` where `install_slash_commands(dest_dir)`
+    would stop partway (#1812).
+
+    Setup runs this before its first write, so a refusal leaves no part of
+    an install behind. It refuses a commands folder that `mkdir -p` can't
+    create or that isn't a folder, one you can't search, a bundled
+    command's `.md` that is a folder, isn't a regular file, can't be read
+    or isn't UTF-8 text, and a folder setup would write a command in but
+    can't. It compares each `.md` with the bundled text as
+    `install_slash_commands` does, newlines read as `read_text` reads them,
+    so it asks for no write access the install wouldn't use.
+    """
+    target = dest_dir if dest_dir is not None else SLASH_COMMANDS_DIR_DEFAULT
+    if not os.path.lexists(target) or not os.path.isdir(target):
+        check_can_write_in(target)
+        return
+    if not os.access(target, os.X_OK):
+        raise SetupInputError(
+            f"{target} can't be read (Permission denied)",
+            "Fix its permissions, and run setup again",
+        )
+    writes = False
+    for name, text in sorted(_bundled_slash_files().items()):
+        dest_file = target / name
+        raw = read_setup_input(dest_file)
+        if raw is None:
+            writes = True
+            continue
+        existing = decode_setup_input(dest_file, raw)
+        if existing.replace("\r\n", "\n").replace("\r", "\n") != text:
+            writes = True
+    if writes:
+        check_can_write_in(target)
+
+
 #: The events whose entries `aelf setup` reads or writes in the Claude
 #: settings (#1812).
 _SETUP_EVENTS: Final[tuple[str, ...]] = tuple(dict.fromkeys((
