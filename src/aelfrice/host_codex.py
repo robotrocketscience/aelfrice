@@ -71,7 +71,7 @@ from aelfrice.setup import (
     check_can_create,
     check_settings_for_setup,
     decode_setup_input,
-    json_type_name,
+    json_type_name as _json_type_name,
     resolve_commit_ingest_command,
     resolve_hook_command,
     resolve_pre_issue_guard_command,
@@ -932,7 +932,7 @@ def _plan_install(
     else:
         return refuse(
             "existing hooks.json has a non-object `hooks` value "
-            f"({json_type_name(hooks_obj)}); it is not ours to reshape — "
+            f"({_json_type_name(hooks_obj)}); it is not ours to reshape — "
             "fix it, or re-run with --force to replace it"
         )
 
@@ -943,7 +943,7 @@ def _plan_install(
             if current is not _ABSENT and not isinstance(current, list):
                 return refuse(
                     f"existing hooks.json has a non-list value for the "
-                    f"`{event}` event ({json_type_name(current)}); it is "
+                    f"`{event}` event ({_json_type_name(current)}); it is "
                     "not ours to reshape — fix it, or re-run with --force "
                     "to replace it"
                 )
