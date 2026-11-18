@@ -182,7 +182,7 @@ def _default_codex_home(*, for_setup: bool) -> Path:
     """The Codex home when `$CODEX_HOME` is unset or empty.
 
     Codex takes the folder `_user_home` gives, adds `.codex`, expands a
-    leading `~` (`_codex_expand_tilde`), joins a relative result to the
+    leading `~/` (`_codex_expand_tilde`), joins a relative result to the
     folder you start Codex in, and removes `.` and `..` (`find_codex_home`
     in codex-rs/utils/home-dir/src/lib.rs, lines 52-61, and
     `AbsolutePathBuf::from_absolute_path`, lines 59-63 of
@@ -1292,10 +1292,11 @@ def resolve_agents_skills_dir() -> Path:
     path (`resolve_skill_roots` in
     codex-rs/ext/skills/src/host_roots.rs, lines 70-71 and 159-165, and
     `AbsolutePathBuf::from_absolute_path_checked`, lines 65-79 of
-    codex-rs/utils/absolute-path/src/lib.rs). Codex expands a leading `~`
+    codex-rs/utils/absolute-path/src/lib.rs). Codex expands a leading `~/`
     first, but the folder it expands to starts with `~` too, so it is never
-    absolute. Then this raises `CodexHomeError`, and setup, unsetup and
-    doctor touch no skills folder (#1812).
+    absolute, and it leaves any other path that starts with `~` as it is.
+    Then this raises `CodexHomeError`, and setup, unsetup and doctor touch
+    no skills folder (#1812).
     """
     if os.name == "nt":  # pragma: no cover - Windows
         home_nt = _user_home()
