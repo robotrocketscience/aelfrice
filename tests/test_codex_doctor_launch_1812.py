@@ -2528,7 +2528,7 @@ _needs_chmod = pytest.mark.skipif(
     not _CAN_CHMOD, reason="needs POSIX permissions and a user that isn't root",
 )
 #: Claude settings that aren't UTF-8: Latin-1 text, and UTF-16.
-_LATIN1_SETTINGS: Final[bytes] = b'{"hooks": {}, "x": "caf\xe9"}'
+_LATIN1_SETTINGS: Final[bytes] = b'{"hooks": {}, "x": "\xe9"}'
 _LATIN1_AT: Final[int] = _LATIN1_SETTINGS.index(b"\xe9")
 _UTF16_SETTINGS: Final[bytes] = '{"hooks": {}}'.encode("utf-16")
 #: An opt-out ledger that isn't UTF-8, and one that opts the claude host out.
@@ -2654,8 +2654,8 @@ def _codex_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
         )
     if name == "skill latin-1":
         _skills_installed(p)
-        p["md"].write_bytes(b"caf\xe9 aelfrice")
-        return f"{p['md']} isn't UTF-8 text: byte 3 is 0xe9", _FIX_OR_MOVE
+        p["md"].write_bytes(b"x\xe9 aelfrice")
+        return f"{p['md']} isn't UTF-8 text: byte 1 is 0xe9", _FIX_OR_MOVE
     if name == "skill utf-16":
         _skills_installed(p)
         p["md"].write_bytes(b"\xff\xfe junk")
