@@ -3061,6 +3061,27 @@ def test_opt_out_readers_read_a_ledger_that_is_not_utf8_as_empty(
     assert getattr(auto_install, reader)(ledger) == frozenset()
 
 
+#: Claude settings whose shape setup can't edit, with the cause it names.
+_SHAPE_STATES: Final[dict[str, tuple[bytes, str]]] = {
+    "hooks array": (b'{"hooks": []}', "has a non-object `hooks` value (array)"),
+    "hooks repeated": (
+        b'{"hooks": {}, "hooks": []}', "has a non-object `hooks` value (array)",
+    ),
+    "event object": (
+        b'{"hooks": {"UserPromptSubmit": {}}}',
+        "has a non-list value for the `UserPromptSubmit` event (object)",
+    ),
+    "event string": (
+        b'{"hooks": {"Stop": "aelf-hook"}}',
+        "has a non-list value for the `Stop` event (string)",
+    ),
+    "entry number": (
+        b'{"hooks": {"SessionStart": [1]}}',
+        "has a non-object entry at `hooks.SessionStart[0]` (number)",
+    ),
+}
+
+
 def _claude_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
     """Apply the Claude setup state `name`, and return the cause and the
     remedy setup names for it."""
@@ -3096,6 +3117,10 @@ def _claude_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
     if name == "folder":
         p["settings"].mkdir(parents=True)
         return f"{p['settings']} is a folder, not a file", _FIX_OR_MOVE
+    if name in _SHAPE_STATES:
+        data, cause = _SHAPE_STATES[name]
+        _write_settings(p, data)
+        return f"{p['settings']} {cause}", _FIX_OR_MOVE
     if name == "unreadable":
         _write_settings(p, b"{}")
         os.chmod(p["settings"], 0)
@@ -3137,7 +3162,8 @@ _CLAUDE_STATES: Final[tuple[str, ...]] = (
     "bom", "bom, claude opted out", "latin-1", "utf-16", "array",
     "not json", "folder", "unreadable", "claude unsearchable",
     "claude file", "fifo", "ledger latin-1", "aelfrice file",
-    "aelfrice read-only",
+    "aelfrice read-only", "hooks array", "hooks repeated", "event object",
+    "event string", "entry number",
 )
 
 
@@ -3187,3 +3213,30 @@ def test_setup_claude_refuses_a_file_it_can_not_use_and_writes_nothing(
     assert err == f"aelf setup: {cause}; nothing was written. {remedy}\n", err
     assert started == []
     assert after == before
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b'{"hooks": null}', id="hooks null"),
+        pytest.param(b'{"hooks": {"Stop": null}}', id="event null"),
+        pytest.param(b'{"hooks": {"Notification": "x"}}', id="other event"),
+        pytest.param(
+            b'{"hooks": {"Notification": [1, "x"]}}', id="other event entries",
+        ),
+        pytest.param(b'{"hooks": {"PreCompact": [{"hooks": "x"}]}}', id="inner"),
+        pytest.param(b'{"hooks": [], "hooks": {}}', id="last hooks object"),
+    ],
+)
+def test_setup_reads_claude_settings_shapes_it_can_edit(
+    tmp_path: Path, data: bytes,
+) -> None:
+    """The settings check refuses only a shape setup would stop on: a
+    `null` it fills in, an event setup doesn't edit, and a shape inside an
+    entry pass, and the last of two `hooks` keys is the one read."""
+    from aelfrice.setup import check_settings_for_setup
+
+    path = tmp_path / "settings.json"
+    path.write_bytes(data)
+    assert check_settings_for_setup(path) == json.loads(data)

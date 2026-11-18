@@ -2084,19 +2084,70 @@ def check_can_create(folder: Path) -> None:
         )
 
 
-def check_settings_for_setup(path: Path) -> None:
+#: The events whose entries `aelf setup` reads or writes in the Claude
+#: settings (#1812).
+_SETUP_EVENTS: Final[tuple[str, ...]] = tuple(dict.fromkeys((
+    _EVENT_KEY,
+    _PRE_COMPACT_EVENT_KEY,
+    *TRANSCRIPT_INGEST_EVENTS,
+    SESSION_START_EVENT_KEY,
+    STOP_EVENT_KEY,
+    COMMIT_INGEST_EVENT,
+    CLAUDE_MEMORY_MIRROR_EVENT,
+    SEARCH_TOOL_EVENT,
+    AGENT_CONTEXT_EVENT,
+    PRE_ISSUE_GUARD_EVENT,
+)))
+
+
+def _settings_shape_refusal(path: Path, data: dict[str, object]) -> str | None:
+    """Why setup can't edit the settings document `data` read from `path`,
+    or None (#1812).
+
+    Setup edits only the documented `{"hooks": {"<Event>": [{...}]}}`
+    shape: a `hooks` value that is an object, and for each event it
+    edits, a list of objects. A missing or `null` value is one setup fills
+    in. As with `json.loads`, the last of two `hooks` keys is the one read.
+    """
+    hooks = data.get(_HOOKS_KEY)
+    if hooks is None:
+        return None
+    if not isinstance(hooks, dict):
+        return f"{path} has a non-object `hooks` value ({json_type_name(hooks)})"
+    events = cast(dict[str, object], hooks)
+    for event in _SETUP_EVENTS:
+        entries = events.get(event)
+        if entries is None:
+            continue
+        if not isinstance(entries, list):
+            return (
+                f"{path} has a non-list value for the `{event}` event "
+                f"({json_type_name(entries)})"
+            )
+        for index, entry in enumerate(cast(list[object], entries)):
+            if not isinstance(entry, dict):
+                return (
+                    f"{path} has a non-object entry at `hooks.{event}[{index}]` "
+                    f"({json_type_name(entry)})"
+                )
+    return None
+
+
+def check_settings_for_setup(path: Path) -> dict[str, object] | None:
     """Raise `SetupInputError` unless `aelf setup` can edit the settings
-    file at `path` (#1812).
+    file at `path`, and return its document, or None for a missing or empty
+    file (#1812).
 
     A missing or empty file is fine. Setup refuses a file it can't read,
-    one that isn't UTF-8 text, one that isn't JSON, and one whose top level
-    isn't an object. It also refuses a file that starts with a UTF-8 byte
-    order mark (BOM), and names the BOM, instead of removing it: the
-    rewrite would drop it without telling you.
+    one that isn't UTF-8 text, one that isn't JSON, one whose top level
+    isn't an object, and one whose shape it can't edit (see
+    `_settings_shape_refusal`). It also refuses a file that starts with a
+    UTF-8 byte order mark (BOM), and names the BOM, instead of removing it:
+    the rewrite would drop it without telling you.
     """
     raw = read_setup_input(path)
     if raw is None:
-        return
+        return None
     if raw.startswith(_UTF8_BOM):
         raise SetupInputError(
             f"{path} starts with a UTF-8 byte order mark (BOM)",
@@ -2104,7 +2155,7 @@ def check_settings_for_setup(path: Path) -> None:
         )
     text = decode_setup_input(path, raw)
     if not text.strip():
-        return
+        return None
     try:
         parsed: object = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -2113,6 +2164,11 @@ def check_settings_for_setup(path: Path) -> None:
         raise SetupInputError(
             f"{path} doesn't hold a JSON object at the top level",
         )
+    data = cast(dict[str, object], parsed)
+    refusal = _settings_shape_refusal(path, data)
+    if refusal is not None:
+        raise SetupInputError(refusal)
+    return data
 
 
 def _settings_fingerprint(path: Path) -> str:
