@@ -2707,15 +2707,24 @@ def _codex_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
             f"{p['home']} can't be written to (Permission denied), so setup "
             f"can't create {p['skills']}", _FIX_PERMS,
         )
+    if name in _SHARED_SETTINGS_STATES:
+        return _claude_state(name, p)
     raise AssertionError(name)
 
 
 #: Codex setup states that don't depend on the skills, and those that do,
 #: which only `--codex-skills` reads.
+#: Claude settings states that both halves of setup refuse (2026-11-18
+#: ruling), applied by `_claude_state`.
+_SHARED_SETTINGS_STATES: Final[tuple[str, ...]] = (
+    "bom", "not json", "array", "folder", "claude file", "fifo",
+    "hooks array", "hooks repeated", "event object", "event string",
+    "entry number",
+)
 _CODEX_STATES: Final[tuple[str, ...]] = (
     "settings latin-1", "settings utf-16", "claude unsearchable",
     "ledger latin-1", "ledger folder", "aelfrice file",
-    "aelfrice unsearchable", "aelfrice read-only",
+    "aelfrice unsearchable", "aelfrice read-only", *_SHARED_SETTINGS_STATES,
 )
 _CODEX_SKILL_STATES: Final[tuple[str, ...]] = (
     "skill latin-1", "skill utf-16", "skills file", "agents file",
@@ -2866,24 +2875,28 @@ def test_setup_codex_reads_a_ledger_that_names_claude_in_a_read_only_folder(
 
 
 @pytest.mark.timeout(60)
-@pytest.mark.parametrize("state", ["folder", "claude file", "not json", "bom"])
-def test_setup_codex_reads_claude_settings_that_hold_no_hooks_as_none(
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param(b"", id="empty"),
+        pytest.param(b'{"hooks": {}}', id="no hooks"),
+        pytest.param(
+            b'{"hooks": {"Stop": [{"hooks": [{"type": "command", '
+            b'"command": "/opt/other"}]}]}}', id="foreign hook",
+        ),
+    ],
+)
+def test_setup_codex_reads_claude_settings_without_aelfrice_hooks_as_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str], state: str,
+    capsys: pytest.CaptureFixture[str], data: bytes | None,
 ) -> None:
-    """A folder where the Claude settings go, a `~/.claude` that is a file,
-    and settings that aren't JSON wire no Claude hook, so setup installs
-    and opts the claude host out of auto-install, as before #1812."""
+    """A missing or empty settings file, and one that holds an object with
+    no aelfrice hook, wire no Claude hook, so setup installs and opts the
+    claude host out of auto-install."""
     p = _setup_files(tmp_path, monkeypatch)
-    if state == "folder":
-        p["settings"].mkdir(parents=True)
-    elif state == "claude file":
-        p["claude"].write_text("x", encoding="utf-8")
-    else:
-        _write_settings(
-            p, b'{"hooks":' if state == "not json"
-            else b'\xef\xbb\xbf{"hooks": {}}',
-        )
+    if data is not None:
+        _write_settings(p, data)
     rc = _run_codex_setup(p, codex_skills=False)
     err = capsys.readouterr().err
     assert rc == 0, err
