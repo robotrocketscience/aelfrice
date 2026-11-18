@@ -67,6 +67,9 @@ from aelfrice.launcher import (
 )
 from aelfrice.setup import (
     SettingsScope,
+    SetupInputError,
+    decode_setup_input,
+    read_setup_input,
     resolve_commit_ingest_command,
     resolve_hook_command,
     resolve_pre_issue_guard_command,
@@ -653,9 +656,15 @@ def claude_host_has_aelfrice_hooks(
     Used by `aelf setup --host codex` (#1053) to distinguish a
     Codex-only machine (write the claude auto-install opt-out) from a
     dual-host one (leave auto-install alone). Shape-tolerant and
-    fail-closed: a missing or unreadable settings file counts as "no
-    hooks" — the worst case of a false negative is an opt-out the user
-    can undo with one explicit `aelf setup`.
+    fail-closed: a missing settings file, a folder or other non-file in
+    its place, and one that isn't JSON count as "no hooks". The worst
+    case of a false negative is an opt-out the user can undo with one
+    explicit `aelf setup`.
+
+    #1812: a settings file that is there but can't be read, such as one
+    in a `~/.claude` you can't search, and one that isn't UTF-8 text raise
+    `SetupInputError` instead, so setup refuses and writes nothing rather
+    than read a Claude install it can't see as none.
 
     #1412: this is the third consumer of the ownership-key derivation, and
     the one whose failure is silent. On Windows the old basename never
@@ -666,11 +675,20 @@ def claude_host_has_aelfrice_hooks(
     keying as the fragment before the space; the probe now reads every
     candidate rather than the first.
     """
-    if not settings_path.is_file():
+    try:
+        st = os.stat(settings_path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        st = None  # `read_setup_input` names the file and the cause.
+    if st is not None and not stat.S_ISREG(st.st_mode):
+        return False
+    raw = read_setup_input(settings_path)
+    if raw is None:
         return False
     try:
-        parsed = json.loads(settings_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        parsed = json.loads(decode_setup_input(settings_path, raw))
+    except json.JSONDecodeError:
         return False
     if not isinstance(parsed, dict):
         return False
@@ -1633,6 +1651,83 @@ def onboard_skill_installed(dest_dir: Path | None = None) -> bool:
         return False
 
 
+def _existing_skill_text(dest_file: Path) -> str | None:
+    """The text of an installed SKILL.md, or None when it isn't a file or
+    can't be read. Raises `SetupInputError` naming the first byte that
+    isn't UTF-8, where comparing it with the bundled text would raise
+    UnicodeDecodeError (#1812)."""
+    if not os.path.isfile(dest_file):
+        return None
+    try:
+        raw = dest_file.read_bytes()
+    except OSError:
+        return None
+    return decode_setup_input(dest_file, raw)
+
+
+def _check_can_create(folder: Path) -> None:
+    """Raise `SetupInputError` unless `mkdir -p` can create `folder`,
+    which doesn't exist: the nearest folder above it that does must be a
+    folder you can write in (#1812)."""
+    probe = folder
+    while not os.path.lexists(probe) and probe.parent != probe:
+        probe = probe.parent
+    if not os.path.isdir(probe):
+        raise SetupInputError(
+            f"{probe} isn't a folder, so setup can't create {folder}",
+        )
+    if not os.access(probe, os.W_OK | os.X_OK):
+        raise SetupInputError(
+            f"{probe} can't be written to (Permission denied), so setup "
+            f"can't create {folder}",
+            "Fix its permissions, and run setup again",
+        )
+
+
+def check_codex_skills_dest(dest_dir: Path) -> None:
+    """Raise `SetupInputError` where `install_codex_skills(dest_dir)` would
+    stop partway, or read a SKILL.md it can't compare (#1812).
+
+    Setup runs this before it writes hooks.json, so a refusal leaves no
+    part of an install behind. It refuses a skills folder that isn't a
+    folder or can't be created, one you can't search, an `aelf-*` skill
+    path that isn't a folder, a SKILL.md that is a folder or isn't UTF-8
+    text, and a folder setup would write a skill in but can't. It reads
+    the SKILL.md files and the ownership marker as `install_codex_skills`
+    does, so it refuses no skill the install would skip or leave as it is.
+    """
+    if not os.path.lexists(dest_dir):
+        _check_can_create(dest_dir)
+        return
+    if not os.path.isdir(dest_dir):
+        raise SetupInputError(f"{dest_dir} isn't a folder")
+    if not os.access(dest_dir, os.X_OK):
+        raise SetupInputError(
+            f"{dest_dir} can't be read (Permission denied)",
+            "Fix its permissions, and run setup again",
+        )
+    for skill_name, text in sorted(_bundled_codex_skills().items()):
+        skill_dir = dest_dir / skill_name
+        dest_file = skill_dir / _SKILL_FILENAME
+        if not os.path.lexists(skill_dir):
+            write_in = dest_dir
+        elif not os.path.isdir(skill_dir):
+            raise SetupInputError(f"{skill_dir} isn't a folder")
+        elif os.path.isdir(dest_file):
+            raise SetupInputError(f"{dest_file} is a folder, not a file")
+        elif _existing_skill_text(dest_file) == text or (
+            os.path.isfile(dest_file) and not _is_owned_skill_dir(skill_dir)
+        ):
+            continue
+        else:
+            write_in = skill_dir
+        if not os.access(write_in, os.W_OK | os.X_OK):
+            raise SetupInputError(
+                f"{write_in} can't be written to (Permission denied)",
+                "Fix its permissions, and run setup again",
+            )
+
+
 def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
     """Write every bundled command as a Codex skill under ``dest_dir``.
 
@@ -1661,14 +1756,13 @@ def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
         skill_dir = target / skill_name
         dest_file = skill_dir / _SKILL_FILENAME
         if dest_file.is_file():
-            try:
-                if dest_file.read_text(encoding="utf-8") == text:
-                    already.append(skill_name)
-                    continue
-            except OSError:
-                # Unreadable existing file: ownership cannot be verified
-                # either, so the marker gate below fails closed (skip).
-                pass
+            # An unreadable existing file reads as None: ownership cannot
+            # be verified either, so the marker gate below fails closed
+            # (skip). One that isn't UTF-8 raises `SetupInputError`, which
+            # `check_codex_skills_dest` raises before setup writes (#1812).
+            if _existing_skill_text(dest_file) == text:
+                already.append(skill_name)
+                continue
             # Bytes differ: the replace path is marker-gated exactly
             # like prune/remove (#1136) — a colliding skill without our
             # marker is someone else's file and is never overwritten.
