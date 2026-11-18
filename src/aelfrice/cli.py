@@ -5846,7 +5846,7 @@ def _reconcile_claude_settings(
         # No manifest budget for this one: `--rebuilder` is opt-in, and
         # the bundled manifest ships default-on hooks plus commit_ingest,
         # which is default-off since #1698. It therefore keeps
-        # the pre-#1161 behaviour — a bare `--timeout` or no timeout key at
+        # the pre-#1161 behaviour: a bare `--timeout` or no timeout key at
         # all. Adding a row here would silently widen the auto-install
         # surface to a hook the operator opted into explicitly.
         pc_result = install_pre_compact_hook(
