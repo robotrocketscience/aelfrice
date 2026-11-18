@@ -3798,3 +3798,142 @@ def _setup_parse(flags: list[str]) -> argparse.Namespace:
     import aelfrice.cli as cli
 
     return cli.build_parser().parse_args(["setup", "--scope", "user", *flags])
+
+
+def _wire_claude(p: dict[str, Path], args: argparse.Namespace) -> None:
+    """Write the Claude settings and slash commands as `aelf setup` with
+    `args` leaves them, by running its settings edits in a transaction."""
+    import aelfrice.cli as cli
+    from aelfrice.setup import install_slash_commands, settings_transaction
+
+    scope = cli._effective_scope(args)  # noqa: SLF001
+    command = cli.resolve_hook_command(scope)
+    p["claude"].mkdir(parents=True, exist_ok=True)
+    with settings_transaction(p["settings"]):
+        cli._reconcile_claude_settings(  # noqa: SLF001
+            args, p["settings"], scope, command,
+            cli._setup_timeouts(args), io.StringIO(),  # noqa: SLF001
+            lambda: None,
+        )
+    install_slash_commands(p["slash"])
+
+
+def _contents(root: Path) -> dict[str, bytes | None]:
+    return {path: data for path, (_mode, data) in _tree(root).items()}
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize(
+    ("state", "refused"),
+    [
+        pytest.param("current", False, id="current"),
+        pytest.param("current, no lock file", False, id="current, no lock"),
+        pytest.param("old commit-ingest entry", True, id="old commit ingest"),
+        pytest.param("one hook missing", True, id="one hook missing"),
+        pytest.param("statusline missing", True, id="statusline missing"),
+        pytest.param("migration pending", True, id="migration pending"),
+    ],
+)
+def test_setup_claude_refuses_a_read_only_claude_folder_only_for_a_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
+    refused: bool,
+) -> None:
+    """Plain setup refuses a `~/.claude` you can't write in only when it
+    would change the settings file there, as its settings edits, run
+    without a write, show. Settings that are current pass, with or
+    without the lock file setup takes; an old commit-ingest entry setup
+    removes, a hook it adds, a statusline it adds, and a uv migration it
+    would start first, which can move the hook programs, are refused. The
+    check writes nothing."""
+    import aelfrice.cli as cli
+    from aelfrice import lifecycle
+    from aelfrice.setup import install_commit_ingest_hook
+
+    p = _setup_files(tmp_path, monkeypatch)
+    args = _setup_parse([])
+    _wire_claude(p, args)
+    lock = p["settings"].with_name("settings.json.lock")
+    assert lock.is_file()
+    if state == "current, no lock file":
+        lock.unlink()
+    elif state == "migration pending":
+        monkeypatch.setattr(lifecycle, "uv_migration_pending", lambda: True)
+    elif state == "old commit-ingest entry":
+        install_commit_ingest_hook(
+            p["settings"], command="/opt/aelf/bin/aelf-commit-ingest",
+        )
+    elif state != "current":
+        doc = json.loads(p["settings"].read_bytes())
+        if state == "one hook missing":
+            del doc["hooks"]["Stop"]
+        else:
+            del doc["statusLine"]
+        p["settings"].write_text(json.dumps(doc), encoding="utf-8")
+    before = _contents(tmp_path)
+    os.chmod(p["claude"], 0o500)
+    try:
+        refusal = cli._setup_input_refusal(args)  # noqa: SLF001
+    finally:
+        _restore_modes(tmp_path)
+    if refused:
+        assert refusal == (
+            f"aelf setup: {p['claude']} can't be written to (Permission "
+            f"denied); nothing was written. {_FIX_PERMS}"
+        ), refusal
+    else:
+        assert refusal is None, refusal
+    assert _contents(tmp_path) == before
+
+
+@pytest.mark.timeout(60)
+def test_setup_claude_settings_dry_run_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run of setup's settings edits that tells whether setup would
+    write the settings file takes no lock and writes nothing, in a folder
+    you can write in too."""
+    import aelfrice.cli as cli
+
+    p = _setup_files(tmp_path, monkeypatch)
+    _write_settings(p, b"{}")
+    before = _contents(tmp_path)
+    changes = cli._claude_settings_would_change(  # noqa: SLF001
+        _setup_parse([]), p["settings"],
+    )
+    assert changes is True
+    assert _contents(tmp_path) == before
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("sentinel", "context", "uv", "pending"),
+    [
+        pytest.param(False, "pipx", True, True, id="pipx, uv on PATH"),
+        pytest.param(True, "pipx", True, False, id="sentinel"),
+        pytest.param(False, "uv_tool", True, False, id="uv tool"),
+        pytest.param(False, "pipx", False, False, id="no uv"),
+    ],
+)
+def test_uv_migration_pending_follows_the_migration_short_circuits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sentinel: bool,
+    context: str, uv: bool, pending: bool,
+) -> None:
+    """Setup's check for a pending uv migration takes the first three
+    steps of `maybe_migrate_to_uv`: a sentinel, a uv tool install, and no
+    `uv` on `PATH` each mean no migration."""
+    from aelfrice import lifecycle
+
+    path = tmp_path / "migrated-to-uv"
+    if sentinel:
+        path.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(lifecycle, "MIGRATED_TO_UV_SENTINEL", path)
+    monkeypatch.setattr(
+        lifecycle, "upgrade_advice",
+        lambda: argparse.Namespace(context=context),
+    )
+    monkeypatch.setattr(
+        lifecycle.shutil, "which",
+        lambda name: "/opt/bin/uv" if uv and name == "uv" else None,
+    )
+    assert lifecycle.uv_migration_pending() is pending

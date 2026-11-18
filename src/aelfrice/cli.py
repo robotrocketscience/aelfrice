@@ -5647,6 +5647,41 @@ def _unsetup_commit_ingest_git_hook(out: object) -> bool:
     return True
 
 
+def _claude_settings_would_change(
+    args: argparse.Namespace, path: Path,
+) -> bool:
+    """Whether `aelf setup` for the claude host would write the settings
+    file at `path` (#1812).
+
+    It runs every settings edit setup makes in a `settings_dry_run`, which
+    writes nothing. In place of the commit-ingest git hook it runs only
+    the removal of the old commit-ingest entry from `path`, the one part
+    of that step that edits this file. A uv migration that setup would
+    start first counts as a change, because it can move the hook programs
+    the settings name.
+    """
+    import io
+
+    from aelfrice import lifecycle
+    from aelfrice.setup import settings_dry_run
+
+    if lifecycle.uv_migration_pending():
+        return True
+    scope = _effective_scope(args)
+    command = (
+        args.command if args.command is not None
+        else resolve_hook_command(scope)
+    )
+    with settings_dry_run(path) as txn:
+        _reconcile_claude_settings(
+            args, path, scope, command, _setup_timeouts(args), io.StringIO(),
+            lambda: uninstall_commit_ingest_hook(
+                path, command_basename=COMMIT_INGEST_SCRIPT_NAME,
+            ),
+        )
+    return txn.dirty
+
+
 def _setup_claude_preflight(args: argparse.Namespace) -> None:
     """Read the files `aelf setup` for the claude host edits before it
     writes anything, and raise `SetupInputError` for one it can't use
@@ -5663,8 +5698,18 @@ def _setup_claude_preflight(args: argparse.Namespace) -> None:
 
     settings_path = _resolve_settings_path(args)
     check_settings_for_setup(settings_path)
-    # The settings commit writes a temp file beside settings.json.
-    check_can_write_in(settings_path.parent)
+    # The settings commit writes a temp file beside settings.json. A
+    # folder you can't write in is refused only when setup would change
+    # the file, so a read-only `~/.claude` whose settings are current
+    # passes. A lock file setup can't create there is no write: the
+    # commit runs unlocked (`exclusive_file_lock`).
+    folder = settings_path.parent
+    if not (
+        os.path.isdir(folder)
+        and not os.access(folder, os.W_OK | os.X_OK)
+        and not _claude_settings_would_change(args, settings_path)
+    ):
+        check_can_write_in(folder)
     slash_dest = getattr(args, "slash_commands_dir", None)
     check_slash_commands_dest(Path(slash_dest) if slash_dest else None)
     wants = {
