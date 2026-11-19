@@ -233,6 +233,23 @@ def _resolve_script(script_name: str, scope: SettingsScope) -> str:
     # stray `aelf-hook.exe` in whatever directory `aelf setup` was run from
     # could be resolved and pinned into settings.json as an absolute path.
     path_hook = launcher.which_on_path(script_name)
+    command = _pick_script(script_name, scope, venv_hook, path_hook)
+    prediction = _active_programs_prediction()
+    if prediction is None:
+        return command
+    after = _pick_script(
+        script_name, scope, venv_hook,
+        launcher.which_on_path(script_name, installed_in=prediction.folder),
+    )
+    if after != command:
+        prediction.moved.setdefault(script_name, (command, after))
+    return after
+
+
+def _pick_script(
+    script_name: str, scope: SettingsScope,
+    venv_hook: Path | None, path_hook: Path | None,
+) -> str:
     if scope == "project":
         chosen = venv_hook or path_hook
     else:
@@ -240,6 +257,52 @@ def _resolve_script(script_name: str, scope: SettingsScope) -> str:
     if chosen is None:
         return script_name
     return str(chosen)
+
+
+# #1812: the programs folder `programs_installed_in` predicts, per thread,
+# as `_TXN_STATE` holds the open settings transaction.
+_PROGRAMS_STATE = threading.local()
+
+
+def _active_programs_prediction() -> _ProgramsInstalledIn | None:
+    return cast(
+        "_ProgramsInstalledIn | None",
+        getattr(_PROGRAMS_STATE, "prediction", None),
+    )
+
+
+class _ProgramsInstalledIn:
+    """The context manager `programs_installed_in` returns (#1812).
+
+    `moved` maps each program whose command the prediction changes to
+    its command now and its command after the install, in the order
+    setup resolved them.
+    """
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        self.moved: dict[str, tuple[str, str]] = {}
+
+    def __enter__(self) -> _ProgramsInstalledIn:
+        if _active_programs_prediction() is not None:
+            raise RuntimeError("programs_installed_in does not nest")
+        _PROGRAMS_STATE.prediction = self
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        _PROGRAMS_STATE.prediction = None
+
+
+def programs_installed_in(folder: Path) -> _ProgramsInstalledIn:
+    """Resolve setup's program commands, inside the block, as they will
+    resolve once `uv tool install` has written every aelfrice program in
+    `folder` (#1812).
+
+    A uv migration installs every program the package declares, and setup
+    resolves only those, so each one setup asks for counts as present in
+    `folder`. The block changes nothing on disk.
+    """
+    return _ProgramsInstalledIn(folder)
 
 
 def detect_default_scope(cwd: Path | None = None) -> SettingsScope:
