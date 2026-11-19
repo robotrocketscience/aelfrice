@@ -4614,9 +4614,10 @@ def test_pending_uv_migration_reads_a_marker_it_can_not_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
 ) -> None:
     """A migration marker that can't be checked, under a folder you can't
-    search, raises, so setup can name it. A file where a folder goes and
-    a symbolic link loop read as no marker, as `Path.exists` reads them on
-    Python 3.12 and 3.13, so a migration is pending (#1812)."""
+    search, raises, so setup can name it, also where `Path.exists` would
+    read it as missing. A file where a folder goes and a symbolic link
+    loop read as no marker, as `Path.exists` reads them on Python 3.12 and
+    3.13, so a migration is pending (#1812)."""
     from aelfrice import lifecycle
 
     if state == "unsearchable" and not _CAN_CHMOD:
@@ -4646,6 +4647,11 @@ def test_pending_uv_migration_reads_a_marker_it_can_not_check(
     try:
         with pytest.raises(PermissionError):
             lifecycle.pending_uv_migration()
+        # As on a Python whose `Path.exists` reads every error as False.
+        with monkeypatch.context() as m:
+            m.setattr(Path, "exists", lambda self, **_k: os.path.exists(self))
+            with pytest.raises(PermissionError):
+                lifecycle.pending_uv_migration()
     finally:
         _restore_modes(tmp_path)
 
