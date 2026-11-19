@@ -157,6 +157,7 @@ from aelfrice.lifecycle import (
     read_cache as _read_update_cache,
     uninstall as _lifecycle_uninstall,
     upgrade_advice,
+    UvToolBinDir,
 )
 from aelfrice.project_warm import (
     DEFAULT_DEBOUNCE_SECONDS as _PROJECT_WARM_DEBOUNCE,
@@ -5694,24 +5695,34 @@ def _claude_settings_change_after_install(
     return dirty, prediction.moved
 
 
-def _uv_migration_programs_folder() -> Path | None:
-    """The folder a uv migration that `aelf setup` would run now installs
-    the hook programs in, or None (#1812).
+class _UvMigrationSkipped(Exception):
+    """`aelf setup` skips a pending uv migration and stops, writing
+    nothing, and exits 0 with `notice` (#1812): the selected scope's
+    settings folder can't be written, uv can't say where the migration
+    would put the hook programs, and the settings need no other change.
+    The migration runs on a later setup."""
 
-    None means no migration is pending (`lifecycle.pending_uv_migration`)
-    or setup can't predict the folder: `uv tool dir --bin` failed, timed
-    out, or printed something other than one absolute path
+    def __init__(self, notice: str) -> None:
+        super().__init__(notice)
+        self.notice = notice
+
+
+def _uv_migration_programs_folder() -> UvToolBinDir | None:
+    """Where a uv migration that `aelf setup` would run now installs the
+    hook programs, or None when no migration is pending
+    (`lifecycle.pending_uv_migration`) (#1812).
+
+    The answer's `path` is None when setup can't tell, and its `reason`
+    says why: `uv tool dir --bin` failed, timed out, couldn't start, or
+    printed something other than one absolute path
     (`lifecycle.uv_tool_bin_dir`), or the platform is Windows, where
-    setup doesn't predict a `PATH` search. Setup then decides on the
-    programs on `PATH` now and checks again after the migration
-    (`_settings_change_after_migration`). Raises `SetupInputError` when
-    the migration marker can't be checked.
+    setup doesn't predict a `PATH` search. Setup then skips the migration
+    (`_UvMigrationSkipped`). Raises `SetupInputError` when the migration
+    marker can't be checked.
     """
     from aelfrice import lifecycle
     from aelfrice.setup import SetupInputError, unreadable_cause
 
-    if sys.platform == "win32":
-        return None
     try:
         uv_bin = lifecycle.pending_uv_migration()
     except OSError as exc:
@@ -5722,12 +5733,23 @@ def _uv_migration_programs_folder() -> Path | None:
         raise SetupInputError(unreadable_cause(marker, exc)) from exc
     if uv_bin is None:
         return None
-    return lifecycle.uv_tool_bin_dir(uv_bin).path
+    if not _setup_predicts_path_search():
+        return lifecycle.UvToolBinDir(
+            None, "setup doesn't predict a program search on Windows",
+        )
+    return lifecycle.uv_tool_bin_dir(uv_bin)
+
+
+def _setup_predicts_path_search() -> bool:
+    """Whether setup predicts the `PATH` search a uv migration changes:
+    not on Windows, where a program's file name takes a `PATHEXT` suffix
+    (#1812)."""
+    return sys.platform != "win32"
 
 
 def _check_claude_settings_folder(
     args: argparse.Namespace, settings_path: Path,
-) -> None:
+) -> str | None:
     """Raise `SetupInputError` when `aelf setup` would write the settings
     file at `settings_path` in a folder it can't write in (#1812).
 
@@ -5737,27 +5759,40 @@ def _check_claude_settings_folder(
     file setup can't create there is no write: the commit runs unlocked
     (`exclusive_file_lock`). Setup runs a pending uv migration before it
     writes the settings, so the edits are run with the hook programs
-    where the migration would put them, when setup can predict that.
+    where the migration would put them. When uv can't say where that is,
+    setup skips the migration: this returns the notice it exits 0 with,
+    when the settings need no other change, and refuses otherwise.
+    Returns None when setup goes on.
     """
     from aelfrice.setup import SetupInputError, check_can_write_in
 
     folder = settings_path.parent
     if not os.path.isdir(folder) or os.access(folder, os.W_OK | os.X_OK):
         check_can_write_in(folder)
-        return
-    programs_folder = _uv_migration_programs_folder()
-    if programs_folder is None:
+        return None
+    answer = _uv_migration_programs_folder()
+    if answer is None or answer.path is None:
         if _claude_settings_would_change(args, settings_path):
             check_can_write_in(folder)
-        return
+        if answer is None:
+            return None
+        return (
+            f"aelf setup: skipped the uv migration (`uv tool install --force "
+            f"aelfrice`), because {folder} can't be written to (Permission "
+            "denied) and setup can't tell where the migration would put the "
+            f"hook programs: {answer.reason}. The settings need no other "
+            "change, so nothing was written. Setup runs the migration on a "
+            "later run, once uv answers or the folder can be written to"
+        )
+    programs_folder = answer.path
     dirty, moved = _claude_settings_change_after_install(
         args, settings_path, programs_folder,
     )
     if not dirty:
-        return
+        return None
     if not moved:
         check_can_write_in(folder)
-        return
+        return None
     old, new = next(iter(moved.values()))
     others = len(moved) - 1
     tail = (
@@ -5781,13 +5816,16 @@ def _settings_change_after_migration(
     just ran, it would change settings in a folder you can't write in, or
     None (#1812).
 
-    The preflight predicts where the migration puts the hook programs.
-    The prediction can be missing (`_uv_migration_programs_folder`) or
-    wrong, for example when the install fails or uv writes the programs
-    somewhere else, so setup runs its settings edits again after a
-    migration it started, and refuses there, before it writes the
-    settings, when they would now change them. By then the migration has
-    run, and setup may have cleared the Claude auto-install opt-out.
+    The preflight predicts where the migration puts the hook programs,
+    and in a folder you can't write in it starts the migration only when
+    uv said where (`_check_claude_settings_folder`). The prediction
+    assumes the install succeeds and puts the programs there, so setup
+    runs its settings edits again after a migration it started, and
+    refuses there, before it writes the settings, when they would now
+    change them: the install failed, or uv wrote the programs somewhere
+    other than the folder `uv tool dir --bin` named. By then the
+    migration has run, and setup may have cleared the Claude auto-install
+    opt-out.
     """
     if not migration.attempted:
         return None
@@ -5811,7 +5849,9 @@ def _setup_claude_preflight(args: argparse.Namespace) -> None:
     (#1812): the settings file and the folder it is written in, the
     slash-commands folder, and the opt-out ledger it clears the claude
     host from and records each `--no-X` flag in
-    (`_sync_setup_opt_outs_and_stamp`)."""
+    (`_sync_setup_opt_outs_and_stamp`). Raises `_UvMigrationSkipped`,
+    after those checks pass, when setup skips a pending uv migration and
+    writes nothing (`_check_claude_settings_folder`)."""
     from aelfrice.auto_install import check_opt_out_ledger
     from aelfrice.setup import (
         check_settings_for_setup,
@@ -5820,7 +5860,7 @@ def _setup_claude_preflight(args: argparse.Namespace) -> None:
 
     settings_path = _resolve_settings_path(args)
     check_settings_for_setup(settings_path)
-    _check_claude_settings_folder(args, settings_path)
+    skipped = _check_claude_settings_folder(args, settings_path)
     slash_dest = getattr(args, "slash_commands_dir", None)
     check_slash_commands_dest(Path(slash_dest) if slash_dest else None)
     wants = {
@@ -5832,6 +5872,9 @@ def _setup_claude_preflight(args: argparse.Namespace) -> None:
         add_hooks=[name for name, on in wants.items() if not on],
         remove_hooks=[name for name, on in wants.items() if on],
     )
+    # After every check, so a file setup can't use is still refused.
+    if skipped is not None:
+        raise _UvMigrationSkipped(skipped)
 
 
 def _setup_codex_preflight(
@@ -5866,7 +5909,8 @@ def _setup_input_refusal(args: argparse.Namespace) -> str | None:
     """The refusal `aelf setup` prints for a file it reads and can't use,
     or None (#1812). `main` calls this ahead of the update check, as it
     calls `_setup_home_refusal`, and each host's executor reads the same
-    files again before its first write."""
+    files again before its first write. A skipped uv migration
+    (`_UvMigrationSkipped`) passes through to the caller, which exits 0."""
     from aelfrice.host_codex import CodexHomeError, resolve_agents_skills_dir
     from aelfrice.setup import SetupInputError
 
@@ -6193,6 +6237,9 @@ def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
     except SetupInputError as exc:
         print(_doctor_text(f"aelf setup: {exc}"), file=sys.stderr)
         return 1
+    except _UvMigrationSkipped as exc:
+        print(_doctor_text(exc.notice), file=sys.stderr)
+        return 0
     # #1053: an explicit claude-host setup is explicit re-consent —
     # clear any persistent claude auto-install opt-out.
     from aelfrice.auto_install import remove_host_opt_out
@@ -13801,7 +13848,13 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
         if home_refusal is not None:
             print(_doctor_text(home_refusal), file=sys.stderr)
             return 1
-        input_refusal = _setup_input_refusal(args)
+        try:
+            input_refusal = _setup_input_refusal(args)
+        except _UvMigrationSkipped as exc:
+            # Ahead of the auto-installer and the update check too, so
+            # the skipped run writes nothing.
+            print(_doctor_text(exc.notice), file=sys.stderr)
+            return 0
         if input_refusal is not None:
             print(_doctor_text(input_refusal), file=sys.stderr)
             return 1

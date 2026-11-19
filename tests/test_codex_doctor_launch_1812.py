@@ -4116,8 +4116,9 @@ def test_setup_claude_rereads_the_hook_programs_after_a_uv_migration(
     moves: bool, read_only: bool, refused: bool,
 ) -> None:
     """The preflight's prediction of where a uv migration puts the hook
-    programs can be missing or wrong, for example when the install fails
-    or writes them somewhere else. So setup runs its settings edits again
+    programs assumes the install succeeds and puts them where uv said, so
+    it can be wrong, for example when the install fails or writes them
+    somewhere else. So setup runs its settings edits again
     after a migration it started: it refuses, naming the folder and the
     migration, only when those edits would now change the settings in a
     folder it can't write in. In a folder it can write in, setup goes on
@@ -4441,10 +4442,6 @@ def _migration_refusal(p: dict[str, Path], uv_bin: Path, old: Path) -> str:
             id="UV_TOOL_BIN_DIR over XDG_BIN_HOME",
         ),
         pytest.param("writable, ahead", False, id="writable"),
-        pytest.param("fail", False, id="uv tool dir fails"),
-        pytest.param("hang", False, id="uv tool dir times out"),
-        pytest.param("relative", False, id="uv tool dir prints a relative path"),
-        pytest.param("two-lines", False, id="uv tool dir prints two lines"),
         pytest.param("project, venv program", False, id="project scope"),
         pytest.param(
             "project, no venv program", True, id="project scope, no venv program",
@@ -4463,9 +4460,8 @@ def test_setup_claude_predicts_where_a_uv_migration_puts_the_hook_programs(
     passes when uv's
     folder comes later on PATH or isn't on it. That holds in the user
     scope and in the project scope, where the running install's program
-    comes first. When uv can't say where, setup decides on the programs on
-    PATH now, and the check after the migration decides the rest. A
-    writable folder asks uv nothing. Nothing is written (#1812)."""
+    comes first. A writable folder asks uv nothing. Nothing is written
+    (#1812)."""
     import aelfrice.cli as cli
     import aelfrice.setup as setup_mod
 
@@ -4498,8 +4494,6 @@ def test_setup_claude_predicts_where_a_uv_migration_puts_the_hook_programs(
         monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv_bin))
     if "XDG_BIN_HOME" in state:
         monkeypatch.setenv("XDG_BIN_HOME", str(xdg))
-    if state in ("fail", "hang", "relative", "two-lines"):
-        monkeypatch.setenv("FAKE_UV_MODE", state)
     monkeypatch.setenv(
         "PATH", os.pathsep.join([str(d), *map(str, order), os.environ["PATH"]]),
     )
@@ -4531,20 +4525,30 @@ def test_setup_claude_asks_uv_nothing_on_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Setup doesn't predict a PATH search on Windows, where a program's
-    file name takes a PATHEXT suffix, so it asks uv nothing there and the
-    check after the migration decides (#1812)."""
+    file name takes a PATHEXT suffix, so it asks uv nothing there and
+    answers that it can't tell where the migration puts the programs,
+    which skips the migration in a folder it can't write in (#1812)."""
     import aelfrice.cli as cli
+    from aelfrice.lifecycle import UvToolBinDir
 
     _p, _args, uv, _current = _predict_setup(tmp_path, monkeypatch, [])
     monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv.parent / "uv-bin"))
     monkeypatch.setenv("PATH", f"{uv.parent}{os.pathsep}{os.environ['PATH']}")
-    assert cli._uv_migration_programs_folder() == uv.parent / "uv-bin"  # noqa: SLF001
+    got = cli._uv_migration_programs_folder()  # noqa: SLF001
+    assert got == UvToolBinDir(uv.parent / "uv-bin", ""), got
     assert _uv_log(uv) == ["tool dir --bin"]
     with monkeypatch.context() as m:
-        m.setattr(cli.sys, "platform", "win32")
+        m.setattr(cli, "_setup_predicts_path_search", lambda: False)
         got = cli._uv_migration_programs_folder()  # noqa: SLF001
-    assert got is None
+    assert got == UvToolBinDir(
+        None, "setup doesn't predict a program search on Windows",
+    ), got
     assert _uv_log(uv) == ["tool dir --bin"]
+    for platform, predicts in (("win32", False), ("darwin", True), ("linux", True)):
+        with monkeypatch.context() as m:
+            m.setattr(cli.sys, "platform", platform)
+            got_predicts = cli._setup_predicts_path_search()  # noqa: SLF001
+        assert got_predicts is predicts, platform
 
 
 @pytest.mark.timeout(60)
