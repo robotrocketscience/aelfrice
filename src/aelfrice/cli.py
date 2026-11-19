@@ -5591,13 +5591,22 @@ def _uv_migration_programs_folder() -> Path | None:
     (`lifecycle.uv_tool_bin_dir`), or the platform is Windows, where
     setup doesn't predict a `PATH` search. Setup then decides on the
     programs on `PATH` now and checks again after the migration
-    (`_settings_change_after_migration`).
+    (`_settings_change_after_migration`). Raises `SetupInputError` when
+    the migration marker can't be checked.
     """
     from aelfrice import lifecycle
+    from aelfrice.setup import SetupInputError, unreadable_cause
 
     if sys.platform == "win32":
         return None
-    uv_bin = lifecycle.pending_uv_migration()
+    try:
+        uv_bin = lifecycle.pending_uv_migration()
+    except OSError as exc:
+        marker = Path(
+            exc.filename if exc.filename is not None
+            else lifecycle.MIGRATED_TO_UV_SENTINEL,
+        )
+        raise SetupInputError(unreadable_cause(marker, exc)) from exc
     if uv_bin is None:
         return None
     return lifecycle.uv_tool_bin_dir(uv_bin).path
