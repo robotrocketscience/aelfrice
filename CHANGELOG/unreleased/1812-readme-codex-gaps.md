@@ -1,0 +1,3 @@
+### Documentation
+
+- **The README lists the gaps in Codex support compared with the `claude` CLI ([#1812](https://github.com/robotrocketscience/aelfrice/issues/1812), [#1932](https://github.com/robotrocketscience/aelfrice/pull/1932)).** The install section said that aelfrice works with the `claude` CLI and Codex, with no qualifier. It now lists the Codex gaps: Codex can cut a large memory block to a preview, a forked Codex thread gets no baseline block of your locked rules, Codex shows no status line, and Codex doesn't get the git hook that reads commit messages. It also says that aelfrice doesn't support Gemini CLI or Antigravity.
