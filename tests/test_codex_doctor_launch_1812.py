@@ -4774,7 +4774,8 @@ def test_setup_claude_skips_a_migration_uv_can_not_place(
     executor exit 0 with a notice that names the folder and the reason;
     with settings that would change anyway, they exit 1 with the plain
     folder refusal. Either way nothing under `tmp_path` changes: no
-    marker, no settings, and the Claude opt-out stays (#1812)."""
+    marker, no settings, and the Claude opt-out stays, and `aelf setup`
+    stops before the update check (#1812)."""
     import aelfrice.cli as cli
     from aelfrice import lifecycle
 
@@ -4789,8 +4790,14 @@ def test_setup_claude_skips_a_migration_uv_can_not_place(
     def migrate(*_a: object, **_k: object) -> object:
         raise AssertionError("setup ran the migration")
 
+    def update_check() -> None:
+        raise AssertionError("setup went on to the update check")
+
     monkeypatch.setattr(cli, "maybe_migrate_to_uv", migrate)
     monkeypatch.setattr(lifecycle, "maybe_migrate_to_uv", migrate)
+    # `main` would start the update check, which writes its cache, next.
+    monkeypatch.setattr(cli, "_update_check_disabled", lambda: False)
+    monkeypatch.setattr(cli, "maybe_check_for_update_async", update_check)
     before = _contents(tmp_path)
     os.chmod(p["claude"], 0o500)
     try:
