@@ -4214,3 +4214,391 @@ def test_setup_claude_runs_a_pending_uv_migration_past_a_read_only_claude_folder
     else:
         assert ran[:2] == ["migration", "past the migration"], ran
 
+
+def _fake_uv_dir(tmp_path: Path) -> Path:
+    """A folder beside `tmp_path` for a fake `uv` and the programs folders
+    it names, so `tmp_path` holds only the files setup reads and writes."""
+    return Path(tempfile.mkdtemp(prefix="fake-uv-", dir=tmp_path.parent))
+
+
+def _clear_uv_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "UV_TOOL_BIN_DIR", "XDG_BIN_HOME", "XDG_DATA_HOME", "FAKE_UV_MODE",
+        "FAKE_UV_INSTALL_DIR",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+_needs_sh = pytest.mark.skipif(
+    os.name == "nt", reason="the fake uv is a POSIX sh script",
+)
+
+
+@pytest.mark.timeout(20)
+@_needs_sh
+@pytest.mark.parametrize(
+    ("mode", "env", "want"),
+    [
+        pytest.param(
+            "", {"UV_TOOL_BIN_DIR": "tool-bin"}, "tool-bin", id="UV_TOOL_BIN_DIR",
+        ),
+        pytest.param(
+            "", {"UV_TOOL_BIN_DIR": "tool-bin", "XDG_BIN_HOME": "xdg-bin"},
+            "tool-bin", id="UV_TOOL_BIN_DIR over XDG_BIN_HOME",
+        ),
+        pytest.param("", {"XDG_BIN_HOME": "xdg-bin"}, "xdg-bin", id="XDG_BIN_HOME"),
+        pytest.param(
+            "fail", {"UV_TOOL_BIN_DIR": "tool-bin"},
+            "`{uv} tool dir --bin` exited 2", id="fails",
+        ),
+        pytest.param(
+            "hang", {"UV_TOOL_BIN_DIR": "tool-bin"},
+            "`{uv} tool dir --bin` timed out after 1s", id="times out",
+        ),
+        pytest.param(
+            "relative", {"UV_TOOL_BIN_DIR": "tool-bin"},
+            "`{uv} tool dir --bin` printed 'rel-bin', not one absolute path",
+            id="relative",
+        ),
+        pytest.param(
+            "two-lines", {"UV_TOOL_BIN_DIR": "tool-bin"},
+            "`{uv} tool dir --bin` printed '{d}/tool-bin\\n{d}/tool-bin', not "
+            "one absolute path",
+            id="two lines",
+        ),
+        pytest.param(
+            "empty", {"UV_TOOL_BIN_DIR": "tool-bin"},
+            "`{uv} tool dir --bin` printed '', not one absolute path", id="empty",
+        ),
+        pytest.param(
+            "missing", {}, "`{uv} tool dir --bin` failed to start: ", id="missing",
+        ),
+    ],
+)
+def test_uv_tool_bin_dir_reads_one_absolute_path_from_uv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+    env: dict[str, str], want: str,
+) -> None:
+    """Setup asks uv where `uv tool install` puts programs with `uv tool dir
+    --bin`, in this process's environment, so uv's own order of
+    UV_TOOL_BIN_DIR over XDG_BIN_HOME holds. It takes the folder only when
+    uv exits 0 within the timeout and prints one absolute path; otherwise
+    it says why and gives no folder (#1812)."""
+    from aelfrice import lifecycle
+
+    d = _fake_uv_dir(tmp_path)
+    uv = d / "no-uv-here" if mode == "missing" else _write_fake_uv(d)
+    _clear_uv_env(monkeypatch)
+    for name, value in env.items():
+        monkeypatch.setenv(name, str(d / value))
+    if mode:
+        monkeypatch.setenv("FAKE_UV_MODE", mode)
+    monkeypatch.setattr(lifecycle, "UV_TOOL_DIR_TIMEOUT_SECONDS", 1)
+    found = lifecycle.uv_tool_bin_dir(str(uv))
+    if "`" not in want:
+        assert found == lifecycle.UvToolBinDir(d / want, ""), found
+    else:
+        assert found.path is None, found
+        assert found.reason.startswith(want.format(uv=uv, d=d)), found.reason
+
+
+@pytest.mark.timeout(20)
+@_needs_sh
+@pytest.mark.parametrize(
+    "state", ["pending", "marker", "uv tool install", "no uv"],
+)
+def test_pending_uv_migration_follows_the_migration_short_circuits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    """Setup predicts a migration only when `maybe_migrate_to_uv` would run
+    one: no marker, an install that isn't a uv tool, and `uv` on `PATH`,
+    whose path it returns (#1812)."""
+    from aelfrice import lifecycle
+
+    d = _fake_uv_dir(tmp_path)
+    uv = _write_fake_uv(d)
+    marker = tmp_path / "migrated-to-uv"
+    if state == "marker":
+        marker.write_text("x\n", encoding="utf-8")
+    context = "uv_tool" if state == "uv tool install" else "pipx"
+    monkeypatch.setattr(lifecycle, "MIGRATED_TO_UV_SENTINEL", marker)
+    monkeypatch.setattr(
+        lifecycle, "upgrade_advice", lambda: argparse.Namespace(context=context),
+    )
+    folders = [] if state == "no uv" else [str(d)]
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([*folders, str(tmp_path / "empty")]),
+    )
+    got = lifecycle.pending_uv_migration()
+    assert got == (str(uv) if state == "pending" else None), got
+
+
+def _program(folder: Path, name: str = "aelf-hook") -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    program = folder / name
+    program.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    program.chmod(0o755)
+    return program
+
+
+@pytest.mark.timeout(20)
+@pytest.mark.skipif(os.name == "nt", reason="setup predicts a POSIX PATH search only")
+@pytest.mark.parametrize(
+    ("entries", "want"),
+    [
+        pytest.param(["old", "uv"], "old", id="uv folder after the program"),
+        pytest.param(["uv", "old"], "uv", id="uv folder ahead"),
+        pytest.param(["old"], "old", id="uv folder not on PATH"),
+        pytest.param(["link", "old"], "link", id="a link to the uv folder ahead"),
+        pytest.param(["none", "uv"], "uv", id="no program yet"),
+        pytest.param(["none"], None, id="no program at all"),
+        pytest.param(["", "uv"], None, id="an empty entry, the program in the cwd"),
+    ],
+)
+def test_which_on_path_predicts_a_program_installed_in_a_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entries: list[str],
+    want: str | None,
+) -> None:
+    """With `installed_in`, the PATH search answers as it will once a
+    program is in that folder: the first PATH entry that holds the program
+    or resolves to the folder wins, in PATH order, and a link to the
+    folder counts as the folder. An empty entry searches the working
+    directory, and a hit there is dropped as the search without a folder
+    drops it. The folder needn't exist yet, and nothing is written
+    (#1812)."""
+    from aelfrice import launcher
+
+    _program(tmp_path / "old")
+    (tmp_path / "none").mkdir()
+    uv = tmp_path / "uv"
+    if "link" in entries:
+        uv.mkdir()
+        os.symlink(uv, tmp_path / "link")
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join(str(tmp_path / e) if e else "" for e in entries),
+    )
+    if "" in entries:
+        monkeypatch.chdir(tmp_path / "old")
+        assert launcher.which_on_path("aelf-hook") is None
+    got = launcher.which_on_path("aelf-hook", installed_in=uv)
+    assert got == (None if want is None else tmp_path / want / "aelf-hook"), got
+    assert not (uv / "aelf-hook").exists()
+
+
+def _predict_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str],
+) -> tuple[dict[str, Path], argparse.Namespace, Path, Path]:
+    """Wire the Claude settings as `aelf setup FLAGS` leaves them, then make
+    a uv migration pending, with the marker under `tmp_path`, a pipx
+    install, and a fake `uv` whose folder the caller puts on PATH. Returns
+    the files, the parsed args, the fake uv, and the folder of the
+    `aelf-hook` the settings name now."""
+    import aelfrice.cli as cli
+    from aelfrice import lifecycle
+
+    p = _setup_files(tmp_path, monkeypatch)
+    args = _setup_parse(flags)
+    _wire_claude(p, args)
+    uv = _write_fake_uv(_fake_uv_dir(tmp_path))
+    _clear_uv_env(monkeypatch)
+    monkeypatch.setattr(
+        lifecycle, "MIGRATED_TO_UV_SENTINEL", p["dotdir"] / "migrated-to-uv",
+    )
+    monkeypatch.setattr(
+        lifecycle, "upgrade_advice", lambda: argparse.Namespace(context="pipx"),
+    )
+    monkeypatch.setattr(lifecycle, "UV_TOOL_DIR_TIMEOUT_SECONDS", 1)
+    scope = cli._effective_scope(args)  # noqa: SLF001
+    current = Path(cli.resolve_hook_command(scope)).parent
+    return p, args, uv, current
+
+
+def _migration_refusal(p: dict[str, Path], uv_bin: Path, old: Path) -> str:
+    """The refusal of a migration that would move setup's 8 hook commands,
+    `aelf-hook` first, out of `old` into `uv_bin`."""
+    return (
+        f"aelf setup: {p['claude']} can't be written to (Permission denied), "
+        "and the uv migration setup runs first (`uv tool install --force "
+        f"aelfrice`) would install the hook programs in {uv_bin}, so setup "
+        f"would change {p['settings']}: {old / 'aelf-hook'} to "
+        f"{uv_bin / 'aelf-hook'}, and 7 other hook commands the same way; "
+        f"nothing was written. {_FIX_PERMS}"
+    )
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize(
+    ("state", "refused"),
+    [
+        pytest.param("behind", False, id="uv folder later on PATH"),
+        pytest.param("behind, hook missing", True, id="uv folder later, hook missing"),
+        pytest.param("ahead", True, id="uv folder ahead"),
+        pytest.param("not on PATH", False, id="uv folder not on PATH"),
+        pytest.param("XDG_BIN_HOME ahead", True, id="XDG_BIN_HOME ahead"),
+        pytest.param(
+            "UV_TOOL_BIN_DIR behind, XDG_BIN_HOME ahead", False,
+            id="UV_TOOL_BIN_DIR over XDG_BIN_HOME",
+        ),
+        pytest.param("writable, ahead", False, id="writable"),
+        pytest.param("fail", False, id="uv tool dir fails"),
+        pytest.param("hang", False, id="uv tool dir times out"),
+        pytest.param("relative", False, id="uv tool dir prints a relative path"),
+        pytest.param("two-lines", False, id="uv tool dir prints two lines"),
+        pytest.param("project, venv program", False, id="project scope"),
+        pytest.param(
+            "project, no venv program", True, id="project scope, no venv program",
+        ),
+    ],
+)
+def test_setup_claude_predicts_where_a_uv_migration_puts_the_hook_programs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str, refused: bool,
+) -> None:
+    """Before its first write, plain setup asks uv where a pending
+    migration installs the hook programs and runs its settings edits with
+    them there, in PATH order. It refuses a `~/.claude` you can't write in
+    only when those settings differ from the file, naming the folder, the
+    migration and the command that would change, or with the plain folder
+    refusal when no command moves but another edit changes the file, and
+    passes when uv's
+    folder comes later on PATH or isn't on it. That holds in the user
+    scope and in the project scope, where the running install's program
+    comes first. When uv can't say where, setup decides on the programs on
+    PATH now, and the check after the migration decides the rest. A
+    writable folder asks uv nothing. Nothing is written (#1812)."""
+    import aelfrice.cli as cli
+    import aelfrice.setup as setup_mod
+
+    flags: list[str] = []
+    if state.startswith("project"):
+        flags = [
+            "--scope", "project",
+            "--settings-path", str(tmp_path / "home" / ".claude" / "settings.json"),
+        ]
+        if state == "project, no venv program":
+            monkeypatch.setattr(
+                setup_mod, "_venv_bin_dir", lambda: tmp_path / "no-venv",
+            )
+    p, args, uv, current = _predict_setup(tmp_path, monkeypatch, flags)
+    if state == "behind, hook missing":
+        doc = json.loads(p["settings"].read_bytes())
+        del doc["hooks"]["Stop"]
+        p["settings"].write_text(json.dumps(doc), encoding="utf-8")
+    d = uv.parent
+    uv_bin = d / "uv-bin"
+    xdg = d / "xdg-bin"
+    order = {
+        "behind": [current, uv_bin],
+        "behind, hook missing": [current, uv_bin],
+        "not on PATH": [current],
+        "XDG_BIN_HOME ahead": [xdg, current],
+        "UV_TOOL_BIN_DIR behind, XDG_BIN_HOME ahead": [xdg, current, uv_bin],
+    }.get(state, [uv_bin, current])
+    if state != "XDG_BIN_HOME ahead":
+        monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv_bin))
+    if "XDG_BIN_HOME" in state:
+        monkeypatch.setenv("XDG_BIN_HOME", str(xdg))
+    if state in ("fail", "hang", "relative", "two-lines"):
+        monkeypatch.setenv("FAKE_UV_MODE", state)
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([str(d), *map(str, order), os.environ["PATH"]]),
+    )
+    before = _contents(tmp_path)
+    if not state.startswith("writable"):
+        os.chmod(p["claude"], 0o500)
+    try:
+        refusal = cli._setup_input_refusal(args)  # noqa: SLF001
+    finally:
+        _restore_modes(tmp_path)
+    if state == "behind, hook missing":
+        assert refusal == (
+            f"aelf setup: {p['claude']} can't be written to (Permission "
+            f"denied); nothing was written. {_FIX_PERMS}"
+        ), refusal
+    elif refused:
+        folder = xdg if state.startswith("XDG") else uv_bin
+        assert refusal == _migration_refusal(p, folder, current), refusal
+    else:
+        assert refusal is None, refusal
+    assert _contents(tmp_path) == before
+    want_calls = [] if state.startswith("writable") else ["tool dir --bin"]
+    assert _uv_log(uv) == want_calls
+
+
+@pytest.mark.timeout(20)
+@_needs_sh
+def test_setup_claude_asks_uv_nothing_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup doesn't predict a PATH search on Windows, where a program's
+    file name takes a PATHEXT suffix, so it asks uv nothing there and the
+    check after the migration decides (#1812)."""
+    import aelfrice.cli as cli
+
+    _p, _args, uv, _current = _predict_setup(tmp_path, monkeypatch, [])
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv.parent / "uv-bin"))
+    monkeypatch.setenv("PATH", f"{uv.parent}{os.pathsep}{os.environ['PATH']}")
+    assert cli._uv_migration_programs_folder() == uv.parent / "uv-bin"  # noqa: SLF001
+    assert _uv_log(uv) == ["tool dir --bin"]
+    with monkeypatch.context() as m:
+        m.setattr(cli.sys, "platform", "win32")
+        got = cli._uv_migration_programs_folder()  # noqa: SLF001
+    assert got is None
+    assert _uv_log(uv) == ["tool dir --bin"]
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize("ahead", [True, False], ids=["ahead", "behind"])
+def test_setup_claude_refuses_a_migration_that_moves_the_hooks_before_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], ahead: bool,
+) -> None:
+    """With current settings in a `~/.claude` you can't write in and uv's
+    programs folder ahead on PATH, plain setup exits 1 before its first
+    write: the migration doesn't run, so no marker is written, the Claude
+    auto-install opt-out stays, and nothing under `tmp_path` changes. With
+    uv's folder later on PATH, the migration runs, as on main, and setup
+    goes on past the check after it (#1812)."""
+    import aelfrice.cli as cli
+    import aelfrice.mcp_cleanup as mcp_cleanup
+
+    p, args, uv, current = _predict_setup(tmp_path, monkeypatch, [])
+    uv_bin = uv.parent / "uv-bin"
+    order = [uv_bin, current] if ahead else [current, uv_bin]
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv_bin))
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([str(uv.parent), *map(str, order), os.environ["PATH"]]),
+    )
+    p["ledger"].write_text(_CLAUDE_OPTED_OUT, encoding="utf-8")
+
+    def went_on() -> None:
+        raise AssertionError("setup went on past the migration check")
+
+    monkeypatch.setattr(cli, "_maybe_reconcile_claude_memory_at_setup", went_on)
+    monkeypatch.setattr(cli, "_open_store", went_on)
+    monkeypatch.setattr(mcp_cleanup, "maybe_clean_up_mcp", went_on)
+    before = _contents(tmp_path)
+    os.chmod(p["claude"], 0o500)
+    try:
+        if ahead:
+            rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+        else:
+            with pytest.raises(AssertionError, match="past the migration check"):
+                cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+            rc = None
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    marker = p["dotdir"] / "migrated-to-uv"
+    if ahead:
+        assert rc == 1, err
+        assert err == _migration_refusal(p, uv_bin, current) + "\n", err
+        assert _contents(tmp_path) == before
+        assert not marker.exists()
+        assert _uv_log(uv) == ["tool dir --bin"]
+    else:
+        assert marker.is_file()
+        assert _uv_log(uv)[-1] == "tool install --force aelfrice", _uv_log(uv)
+        assert (uv_bin / "aelf-hook").is_file()
