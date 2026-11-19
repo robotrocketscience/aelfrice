@@ -4687,6 +4687,164 @@ def test_setup_claude_refuses_a_migration_marker_it_can_not_check(
     assert _uv_log(uv) == []
 
 
+#: Why setup can't tell where a uv migration puts the hook programs, for
+#: each way `uv tool dir --bin` gives no folder, and on Windows.
+_UV_CANT_SAY: Final[dict[str, str]] = {
+    "fail": "`{uv} tool dir --bin` exited 2",
+    "hang": "`{uv} tool dir --bin` timed out after 1s",
+    "relative": "`{uv} tool dir --bin` printed 'rel-bin', not one absolute path",
+    "two-lines": (
+        "`{uv} tool dir --bin` printed '{bin}\\n{bin}', not one absolute path"
+    ),
+    "empty": "`{uv} tool dir --bin` printed '', not one absolute path",
+    "no start": "`{uv} tool dir --bin` failed to start: ",
+    "windows": "setup doesn't predict a program search on Windows",
+}
+
+
+def _skip_notice(folder: Path, reason: str) -> str:
+    return (
+        "aelf setup: skipped the uv migration (`uv tool install --force "
+        f"aelfrice`), because {folder} can't be written to (Permission "
+        "denied) and setup can't tell where the migration would put the "
+        f"hook programs: {reason}. The settings need no other change, so "
+        "nothing was written. Setup runs the migration on a later run, once "
+        "uv answers or the folder can be written to"
+    )
+
+
+def _uv_cant_say(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str],
+    mode: str,
+) -> tuple[dict[str, Path], argparse.Namespace, Path, str]:
+    """Wire the Claude settings, make a uv migration pending with uv's
+    programs folder ahead on PATH, so a prediction would move the hook
+    commands, and make `uv tool dir --bin` give no folder as `mode` says.
+    Returns the files, the args, the uv on PATH and the reason setup
+    gives, up to the OS error for a uv that can't start."""
+    p, args, uv, current = _predict_setup(tmp_path, monkeypatch, flags)
+    uv_bin = uv.parent / "uv-bin"
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv_bin))
+    first = uv.parent
+    if mode == "no start":
+        first = _fake_uv_dir(tmp_path)
+        broken = first / "uv"
+        broken.write_text("#!/nonexistent-interpreter/sh\n", encoding="utf-8")
+        broken.chmod(0o755)
+        uv = broken
+    elif mode != "windows":
+        monkeypatch.setenv("FAKE_UV_MODE", mode)
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([str(first), str(uv_bin), str(current), os.environ["PATH"]]),
+    )
+    return p, args, uv, _UV_CANT_SAY[mode].format(uv=uv, bin=uv_bin)
+
+
+def _setup_flags(tmp_path: Path, scope: str) -> list[str]:
+    if scope == "user":
+        return []
+    return [
+        "--scope", "project",
+        "--settings-path", str(tmp_path / "home" / ".claude" / "settings.json"),
+    ]
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@_needs_sh
+@pytest.mark.parametrize("scope", ["user", "project"])
+@pytest.mark.parametrize("stale", [False, True], ids=["current", "stale"])
+@pytest.mark.parametrize("mode", list(_UV_CANT_SAY))
+def test_setup_claude_skips_a_migration_uv_can_not_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], scope: str, stale: bool, mode: str,
+) -> None:
+    """With a uv migration pending, a `~/.claude` you can't write in, and
+    no answer from uv on where the install puts the programs (it fails,
+    times out, can't start, prints a relative path, two lines or nothing,
+    or the platform is Windows), plain setup doesn't run the migration.
+    With settings that need no other change, `aelf setup` and the
+    executor exit 0 with a notice that names the folder and the reason;
+    with settings that would change anyway, they exit 1 with the plain
+    folder refusal. Either way nothing under `tmp_path` changes: no
+    marker, no settings, and the Claude opt-out stays (#1812)."""
+    import aelfrice.cli as cli
+    from aelfrice import lifecycle
+
+    flags = _setup_flags(tmp_path, scope)
+    p, args, uv, reason = _uv_cant_say(tmp_path, monkeypatch, flags, mode)
+    if stale:
+        doc = json.loads(p["settings"].read_bytes())
+        del doc["hooks"]["Stop"]
+        p["settings"].write_text(json.dumps(doc), encoding="utf-8")
+    p["ledger"].write_text(_CLAUDE_OPTED_OUT, encoding="utf-8")
+
+    def migrate(*_a: object, **_k: object) -> object:
+        raise AssertionError("setup ran the migration")
+
+    monkeypatch.setattr(cli, "maybe_migrate_to_uv", migrate)
+    monkeypatch.setattr(lifecycle, "maybe_migrate_to_uv", migrate)
+    before = _contents(tmp_path)
+    os.chmod(p["claude"], 0o500)
+    try:
+        with monkeypatch.context() as m:
+            if mode == "windows":
+                m.setattr(cli, "_setup_predicts_path_search", lambda: False)
+            rc_main = main(["setup", "--scope", "user", *flags])
+            err_main = capsys.readouterr().err
+            rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+            err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    if stale:
+        want = (
+            f"aelf setup: {p['claude']} can't be written to (Permission "
+            f"denied); nothing was written. {_FIX_PERMS}"
+        )
+        assert (rc_main, rc) == (1, 1), err_main + err
+        assert err_main == err == want + "\n", err_main + err
+    else:
+        assert (rc_main, rc) == (0, 0), err_main + err
+        head, _, tail = _skip_notice(p["claude"], reason).partition(reason)
+        for text in (err_main, err):
+            assert text.startswith(head + reason), text
+            assert text.endswith(tail + "\n"), text
+            assert text.count("\n") == 1, text
+    assert _contents(tmp_path) == before
+    assert not (p["dotdir"] / "migrated-to-uv").exists()
+    calls = _uv_log(uv)
+    assert "tool install --force aelfrice" not in calls, calls
+    if mode == "windows":
+        assert calls == [], calls
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@_needs_sh
+def test_setup_claude_refuses_a_ledger_before_it_skips_a_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Setup decides to skip a migration uv can't place only after every
+    other check passes, so a ledger it can't use is still refused, exit 1
+    with the ledger named, and nothing written (#1812)."""
+    import aelfrice.cli as cli
+
+    p, args, _uv, _reason = _uv_cant_say(tmp_path, monkeypatch, [], "fail")
+    p["ledger"].write_bytes(b'{"opt_out": ["\xff"]}')
+    before = _contents(tmp_path)
+    os.chmod(p["claude"], 0o500)
+    try:
+        rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 1, err
+    assert err.startswith(f"aelf setup: {p['ledger']} isn't UTF-8 text"), err
+    assert _contents(tmp_path) == before
+
+
 def _hook_entry(command: str) -> dict[str, object]:
     return {"hooks": [{"type": "command", "command": command}]}
 
