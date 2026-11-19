@@ -2,6 +2,10 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+# Hypothesis writes its cache here (#1940). Hatchling reads this
+# file and not the .gitignore inside the folder, so without this line the
+# sdist built after a test run ships the cache.
+.hypothesis/
 .venv/
 dist/
 build/

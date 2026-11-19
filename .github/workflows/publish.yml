@@ -55,8 +55,12 @@ jobs:
           # That cache is a path into the published build.
           enable-cache: false
       - run: uv sync --frozen --group dev --extra archive --extra onboard-llm
-      - run: uv run pytest tests/ -q
+      # Build before the tests run, so the sdist holds the checkout and
+      # nothing a test leaves in it (#1940). The 5.3.0 and 5.4.0 sdists
+      # shipped the `.hypothesis/` cache this job's pytest wrote. A failed
+      # test still stops the job before attestation and upload.
       - run: uv build
+      - run: uv run pytest tests/ -q
       - uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1.4.4
         with:
           subject-path: 'dist/*'

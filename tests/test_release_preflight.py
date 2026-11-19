@@ -364,6 +364,22 @@ def test_the_preflight_fetches_main_and_is_not_a_dry_run() -> None:
     assert "${{" not in step, "pass the tag through the env, not an expression"
 
 
+def test_the_build_runs_before_pytest_and_the_upload_after_it() -> None:
+    """#1940: a build after pytest packed the `.hypothesis/` cache it wrote.
+
+    The tests still gate the release: attestation and upload come after
+    them, so a failed test stops the job before anything leaves it.
+    """
+    steps = _steps(_jobs(_publish_text())["publish"])
+    build = _index(steps, r"\buv build\b")
+    pytest_ = _index(steps, r"\bpytest\b")
+    shipped = _index(steps, r"attest-build-provenance@|gh-action-pypi-publish@")
+    assert len(build) == 1, build
+    assert len(pytest_) == 1, pytest_
+    assert len(shipped) == 2, shipped
+    assert build[0] < pytest_[0] < min(shipped), (build, pytest_, shipped)
+
+
 def test_every_action_in_publish_is_pinned_to_a_commit_sha() -> None:
     refs = [
         m for m in (
