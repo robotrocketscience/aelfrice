@@ -286,4 +286,7 @@ dev = [
     # Property-based testing for replay-soak gate (#403). Pure Python,
     # no GPU/network deps; consistent with the v1.x install promise.
     "hypothesis>=6.100",
+    # The build backend, so tests/test_sdist_contents_1940.py can call its
+    # PEP 517 `build_sdist` hook without fetching it from an index (#1940).
+    "hatchling>=1.27",
 ]
