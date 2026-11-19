@@ -424,3 +424,70 @@ def test_a_source_without_the_speaker_column_copies_its_corroborations(
         t.close()
     assert b is not None
     assert b.corroboration_count == 1
+
+
+# --- A run that stops partway can be rerun ----------------------------------
+
+
+class _Stop(Exception):
+    """Raised by a patched store method to stop a migrate partway."""
+
+
+def _fail_once(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """Make `MemoryStore.<name>` raise `_Stop` on its first call only."""
+    real = getattr(MemoryStore, name)
+    calls = {"n": 0}
+
+    def wrapper(self: MemoryStore, *args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _Stop(name)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(MemoryStore, name, wrapper)
+
+
+def _seed_retired_with_rows(path: Path) -> None:
+    s = MemoryStore(str(path))
+    try:
+        s.insert_belief(_belief("r1"))
+        for i in range(2):
+            s.record_corroboration(
+                "r1", source_type=CORROBORATION_SOURCE_CLI_REMEMBER,
+                session_id=f"s-{i}", ts=f"2026-01-0{i + 2}T00:00:00+00:00",
+            )
+        s.soft_delete_belief("r1", ts="2026-03-01T00:00:00+00:00")
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("fails", ["soft_delete_belief", "record_corroboration"])
+def test_a_rerun_after_a_stop_copies_the_belief_in_full(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fails: str,
+) -> None:
+    """A stop after the insert leaves no belief behind in the target, so
+    the rerun copies it retired and with its corroboration rows."""
+    src, dst = tmp_path / "src.db", tmp_path / "dst.db"
+    _seed_retired_with_rows(src)
+    with monkeypatch.context() as m:
+        _fail_once(m, fails)
+        with pytest.raises(_Stop):
+            migrate(legacy_path=src, target_path=dst, project_root=tmp_path,
+                    apply=True, copy_all=True)
+    report = migrate(legacy_path=src, target_path=dst, project_root=tmp_path,
+                     apply=True, copy_all=True)
+    assert report.counts.inserted_beliefs == 1
+    conn = sqlite3.connect(dst)
+    try:
+        valid_to = conn.execute(
+            "SELECT valid_to FROM beliefs WHERE id = 'r1'",
+        ).fetchone()[0]
+        fts = conn.execute(
+            "SELECT COUNT(*) FROM beliefs_fts WHERE id = 'r1'",
+        ).fetchone()[0]
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM belief_corroborations WHERE belief_id = 'r1'",
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert (valid_to, fts, rows) == ("2026-03-01T00:00:00+00:00", 0, 2)

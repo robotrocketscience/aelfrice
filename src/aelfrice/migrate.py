@@ -267,6 +267,9 @@ def migrate(
             if _belongs_to_project(b.content, project_root)
         ]
     matched_ids: set[str] = {b.id for b in matched}
+    corroborations_by_belief: dict[str, list[_CorroborationRow]] = {}
+    for c in legacy_corroborations:
+        corroborations_by_belief.setdefault(c.belief_id, []).append(c)
 
     inserted_beliefs = 0
     skipped_existing = 0
@@ -277,7 +280,6 @@ def migrate(
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target = MemoryStore(str(target_path))
         try:
-            inserted_ids: set[str] = set()
             for b in matched:
                 # include_retired (#1210): an id-existence check against the target.
                 # A tombstone still owns its primary key, so treating it as absent
@@ -285,28 +287,33 @@ def migrate(
                 if target.get_belief(b.id, include_retired=True) is not None:
                     skipped_existing += 1
                     continue
-                if b.valid_to is None:
-                    target.insert_belief(b)
-                else:
-                    # #1911: a retired belief arrives retired, with the
-                    # same valid_to. Retiring through the store also
-                    # prunes the FTS row, as it does for the source row.
-                    target.insert_belief(dataclasses.replace(b, valid_to=None))
-                    target.soft_delete_belief(b.id, ts=b.valid_to)
-                inserted_ids.add(b.id)
+                # #1911: one transaction per belief. A run that stops
+                # partway leaves each belief either absent from the target
+                # or present with its retire and its corroboration rows, so
+                # a rerun copies the rest. Without it, a rerun skipped a
+                # belief left active or left without its rows.
+                with target.transaction():
+                    if b.valid_to is None:
+                        target.insert_belief(b)
+                    else:
+                        # A retired belief arrives retired, with the same
+                        # valid_to. Retiring through the store also prunes
+                        # the FTS row, as it does for the source row.
+                        target.insert_belief(
+                            dataclasses.replace(b, valid_to=None),
+                        )
+                        target.soft_delete_belief(b.id, ts=b.valid_to)
+                    # A copied belief keeps its corroboration rows. A belief
+                    # the target already held is skipped above and keeps
+                    # the target's own rows.
+                    for c in corroborations_by_belief.get(b.id, ()):
+                        target.record_corroboration(
+                            c.belief_id, source_type=c.source_type,
+                            session_id=c.session_id,
+                            source_path_hash=c.source_path_hash,
+                            ts=c.ingested_at, speaker=c.speaker,
+                        )
                 inserted_beliefs += 1
-
-            # #1911: a copied belief keeps its corroboration rows, so its
-            # corroboration count in the target matches the source. A
-            # belief the target already held keeps the target's own rows.
-            for c in legacy_corroborations:
-                if c.belief_id in inserted_ids:
-                    target.record_corroboration(
-                        c.belief_id, source_type=c.source_type,
-                        session_id=c.session_id,
-                        source_path_hash=c.source_path_hash,
-                        ts=c.ingested_at, speaker=c.speaker,
-                    )
 
             # Copy edges only when both endpoints landed in the target.
             # Edges that reference an unmatched legacy belief are
