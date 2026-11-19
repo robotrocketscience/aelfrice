@@ -4602,3 +4602,90 @@ def test_setup_claude_refuses_a_migration_that_moves_the_hooks_before_it(
         assert marker.is_file()
         assert _uv_log(uv)[-1] == "tool install --force aelfrice", _uv_log(uv)
         assert (uv_bin / "aelf-hook").is_file()
+
+
+def _hook_entry(command: str) -> dict[str, object]:
+    return {"hooks": [{"type": "command", "command": command}]}
+
+
+@pytest.mark.timeout(20)
+@pytest.mark.skipif(os.name == "nt", reason="setup predicts a POSIX PATH search only")
+def test_prune_keeps_the_programs_a_uv_migration_would_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside setup's prediction of a uv migration, the prune of broken
+    `aelf-*` hooks counts each program the package installs as present in
+    uv's folder, as it will be after the install: a path in the folder,
+    whose name has a space in it, one through a link to the folder, and a
+    bare name PATH finds there. It still removes a name the package
+    doesn't install and a program in another missing folder. Outside the
+    prediction every one of them is broken. Nothing is written (#1812)."""
+    from aelfrice.doctor import prune_broken_aelf_hooks
+    from aelfrice.setup import programs_installed_in
+
+    uv = tmp_path / "uv bin"
+    link = tmp_path / "uv-link"
+    os.symlink(uv.name, link)
+    gone = tmp_path / "gone"
+    doc = {"hooks": {
+        "UserPromptSubmit": [_hook_entry(f"{uv}/aelf-hook")],
+        "Stop": [_hook_entry(f"{link}/aelf-stop-hook")],
+        "SessionStart": [_hook_entry("aelf-session-start-hook")],
+        "PreToolUse": [_hook_entry(f"{link}/aelf-not-a-program")],
+        "PostToolUse": [_hook_entry(f"{gone}/aelf-commit-ingest")],
+    }}
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(doc), encoding="utf-8")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(link), str(tmp_path / "empty")]))
+    before = settings.read_bytes()
+    with programs_installed_in(uv):
+        kept = prune_broken_aelf_hooks(settings, dry_run=True)
+    plain = prune_broken_aelf_hooks(settings, dry_run=True)
+    assert kept.removed_per_event == {"PreToolUse": 1, "PostToolUse": 1}, kept
+    assert plain.total_removed == 5, plain
+    assert settings.read_bytes() == before
+    assert not uv.exists()
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@_needs_sh
+def test_setup_claude_passes_settings_that_already_name_uv_programs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Settings an earlier setup wired to programs in uv's folder, which
+    are gone now, are what the pending migration's install leaves, so a
+    `~/.claude` you can't write in passes the preflight, asks uv once and
+    writes nothing, as the migration then changes no setting (#1812)."""
+    import aelfrice.cli as cli
+
+    p, args, uv, current = _predict_setup(tmp_path, monkeypatch, [])
+    uv_bin = uv.parent / "uv-bin"
+    for name in _UV_PROGRAMS.split():
+        _program(uv_bin, name)
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv_bin))
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([str(uv.parent), str(uv_bin), str(current), os.environ["PATH"]]),
+    )
+    _wire_claude(p, args)
+    assert str(uv_bin / "aelf-hook") in p["settings"].read_text(encoding="utf-8")
+    shutil.rmtree(uv_bin)
+    assert cli._claude_settings_would_change(args, p["settings"])  # noqa: SLF001
+    before = _contents(tmp_path)
+    os.chmod(p["claude"], 0o500)
+    try:
+        refusal = cli._setup_input_refusal(args)  # noqa: SLF001
+    finally:
+        _restore_modes(tmp_path)
+    assert refusal is None, refusal
+    assert _contents(tmp_path) == before
+    assert _uv_log(uv) == ["tool dir --bin"]
+
+
+def test_setup_names_every_program_the_package_installs() -> None:
+    """The programs setup counts as installed by a uv migration are the
+    console scripts in pyproject.toml's `[project.scripts]` (#1812)."""
+    from aelfrice.setup import PACKAGE_PROGRAM_NAMES
+
+    assert sorted(PACKAGE_PROGRAM_NAMES) == _package_scripts()
