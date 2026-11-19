@@ -151,6 +151,7 @@ from aelfrice.lifecycle import (
     format_update_banner as _format_update_banner,
     is_disabled as _update_check_disabled,
     detect_reachable_installs,
+    MigrationResult,
     maybe_check_for_update_async,
     maybe_migrate_to_uv,
     read_cache as _read_update_cache,
@@ -5656,17 +5657,14 @@ def _claude_settings_would_change(
     It runs every settings edit setup makes in a `settings_dry_run`, which
     writes nothing. In place of the commit-ingest git hook it runs only
     the removal of the old commit-ingest entry from `path`, the one part
-    of that step that edits this file. A uv migration that setup would
-    start first counts as a change, because it can move the hook programs
-    the settings name.
+    of that step that edits this file. It resolves the hook programs as
+    they are on `PATH` now, so setup runs it again after a uv migration,
+    which can put new ones ahead of them (`_settings_change_after_migration`).
     """
     import io
 
-    from aelfrice import lifecycle
     from aelfrice.setup import settings_dry_run
 
-    if lifecycle.uv_migration_pending():
-        return True
     scope = _effective_scope(args)
     command = (
         args.command if args.command is not None
@@ -5680,6 +5678,36 @@ def _claude_settings_would_change(
             ),
         )
     return txn.dirty
+
+
+def _settings_change_after_migration(
+    args: argparse.Namespace, migration: MigrationResult,
+) -> str | None:
+    """The refusal `aelf setup` prints when the uv migration it just ran
+    makes it change settings in a folder you can't write in, or None
+    (#1812).
+
+    The preflight runs the settings edits with the hook programs on `PATH`
+    before the migration, and a read-only `~/.claude` whose settings are
+    current passes it. Which programs `uv tool install` puts on `PATH`,
+    if it succeeds, isn't known until it has run, so setup runs the edits
+    again after a migration it started, and refuses there, before it
+    writes the settings, when they would now change them.
+    """
+    if not migration.attempted:
+        return None
+    path = _resolve_settings_path(args)
+    folder = path.parent
+    if not os.path.isdir(folder) or os.access(folder, os.W_OK | os.X_OK):
+        return None
+    if not _claude_settings_would_change(args, path):
+        return None
+    return (
+        f"aelf setup: {folder} can't be written to (Permission denied), "
+        "and the uv migration that just ran changed the hook programs "
+        f"on PATH, so setup would change {path}; the settings weren't "
+        "changed. Fix its permissions, and run setup again"
+    )
 
 
 def _setup_claude_preflight(args: argparse.Namespace) -> None:
@@ -6109,6 +6137,11 @@ def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
                 f"aelfrice: {verb} — {migration.reason}",
                 file=sys.stderr,
             )
+    # #1812: the preflight read the hook programs before the migration.
+    refusal = _settings_change_after_migration(args, migration)
+    if refusal is not None:
+        print(_doctor_text(refusal), file=sys.stderr)
+        return 1
     # #1422: one-shot report of what the removed MCP surface left behind —
     # a `[mcp]` extra in the uv environment, a host registration pointing at
     # the deleted `aelf mcp`. Report-only by design: aelfrice never wrote

@@ -3929,7 +3929,6 @@ def _contents(root: Path) -> dict[str, bytes | None]:
         pytest.param("old commit-ingest entry", True, id="old commit ingest"),
         pytest.param("one hook missing", True, id="one hook missing"),
         pytest.param("statusline missing", True, id="statusline missing"),
-        pytest.param("migration pending", True, id="migration pending"),
     ],
 )
 def test_setup_claude_refuses_a_read_only_claude_folder_only_for_a_write(
@@ -3940,11 +3939,9 @@ def test_setup_claude_refuses_a_read_only_claude_folder_only_for_a_write(
     would change the settings file there, as its settings edits, run
     without a write, show. Settings that are current pass, with or
     without the lock file setup takes; an old commit-ingest entry setup
-    removes, a hook it adds, a statusline it adds, and a uv migration it
-    would start first, which can move the hook programs, are refused. The
+    removes, a hook it adds, and a statusline it adds are refused. The
     check writes nothing."""
     import aelfrice.cli as cli
-    from aelfrice import lifecycle
     from aelfrice.setup import install_commit_ingest_hook
 
     p = _setup_files(tmp_path, monkeypatch)
@@ -3954,8 +3951,6 @@ def test_setup_claude_refuses_a_read_only_claude_folder_only_for_a_write(
     assert lock.is_file()
     if state == "current, no lock file":
         lock.unlink()
-    elif state == "migration pending":
-        monkeypatch.setattr(lifecycle, "uv_migration_pending", lambda: True)
     elif state == "old commit-ingest entry":
         # A program that exists, so the prune of entries whose program is
         # gone leaves the entry, and only the commit-ingest step drops it.
@@ -4006,35 +4001,124 @@ def test_setup_claude_settings_dry_run_writes_nothing(
     assert _contents(tmp_path) == before
 
 
+def _hook_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put an `aelf-hook` program in a new folder ahead of the others on
+    `PATH`, as a uv migration can, so setup resolves the hook command to
+    it."""
+    folder = tmp_path / "uv-bin"
+    folder.mkdir()
+    program = folder / "aelf-hook"
+    program.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    program.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{folder}{os.pathsep}{os.environ['PATH']}")
+
+
 @pytest.mark.timeout(60)
+@_needs_chmod
 @pytest.mark.parametrize(
-    ("sentinel", "context", "uv", "pending"),
+    ("attempted", "moves", "refused"),
     [
-        pytest.param(False, "pipx", True, True, id="pipx, uv on PATH"),
-        pytest.param(True, "pipx", True, False, id="sentinel"),
-        pytest.param(False, "uv_tool", True, False, id="uv tool"),
-        pytest.param(False, "pipx", False, False, id="no uv"),
+        pytest.param(True, False, False, id="ran, same programs"),
+        pytest.param(True, True, True, id="ran, moved the hook"),
+        pytest.param(False, True, False, id="did not run"),
     ],
 )
-def test_uv_migration_pending_follows_the_migration_short_circuits(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sentinel: bool,
-    context: str, uv: bool, pending: bool,
+def test_setup_claude_rereads_the_hook_programs_after_a_uv_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attempted: bool,
+    moves: bool, refused: bool,
 ) -> None:
-    """Setup's check for a pending uv migration takes the first three
-    steps of `maybe_migrate_to_uv`: a sentinel, a uv tool install, and no
-    `uv` on `PATH` each mean no migration."""
-    from aelfrice import lifecycle
+    """A uv migration that setup starts can put new hook programs ahead of
+    the old ones on `PATH`, which setup can't know before it runs. So the
+    preflight passes a `~/.claude` you can't write in whose settings are
+    current while a migration is pending, and setup runs its settings
+    edits again after a migration it started: it refuses, naming the
+    folder and the migration, only when those edits would now change the
+    settings. The check writes nothing."""
+    import aelfrice.cli as cli
+    from aelfrice.lifecycle import MigrationResult
 
-    path = tmp_path / "migrated-to-uv"
-    if sentinel:
-        path.write_text("x", encoding="utf-8")
-    monkeypatch.setattr(lifecycle, "MIGRATED_TO_UV_SENTINEL", path)
-    monkeypatch.setattr(
-        lifecycle, "upgrade_advice",
-        lambda: argparse.Namespace(context=context),
-    )
-    monkeypatch.setattr(
-        lifecycle.shutil, "which",
-        lambda name: "/opt/bin/uv" if uv and name == "uv" else None,
-    )
-    assert lifecycle.uv_migration_pending() is pending
+    p = _setup_files(tmp_path, monkeypatch)
+    args = _setup_parse([])
+    _wire_claude(p, args)
+    if moves:
+        _hook_on_path(tmp_path, monkeypatch)
+    before = _contents(tmp_path)
+    os.chmod(p["claude"], 0o500)
+    try:
+        refusal = cli._settings_change_after_migration(  # noqa: SLF001
+            args, MigrationResult(attempted, attempted, "migrated to uv tool"),
+        )
+    finally:
+        _restore_modes(tmp_path)
+    if refused:
+        assert refusal == (
+            f"aelf setup: {p['claude']} can't be written to (Permission "
+            "denied), and the uv migration that just ran changed the hook "
+            f"programs on PATH, so setup would change {p['settings']}; the "
+            f"settings weren't changed. {_FIX_PERMS}"
+        ), refusal
+    else:
+        assert refusal is None, refusal
+    assert _contents(tmp_path) == before
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize("moves", [False, True], ids=["same", "moved"])
+def test_setup_claude_runs_a_pending_uv_migration_past_a_read_only_claude_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], moves: bool,
+) -> None:
+    """With current settings in a `~/.claude` you can't write in, plain
+    setup's preflight passes, so the pending uv migration runs, as on
+    main, instead of every run refusing before it. When the migration
+    moved the hook programs, setup exits 1 after it with the refusal that
+    names the migration, before any later step, and changes no settings."""
+    import aelfrice.cli as cli
+    from aelfrice.lifecycle import MigrationResult
+
+    p = _setup_files(tmp_path, monkeypatch)
+    args = _setup_parse([])
+    _wire_claude(p, args)
+    ran: list[str] = []
+
+    def migrate(*_a: object, **_k: object) -> MigrationResult:
+        ran.append("migration")
+        if moves:
+            _hook_on_path(tmp_path, monkeypatch)
+        return MigrationResult(True, True, "migrated to uv tool")
+
+    def went_on() -> None:
+        ran.append("past the migration")
+        raise AssertionError("setup went on past the refusal")
+
+    monkeypatch.setattr(cli, "maybe_migrate_to_uv", migrate)
+    monkeypatch.setattr(cli, "_maybe_reconcile_claude_memory_at_setup", went_on)
+    monkeypatch.setattr(cli, "_open_store", went_on)
+    import aelfrice.mcp_cleanup as mcp_cleanup
+
+    monkeypatch.setattr(mcp_cleanup, "maybe_clean_up_mcp", went_on)
+    settings = p["settings"].read_bytes()
+    os.chmod(p["claude"], 0o500)
+    try:
+        if moves:
+            rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+        else:
+            with pytest.raises(AssertionError, match="past the refusal"):
+                cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+            rc = None
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    assert p["settings"].read_bytes() == settings
+    if moves:
+        assert rc == 1, err
+        assert ran == ["migration"], ran
+        assert err.endswith(
+            f"aelf setup: {p['claude']} can't be written to (Permission "
+            "denied), and the uv migration that just ran changed the hook "
+            f"programs on PATH, so setup would change {p['settings']}; the "
+            f"settings weren't changed. {_FIX_PERMS}\n"
+        ), err
+    else:
+        assert ran[:2] == ["migration", "past the migration"], ran
