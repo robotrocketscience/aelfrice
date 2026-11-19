@@ -2053,16 +2053,64 @@ class SetupJSONSyntaxError(SetupInputError):
     """
 
 
-def json_unreadable_cause(exc: RecursionError | ValueError) -> str:
-    """Why Python's `json` can't read a document that is JSON, from the
-    error `json.loads` raised for it other than `JSONDecodeError` (#1812).
+#: The deepest nesting of arrays and objects, with the top-level value at
+#: level 1, that setup reads in a file it may write back (#1812). Python
+#: 3.12 writes `json.dumps(indent=2)` with one Python frame per level, so
+#: at the default recursion limit of 1000 it raises `RecursionError` past
+#: about 980 levels near the bottom of the stack, and past fewer as the
+#: stack grows; 3.13 writes, and `json.loads` reads on both, about 9990.
+#: A fixed bound far below these refuses the same files on both versions.
+SETUP_JSON_MAX_DEPTH: Final[int] = 256
 
-    `json.loads` raises `RecursionError` for arrays or objects nested
-    deeper than the interpreter's recursion limit, and `ValueError` for an
-    integer longer than `sys.get_int_max_str_digits()` digits.
+#: An array or object bracket, or a JSON string, which `json_nesting_too_deep`
+#: skips. A string runs to its closing quote or to the end of the text.
+_JSON_NESTING_TOKEN: Final[re.Pattern[str]] = re.compile(
+    r'"(?:[^"\\]|\\.)*"?|[\[\]{}]', re.DOTALL,
+)
+
+
+class JSONTooDeepError(ValueError):
+    """Text that nests arrays or objects more than `SETUP_JSON_MAX_DEPTH`
+    levels deep, which `load_setup_json` refuses before `json.loads`
+    reads it (#1812)."""
+
+
+def load_setup_json(text: str) -> object:
+    """`json.loads(text)`, or `JSONTooDeepError` when `text` nests arrays
+    or objects more than `SETUP_JSON_MAX_DEPTH` levels deep (#1812).
+
+    It counts the brackets outside strings before it parses, with a loop,
+    so the refusal doesn't depend on the Python version or the stack, and
+    text that isn't JSON past that depth is refused too.
     """
-    if isinstance(exc, RecursionError):
-        return "nests arrays or objects too deeply for setup to read"
+    depth = 0
+    for match in _JSON_NESTING_TOKEN.finditer(text):
+        token = match.group()
+        if token in ("[", "{"):
+            depth += 1
+            if depth > SETUP_JSON_MAX_DEPTH:
+                raise JSONTooDeepError(
+                    f"more than {SETUP_JSON_MAX_DEPTH} levels deep",
+                )
+        elif token in ("]", "}"):
+            depth -= 1
+    return json.loads(text)
+
+
+def json_unreadable_cause(exc: RecursionError | ValueError) -> str:
+    """Why setup doesn't read a document that may be JSON, from the error
+    `load_setup_json` raised for it other than `JSONDecodeError` (#1812).
+
+    That is `JSONTooDeepError` for arrays or objects nested more than
+    `SETUP_JSON_MAX_DEPTH` levels deep, `RecursionError`, which the depth
+    check keeps `json.loads` from raising, and `ValueError` for an integer
+    longer than `sys.get_int_max_str_digits()` digits.
+    """
+    if isinstance(exc, (JSONTooDeepError, RecursionError)):
+        return (
+            f"nests arrays or objects more than {SETUP_JSON_MAX_DEPTH} "
+            "levels deep, which setup can't read"
+        )
     return (
         f"holds an integer of more than {sys.get_int_max_str_digits()} "
         "digits, which setup can't read"
@@ -2126,12 +2174,12 @@ def parse_setup_json(path: Path, text: str) -> object:
     naming `path` and the cause (#1812).
 
     It refuses text that isn't JSON (`SetupJSONSyntaxError`), JSON that
-    Python's `json` can't read (see `json_unreadable_cause`), and a key or
-    string that holds a lone UTF-16 surrogate escape, such as `"\\ud800"`,
-    which setup's writers can't write back as UTF-8 text.
+    setup doesn't read (see `json_unreadable_cause`), and a key or string
+    that holds a lone UTF-16 surrogate escape, such as `"\\ud800"`, which
+    setup's writers can't write back as UTF-8 text.
     """
     try:
-        parsed: object = json.loads(text)
+        parsed: object = load_setup_json(text)
     except json.JSONDecodeError as exc:
         raise SetupJSONSyntaxError(f"{path} isn't valid JSON ({exc})") from exc
     except (RecursionError, ValueError) as exc:

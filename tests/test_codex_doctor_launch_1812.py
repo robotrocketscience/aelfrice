@@ -2536,15 +2536,30 @@ _LATIN1_LEDGER: Final[bytes] = b'{"opt_out": ["\xff"]}'
 _CLAUDE_OPTED_OUT: Final[str] = '{"opt_out": [], "opt_out_hosts": ["claude"]}\n'
 #: A ledger that opts the transcript-ingest hook out.
 _INGEST_OPTED_OUT: Final[str] = '{"opt_out": ["transcript_ingest"]}\n'
-#: JSON that Python's `json` can't read, or that holds a lone surrogate,
-#: with the cause setup names after the file (#1812), keyed by the name of
-#: the state that puts it in the Claude settings; the ledger states put the
-#: same text under `opt_out`.
+
+
+def _nested(levels: int, top: bytes = b'{"hooks": {}, "x": ') -> bytes:
+    """A JSON object that nests arrays or objects `levels` levels deep, the
+    object itself at level 1, with its first members `top` (#1812)."""
+    return top + b"[" * (levels - 1) + b"]" * (levels - 1) + b"}"
+
+
+#: The cause setup names after a file nested deeper than it reads (#1812).
+_TOO_DEEP: Final[str] = (
+    "nests arrays or objects more than 256 levels deep, which setup can't "
+    "read"
+)
+#: JSON that setup doesn't read, or that holds a lone surrogate, with the
+#: cause setup names after the file (#1812), keyed by the name of the state
+#: that puts it in the Claude settings; the ledger states put the same text
+#: under `opt_out`. Python 3.12 reads 2,000 and 9,000 levels with
+#: `json.loads` and raises `RecursionError` when `json.dumps(indent=2)`
+#: writes them; 100,000 levels raise it in `json.loads` on 3.12 and 3.13.
 _UNREADABLE_JSON: Final[dict[str, tuple[bytes, str]]] = {
-    "deep": (
-        b'{"hooks": {}, "x": ' + b"[" * 100_000 + b"]" * 100_000 + b"}",
-        "nests arrays or objects too deeply for setup to read",
-    ),
+    "deep": (_nested(100_000), _TOO_DEEP),
+    "deep 257": (_nested(257), _TOO_DEEP),
+    "deep 2000": (_nested(2000), _TOO_DEEP),
+    "deep 9000": (_nested(9000), _TOO_DEEP),
     "long integer": (
         b'{"hooks": {}, "x": ' + b"1" * 5000 + b"}",
         f"holds an integer of more than {sys.get_int_max_str_digits()} "
@@ -2562,10 +2577,9 @@ _UNREADABLE_JSON: Final[dict[str, tuple[bytes, str]]] = {
     ),
 }
 _LEDGER_JSON: Final[dict[str, tuple[bytes, str]]] = {
-    "ledger deep": (
-        b'{"opt_out": ' + b"[" * 100_000 + b"]" * 100_000 + b"}",
-        _UNREADABLE_JSON["deep"][1],
-    ),
+    "ledger deep": (_nested(100_000, b'{"opt_out": '), _TOO_DEEP),
+    "ledger deep 2000": (_nested(2000, b'{"opt_out": '), _TOO_DEEP),
+    "ledger deep 9000": (_nested(9000, b'{"opt_out": '), _TOO_DEEP),
     "ledger long integer": (
         b'{"opt_out": [' + b"1" * 5000 + b"]}", _UNREADABLE_JSON["long integer"][1],
     ),
@@ -2782,9 +2796,10 @@ _SHARED_SETTINGS_STATES: Final[tuple[str, ...]] = (
     "hooks array", "hooks repeated", "event object", "event string",
     "entry number", "inner number", "inner true", "inner object",
     "inner string", "claude dangling", "claude loop", "settings loop",
-    "claude link to fifo", "settings link to fifo", "deep", "long integer",
-    "lone surrogate", "surrogate key", "ledger deep", "ledger long integer",
-    "ledger surrogate",
+    "claude link to fifo", "settings link to fifo", "deep", "deep 257",
+    "deep 2000", "deep 9000", "long integer", "lone surrogate",
+    "surrogate key", "ledger deep", "ledger deep 2000", "ledger deep 9000",
+    "ledger long integer", "ledger surrogate",
 )
 _CODEX_STATES: Final[tuple[str, ...]] = (
     "settings latin-1", "settings utf-16", "claude unsearchable",
@@ -3384,7 +3399,8 @@ _CLAUDE_STATES: Final[tuple[str, ...]] = (
     "home read-only", "claude read-only", "inner number", "inner true",
     "inner object", "inner string", "claude dangling", "claude loop",
     "settings loop", "claude link to fifo", "settings link to fifo", "deep",
-    "long integer", "lone surrogate", "surrogate key", "ledger deep",
+    "deep 257", "deep 2000", "deep 9000", "long integer", "lone surrogate",
+    "surrogate key", "ledger deep", "ledger deep 2000", "ledger deep 9000",
     "ledger long integer", "ledger surrogate",
 )
 
@@ -3457,6 +3473,13 @@ def test_setup_claude_refuses_a_file_it_can_not_use_and_writes_nothing(
         ),
         pytest.param(b'{"hooks": [], "hooks": {}}', id="last hooks object"),
         pytest.param(b'{"x": "\\ud83d\\ude00"}', id="surrogate pair"),
+        pytest.param(_nested(256), id="256 levels"),
+        pytest.param(
+            b'{"x": "' + b"[" * 300 + b'"}', id="brackets in a string",
+        ),
+        pytest.param(
+            b'{"x": "\\"' + b"{" * 300 + b'"}', id="brackets after an escape",
+        ),
     ],
 )
 def test_setup_reads_claude_settings_shapes_it_can_edit(
@@ -3465,7 +3488,9 @@ def test_setup_reads_claude_settings_shapes_it_can_edit(
     """The settings check refuses only a shape setup would stop on: a
     `null` it fills in, an event setup doesn't edit, and a list of any
     values inside an entry pass, and the last of two `hooks` keys is the
-    one read. An escaped surrogate pair is one character and passes."""
+    one read. An escaped surrogate pair is one character and passes, and
+    so do 256 levels of nesting and brackets inside a string, which the
+    depth check skips past an escaped quote too."""
     from aelfrice.setup import check_settings_for_setup
 
     path = tmp_path / "settings.json"
@@ -3697,10 +3722,10 @@ def test_both_halves_read_a_settings_link_they_can_follow(
 #: hooks.json contents that are JSON Python's `json` can't read, with the
 #: cause setup and unsetup name after the file (#1812).
 _HOOKS_UNREADABLE: Final[dict[str, tuple[bytes, str]]] = {
-    "deep": (
-        b'{"hooks": ' + b"[" * 100_000 + b"]" * 100_000 + b"}",
-        "nests arrays or objects too deeply for setup to read",
-    ),
+    "deep": (_nested(100_000, b'{"hooks": '), _TOO_DEEP),
+    "deep 257": (_nested(257), _TOO_DEEP),
+    "deep 2000": (_nested(2000), _TOO_DEEP),
+    "deep 9000": (_nested(9000), _TOO_DEEP),
     "long integer": (
         b'{"hooks": {"x": ' + b"1" * 5000 + b"}}",
         f"holds an integer of more than {sys.get_int_max_str_digits()} "
@@ -3714,10 +3739,11 @@ _HOOKS_UNREADABLE: Final[dict[str, tuple[bytes, str]]] = {
 def test_setup_and_unsetup_treat_a_hooks_json_python_can_not_read_as_invalid(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], case: str,
 ) -> None:
-    """Setup and unsetup treat a hooks.json that is JSON Python's `json`
-    can't read, nested too deeply or holding an integer too long, as one
-    that isn't JSON: they exit 1, name the cause and leave the file as it
-    is, and `setup --force` replaces it."""
+    """Setup and unsetup treat a hooks.json that setup doesn't read,
+    nested more than 256 levels deep, under `hooks` or a key Codex doesn't
+    read, or holding an integer too long, as one that isn't JSON: they
+    exit 1, name the cause and leave the file as it is, and `setup
+    --force` replaces it."""
     data, cause = _HOOKS_UNREADABLE[case]
     hooks = tmp_path / "codex" / "hooks.json"
     hooks.parent.mkdir()
@@ -3740,6 +3766,60 @@ def test_setup_and_unsetup_treat_a_hooks_json_python_can_not_read_as_invalid(
     doc = json.loads(hooks.read_text(encoding="utf-8"))
     assert sorted(doc) == ["hooks"], doc
     assert "SessionStart" in doc["hooks"], doc
+
+
+def _depth(value: object) -> int:
+    """How many levels of arrays and objects `value` nests, itself at
+    level 1, counted with a loop."""
+    deepest, stack = 0, [(value, 1)]
+    while stack:
+        item, level = stack.pop()
+        if isinstance(item, dict):
+            stack.extend((v, level + 1) for v in cast(dict[str, object], item).values())
+        elif isinstance(item, list):
+            stack.extend((v, level + 1) for v in cast(list[object], item))
+        else:
+            continue
+        deepest = max(deepest, level)
+    return deepest
+
+
+@pytest.mark.timeout(60)
+def test_both_halves_write_files_nested_as_deep_as_setup_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup reads and writes back files that nest 256 levels deep, the
+    deepest it reads: plain setup's preflight passes such Claude settings
+    and its settings commit writes them, and `setup --host codex` and
+    `unsetup --host codex` rewrite such a hooks.json and keep the key
+    Codex doesn't read. On Python 3.12 `json.dumps(indent=2)` takes one
+    Python frame per level, so this runs the writers at that depth below
+    pytest's own frames."""
+    import aelfrice.cli as cli
+
+    p = _setup_files(tmp_path, monkeypatch)
+    _write_settings(p, _nested(256))
+    args = _setup_parse([])
+    assert cli._setup_input_refusal(args) is None  # noqa: SLF001
+    _wire_claude(p, args)
+    doc = json.loads(p["settings"].read_bytes())
+    assert _depth(doc["x"]) == 255
+    assert "UserPromptSubmit" in doc["hooks"], doc["hooks"]
+    hooks = p["codex"] / "hooks.json"
+    hooks.write_bytes(_nested(256))
+    codex = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=False,
+    )
+    assert _cmd_setup_codex(codex, io.StringIO(), hooks_path=hooks) == 0
+    doc = json.loads(hooks.read_bytes())
+    assert _depth(doc["x"]) == 255
+    assert "SessionStart" in doc["hooks"], doc["hooks"]
+    assert _cmd_unsetup_codex(
+        codex, io.StringIO(), hooks_path=hooks, skills_dest=tmp_path / "s",
+    ) == 0
+    doc = json.loads(hooks.read_bytes())
+    assert _depth(doc["x"]) == 255
+    assert doc["hooks"] == {}, doc["hooks"]
 
 
 @pytest.mark.timeout(60)
@@ -3768,8 +3848,7 @@ def test_opt_out_ledger_check_reads_a_ledger_that_is_not_json_as_empty(
 ) -> None:
     """The ledger check reads a ledger that isn't JSON at all as empty, as
     the readers read it, so setup rewrites it instead of refusing; only
-    JSON that Python's `json` can't read, or a lone surrogate, is
-    refused."""
+    JSON that setup doesn't read, or a lone surrogate, is refused."""
     from aelfrice.auto_install import check_opt_out_ledger
 
     ledger = tmp_path / "opt-out-hooks.json"

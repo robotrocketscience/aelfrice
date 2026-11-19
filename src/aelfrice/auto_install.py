@@ -411,11 +411,11 @@ def check_opt_out_ledger(
     create or write in, such as a missing `~/.aelfrice` in a home you
     can't write in, or a `~/.aelfrice` that is a symbolic link to a path
     that doesn't exist (`setup.check_can_write_in`). A ledger that isn't
-    JSON still reads as empty, as the readers read it. One that is JSON
-    but that Python's `json` can't read, nested too deeply or holding an
-    integer too long, or that holds a lone UTF-16 surrogate escape, which
-    the ledger writer can't write back as UTF-8, is refused
-    (`setup.parse_setup_json`).
+    JSON still reads as empty, as the readers read it. One that nests
+    arrays or objects more than `setup.SETUP_JSON_MAX_DEPTH` levels deep,
+    JSON with an integer Python's `json` can't read, and one that holds a
+    lone UTF-16 surrogate escape, which the ledger writer can't write back
+    as UTF-8, are refused (`setup.parse_setup_json`).
     """
     if opt_out_path is None:
         opt_out_path = OPT_OUT_PATH
