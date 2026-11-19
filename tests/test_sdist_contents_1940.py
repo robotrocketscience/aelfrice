@@ -47,7 +47,7 @@ _CACHE_FILES = {
 
 
 def _tracked() -> list[str]:
-    out = subprocess.run(
+    out = subprocess.run(  # path-filter: **
         ["git", "ls-files", "-z"],
         cwd=_REPO, check=True, capture_output=True, timeout=60,
     ).stdout.decode("utf-8")
@@ -58,7 +58,7 @@ def _copy_tracked(tree: Path) -> set[str]:
     """Copy each tracked file present in the working tree; return the paths."""
     copied: set[str] = set()
     for rel in _tracked():
-        src = _REPO / rel
+        src = _REPO / rel  # path-filter: **
         if not src.is_file() and not src.is_symlink():
             continue  # deleted in the working tree, or a submodule
         dst = tree / rel
