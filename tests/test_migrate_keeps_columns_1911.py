@@ -185,6 +185,35 @@ def test_corroboration_count_survives_with_its_rows(tmp_path: Path) -> None:
     ]
 
 
+def test_a_belief_the_target_holds_keeps_the_targets_rows(
+    tmp_path: Path,
+) -> None:
+    """Migrating into a store that already holds b1 adds none of the
+    source's rows to it, so its corroboration count does not grow."""
+    src, dst = tmp_path / "src.db", tmp_path / "dst.db"
+    for path, sessions in ((src, ("s-0", "s-1")), (dst, ("t-0",))):
+        s = MemoryStore(str(path))
+        try:
+            s.insert_belief(_belief())
+            for sid in sessions:
+                s.record_corroboration(
+                    "b1", source_type=CORROBORATION_SOURCE_CLI_REMEMBER,
+                    session_id=sid, ts="2026-01-02T00:00:00+00:00",
+                )
+        finally:
+            s.close()
+    report = migrate(legacy_path=src, target_path=dst, project_root=tmp_path,
+                     apply=True, copy_all=True)
+    assert report.counts.skipped_existing_beliefs == 1
+    assert report.counts.copied_corroborations == 0
+    t = MemoryStore(str(dst))
+    try:
+        rows = t.list_corroborations("b1")
+    finally:
+        t.close()
+    assert [r[2] for r in rows] == ["t-0"]
+
+
 def test_edge_anchor_text_survives(tmp_path: Path) -> None:
     src, dst = tmp_path / "src.db", tmp_path / "dst.db"
     s = MemoryStore(str(src))
