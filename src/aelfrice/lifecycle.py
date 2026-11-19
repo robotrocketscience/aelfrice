@@ -1410,23 +1410,6 @@ class MigrationResult:
     reason: str
 
 
-def uv_migration_pending(*, sentinel_path: Path | None = None) -> bool:
-    """Whether `maybe_migrate_to_uv` would start the migration now
-    (#1812): no sentinel, an install that isn't a uv tool, and `uv` on
-    `PATH`, the first three steps of its short-circuit order.
-
-    `aelf setup` asks before its first write, because the migration can
-    move the hook programs that the settings name.
-    """
-    if sentinel_path is None:
-        sentinel_path = MIGRATED_TO_UV_SENTINEL
-    if sentinel_path.exists():
-        return False
-    if upgrade_advice().context == "uv_tool":
-        return False
-    return shutil.which("uv") is not None
-
-
 def maybe_migrate_to_uv(
     *,
     sentinel_path: Path | None = None,
