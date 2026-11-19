@@ -3480,6 +3480,10 @@ def test_setup_claude_refuses_a_file_it_can_not_use_and_writes_nothing(
         pytest.param(
             b'{"x": "\\"' + b"{" * 300 + b'"}', id="brackets after an escape",
         ),
+        pytest.param(
+            b'{"x": [' + b", ".join([b"{}"] * 300) + b"]}",
+            id="300 objects side by side",
+        ),
     ],
 )
 def test_setup_reads_claude_settings_shapes_it_can_edit(
@@ -3489,8 +3493,9 @@ def test_setup_reads_claude_settings_shapes_it_can_edit(
     `null` it fills in, an event setup doesn't edit, and a list of any
     values inside an entry pass, and the last of two `hooks` keys is the
     one read. An escaped surrogate pair is one character and passes, and
-    so do 256 levels of nesting and brackets inside a string, which the
-    depth check skips past an escaped quote too."""
+    so do 256 levels of nesting, 300 objects side by side, and brackets
+    inside a string, which the depth check skips past an escaped quote
+    too."""
     from aelfrice.setup import check_settings_for_setup
 
     path = tmp_path / "settings.json"
@@ -4016,16 +4021,17 @@ def _hook_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.timeout(60)
 @_needs_chmod
 @pytest.mark.parametrize(
-    ("attempted", "moves", "refused"),
+    ("attempted", "moves", "read_only", "refused"),
     [
-        pytest.param(True, False, False, id="ran, same programs"),
-        pytest.param(True, True, True, id="ran, moved the hook"),
-        pytest.param(False, True, False, id="did not run"),
+        pytest.param(True, False, True, False, id="ran, same programs"),
+        pytest.param(True, True, True, True, id="ran, moved the hook"),
+        pytest.param(False, True, True, False, id="did not run"),
+        pytest.param(True, True, False, False, id="ran, moved, writable"),
     ],
 )
 def test_setup_claude_rereads_the_hook_programs_after_a_uv_migration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attempted: bool,
-    moves: bool, refused: bool,
+    moves: bool, read_only: bool, refused: bool,
 ) -> None:
     """A uv migration that setup starts can put new hook programs ahead of
     the old ones on `PATH`, which setup can't know before it runs. So the
@@ -4033,7 +4039,8 @@ def test_setup_claude_rereads_the_hook_programs_after_a_uv_migration(
     current while a migration is pending, and setup runs its settings
     edits again after a migration it started: it refuses, naming the
     folder and the migration, only when those edits would now change the
-    settings. The check writes nothing."""
+    settings there. In a folder it can write in, setup goes on and writes
+    them. The check writes nothing."""
     import aelfrice.cli as cli
     from aelfrice.lifecycle import MigrationResult
 
@@ -4043,7 +4050,8 @@ def test_setup_claude_rereads_the_hook_programs_after_a_uv_migration(
     if moves:
         _hook_on_path(tmp_path, monkeypatch)
     before = _contents(tmp_path)
-    os.chmod(p["claude"], 0o500)
+    if read_only:
+        os.chmod(p["claude"], 0o500)
     try:
         refusal = cli._settings_change_after_migration(  # noqa: SLF001
             args, MigrationResult(attempted, attempted, "migrated to uv tool"),
