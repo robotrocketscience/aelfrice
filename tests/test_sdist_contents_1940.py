@@ -2,7 +2,7 @@
 
 `publish.yml` ran pytest and then `uv build` in one checkout. Hypothesis
 writes its cache to `.hypothesis/` in the working directory, and hatchling
-put every file there into the sdist: the 5.4.0 sdist on PyPI carried 239
+put every file there into the sdist: the 5.4.0 sdist on PyPI carried 240
 cache files. Hatchling reads the root `.gitignore` and not the `.gitignore`
 that Hypothesis writes inside the cache folder.
 
