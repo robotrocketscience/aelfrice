@@ -1,15 +1,15 @@
-"""`aelf migrate --apply` copies every column the source has (#1911).
+"""`aelf migrate --apply` copies every column of each belief (#1911).
 
 Before the fix, migrate built each target `Belief` from 13 named fields,
 so `valid_to`, `lock_tier`, `lock_expires_at`, `session_id`,
-`retention_class` and `last_confirmed_at` took their defaults, the
-`belief_corroborations` rows behind `corroboration_count` stayed behind,
-and edges lost `anchor_text`. A retired belief came back active and a
-timed reference lock came back as a permanent frozen lock.
+`retention_class`, and `last_confirmed_at` took their defaults, the
+`belief_corroborations` rows behind `corroboration_count` were not
+copied, and edges lost `anchor_text`. A retired belief was active in the
+target, and a timed reference lock was a permanent frozen lock there.
 
 Each test seeds a source store, runs `migrate(..., apply=True,
 copy_all=True)` into a fresh target in `tmp_path`, and reads the target
-back. The conftest session fixture pins HOME, AELFRICE_DB and
+back. The conftest session fixture pins HOME, AELFRICE_DB, and
 AELFRICE_USER_DB to a temp dir.
 """
 from __future__ import annotations
