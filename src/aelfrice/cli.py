@@ -5545,8 +5545,8 @@ def _claude_settings_would_change(
     writes nothing. In place of the commit-ingest git hook it runs only
     the removal of the old commit-ingest entry from `path`, the one part
     of that step that edits this file. It resolves the hook programs as
-    they are on `PATH` now, so setup runs it again after a uv migration,
-    which can put new ones ahead of them (`_settings_change_after_migration`).
+    they are on `PATH` now, or, inside `programs_installed_in`, as a uv
+    migration would leave them (`_claude_settings_change_after_install`).
     """
     import io
 
@@ -5567,19 +5567,105 @@ def _claude_settings_would_change(
     return txn.dirty
 
 
+def _claude_settings_change_after_install(
+    args: argparse.Namespace, path: Path, programs_folder: Path,
+) -> tuple[bool, dict[str, tuple[str, str]]]:
+    """Whether `aelf setup` would write the settings file at `path` once
+    a uv migration has installed the hook programs in `programs_folder`,
+    and each hook command that install changes, as its command now and
+    after (#1812). It writes nothing."""
+    from aelfrice.setup import programs_installed_in
+
+    with programs_installed_in(programs_folder) as prediction:
+        dirty = _claude_settings_would_change(args, path)
+    return dirty, prediction.moved
+
+
+def _uv_migration_programs_folder() -> Path | None:
+    """The folder a uv migration that `aelf setup` would run now installs
+    the hook programs in, or None (#1812).
+
+    None means no migration is pending (`lifecycle.pending_uv_migration`)
+    or setup can't predict the folder: `uv tool dir --bin` failed, timed
+    out, or printed something other than one absolute path
+    (`lifecycle.uv_tool_bin_dir`), or the platform is Windows, where
+    setup doesn't predict a `PATH` search. Setup then decides on the
+    programs on `PATH` now and checks again after the migration
+    (`_settings_change_after_migration`).
+    """
+    from aelfrice import lifecycle
+
+    if sys.platform == "win32":
+        return None
+    uv_bin = lifecycle.pending_uv_migration()
+    if uv_bin is None:
+        return None
+    return lifecycle.uv_tool_bin_dir(uv_bin).path
+
+
+def _check_claude_settings_folder(
+    args: argparse.Namespace, settings_path: Path,
+) -> None:
+    """Raise `SetupInputError` when `aelf setup` would write the settings
+    file at `settings_path` in a folder it can't write in (#1812).
+
+    The settings commit writes a temp file beside settings.json. A folder
+    you can't write in is refused only when setup would change the file,
+    so a read-only `~/.claude` whose settings are current passes. A lock
+    file setup can't create there is no write: the commit runs unlocked
+    (`exclusive_file_lock`). Setup runs a pending uv migration before it
+    writes the settings, so the edits are run with the hook programs
+    where the migration would put them, when setup can predict that.
+    """
+    from aelfrice.setup import SetupInputError, check_can_write_in
+
+    folder = settings_path.parent
+    if not os.path.isdir(folder) or os.access(folder, os.W_OK | os.X_OK):
+        check_can_write_in(folder)
+        return
+    programs_folder = _uv_migration_programs_folder()
+    if programs_folder is None:
+        if _claude_settings_would_change(args, settings_path):
+            check_can_write_in(folder)
+        return
+    dirty, moved = _claude_settings_change_after_install(
+        args, settings_path, programs_folder,
+    )
+    if not dirty:
+        return
+    if not moved:
+        check_can_write_in(folder)
+        return
+    old, new = next(iter(moved.values()))
+    others = len(moved) - 1
+    tail = (
+        "" if others == 0
+        else f", and {others} other hook command"
+        f"{'' if others == 1 else 's'} the same way"
+    )
+    raise SetupInputError(
+        f"{folder} can't be written to (Permission denied), and the uv "
+        "migration setup runs first (`uv tool install --force aelfrice`) "
+        f"would install the hook programs in {programs_folder}, so setup "
+        f"would change {settings_path}: {old} to {new}{tail}",
+        "Fix its permissions, and run setup again",
+    )
+
+
 def _settings_change_after_migration(
     args: argparse.Namespace, migration: MigrationResult,
 ) -> str | None:
-    """The refusal `aelf setup` prints when the uv migration it just ran
-    makes it change settings in a folder you can't write in, or None
-    (#1812).
+    """The refusal `aelf setup` prints when, after the uv migration it
+    just ran, it would change settings in a folder you can't write in, or
+    None (#1812).
 
-    The preflight runs the settings edits with the hook programs on `PATH`
-    before the migration, and a read-only `~/.claude` whose settings are
-    current passes it. Which programs `uv tool install` puts on `PATH`,
-    if it succeeds, isn't known until it has run, so setup runs the edits
-    again after a migration it started, and refuses there, before it
-    writes the settings, when they would now change them.
+    The preflight predicts where the migration puts the hook programs.
+    The prediction can be missing (`_uv_migration_programs_folder`) or
+    wrong, for example when the install fails or uv writes the programs
+    somewhere else, so setup runs its settings edits again after a
+    migration it started, and refuses there, before it writes the
+    settings, when they would now change them. By then the migration has
+    run, and setup may have cleared the Claude auto-install opt-out.
     """
     if not migration.attempted:
         return None
@@ -5591,8 +5677,8 @@ def _settings_change_after_migration(
         return None
     return (
         f"aelf setup: {folder} can't be written to (Permission denied), "
-        "and the uv migration that just ran changed the hook programs "
-        f"on PATH, so setup would change {path}; the settings weren't "
+        "and with the hook programs on PATH after the uv migration it "
+        f"just ran, setup would change {path}; the settings weren't "
         "changed. Fix its permissions, and run setup again"
     )
 
@@ -5606,25 +5692,13 @@ def _setup_claude_preflight(args: argparse.Namespace) -> None:
     (`_sync_setup_opt_outs_and_stamp`)."""
     from aelfrice.auto_install import check_opt_out_ledger
     from aelfrice.setup import (
-        check_can_write_in,
         check_settings_for_setup,
         check_slash_commands_dest,
     )
 
     settings_path = _resolve_settings_path(args)
     check_settings_for_setup(settings_path)
-    # The settings commit writes a temp file beside settings.json. A
-    # folder you can't write in is refused only when setup would change
-    # the file, so a read-only `~/.claude` whose settings are current
-    # passes. A lock file setup can't create there is no write: the
-    # commit runs unlocked (`exclusive_file_lock`).
-    folder = settings_path.parent
-    if not (
-        os.path.isdir(folder)
-        and not os.access(folder, os.W_OK | os.X_OK)
-        and not _claude_settings_would_change(args, settings_path)
-    ):
-        check_can_write_in(folder)
+    _check_claude_settings_folder(args, settings_path)
     slash_dest = getattr(args, "slash_commands_dir", None)
     check_slash_commands_dest(Path(slash_dest) if slash_dest else None)
     wants = {

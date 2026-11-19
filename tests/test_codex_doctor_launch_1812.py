@@ -3945,9 +3945,10 @@ def test_setup_claude_refuses_a_read_only_claude_folder_only_for_a_write(
     would change the settings file there, as its settings edits, run
     without a write, show. Settings that are current pass, with or
     without the lock file setup takes; an old commit-ingest entry setup
-    removes, a hook it adds, and a statusline it adds are refused. A uv
-    migration that setup would start first doesn't count as a change, so
-    current settings pass with one pending. The check writes nothing."""
+    removes, a hook it adds, and a statusline it adds are refused. A
+    pending uv migration that installs the hook programs in a folder that
+    isn't on PATH moves no hook command, so current settings pass with one
+    pending. The check writes nothing."""
     import aelfrice.cli as cli
     from aelfrice.setup import install_commit_ingest_hook
 
@@ -4012,9 +4013,11 @@ def test_setup_claude_settings_dry_run_writes_nothing(
 
 def _pend_migration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Make `maybe_migrate_to_uv` see a migration to run: no marker, a
-    pipx install, and `uv` on `PATH`. The conftest sandbox creates the
-    marker so no test runs a real `uv tool install`; a test that uses
-    this replaces `cli.maybe_migrate_to_uv` or never reaches it."""
+    pipx install, and a fake `uv` first on `PATH` whose programs folder
+    isn't on `PATH`, so the migration setup predicts moves no hook
+    command. The conftest sandbox creates the marker so no test runs a
+    real `uv tool install`; a test that uses this replaces
+    `cli.maybe_migrate_to_uv` or never reaches it."""
     from aelfrice import lifecycle
 
     monkeypatch.setattr(
@@ -4023,11 +4026,66 @@ def _pend_migration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         lifecycle, "upgrade_advice", lambda: argparse.Namespace(context="pipx"),
     )
-    real_which = lifecycle.shutil.which
-    monkeypatch.setattr(
-        lifecycle.shutil, "which",
-        lambda name, *a, **k: "/opt/bin/uv" if name == "uv" else real_which(name, *a, **k),
+    uv_dir = Path(tempfile.mkdtemp(prefix="fake-uv-", dir=tmp_path.parent))
+    _write_fake_uv(uv_dir)
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv_dir / "off-path-bin"))
+    monkeypatch.setenv("PATH", f"{uv_dir}{os.pathsep}{os.environ['PATH']}")
+
+
+#: The programs a fake `uv tool install aelfrice` writes: every
+#: [project.scripts] name in pyproject.toml, as a real install writes them.
+_UV_PROGRAMS: Final[str] = " ".join(sorted(tomllib.loads(
+    (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8",
+    ),
+)["project"]["scripts"]))
+
+
+def _write_fake_uv(folder: Path) -> Path:
+    """Write a fake `uv` in `folder` (#1812). It appends its arguments to
+    `folder / "uv.log"`. `uv tool dir --bin` prints the programs folder in
+    the order uv's docs give, UV_TOOL_BIN_DIR, XDG_BIN_HOME, then
+    XDG_DATA_HOME/../bin, then HOME/.local/bin, or, under FAKE_UV_MODE,
+    fails (exit 2), hangs, prints a relative path, two lines, or nothing.
+    `uv tool install` writes each aelfrice program in that folder, or in
+    FAKE_UV_INSTALL_DIR when it is set. It never runs a real uv."""
+    uv = folder / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> "{folder / "uv.log"}"\n'
+        "bindir() {\n"
+        '  if [ -n "$UV_TOOL_BIN_DIR" ]; then echo "$UV_TOOL_BIN_DIR"\n'
+        '  elif [ -n "$XDG_BIN_HOME" ]; then echo "$XDG_BIN_HOME"\n'
+        '  elif [ -n "$XDG_DATA_HOME" ]; then echo "$XDG_DATA_HOME/../bin"\n'
+        '  else echo "$HOME/.local/bin"; fi\n'
+        "}\n"
+        'if [ "$1 $2 $3" = "tool dir --bin" ]; then\n'
+        '  case "$FAKE_UV_MODE" in\n'
+        '    fail) echo "error: no tool dir" >&2; exit 2;;\n'
+        "    hang) exec sleep 30;;\n"
+        "    relative) echo rel-bin; exit 0;;\n"
+        "    two-lines) bindir; bindir; exit 0;;\n"
+        "    empty) exit 0;;\n"
+        "  esac\n"
+        "  bindir; exit 0\n"
+        "fi\n"
+        'if [ "$1 $2" = "tool install" ]; then\n'
+        '  d="${FAKE_UV_INSTALL_DIR:-$(bindir)}"\n'
+        '  mkdir -p "$d"\n'
+        f"  for n in {_UV_PROGRAMS}; do\n"
+        "    printf '#!/bin/sh\\nexit 0\\n' > \"$d/$n\"; chmod 755 \"$d/$n\"\n"
+        "  done\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
     )
+    uv.chmod(0o755)
+    return uv
+
+
+def _uv_log(uv: Path) -> list[str]:
+    log = uv.parent / "uv.log"
+    return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
 
 
 def _hook_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4057,14 +4115,13 @@ def test_setup_claude_rereads_the_hook_programs_after_a_uv_migration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attempted: bool,
     moves: bool, read_only: bool, refused: bool,
 ) -> None:
-    """A uv migration that setup starts can put new hook programs ahead of
-    the old ones on `PATH`, which setup can't know before it runs. So the
-    preflight passes a `~/.claude` you can't write in whose settings are
-    current while a migration is pending, and setup runs its settings
-    edits again after a migration it started: it refuses, naming the
-    folder and the migration, only when those edits would now change the
-    settings there. In a folder it can write in, setup goes on and writes
-    them. The check writes nothing."""
+    """The preflight's prediction of where a uv migration puts the hook
+    programs can be missing or wrong, for example when the install fails
+    or writes them somewhere else. So setup runs its settings edits again
+    after a migration it started: it refuses, naming the folder and the
+    migration, only when those edits would now change the settings in a
+    folder it can't write in. In a folder it can write in, setup goes on
+    and writes them. The check writes nothing."""
     import aelfrice.cli as cli
     from aelfrice.lifecycle import MigrationResult
 
@@ -4085,8 +4142,8 @@ def test_setup_claude_rereads_the_hook_programs_after_a_uv_migration(
     if refused:
         assert refusal == (
             f"aelf setup: {p['claude']} can't be written to (Permission "
-            "denied), and the uv migration that just ran changed the hook "
-            f"programs on PATH, so setup would change {p['settings']}; the "
+            "denied), and with the hook programs on PATH after the uv "
+            f"migration it just ran, setup would change {p['settings']}; the "
             f"settings weren't changed. {_FIX_PERMS}"
         ), refusal
     else:
@@ -4101,11 +4158,12 @@ def test_setup_claude_runs_a_pending_uv_migration_past_a_read_only_claude_folder
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str], moves: bool,
 ) -> None:
-    """With current settings in a `~/.claude` you can't write in, plain
-    setup's preflight passes, so the pending uv migration runs, as on
-    main, instead of every run refusing before it. When the migration
-    moved the hook programs, setup exits 1 after it with the refusal that
-    names the migration, before any later step, and changes no settings."""
+    """With current settings in a `~/.claude` you can't write in and a
+    pending uv migration predicted to move no hook command, plain setup's
+    preflight passes, so the migration runs, as on main, instead of every
+    run refusing before it. When the migration moved the hook programs
+    after all, setup exits 1 after it with the refusal that names the
+    migration, before any later step, and changes no settings."""
     import aelfrice.cli as cli
     from aelfrice.lifecycle import MigrationResult
 
@@ -4149,9 +4207,10 @@ def test_setup_claude_runs_a_pending_uv_migration_past_a_read_only_claude_folder
         assert ran == ["migration"], ran
         assert err.endswith(
             f"aelf setup: {p['claude']} can't be written to (Permission "
-            "denied), and the uv migration that just ran changed the hook "
-            f"programs on PATH, so setup would change {p['settings']}; the "
+            "denied), and with the hook programs on PATH after the uv "
+            f"migration it just ran, setup would change {p['settings']}; the "
             f"settings weren't changed. {_FIX_PERMS}\n"
         ), err
     else:
         assert ran[:2] == ["migration", "past the migration"], ran
+
