@@ -7960,6 +7960,9 @@ def _print_migrate_report(report: MigrateReport, out: object) -> None:
     print(f"  skipped existing:         {c.skipped_existing_beliefs}", file=out)  # type: ignore[arg-type]
     print(f"  {verb} edges:           {c.inserted_edges}", file=out)  # type: ignore[arg-type]
     print(f"  skipped orphan edges:     {c.skipped_orphan_edges}", file=out)  # type: ignore[arg-type]
+    copy_verb = "copied" if report.applied else "would copy"
+    print(f"  {copy_verb} corroborations: {c.copied_corroborations}", file=out)  # type: ignore[arg-type]
+    print(f"  skipped unknown corroborations: {c.skipped_unknown_corroborations}", file=out)  # type: ignore[arg-type]
     if not report.applied:
         print("", file=out)  # type: ignore[arg-type]
         print(

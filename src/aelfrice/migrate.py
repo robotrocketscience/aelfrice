@@ -40,6 +40,8 @@ from aelfrice.db_paths import repo_identity_from_db_path
 from aelfrice.models import (
     BELIEF_CORRECTION,
     BELIEF_SCOPE_PROJECT,
+    CORROBORATION_SOURCE_TYPES,
+    CORROBORATION_SPEAKERS,
     LOCK_USER,
     ORIGIN_UNKNOWN,
     ORIGIN_USER_CORRECTED,
@@ -67,6 +69,12 @@ class MigrateCounts:
     skipped_existing_beliefs: int
     inserted_edges: int
     skipped_orphan_edges: int
+    # #1911: corroboration rows of the inserted beliefs. An applied run
+    # counts the rows that landed in the target, a dry run the rows it
+    # would copy. A row whose source type or speaker this version does not
+    # know is skipped and counted, and the rest of the migrate goes on.
+    copied_corroborations: int = 0
+    skipped_unknown_corroborations: int = 0
 
 
 @dataclass(frozen=True)
@@ -211,6 +219,19 @@ def _read_legacy_corroborations(
     ]
 
 
+def _is_known_corroboration(c: _CorroborationRow) -> bool:
+    """True when `record_corroboration` accepts this row's values.
+
+    A source written by a newer version, or edited by hand, can hold a
+    source type or speaker this version does not know. Checking every row
+    before the first write lets migrate skip those rows instead of
+    stopping partway with a `ValueError`.
+    """
+    return c.source_type in CORROBORATION_SOURCE_TYPES and (
+        c.speaker is None or c.speaker in CORROBORATION_SPEAKERS
+    )
+
+
 def migrate(
     *,
     legacy_path: Path,
@@ -219,7 +240,8 @@ def migrate(
     apply: bool,
     copy_all: bool,
 ) -> MigrateReport:
-    """Copy beliefs (and incident edges) from `legacy_path` into `target_path`.
+    """Copy beliefs, their corroboration rows, and their incident edges
+    from `legacy_path` into `target_path`.
 
     Pure read on `legacy_path`; opens it via `file:...?mode=ro` URI so
     accidental writes are rejected at the SQLite layer.
@@ -268,13 +290,21 @@ def migrate(
         ]
     matched_ids: set[str] = {b.id for b in matched}
     corroborations_by_belief: dict[str, list[_CorroborationRow]] = {}
+    unknown_corroborations: dict[str, int] = {}
     for c in legacy_corroborations:
-        corroborations_by_belief.setdefault(c.belief_id, []).append(c)
+        if _is_known_corroboration(c):
+            corroborations_by_belief.setdefault(c.belief_id, []).append(c)
+        else:
+            unknown_corroborations[c.belief_id] = (
+                unknown_corroborations.get(c.belief_id, 0) + 1
+            )
 
     inserted_beliefs = 0
     skipped_existing = 0
     inserted_edges = 0
     skipped_orphan_edges = 0
+    copied_corroborations = 0
+    skipped_unknown_corroborations = 0
 
     if apply:
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -314,6 +344,10 @@ def migrate(
                             ts=c.ingested_at, speaker=c.speaker,
                         )
                 inserted_beliefs += 1
+                copied_corroborations += target.count_corroborations(b.id)
+                skipped_unknown_corroborations += unknown_corroborations.get(
+                    b.id, 0,
+                )
 
             # Copy edges only when both endpoints landed in the target.
             # Edges that reference an unmatched legacy belief are
@@ -338,15 +372,21 @@ def migrate(
         if target_exists:
             target = MemoryStore(str(target_path))
             try:
-                for b in matched:
-                    if target.get_belief(b.id, include_retired=True) is not None:
-                        skipped_existing += 1
-                    else:
-                        inserted_beliefs += 1
+                would_insert = [
+                    b for b in matched
+                    if target.get_belief(b.id, include_retired=True) is None
+                ]
             finally:
                 target.close()
         else:
-            inserted_beliefs = len(matched)
+            would_insert = matched
+        inserted_beliefs = len(would_insert)
+        skipped_existing = len(matched) - inserted_beliefs
+        for b in would_insert:
+            copied_corroborations += len(corroborations_by_belief.get(b.id, ()))
+            skipped_unknown_corroborations += unknown_corroborations.get(
+                b.id, 0,
+            )
         # Edges-would-copy = edges with both endpoints in matched_ids
         # (deduplicated against existing target edges only when applying).
         for e in legacy_edges:
@@ -363,6 +403,8 @@ def migrate(
         skipped_existing_beliefs=skipped_existing,
         inserted_edges=inserted_edges,
         skipped_orphan_edges=skipped_orphan_edges,
+        copied_corroborations=copied_corroborations,
+        skipped_unknown_corroborations=skipped_unknown_corroborations,
     )
     return MigrateReport(
         legacy_path=legacy_path,

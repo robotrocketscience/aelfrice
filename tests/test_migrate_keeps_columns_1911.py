@@ -491,3 +491,65 @@ def test_a_rerun_after_a_stop_copies_the_belief_in_full(
     finally:
         conn.close()
     assert (valid_to, fts, rows) == ("2026-03-01T00:00:00+00:00", 0, 2)
+
+
+# --- Rows this version does not know are skipped ----------------------------
+
+
+def _seed_with_unknown_rows(path: Path) -> None:
+    """b1 with one known row and two rows `record_corroboration` refuses."""
+    s = MemoryStore(str(path))
+    try:
+        s.insert_belief(_belief("b1"))
+        s.insert_belief(_belief("b2"))
+        s.insert_edge(Edge(src="b1", dst="b2", type=EDGE_SUPPORTS, weight=0.5))
+        s.record_corroboration(
+            "b1", source_type=CORROBORATION_SOURCE_CLI_REMEMBER,
+            session_id="s-known", ts="2026-01-02T00:00:00+00:00",
+        )
+    finally:
+        s.close()
+    conn = sqlite3.connect(path)
+    try:
+        conn.executemany(
+            "INSERT INTO belief_corroborations (belief_id, ingested_at, "
+            "source_type, session_id, source_path_hash, speaker) "
+            "VALUES ('b1', '2026-01-03T00:00:00+00:00', ?, ?, NULL, ?)",
+            [("future_ingest", "s-type", None),
+             (CORROBORATION_SOURCE_CLI_REMEMBER, "s-speaker", "future_speaker")],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_an_unknown_corroboration_row_is_skipped_and_counted(
+    tmp_path: Path,
+) -> None:
+    """A newer source type or speaker does not stop the migrate (#1911)."""
+    src, dst = tmp_path / "src.db", tmp_path / "dst.db"
+    _seed_with_unknown_rows(src)
+    report = migrate(legacy_path=src, target_path=dst, project_root=tmp_path,
+                     apply=True, copy_all=True)
+    c = report.counts
+    assert (c.inserted_beliefs, c.inserted_edges) == (2, 1)
+    assert (c.copied_corroborations, c.skipped_unknown_corroborations) == (1, 2)
+    t = MemoryStore(str(dst))
+    try:
+        b = t.get_belief("b1")
+    finally:
+        t.close()
+    assert b is not None
+    assert b.corroboration_count == 1
+
+
+def test_a_dry_run_counts_the_corroboration_rows_it_would_copy(
+    tmp_path: Path,
+) -> None:
+    src, dst = tmp_path / "src.db", tmp_path / "dst.db"
+    _seed_with_unknown_rows(src)
+    report = migrate(legacy_path=src, target_path=dst, project_root=tmp_path,
+                     apply=False, copy_all=True)
+    c = report.counts
+    assert (c.copied_corroborations, c.skipped_unknown_corroborations) == (1, 2)
+    assert not dst.exists()
