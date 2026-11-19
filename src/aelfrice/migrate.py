@@ -29,6 +29,7 @@ interactive selection. All v1.2.0+.
 """
 from __future__ import annotations
 
+import dataclasses
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -89,6 +90,11 @@ def _belongs_to_project(content: str, project_root: Path) -> bool:
     return abs_root in content
 
 
+_BELIEF_FIELDS: Final[tuple[str, ...]] = tuple(
+    f.name for f in dataclasses.fields(Belief)
+)
+
+
 def _read_legacy_beliefs(
     conn: sqlite3.Connection, *, source_identity: str = "",
 ) -> list[Belief]:
@@ -133,34 +139,75 @@ def _read_legacy_beliefs(
                 origin = ORIGIN_USER_STATED
             elif row["type"] == BELIEF_CORRECTION:
                 origin = ORIGIN_USER_CORRECTED
-        out.append(Belief(
-            id=row["id"],
-            content=row["content"],
-            content_hash=row["content_hash"],
+        # #1911: every Belief field the source row has comes across. A
+        # column an older source schema lacks takes the dataclass default.
+        fields = {name: row[name] for name in _BELIEF_FIELDS if name in keys}
+        fields.update(
             alpha=float(row["alpha"]),
             beta=float(row["beta"]),
-            type=row["type"],
-            lock_level=lock_level,
-            locked_at=row["locked_at"],
-            created_at=row["created_at"],
-            last_retrieved_at=row["last_retrieved_at"],
             origin=origin,
             scope=scope,
             project_context=pc,
-        ))
+        )
+        out.append(Belief(**fields))
     return out
 
 
 def _read_legacy_edges(conn: sqlite3.Connection) -> list[Edge]:
     cur = conn.execute("SELECT * FROM edges")
+    rows = cur.fetchall()
+    has_anchor = bool(rows) and "anchor_text" in rows[0].keys()
     return [
         Edge(
             src=row["src"],
             dst=row["dst"],
             type=row["type"],
             weight=float(row["weight"]),
+            anchor_text=row["anchor_text"] if has_anchor else None,
         )
-        for row in cur.fetchall()
+        for row in rows
+    ]
+
+
+@dataclass(frozen=True)
+class _CorroborationRow:
+    belief_id: str
+    ingested_at: str
+    source_type: str
+    session_id: str | None
+    source_path_hash: str | None
+    speaker: str | None
+
+
+def _read_legacy_corroborations(
+    conn: sqlite3.Connection,
+) -> list[_CorroborationRow]:
+    """Read `belief_corroborations` rows, oldest first (#1911).
+
+    A source older than the table (v1.5.0, #190) has none. A source older
+    than the `speaker` column reads every row with speaker None.
+    `corroboration_count` is computed from these rows, so copying them is
+    how the count reaches the target.
+    """
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'belief_corroborations'"
+    ).fetchone()
+    if has_table is None:
+        return []
+    cur = conn.execute("SELECT * FROM belief_corroborations ORDER BY id")
+    rows = cur.fetchall()
+    has_speaker = bool(rows) and "speaker" in rows[0].keys()
+    return [
+        _CorroborationRow(
+            belief_id=row["belief_id"],
+            ingested_at=row["ingested_at"],
+            source_type=row["source_type"],
+            session_id=row["session_id"],
+            source_path_hash=row["source_path_hash"],
+            speaker=row["speaker"] if has_speaker else None,
+        )
+        for row in rows
     ]
 
 
@@ -208,6 +255,7 @@ def migrate(
             legacy_conn, source_identity=source_identity,
         )
         legacy_edges = _read_legacy_edges(legacy_conn)
+        legacy_corroborations = _read_legacy_corroborations(legacy_conn)
     finally:
         legacy_conn.close()
 
@@ -229,6 +277,7 @@ def migrate(
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target = MemoryStore(str(target_path))
         try:
+            inserted_ids: set[str] = set()
             for b in matched:
                 # include_retired (#1210): an id-existence check against the target.
                 # A tombstone still owns its primary key, so treating it as absent
@@ -236,8 +285,28 @@ def migrate(
                 if target.get_belief(b.id, include_retired=True) is not None:
                     skipped_existing += 1
                     continue
-                target.insert_belief(b)
+                if b.valid_to is None:
+                    target.insert_belief(b)
+                else:
+                    # #1911: a retired belief arrives retired, with the
+                    # same valid_to. Retiring through the store also
+                    # prunes the FTS row, as it does for the source row.
+                    target.insert_belief(dataclasses.replace(b, valid_to=None))
+                    target.soft_delete_belief(b.id, ts=b.valid_to)
+                inserted_ids.add(b.id)
                 inserted_beliefs += 1
+
+            # #1911: a copied belief keeps its corroboration rows, so its
+            # corroboration count in the target matches the source. A
+            # belief the target already held keeps the target's own rows.
+            for c in legacy_corroborations:
+                if c.belief_id in inserted_ids:
+                    target.record_corroboration(
+                        c.belief_id, source_type=c.source_type,
+                        session_id=c.session_id,
+                        source_path_hash=c.source_path_hash,
+                        ts=c.ingested_at, speaker=c.speaker,
+                    )
 
             # Copy edges only when both endpoints landed in the target.
             # Edges that reference an unmatched legacy belief are
