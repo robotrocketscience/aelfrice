@@ -35,7 +35,7 @@ Each belief records its source, type, and Bayesian confidence score. Every 12 lo
 
 aelfrice supports the `claude` CLI fully. Codex support works but isn't yet on par with the `claude` CLI:
 
-- Codex keeps hook output over about 2,500 tokens in a file and gives the model only a preview, so a large memory block reaches the model cut short.
+- Codex keeps hook output over about 2,500 tokens in a file and gives the model only a preview, so a large memory block can reach the model cut short.
 - A forked Codex thread gets no baseline block of your locked rules.
 - Codex shows no status line when aelfrice runs.
 - Codex doesn't get the git hook that reads commit messages.
