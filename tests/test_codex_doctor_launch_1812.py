@@ -3934,6 +3934,7 @@ def _contents(root: Path) -> dict[str, bytes | None]:
         pytest.param("old commit-ingest entry", True, id="old commit ingest"),
         pytest.param("one hook missing", True, id="one hook missing"),
         pytest.param("statusline missing", True, id="statusline missing"),
+        pytest.param("migration pending", False, id="migration pending"),
     ],
 )
 def test_setup_claude_refuses_a_read_only_claude_folder_only_for_a_write(
@@ -3944,8 +3945,9 @@ def test_setup_claude_refuses_a_read_only_claude_folder_only_for_a_write(
     would change the settings file there, as its settings edits, run
     without a write, show. Settings that are current pass, with or
     without the lock file setup takes; an old commit-ingest entry setup
-    removes, a hook it adds, and a statusline it adds are refused. The
-    check writes nothing."""
+    removes, a hook it adds, and a statusline it adds are refused. A uv
+    migration that setup would start first doesn't count as a change, so
+    current settings pass with one pending. The check writes nothing."""
     import aelfrice.cli as cli
     from aelfrice.setup import install_commit_ingest_hook
 
@@ -3956,6 +3958,8 @@ def test_setup_claude_refuses_a_read_only_claude_folder_only_for_a_write(
     assert lock.is_file()
     if state == "current, no lock file":
         lock.unlink()
+    elif state == "migration pending":
+        _pend_migration(tmp_path, monkeypatch)
     elif state == "old commit-ingest entry":
         # A program that exists, so the prune of entries whose program is
         # gone leaves the entry, and only the commit-ingest step drops it.
@@ -4004,6 +4008,26 @@ def test_setup_claude_settings_dry_run_writes_nothing(
     )
     assert changes is True
     assert _contents(tmp_path) == before
+
+
+def _pend_migration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make `maybe_migrate_to_uv` see a migration to run: no marker, a
+    pipx install, and `uv` on `PATH`. The conftest sandbox creates the
+    marker so no test runs a real `uv tool install`; a test that uses
+    this replaces `cli.maybe_migrate_to_uv` or never reaches it."""
+    from aelfrice import lifecycle
+
+    monkeypatch.setattr(
+        lifecycle, "MIGRATED_TO_UV_SENTINEL", tmp_path / "no-marker",
+    )
+    monkeypatch.setattr(
+        lifecycle, "upgrade_advice", lambda: argparse.Namespace(context="pipx"),
+    )
+    real_which = lifecycle.shutil.which
+    monkeypatch.setattr(
+        lifecycle.shutil, "which",
+        lambda name, *a, **k: "/opt/bin/uv" if name == "uv" else real_which(name, *a, **k),
+    )
 
 
 def _hook_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4101,6 +4125,7 @@ def test_setup_claude_runs_a_pending_uv_migration_past_a_read_only_claude_folder
         raise AssertionError("setup went on past the refusal")
 
     monkeypatch.setattr(cli, "maybe_migrate_to_uv", migrate)
+    _pend_migration(tmp_path, monkeypatch)
     monkeypatch.setattr(cli, "_maybe_reconcile_claude_memory_at_setup", went_on)
     monkeypatch.setattr(cli, "_open_store", went_on)
     import aelfrice.mcp_cleanup as mcp_cleanup
