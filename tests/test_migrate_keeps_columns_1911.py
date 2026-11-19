@@ -237,17 +237,23 @@ _SCOPES = st.one_of(
     st.sampled_from(["project", "global"]),
     st.from_regex(r"\Ashared:[a-z0-9_-]{1,8}\Z"),
 )
+# (source_type, speaker, ingested_at, session_id, source_path_hash). Two
+# session ids let rows share a session, so rows that differ only in
+# source_path_hash stay distinct under the #1020 unique key.
+_CorroborationDraw = tuple[str, str | None, str, str | None, str | None]
 _CORROBORATION = st.tuples(
     st.sampled_from(sorted(CORROBORATION_SOURCE_TYPES)),
     st.none() | st.sampled_from(sorted(CORROBORATION_SPEAKERS)),
     _ISO,
+    st.none() | st.sampled_from(["s0", "s1"]),
+    st.none() | _TEXT,
 )
 
 
 @st.composite
-def _beliefs(draw: st.DrawFn) -> list[tuple[Belief, list[tuple[str, str | None, str]]]]:
+def _beliefs(draw: st.DrawFn) -> list[tuple[Belief, list[_CorroborationDraw]]]:
     n = draw(st.integers(min_value=1, max_value=4))
-    out: list[tuple[Belief, list[tuple[str, str | None, str]]]] = []
+    out: list[tuple[Belief, list[_CorroborationDraw]]] = []
     for i in range(n):
         lock_level = draw(st.sampled_from(sorted(LOCK_LEVELS)))
         kwargs: dict[str, Any] = {
@@ -291,7 +297,8 @@ def _snapshot(path: Path) -> tuple[dict[str, dict[str, Any]], list[tuple[Any, ..
         corroborations = conn.execute(
             "SELECT belief_id, ingested_at, source_type, session_id, "
             "source_path_hash, speaker FROM belief_corroborations "
-            "ORDER BY belief_id, ingested_at, session_id",
+            "ORDER BY belief_id, ingested_at, session_id, source_path_hash, "
+            "source_type, speaker",
         ).fetchall()
     finally:
         conn.close()
@@ -311,7 +318,7 @@ def _snapshot(path: Path) -> tuple[dict[str, dict[str, Any]], list[tuple[Any, ..
 @settings(max_examples=25, deadline=None, derandomize=True, database=None)
 @given(rows=_beliefs())
 def test_migrate_round_trips_every_belief_field(
-    rows: list[tuple[Belief, list[tuple[str, str | None, str]]]],
+    rows: list[tuple[Belief, list[_CorroborationDraw]]],
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     d = tmp_path_factory.mktemp("roundtrip")
@@ -322,10 +329,10 @@ def test_migrate_round_trips_every_belief_field(
             s.insert_belief(dataclasses.replace(b, valid_to=None))
             if b.valid_to is not None:
                 s.soft_delete_belief(b.id, ts=b.valid_to)
-            for j, (source_type, speaker, ts) in enumerate(corroborations):
+            for source_type, speaker, ts, session_id, path_hash in corroborations:
                 s.record_corroboration(
-                    b.id, source_type=source_type, session_id=f"s{j}",
-                    ts=ts, speaker=speaker,
+                    b.id, source_type=source_type, session_id=session_id,
+                    source_path_hash=path_hash, ts=ts, speaker=speaker,
                 )
     finally:
         s.close()
