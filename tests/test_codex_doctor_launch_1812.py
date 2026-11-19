@@ -4604,6 +4604,85 @@ def test_setup_claude_refuses_a_migration_that_moves_the_hooks_before_it(
         assert (uv_bin / "aelf-hook").is_file()
 
 
+@pytest.mark.timeout(20)
+@pytest.mark.parametrize("state", ["unsearchable", "file above", "link loop"])
+def test_pending_uv_migration_reads_a_marker_it_can_not_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    """A migration marker that can't be checked, under a folder you can't
+    search, raises, so setup can name it. A file where a folder goes and
+    a symbolic link loop read as no marker, as `Path.exists` reads them on
+    Python 3.12 and 3.13, so a migration is pending (#1812)."""
+    from aelfrice import lifecycle
+
+    if state == "unsearchable" and not _CAN_CHMOD:
+        pytest.skip("needs POSIX permissions and a user that isn't root")
+    folder = tmp_path / "dotdir"
+    if state == "file above":
+        folder.write_text("x\n", encoding="utf-8")
+    elif state == "link loop":
+        os.symlink(folder.name, folder)
+    else:
+        folder.mkdir()
+    monkeypatch.setattr(
+        lifecycle, "MIGRATED_TO_UV_SENTINEL", folder / "migrated-to-uv",
+    )
+    monkeypatch.setattr(
+        lifecycle, "upgrade_advice", lambda: argparse.Namespace(context="pipx"),
+    )
+    uv = tmp_path / "bin" / "uv"
+    uv.parent.mkdir()
+    uv.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    uv.chmod(0o755)
+    monkeypatch.setenv("PATH", str(uv.parent))
+    if state != "unsearchable":
+        assert lifecycle.pending_uv_migration() == str(uv)
+        return
+    os.chmod(folder, 0o600)
+    try:
+        with pytest.raises(PermissionError):
+            lifecycle.pending_uv_migration()
+    finally:
+        _restore_modes(tmp_path)
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@_needs_sh
+@pytest.mark.parametrize("mode", [0o600, 0o000, 0o200], ids=["600", "000", "200"])
+def test_setup_claude_refuses_a_migration_marker_it_can_not_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], mode: int,
+) -> None:
+    """With a `~/.aelfrice` you can't search and a `~/.claude` you can't
+    write in, plain setup can't tell whether a uv migration is pending.
+    The check `main` runs and the executor's both exit 1 naming the
+    marker and the cause, ask uv nothing, and write nothing (#1812)."""
+    import aelfrice.cli as cli
+
+    p, args, uv, _current = _predict_setup(tmp_path, monkeypatch, [])
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv.parent / "uv-bin"))
+    monkeypatch.setenv("PATH", f"{uv.parent}{os.pathsep}{os.environ['PATH']}")
+    before = _contents(tmp_path)
+    os.chmod(p["claude"], 0o500)
+    os.chmod(p["dotdir"], mode)
+    try:
+        refusal = cli._setup_input_refusal(args)  # noqa: SLF001
+        rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    want = (
+        f"aelf setup: {p['dotdir'] / 'migrated-to-uv'} can't be read "
+        f"(Permission denied); nothing was written. {_FIX_OR_MOVE}"
+    )
+    assert refusal == want, refusal
+    assert rc == 1, err
+    assert err == want + "\n", err
+    assert _contents(tmp_path) == before
+    assert _uv_log(uv) == []
+
+
 def _hook_entry(command: str) -> dict[str, object]:
     return {"hooks": [{"type": "command", "command": command}]}
 
