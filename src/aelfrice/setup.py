@@ -2108,7 +2108,7 @@ class SetupInputError(Exception):
 _UTF8_BOM: Final[bytes] = b"\xef\xbb\xbf"
 
 
-def _unreadable_cause(path: Path, exc: OSError) -> str:
+def unreadable_cause(path: Path, exc: OSError) -> str:
     """Why `path` can't be read, for a `SetupInputError` (#1812)."""
     if isinstance(exc, NotADirectoryError):
         # A plain loop up the folders above `path`: the `.parents` idiom
@@ -2135,7 +2135,7 @@ def read_setup_input(path: Path) -> bytes | None:
     except FileNotFoundError:
         return None
     except OSError as exc:
-        raise SetupInputError(_unreadable_cause(path, exc)) from exc
+        raise SetupInputError(unreadable_cause(path, exc)) from exc
     if stat.S_ISDIR(st.st_mode):
         raise SetupInputError(f"{path} is a folder, not a file")
     if not stat.S_ISREG(st.st_mode):
@@ -2143,7 +2143,7 @@ def read_setup_input(path: Path) -> bytes | None:
     try:
         return path.read_bytes()
     except OSError as exc:
-        raise SetupInputError(_unreadable_cause(path, exc)) from exc
+        raise SetupInputError(unreadable_cause(path, exc)) from exc
 
 
 def decode_setup_input(path: Path, raw: bytes) -> str:

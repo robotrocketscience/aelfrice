@@ -19,6 +19,7 @@ can offer hash-pinned installs without an extra round trip.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -1416,6 +1417,12 @@ class MigrationResult:
 # setup's preflight runs twice, so a uv that hangs costs at most twice this.
 UV_TOOL_DIR_TIMEOUT_SECONDS: Final[int] = 5
 
+#: The `os.stat` errors `pending_uv_migration` reads as no sentinel: the
+#: ones `pathlib.Path.exists` ignores on Python 3.12 and 3.13 (#1812).
+_NO_SENTINEL_ERRNOS: Final[frozenset[int]] = frozenset({
+    errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP,
+})
+
 
 def pending_uv_migration(*, sentinel_path: Path | None = None) -> str | None:
     """The `uv` program `maybe_migrate_to_uv` would run now, or None when
@@ -1424,10 +1431,21 @@ def pending_uv_migration(*, sentinel_path: Path | None = None) -> str | None:
     It takes the first three steps of that function's short-circuit
     order: a sentinel that exists, a running install that is already a uv
     tool, and no `uv` on `PATH` each mean no migration.
+
+    Raises `OSError` when the sentinel can't be checked, for example
+    under a `~/.aelfrice` you can't search. A missing path, a file where
+    a folder goes, and a symbolic link loop read as no sentinel, the
+    errors `Path.exists` reads as False on Python 3.12 and 3.13, so the
+    answer doesn't change with the Python version.
     """
     if sentinel_path is None:
         sentinel_path = MIGRATED_TO_UV_SENTINEL
-    if sentinel_path.exists():
+    try:
+        os.stat(sentinel_path)
+    except OSError as exc:
+        if exc.errno not in _NO_SENTINEL_ERRNOS:
+            raise
+    else:
         return None
     if upgrade_advice().context == "uv_tool":
         return None
