@@ -2062,7 +2062,7 @@ class SetupJSONSyntaxError(SetupInputError):
 #: A fixed bound far below these refuses the same files on both versions.
 SETUP_JSON_MAX_DEPTH: Final[int] = 256
 
-#: An array or object bracket, or a JSON string, which `json_nesting_too_deep`
+#: An array or object bracket, or a JSON string, which `load_setup_json`
 #: skips. A string runs to its closing quote or to the end of the text.
 _JSON_NESTING_TOKEN: Final[re.Pattern[str]] = re.compile(
     r'"(?:[^"\\]|\\.)*"?|[\[\]{}]', re.DOTALL,
