@@ -4294,7 +4294,10 @@ def test_uv_tool_bin_dir_reads_one_absolute_path_from_uv(
         monkeypatch.setenv(name, str(d / value))
     if mode:
         monkeypatch.setenv("FAKE_UV_MODE", mode)
-    monkeypatch.setattr(lifecycle, "UV_TOOL_DIR_TIMEOUT_SECONDS", 1)
+    if mode == "hang":
+        # Only the hang case gets the short limit, so a loaded machine
+        # that starts the fake slowly doesn't time the other cases out.
+        monkeypatch.setattr(lifecycle, "UV_TOOL_DIR_TIMEOUT_SECONDS", 1)
     found = lifecycle.uv_tool_bin_dir(str(uv))
     if "`" not in want:
         assert found == lifecycle.UvToolBinDir(d / want, ""), found
@@ -4408,7 +4411,6 @@ def _predict_setup(
     monkeypatch.setattr(
         lifecycle, "upgrade_advice", lambda: argparse.Namespace(context="pipx"),
     )
-    monkeypatch.setattr(lifecycle, "UV_TOOL_DIR_TIMEOUT_SECONDS", 1)
     scope = cli._effective_scope(args)  # noqa: SLF001
     current = Path(cli.resolve_hook_command(scope)).parent
     return p, args, uv, current
@@ -4740,6 +4742,10 @@ def _uv_cant_say(
         uv = broken
     elif mode != "windows":
         monkeypatch.setenv("FAKE_UV_MODE", mode)
+    if mode == "hang":
+        from aelfrice import lifecycle
+
+        monkeypatch.setattr(lifecycle, "UV_TOOL_DIR_TIMEOUT_SECONDS", 1)
     monkeypatch.setenv(
         "PATH",
         os.pathsep.join([str(first), str(uv_bin), str(current), os.environ["PATH"]]),
