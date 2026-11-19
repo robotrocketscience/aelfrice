@@ -38,6 +38,7 @@ import shlex
 import shutil
 import sys
 import sysconfig
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final
 
@@ -285,6 +286,7 @@ def program_exists(command: str, *, windows: bool | None = None) -> bool:
 
 def existing_program_path(
     command: str, *, windows: bool | None = None,
+    present: Callable[[Path], bool] | None = None,
 ) -> Path | None:
     """The reading of this command's program that names a file, else None.
 
@@ -292,6 +294,10 @@ def existing_program_path(
     *something* about the file — whether it is executable, or where it is.
     Same scan, same switch-shaped stop; the shortest prefix wins, so an
     argument can never displace a program that already resolved.
+
+    `present` counts a reading that doesn't exist as one that does when
+    it returns True: `aelf setup` passes the programs a pending uv
+    migration would install (#1812).
     """
     win = _resolve_windows(windows)
     tokens = command_tokens(command, windows=win)
@@ -305,7 +311,9 @@ def existing_program_path(
             if candidate.exists():
                 return candidate
         except OSError:  # a path the platform cannot even stat
-            continue
+            pass
+        if present is not None and present(candidate):
+            return candidate
     return None
 
 

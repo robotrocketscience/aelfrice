@@ -300,9 +300,60 @@ def programs_installed_in(folder: Path) -> _ProgramsInstalledIn:
 
     A uv migration installs every program the package declares, and setup
     resolves only those, so each one setup asks for counts as present in
-    `folder`. The block changes nothing on disk.
+    `folder`. Inside the block, the checks that decide whether a settings
+    command is broken count a program the package declares as present in
+    `folder` too (`predicted_install_folder`, `predicted_program_at`), so
+    the prune of broken `aelf-*` hooks keeps a command that names one, as
+    it does after the install. The block changes nothing on disk.
     """
     return _ProgramsInstalledIn(folder)
+
+
+#: Every program the aelfrice package installs, its `[project.scripts]` in
+#: pyproject.toml, which `uv tool install aelfrice` writes in uv's
+#: programs folder. A test fails when the two differ (#1812).
+PACKAGE_PROGRAM_NAMES: Final[frozenset[str]] = frozenset({
+    "aelf",
+    "aelf-hook",
+    "aelf-transcript-logger",
+    "aelf-pre-compact-hook",
+    "aelf-commit-ingest",
+    "aelf-search-tool-hook",
+    "aelf-agent-context-hook",
+    "aelf-session-start-hook",
+    "aelf-stop-hook",
+    "aelf-pre-issue-hook",
+    "aelf-claude-memory-mirror",
+})
+
+
+def predicted_install_folder(name: str) -> Path | None:
+    """The folder `programs_installed_in` predicts holds the program
+    `name`, or None (#1812).
+
+    None outside a `programs_installed_in` block, and for a name that
+    isn't in `PACKAGE_PROGRAM_NAMES`: the install writes only those, so a
+    command that names another program in uv's folder still finds none
+    there after it.
+    """
+    prediction = _active_programs_prediction()
+    if prediction is None or name not in PACKAGE_PROGRAM_NAMES:
+        return None
+    return prediction.folder
+
+
+def predicted_program_at(path: Path) -> bool:
+    """Whether `programs_installed_in` predicts a program at `path`: its
+    name is in `PACKAGE_PROGRAM_NAMES` and its folder resolves to the
+    predicted one, through links, as the install's file will (#1812).
+    False outside a `programs_installed_in` block."""
+    folder = predicted_install_folder(path.name)
+    if folder is None:
+        return False
+    try:
+        return os.path.realpath(path.parent) == os.path.realpath(folder)
+    except (OSError, ValueError):  # a path the platform can't resolve
+        return False
 
 
 def detect_default_scope(cwd: Path | None = None) -> SettingsScope:

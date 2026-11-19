@@ -1358,13 +1358,20 @@ def _inspect_command(
         # recognise a spaced path as `aelf-*` at all, and a deletion the
         # moment it could. Check the reading that names a real file, and
         # keep reporting the raw token when none does.
-        resolved = launcher.existing_program_path(stripped)
+        # #1812: inside `aelf setup`'s uv migration prediction, a program
+        # the install would write counts as present (`_setup.
+        # predicted_program_at`), so the prune keeps what the install keeps.
+        resolved = launcher.existing_program_path(
+            stripped, present=_setup.predicted_program_at,
+        )
         target = program if resolved is None else str(resolved)
         finding = _check_path(settings_path, location, command, target)
         return _with_silent_failure(finding) if silent else finding
     # Bare name -- $PATH lookup. Explicit `path=` (see launcher) keeps the
     # win32 current-directory search out of a diagnostic.
-    resolved = launcher.which_on_path(program)
+    resolved = launcher.which_on_path(
+        program, installed_in=_setup.predicted_install_folder(program),
+    )
     if resolved is None:
         return CommandFinding(
             settings_path=settings_path, location=location,
@@ -1395,9 +1402,15 @@ def _with_silent_failure(f: CommandFinding) -> CommandFinding:
 def _check_path(
     settings_path: Path, location: str, command: str, program: str
 ) -> CommandFinding:
-    """Existence + executable-bit check for a path-shaped program token."""
+    """Existence + executable-bit check for a path-shaped program token.
+
+    A program `aelf setup` predicts a pending uv migration installs counts
+    as an executable file (`_setup.predicted_program_at`, #1812).
+    """
     prog_path = Path(program)
-    if prog_path.is_file() and os.access(prog_path, os.X_OK):
+    if _setup.predicted_program_at(prog_path) or (
+        prog_path.is_file() and os.access(prog_path, os.X_OK)
+    ):
         return CommandFinding(
             settings_path=settings_path, location=location,
             command=command, program=program, status="ok",
