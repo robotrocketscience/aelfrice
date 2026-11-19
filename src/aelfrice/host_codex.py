@@ -73,6 +73,7 @@ from aelfrice.setup import (
     decode_setup_input,
     json_type_name as _json_type_name,
     json_unreadable_cause,
+    load_setup_json,
     resolve_commit_ingest_command,
     resolve_hook_command,
     resolve_pre_issue_guard_command,
@@ -906,7 +907,7 @@ def _plan_install(
         # refusal and overwrote it with no error and no `--force`.
         parsed: object = _UNPARSEABLE
         try:
-            parsed = json.loads(text)
+            parsed = load_setup_json(text)
         except json.JSONDecodeError as exc:
             if not force:
                 return refuse(
@@ -914,8 +915,8 @@ def _plan_install(
                     "re-run with --force to replace it"
                 )
         except (RecursionError, ValueError) as exc:
-            # #1812: JSON that Python's `json` can't read is refused, or
-            # replaced with `--force`, as a file that isn't JSON is.
+            # #1812: JSON that setup doesn't read is refused, or replaced
+            # with `--force`, as a file that isn't JSON is.
             if not force:
                 return refuse(
                     f"existing hooks.json {json_unreadable_cause(exc)}; "
@@ -1021,7 +1022,7 @@ def _plan_remove(
             error=f"{hooks_path} {text.describe()}; not modified",
         )
     try:
-        parsed = json.loads(text)
+        parsed = load_setup_json(text)
     except json.JSONDecodeError as exc:
         return None, CodexInstallResult(
             path=hooks_path, changed=False,
