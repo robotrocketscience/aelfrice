@@ -80,7 +80,7 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev
       - name: Check the mutmut contract the plan relies on
-        # The plan and the pragmas rely on how mutmut 3.8.0 counts, names,
+        # The plan and the pragmas rely on how mutmut 3.8.1 counts, names,
         # and skips mutants. The tests that pin that skip in the ordinary
         # suite, where mutmut isn't installed, so they run here, against
         # the exact version the shards install, before anything is planned.
@@ -88,7 +88,7 @@ jobs:
           # Turns the tests' skip-without-mutmut into a failure here.
           AELF_REQUIRE_MUTMUT: "1"
         run: |
-          uv run --with 'mutmut==3.8.0' pytest -q \
+          uv run --with 'mutmut==3.8.1' pytest -q \
               tests/test_mutation_shards_1747.py \
               tests/test_mutation_function_scope_1632.py
       - name: Plan the shards
@@ -96,7 +96,7 @@ jobs:
         run: |
           # The plan counts mutants with mutmut's own generator, so it runs
           # the same exact version the shards install below.
-          uv run --no-project --with 'mutmut==3.8.0' \
+          uv run --no-project --with 'mutmut==3.8.1' \
               python scripts/mutation_shards.py plan \
               --out mutation-plan.json --summary mutation-plan.md
           cat mutation-plan.md >> "${GITHUB_STEP_SUMMARY}"
@@ -147,8 +147,11 @@ jobs:
       - name: Install mutmut
         # Pinned exactly, for the reason the per-PR job gives: the shard
         # plan and the pragmas that cut a file into shards both rely on how
-        # this version generates and skips mutants, verified only on 3.8.0.
-        run: uv pip install 'mutmut==3.8.0'
+        # this version generates and skips mutants, verified only on 3.8.1.
+        # #1938: 3.8.0 read pytest's private `Item._nodeid`, which pytest
+        # 9.2.0 removed, so its stats pass raised AttributeError and every
+        # shard checked no mutant. 3.8.1 reads the public `nodeid`.
+        run: uv pip install 'mutmut==3.8.1'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: mutation-plan
@@ -170,7 +173,7 @@ jobs:
         run: |
           # No `|| true` on the whole pipeline. The run's status is captured,
           # not propagated, so `mutmut results` still writes the report; the
-          # assertion below fails the job on it. mutmut 3.8.0 exits 0 whether
+          # assertion below fails the job on it. mutmut 3.8.1 exits 0 whether
           # or not mutants survive, so 0 is a finished run, 124 is the time
           # box, and anything else is mutmut failing partway.
           #
@@ -234,7 +237,7 @@ jobs:
           # `suspicious` on every mutant says nothing about the tests.
           #
           # Only the time box (124) excuses `not checked` mutants. mutmut
-          # 3.8.0 can swallow a ChildProcessError in its result loop and
+          # 3.8.1 can swallow a ChildProcessError in its result loop and
           # still exit 0, so a run that exited 0 with mutants left `not
           # checked` stopped early without saying so, and fails.
           MUTANT_LINE='^ *[^ :]+__mutmut_[0-9]+: '
@@ -392,11 +395,11 @@ jobs:
       - name: Install mutmut
         # Pinned exactly, not to the major. `mutation_scope.py` relies on
         # how this version reads `# pragma: no mutate block` and which
-        # functions it skips, verified only on 3.8.0; the contract tests in
+        # functions it skips, verified only on 3.8.1; the contract tests in
         # tests/test_mutation_function_scope_1632.py skip where mutmut is
         # not installed, so a silent bump would go unchecked. Bumping this
         # requires re-running those tests locally with the new version.
-        run: uv pip install 'mutmut==3.8.0'
+        run: uv pip install 'mutmut==3.8.1'
       - name: Scope mutmut to the PR's changed files
         id: scope
         env:

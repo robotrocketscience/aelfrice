@@ -21,7 +21,7 @@ so the diff between them introduces no mutant.
 
 A real change to one function of `cli.py` still put the whole file in scope,
 and the cost is in mutant *generation*, not only in running them: mutmut
-3.8.0 writes every mutant of a function as a full copy of that function, so
+3.8.1 writes every mutant of a function as a full copy of that function, so
 generating a whole large file such as `cli.py` takes minutes and produces
 tens of thousands of mutants. With one function in scope it takes seconds.
 Filtering mutant names after generation (`mutmut run <glob>`) leaves that
@@ -108,7 +108,7 @@ PRAGMA_BLOCK: Final[str] = "# pragma: no mutate block"
 #: mutmut's documented pragma for skipping one line.
 PRAGMA_LINE: Final[str] = "# pragma: no mutate"
 
-#: The one decorator form mutmut still mutates (mutmut 3.8.0,
+#: The one decorator form mutmut still mutates (mutmut 3.8.1,
 #: `MutationVisitor._skip_node_and_children`); any other decorator, or
 #: more than one, makes it skip the function entirely.
 MUTATED_DECORATORS: Final[frozenset[str]] = frozenset(
@@ -116,9 +116,11 @@ MUTATED_DECORATORS: Final[frozenset[str]] = frozenset(
 )
 
 #: Function names mutmut never mutates, whatever their decorators or
-#: position. mutmut 3.8.0, `mutmut/mutation/file_mutation.py:37`
+#: position. mutmut 3.8.1, `mutmut/mutation/file_mutation.py:37`
 #: (`NEVER_MUTATE_FUNCTION_NAMES`), checked by
-#: `MutationVisitor._skip_node_and_children` at line 307.
+#: `MutationVisitor._skip_node_and_children` at line 319. mutmut 3.8.1 also
+#: skips `__init__` and `_generate_next_value_` in an Enum subclass
+#: (`NEVER_MUTATE_ENUM_FUNCTION_NAMES`), which this set doesn't model.
 MUTMUT_SKIPPED_NAMES: Final[frozenset[str]] = frozenset(
     {"__getattribute__", "__setattr__", "__new__"},
 )
