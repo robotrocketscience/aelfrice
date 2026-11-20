@@ -122,12 +122,18 @@ def load_injections(db: Path) -> tuple[dict[str, list], dict[str, set[str]]]:
     finally:
         con.close()
 
+    # A belief counts once per turn. Since #1954 the turn id is the host's
+    # prompt id, so a duplicated hook registration writes two batches under
+    # one (session_id, turn_id), and the second would count every belief
+    # again.
     turns: dict[tuple[str, str], dict] = {}
     for sid, tid, at, bid in rows:
         slot = turns.setdefault(
-            (sid, tid), {"t": parse_ts(at), "at": at, "ids": []}
+            (sid, tid), {"t": parse_ts(at), "at": at, "ids": [], "seen": set()}
         )
-        slot["ids"].append(bid)
+        if bid not in slot["seen"]:
+            slot["seen"].add(bid)
+            slot["ids"].append(bid)
 
     by_session: dict[str, list] = {}
     for (sid, _tid), v in turns.items():
