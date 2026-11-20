@@ -4536,10 +4536,13 @@ def _record_injection_events(
     """Append one ``injection_events`` row per injected belief.
 
     Fires from the UPS hook after retrieval has decided which beliefs
-    will appear in the rendered ``<aelfrice-memory>`` block. The
-    sweeper at the *next* UPS turn (#779 Layer 3) reads these rows,
-    scores ``referenced`` against the assistant transcript, and pushes
-    one update per active consumer into the meta-belief substrate.
+    will appear in the rendered ``<aelfrice-memory>`` block. Every row
+    of the batch shares ``turn_id``, which is the host's ``prompt_id``
+    when the payload carries a valid one, so the rows join the
+    transcript logger's lines for the same turn (#1954). The sweeper
+    that scored ``referenced`` was removed (#1655), so the column stays
+    NULL; ``MemoryStore.exploration_pool`` reads the rows only to tell
+    whether a belief has been shown.
 
     Fail-soft: any path-resolution, store-open, or insert failure
     prints one line to stderr and never propagates. injection_events

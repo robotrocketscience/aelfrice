@@ -162,8 +162,10 @@ Notes:
   then share it, and the retrieval hook writes the same value to
   `injection_events.turn_id`, so the two join exactly. Without a
   valid `prompt_id`, each line gets its own id from the clock and 4
-  random bytes, which joins nothing. No reader in `src/aelfrice`
-  parses `turn_id` from this file.
+  random bytes, which joins nothing. So `turn_id` is per prompt, not
+  per line: when the #1956 race writes one prompt twice, both lines
+  share one `turn_id`. No reader in `src/aelfrice` parses `turn_id`
+  from this file.
 - `context.git_*` is populated cheaply from `git rev-parse` and
   `git symbolic-ref --short HEAD`. Failures (non-git directories)
   set the fields to `null`; never block the hook.
@@ -197,8 +199,9 @@ def ingest_jsonl(
         typed edges (CITES, SUPPORTS, CONTRADICTS) discovered in the
         prose.
 
-    Idempotent: re-ingesting the same JSONL line is a no-op (deduped
-    on (session_id, turn_id)).
+    Idempotent: re-ingesting the same JSONL line inserts no new
+    belief, because ingest_turn dedupes per (source_label, sentence).
+    Nothing reads turn_id.
     """
 ```
 

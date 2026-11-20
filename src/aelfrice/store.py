@@ -6327,10 +6327,14 @@ class MemoryStore:
     ) -> int:
         """Insert one injection_events row, return its rowid.
 
-        Caller batches per-(turn × belief) writes by sharing the same
-        ``turn_id`` and ``injected_at`` across the batch — the sweeper
-        groups by ``(session_id, turn_id)`` so the batch is what gets
-        scored together.
+        The UPS hook writes one row per injected belief and gives every
+        row of a fire the same ``turn_id`` and ``injected_at``. The
+        ``turn_id`` is the host's ``prompt_id`` when the payload carries
+        a valid one, which the transcript logger writes on that turn's
+        lines too (#1954). Nothing scores ``referenced`` since the
+        sweeper was removed (#1655), so it stays NULL; the one reader
+        in this module is ``exploration_pool``, which treats a belief
+        with any row as already shown.
 
         Raises ``ValueError`` on an empty ``source``. Other validation
         (e.g. the v1 ``source ∈ {'ups'}`` allowlist) lives in the
