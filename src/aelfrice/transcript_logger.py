@@ -817,8 +817,11 @@ def _handle_stop(payload: dict[str, object]) -> None:
     # #1634: a headless session's reply is not recorded either. The flush
     # below still runs: it folds turns other sessions already logged.
     if not _skip_headless(payload):
+        # #1954: the host sends the same `prompt_id` on a turn's Stop as on
+        # its UserPromptSubmit, so the answer's line carries its prompt's id.
         line = _build_turn_line(
             role="assistant", text=text, session_id=sid, ctx=_turn_context(),
+            prompt_id=payload_prompt_id(payload),
         )
         _append_turn(line)
     # #1011: fold accumulated turns into beliefs without waiting for a
