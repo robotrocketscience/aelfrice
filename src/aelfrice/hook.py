@@ -1058,8 +1058,13 @@ def _choose_locks_for_room(
     wrapper: int, frame: int, room_chars: int, *,
     frame_before_line: int | None = None,
     manifest_ids: frozenset[str] = frozenset(), manifest_wrapper: int = 0,
+    past_share: frozenset[str] = frozenset(),
 ) -> tuple[str, ...]:
     """The locks the payload room cannot hold, in render order (#1639).
+
+    `past_share` are user locks past their share of the room (#1944).
+    They are always cut here, and never taken back: `_write_memory_block`
+    takes one back only into room the block leaves empty.
 
     `frame` is what the block costs with every droppable element shed and
     no lock rendered: what stays whatever is cut. `frame_before_line` is
@@ -1089,7 +1094,7 @@ def _choose_locks_for_room(
             for bid, spans in groups.items()}
     total = (frame + sum(cost.values()) + (wrapper if recap_ids else 0)
              + (manifest_wrapper if manifest_ids else 0))
-    if total <= room_chars:
+    if not past_share and total <= room_chars:
         return ()
 
     def wrappers_due(bid: str, kept_ids: Iterable[str]) -> int:
@@ -1108,6 +1113,9 @@ def _choose_locks_for_room(
         kept_so_far: list[str] = []
         cut: list[str] = []
         for bid in groups:
+            if bid in past_share:
+                cut.append(bid)
+                continue
             extra = wrappers_due(bid, kept_so_far)
             if used + cost[bid] + extra <= room_chars:
                 used += cost[bid] + extra
@@ -1129,6 +1137,8 @@ def _choose_locks_for_room(
     while changed and cut:
         changed = False
         for bid in list(cut):
+            if bid in past_share:
+                continue
             extra = wrappers_due(bid, (b for b in groups if b not in cut))
             rest = [b for b in cut if b != bid]
             # With nothing left to name there is no line, and the block
@@ -1138,6 +1148,55 @@ def _choose_locks_for_room(
             if kept + cost[bid] + extra + line <= room_chars:
                 cut, kept, changed = rest, kept + cost[bid] + extra, True
     return tuple(cut)
+
+
+def _past_user_lock_share(
+    groups: dict[str, list[tuple[int, int]]],
+    user_scope_ids: frozenset[str],
+    room: int,
+) -> frozenset[str]:
+    """The user locks in `groups` past their share of `room` (#1944).
+
+    Each lock costs its renders, as in `_choose_locks_for_room`; the share
+    is `user_locks.resolve_user_lock_share()` of `room`, first fit in
+    render order (`user_locks.fit_user_lock_share`).
+    """
+    users = [(bid, sum(hi - lo for lo, hi in spans))
+             for bid, spans in groups.items() if bid in user_scope_ids]
+    if not users:
+        return frozenset()
+    from aelfrice.user_locks import (  # noqa: PLC0415
+        fit_user_lock_share,
+        resolve_user_lock_share,
+    )
+
+    _kept, past = fit_user_lock_share(
+        users, int(room * resolve_user_lock_share()))
+    return frozenset(past)
+
+
+def _user_scope_lock_ids(store: MemoryStore | None) -> frozenset[str]:
+    """Ids a block renders as user-scope locks, for the #1944 share.
+
+    The user store's locks less any that share an id with a repository
+    lock: the L0 merge renders the repository copy of those. A user lock
+    the merge drops as a near-duplicate has an id of its own that the
+    block never renders, so it costs nothing here. Fail-soft: an error
+    returns no ids, which leaves the room to bound user locks alone.
+    """
+    try:
+        from aelfrice.user_locks import read_user_locks  # noqa: PLC0415
+
+        with _store_handle(store) as s:
+            if s is None:
+                return frozenset()
+            user_ids = {b.id for b in read_user_locks(s.db_path)}
+            if not user_ids:
+                return frozenset()
+            return frozenset(
+                user_ids - {b.id for b in s.list_locked_beliefs()})
+    except Exception:  # fail-soft: the payload bound still holds
+        return frozenset()
 
 
 def _splice_out(body: str, spans: list[tuple[int, int]]) -> str:
@@ -1498,6 +1557,7 @@ def enforce_block_ceiling(
 def _write_memory_block(
     body: str, *, stdout: IO[str], stderr: IO[str],
     room_chars: int = HOOK_PAYLOAD_CHAR_LIMIT,
+    user_scope_ids: frozenset[str] = frozenset(),
 ) -> BlockCeilingOutcome:
     """Trim `body` to the ceiling, note what happened, and write it.
 
@@ -1520,6 +1580,14 @@ def _write_memory_block(
     the ceiling, it becomes the limit and user locks may be cut, and
     named; see `_choose_locks_for_room`. The figures in this docstring
     measure the ceiling alone, with the payload bound lifted.
+
+    `user_scope_ids` are the ids the block renders as user-scope locks
+    (#1944). Together they may claim `user_locks.resolve_user_lock_share()`
+    of the room, first fit in render order. A user lock past the share is
+    cut first and taken back only into room the block leaves empty, never
+    by shedding a hit or a frame piece, so it can't push out a repository
+    lock or a retrieval hit. One it can't show is named in the last line
+    like any other cut lock.
 
     Routing the write itself through the trim is what keeps a
     fourth emit site from being added unbounded;
@@ -1629,10 +1697,12 @@ def _write_memory_block(
             _without_empty_recap(
                 _splice_out(body, spans_of(list(groups))), body), 1,
         ).body, 0)[0]) if groups else ""
+        past_share = _past_user_lock_share(groups, user_scope_ids, room)
         cut = _choose_locks_for_room(
             groups, recap_ids, wrapper, len(frame_body), room,
             frame_before_line=len(frame_body.rstrip("\n")),
             manifest_ids=manifest_ids, manifest_wrapper=manifest_wrapper,
+            past_share=past_share,
         )
         # The choice rests on a model of the block's size. Measure what it
         # renders instead of trusting it: while the block is over the room,
@@ -1663,11 +1733,11 @@ def _write_memory_block(
         # and changes the block, another that would grow it as much or more
         # -- its cost less what its leaving the line saves -- and bring
         # back the same wrappers fails too, and is not rendered.
-        def wrappers_of(bid: str) -> tuple[bool, bool]:
-            return bid in recap_ids, bid in manifest_ids
+        def wrappers_of(bid: str) -> tuple[bool, bool, bool]:
+            return bid in recap_ids, bid in manifest_ids, bid in past_share
 
         sheddable = _freeable_chars(step.body)
-        failed: dict[tuple[bool, bool], int] = {}
+        failed: dict[tuple[bool, bool, bool], int] = {}
         for bid in list(cut_list):
             cost = sum(hi - lo for lo, hi in groups[bid])
             rest = [b for b in cut_list if b != bid]
@@ -1684,7 +1754,13 @@ def _write_memory_block(
             if growth > room - len(trimmed) + sheddable:
                 continue
             t_text, t_step, t_shed = attempt(rest)
-            if len(t_text) <= room:
+            fits = len(t_text) <= room
+            # #1944: a user lock past its share may not shed a hit or a
+            # frame piece to fit, only take room the block leaves empty.
+            if fits and key[2]:
+                fits = (set(t_step.dropped_ids) <= set(step.dropped_ids)
+                        and t_shed <= frame_shed)
+            if fits:
                 cut_list, trimmed, step, frame_shed = rest, t_text, t_step, t_shed
                 sheddable = _freeable_chars(step.body)
                 failed.clear()
@@ -3708,6 +3784,7 @@ def user_prompt_submit(
             # this branch cannot drift away from its two siblings.
             outcome = _write_memory_block(
                 body, stdout=sout, stderr=serr, room_chars=envelope_room,
+                user_scope_ids=_user_scope_lock_ids(ups_store),
             )
             # Load-bearing, and the only consumer is `rendered_block=`
             # below: without it the audit row stores the PRE-trim block
@@ -4014,6 +4091,7 @@ def user_prompt_submit(
                 # test_gate_skip_audit_row_records_the_block_it_emitted
                 body = _write_memory_block(
                     body, stdout=sout, stderr=serr, room_chars=envelope_room,
+                    user_scope_ids=_user_scope_lock_ids(ups_store),
                 ).body
             else:
                 body = ""

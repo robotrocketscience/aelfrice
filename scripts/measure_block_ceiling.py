@@ -297,9 +297,10 @@ def _payload_bound_lifted() -> Iterator[None]:
     original_limit = _hook.HOOK_PAYLOAD_CHAR_LIMIT
     original_write = _hook._write_memory_block
 
-    def lifted_write(body, *, stdout, stderr, room_chars=_LIFTED_LIMIT):
+    def lifted_write(body, *, stdout, stderr, room_chars=_LIFTED_LIMIT, **kw):
+        # #1944: pass the user-scope ids and any later keyword through.
         return original_write(
-            body, stdout=stdout, stderr=stderr, room_chars=room_chars,
+            body, stdout=stdout, stderr=stderr, room_chars=room_chars, **kw,
         )
 
     _hook.HOOK_PAYLOAD_CHAR_LIMIT = _LIFTED_LIMIT
