@@ -268,3 +268,14 @@ def test_a_crlf_empty_section_fails(tmp_path: Path) -> None:
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert _EMPTY_MESSAGE in proc.stdout, proc.stdout
+
+
+@pytest.mark.timeout(30)
+def test_a_crlf_changelog_with_entries_passes(tmp_path: Path) -> None:
+    """The [Unreleased] drain check shares the bare-CR blank line."""
+    text = _with_section(
+        "## [5.4.1] - 2026-11-19\n\n### Fixed\n\n- **A ([#2](u)).** x\n\n"
+    )
+    proc = _run(_tree(tmp_path, text.replace("\n", "\r\n")), "5.4.1")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr

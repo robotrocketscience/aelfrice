@@ -273,6 +273,7 @@ jobs:
             # [Unreleased] (the original failure mode that motivated this
             # check: PR #835 review thread).
             unreleased_body=$(awk '
+              { sub(/\r$/, "") }
               /^## \[Unreleased\]/ { in_unreleased=1; next }
               /^## \[/ && in_unreleased { exit }
               in_unreleased && NF > 0 && !/^###/ { print }
