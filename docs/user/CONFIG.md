@@ -1516,6 +1516,12 @@ If `AELFRICE_USER_DB` and the repository store name the same file, `aelf lock --
 
 An injected user lock carries `scope="user"` on its `<belief>` element, for example `<belief id="…" lock="user" scope="user">`, and a repository lock's element is unchanged. The attribute counts against the token budget like the rest of the element. The hooks open the user store read-only, next to the repository store, and never create it. They never write its database file, though SQLite can create the `-wal` and `-shm` files beside it. If another process holds the user store under a lock, the hooks wait at most 150 ms, then inject the repository locks only and print one warning. If the user store is missing, the hooks inject the repository locks only. If the user store exists but can't be opened or read, the hooks print one warning to stderr and inject the repository locks only.
 
+### User-lock share: `user_lock_share`
+
+User locks reach every repository, so they get a share of each prompt instead of all of it ([#1944](https://github.com/robotrocketscience/aelfrice/issues/1944)). Together, they may claim at most `user_lock_share` of the prompt hook's output room and of the retrieval token budget. The default is `0.35`. A user lock past the share appears only in room that the repository's locks and the retrieval hits leave empty, so it never pushes either one out. The block's last line names each lock that it can't show, as it does for any lock that doesn't fit. A share of `1` restores the behavior before 5.5.0, where only the output limit bounds user locks. A share of `0` gives user locks only the room that nothing else uses.
+
+To change the share, set `[retrieval] user_lock_share` in `.aelfrice.toml`, or set `AELFRICE_USER_LOCK_SHARE`, which takes precedence. The value is a number from 0 to 1. If the value is outside that range or isn't a number, aelfrice prints one warning and uses the next setting. When the user store holds more locks than the share can show, `aelf doctor` prints a warning with the counts.
+
 ## When changes apply
 
 An edit to a `[noise]` key applies on the next `aelf onboard` run, and an edit to `[retrieval] entity_index_enabled` applies on the next `retrieve()` call. An edit never re-filters the beliefs already in the store: the configuration controls ingestion and retrieval, not retention.
