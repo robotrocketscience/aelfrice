@@ -106,6 +106,13 @@ DUP_WINDOW_SECONDS: Final[float] = 2.0
 # Bounds the dedup read at O(1) in file size, holding the per-append cost
 # inside the sub-10ms budget even when rotation has not run recently.
 _TAIL_READ_BYTES: Final[int] = 65536
+# #1956: longest wait, in seconds, for the lock that makes the duplicate
+# guard's read and append one step. The host runs a duplicated registration
+# in parallel, so the guard needs the lock to see the other copy's line. A
+# holder keeps the lock for one tail read and one append, well under this.
+# Past it, the turn is appended through the unlocked guard, so the hook
+# never stalls.
+_TURN_LOCK_TIMEOUT_SECONDS: float = 0.25
 
 PASTE_COUNT_MAX_CHARS: Final[int] = 2_000_000
 """Longest prompt the logger counts pastes in (#1955).
@@ -345,11 +352,30 @@ def _append_turn(line: dict[str, object]) -> None:
     `_append_jsonl` directly and are never deduped. When the previous
     record in turns.jsonl matches on (session_id, role, text) within
     DUP_WINDOW_SECONDS, the write is skipped and the drop is noted in
-    hook_audit.jsonl. The guard targets the sequential burst of re-fires a
-    duplicated hook registration produces; it adds no locking, preserving
-    the lock-free non-blocking contract.
+    hook_audit.jsonl.
+
+    #1956: the host starts a duplicated registration's copies in parallel,
+    so the read and the append run under an advisory lock on a sibling
+    `turns.jsonl.lock`. A lock still held after `_TURN_LOCK_TIMEOUT_SECONDS`
+    falls back to the unlocked guard, and a host or filesystem that can't
+    lock runs it unlocked too, so the hook never blocks or drops a turn.
     """
     path = turns_path()
+    from aelfrice.session_ring import (  # noqa: PLC0415
+        FileLockTimeout,
+        exclusive_file_lock,
+    )
+
+    try:
+        with exclusive_file_lock(path, timeout=_TURN_LOCK_TIMEOUT_SECONDS):
+            _append_unless_duplicate(path, line)
+        return
+    except FileLockTimeout:
+        pass
+    _append_unless_duplicate(path, line)
+
+
+def _append_unless_duplicate(path: Path, line: dict[str, object]) -> None:
     last = _read_last_turn_line(path)
     if _is_consecutive_duplicate(last, line):
         role = line.get("role")
