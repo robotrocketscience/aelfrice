@@ -12,6 +12,10 @@ finish a read too. On the unlocked guard both reads happen, both see an
 empty file, and both append. With the lock, the second child cannot read
 until the first appends, so the first child's wait runs out, it appends,
 and the second child reads that row and skips its own.
+
+Both children stamp their row with one fixed timestamp, so the guard's
+2-second duplicate window can't split them however late the second child
+starts on a loaded runner.
 """
 from __future__ import annotations
 
@@ -33,6 +37,7 @@ _READ_HOLD_SECONDS = 2.0
 # Longer than the hold, so the waiting child gets the lock instead of
 # timing out into the unlocked fallback.
 _CHILD_LOCK_TIMEOUT_SECONDS = 15.0
+_FIXED_TS = "2026-01-01T00:00:00+00:00"
 
 _CHILD = r"""
 import sys
@@ -45,6 +50,8 @@ reads_dir = Path(sys.argv[1])
 name = sys.argv[2]
 hold = float(sys.argv[3])
 tl._TURN_LOCK_TIMEOUT_SECONDS = float(sys.argv[4])
+fixed_ts = sys.argv[5]
+tl._now_iso = lambda: fixed_ts
 original = tl._read_last_turn_line
 
 
@@ -96,6 +103,7 @@ def _run_child(
         [
             sys.executable, "-c", _CHILD, str(reads_dir), name,
             str(_READ_HOLD_SECONDS), str(_CHILD_LOCK_TIMEOUT_SECONDS),
+            _FIXED_TS,
         ],
         input=json.dumps(_PAYLOAD).encode("utf-8"),
         stdout=subprocess.PIPE,
