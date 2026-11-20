@@ -8160,6 +8160,7 @@ def _print_replay_report(
         ---------------------------
         log rows considered:       <n>
         excluded (legacy_unknown): <n>
+        excluded (deleted):        <n>
         matched:                   <n>
         mismatched:                <n>
         derived_orphan:            <n>
@@ -8190,6 +8191,7 @@ def _print_replay_report(
         "---------------------------",
         f"log rows considered:       {report.total_log_rows}",
         f"excluded (legacy_unknown): {report.excluded_legacy_unknown}",
+        f"excluded (deleted):        {report.excluded_purged}",
         f"matched:                   {report.matched}",
         f"mismatched:                {report.mismatched}",
         f"derived_orphan:            {report.derived_orphan}",
