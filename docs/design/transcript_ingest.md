@@ -157,15 +157,16 @@ Notes:
   stays stable for the duration. Source: a session-start hook that
   writes a `session_id` env var the per-turn hooks read.
 - `turn_id` is the host's `prompt_id` when the hook payload carries
-  a valid one (#1954): a non-empty string of at most 128 characters
-  with no control characters. A turn's user line and assistant line
+  a valid one (#1954): 1 to 128 ASCII letters, digits, `_` or `-`. A turn's user line and assistant line
   then share it, and the retrieval hook writes the same value to
   `injection_events.turn_id`, so the two join exactly. Without a
   valid `prompt_id`, each line gets its own id from the clock and 4
   random bytes, which joins nothing. So `turn_id` is per prompt, not
   per line: when the #1956 race writes one prompt twice, both lines
-  share one `turn_id`. No reader in `src/aelfrice` parses `turn_id`
-  from this file.
+  share one `turn_id`. A Stop re-fire, one with `stop_hook_active`
+  set after a Stop hook blocked, writes a further assistant line with
+  the same `turn_id`, so one prompt can own several assistant lines.
+  No reader in `src/aelfrice` parses `turn_id` from this file.
 - `context.git_*` is populated cheaply from `git rev-parse` and
   `git symbolic-ref --short HEAD`. Failures (non-git directories)
   set the fields to `null`; never block the hook.
