@@ -1,7 +1,7 @@
 ---
 name: aelf:restore
 description: Restore a retired (soft-deleted) belief to active — the inverse of aelf retire. Clears valid_to and re-indexes the belief for search. No-op on an already-active or unknown id.
-argument-hint: The belief ID to restore
+argument-hint: The belief ID to restore, plus optional --user
 allowed-tools:
   - Bash
 ---
@@ -14,7 +14,8 @@ re-enters keyword search and retrieval. This is the inverse of
 One audit row is written to feedback_history (valence=+1.0,
 source=user_restored) on a successful restore. Restoring a belief that is
 already active, or an id that does not exist, is a no-op that reports
-"not restorable" and exits non-zero.
+"not restorable" and exits non-zero. Pass `--user` to restore a belief
+in the user store, which the command never creates.
 </objective>
 
 <process>

@@ -212,9 +212,18 @@ Inline code and URLs that aelfrice keeps are part of the belief. You can search 
 
 The rule covers sentences from your prompts and nothing else. The commit hook reads a commit message without it, so a token in a message can reach a belief through the words it stores, and the edge keeps about 80 characters of the message as written. The transcript log, `turns.jsonl`, holds each prompt as you typed it, and an edge between two turns of a session keeps the start of the earlier prompt as you typed it.
 
-To remove a stored secret, run `aelf delete <id>`, or `aelf delete --user <id>` for a user lock. The confirmation prompt shows the id, the text's length, and the first 12 characters of the text's sha256, never the text ([#1946](https://github.com/robotrocketscience/aelfrice/issues/1946)). The delete removes the belief and clears the text of each ingest log row once no belief that row derived exists. A cleared row keeps the text's sha256 and the time the text was cleared. A row that also derived a belief that still exists keeps its text. `aelf retire` keeps the text, so that `aelf restore` can bring the belief back.
+To remove a stored secret, run `aelf delete <id>`, or `aelf delete --user <id>` for a user lock. The confirmation prompt shows the id, the origin, and the creation date, never the text ([#1946](https://github.com/robotrocketscience/aelfrice/issues/1946)). The delete removes the belief and clears the text of each ingest log row once no belief that row derived exists. A cleared row keeps the text's sha256 and the time the text was cleared. A row that also derived a belief that still exists keeps its text. `aelf retire` keeps the text, so that `aelf restore` can bring the belief back; for a user lock, `aelf retire --user` and `aelf restore --user` do the same in the user store.
 
-A delete changes only the store file in place. A backup or other copy of the store file made before the delete keeps the text, and so do `turns.jsonl` and any terminal, transcript, or log that showed it. The store file itself can also keep pieces of the text in unused pages and in its full-text search index after the delete.
+A delete changes only the store file in place. A backup or other copy of the store file made before the delete keeps the text, and so does any terminal or transcript that showed it. These logs keep it too, and a delete doesn't touch them:
+
+- `turns.jsonl` holds each prompt as you typed it.
+- `feed.jsonl` holds the first 120 characters of each lock.
+- `hook_audit.jsonl` holds each block the hooks injected, in full, so it holds a lock's text from every prompt that injected it.
+- `command_outcomes.jsonl` holds the first 500 characters of each typed `/aelf:lock`.
+
+These logs sit next to the repository store that wrote them. For a user lock, they sit next to each repository store that locked or injected it, not in the user store's folder.
+
+The store file itself can still hold pieces of the text after the delete, in its full-text search index and in database pages that SQLite hasn't overwritten yet ([#1961](https://github.com/robotrocketscience/aelfrice/issues/1961)).
 
 ## Batch ingest of historical sessions
 
