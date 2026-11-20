@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -381,3 +382,163 @@ def test_lock_with_one_file_for_both_scopes_says_nothing(
     assert rc == 0
     assert "`aelf unlock" not in out
     assert err == ""
+
+
+# --- an other-store path with URI metacharacters -------------------------
+
+
+@pytest.mark.parametrize("char", ["#", "?", "%41"])
+@pytest.mark.timeout(60)
+def test_a_repo_store_path_with_uri_characters_is_read_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, char: str,
+) -> None:
+    base = tmp_path / "base"
+    repo = base / f"R{char}x" / "memory.db"
+    repo.parent.mkdir(parents=True)
+    monkeypatch.setenv("AELFRICE_DB", str(repo))
+    monkeypatch.setenv("AELFRICE_USER_DB", str(tmp_path / "u" / "memory.db"))
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+    assert _run(["lock", STATEMENT])[0] == 0
+    bid = _lock_id(STATEMENT)
+    before = sorted(p.name for p in base.iterdir())
+    rc, out, err = _run(["lock", "--user", STATEMENT])
+    assert rc == 0
+    assert f"`aelf unlock {bid}`" in out
+    assert err == ""
+    rc, _, err = _run(["unlock", "--user", bid])
+    assert rc == 0
+    assert f"`aelf unlock {bid}`" in err
+    assert sorted(p.name for p in base.iterdir()) == before
+
+
+@pytest.mark.parametrize("char", ["#", "?", "%41"])
+@pytest.mark.timeout(60)
+def test_a_user_store_path_with_uri_characters_is_read_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, char: str,
+) -> None:
+    base = tmp_path / "base"
+    user = base / f"U{char}x" / "memory.db"
+    (tmp_path / "r").mkdir()
+    monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "r" / "memory.db"))
+    monkeypatch.setenv("AELFRICE_USER_DB", str(user))
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+    assert _run(["lock", "--user", STATEMENT])[0] == 0
+    bid = _lock_id(STATEMENT)
+    before = sorted(p.name for p in base.iterdir())
+    rc, out, err = _run(["lock", STATEMENT])
+    assert rc == 0
+    assert f"`aelf unlock --user {bid}`" in out
+    assert err == ""
+    rc, _, err = _run(["unlock", bid])
+    assert rc == 0
+    assert f"`aelf unlock --user {bid}`" in err
+    assert sorted(p.name for p in base.iterdir()) == before
+
+
+# --- one statement under two ids ------------------------------------------
+
+
+@pytest.mark.timeout(120)
+def test_a_corroborated_repo_lock_matches_the_user_copy_by_text(
+    stores: tuple[Path, Path], tmp_path: Path,
+) -> None:
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    text = (
+        "The deploy script must always run the database migrations "
+        "before restarting the web workers."
+    )
+    (proj / "NOTES.md").write_text(f"# Notes\n\n{text}\n")
+    assert _run(["onboard", str(proj)])[0] == 0
+    rc, out, _ = _run(["lock", text])
+    assert rc == 0
+    assert "(corroborated existing)" in out
+    assert _run(["lock", "--user", text])[0] == 0
+    rid, uid = _ids("repo")[text], _ids("user")[text]
+    assert rid != uid
+
+    rc, out, err = _run(["locked"])
+    assert rc == 0
+    tagged = [ln for ln in out.splitlines() if "[also locked in the other scope]" in ln]
+    assert sorted(ln.split(" ", 1)[0] for ln in tagged) == sorted([rid, uid])
+    assert f"`aelf unlock {rid}`" in err
+    assert f"`aelf unlock --user {uid}`" in err
+    rows = json.loads(_run(["locked", "--json"])[1])
+    assert [r["in_both_scopes"] for r in rows] == [True, True]
+
+    rc, _, err = _run(["unlock", rid])
+    assert rc == 0
+    assert f"`aelf unlock --user {uid}`" in err
+    assert _run(["lock", text])[0] == 0
+    rc, _, err = _run(["unlock", "--user", uid])
+    assert rc == 0
+    assert f"`aelf unlock {rid}`" in err
+
+
+# --- the warning's length and wording -------------------------------------
+
+
+@pytest.mark.timeout(120)
+def test_the_lock_warning_names_three_ids_and_counts_the_rest(
+    stores: tuple[Path, Path],
+) -> None:
+    for i in range(5):
+        assert _run(["lock", "--user", f"{STATEMENT[:-1]} v{i}."])[0] == 0
+    rc, out, _ = _run(["lock", STATEMENT])
+    assert rc == 0
+    [warning] = [ln for ln in out.splitlines() if "warning:" in ln]
+    assert re.search(
+        r"\(([0-9a-f]{16}), ([0-9a-f]{16}), and ([0-9a-f]{16}) \(\+2 more\)\)",
+        warning,
+    )
+    assert "those copies" in warning
+    assert warning.count("`aelf unlock --user ") == 3
+    assert ", and `aelf unlock --user " in warning
+
+
+@pytest.mark.timeout(60)
+def test_one_match_is_named_in_the_singular(stores: tuple[Path, Path]) -> None:
+    assert _run(["lock", STATEMENT])[0] == 0
+    rc, out, _ = _run(["lock", "--user", STATEMENT])
+    assert rc == 0
+    [warning] = [ln for ln in out.splitlines() if "warning:" in ln]
+    assert "that copy" in warning
+    assert "(+" not in warning
+
+
+@pytest.mark.timeout(60)
+def test_user_unlock_with_no_user_store_points_at_the_repo_copy(
+    stores: tuple[Path, Path],
+) -> None:
+    _, user = stores
+    assert _run(["lock", STATEMENT])[0] == 0
+    bid = _lock_id(STATEMENT)
+    rc, _, err = _run(["unlock", "--user", bid])
+    assert rc == 1
+    assert "no user lock store" in err
+    assert f"`aelf unlock {bid}`" in err
+    assert not user.parent.exists()
+
+
+@pytest.mark.parametrize("char", ["#", "?", "%41"])
+@pytest.mark.timeout(60)
+def test_doctor_reads_a_store_path_with_uri_characters_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, char: str,
+) -> None:
+    from aelfrice.doctor import diagnose_user_lock_duplicates
+
+    base = tmp_path / "base"
+    repo = base / f"R{char}x" / "memory.db"
+    user = base / f"U{char}x" / "memory.db"
+    repo.parent.mkdir(parents=True)
+    monkeypatch.setenv("AELFRICE_DB", str(repo))
+    monkeypatch.setenv("AELFRICE_USER_DB", str(user))
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+    assert _run(["lock", STATEMENT])[0] == 0
+    assert _run(["lock", "--user", STATEMENT])[0] == 0
+    bid = _lock_id(STATEMENT)
+    before = sorted(p.name for p in base.iterdir())
+    report = diagnose_user_lock_duplicates(str(repo), str(user))
+    assert report.known
+    assert [(rid, uids) for rid, _, uids in report.pairs] == [(bid, (bid,))]
+    assert sorted(p.name for p in base.iterdir()) == before
