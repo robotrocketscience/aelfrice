@@ -1785,7 +1785,8 @@ def _write_memory_block(
     if outcome.omitted_lock_ids:
         stderr.write(
             f"aelfrice hook: {len(outcome.omitted_lock_ids)} user lock(s) "
-            "did not fit the hook's output limit and were not shown; the "
+            "did not fit the hook's output limit or the user-lock share and "
+            "were not shown; the "
             "block's last line lists them and points to `aelf locked`\n"
         )
     if outcome.dropped_ids:

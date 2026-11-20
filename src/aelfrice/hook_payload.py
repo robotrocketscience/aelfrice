@@ -66,7 +66,13 @@ itself outgrow the room it is priced into."""
 
 
 def lock_overflow_line(omitted: list[str]) -> str:
-    """The #1639 line that names user locks the payload bound cut."""
+    """The #1639 line that names user locks the block cut.
+
+    The payload bound cuts them, and so does the #1944 user-lock share,
+    so the line says they did not fit the output space, which covers
+    both. "space" keeps the line the length "limit" gave it, which the
+    published `scripts/measure_block_ceiling.py` figures are priced at.
+    """
     named = [
         b if len(b) <= LOCK_POINTER_ID_CHARS
         else b[:LOCK_POINTER_ID_CHARS - 1] + "…"
@@ -76,7 +82,7 @@ def lock_overflow_line(omitted: list[str]) -> str:
     ids = ", ".join(named) + (f", and {more} more" if more else "")
     return (
         f"\naelfrice: {len(omitted)} user lock(s) did not fit this hook's "
-        f"output limit and are not shown in full here: {ids}. Run "
+        f"output space and are not shown in full here: {ids}. Run "
         f"`aelf locked` to read "
         "every lock.\n"
     )
