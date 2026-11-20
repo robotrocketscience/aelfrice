@@ -36,15 +36,22 @@ see [`benchmarks/README.md`](../../benchmarks/README.md).
 >
 > Uplift attributable to these lanes therefore reflects production behavior, not
 > only the eval surface. The temporal spine's +14.6pp LoCoMo coverage is one
-> such number. Two staged lanes are **exposed on `retrieve_v2` but held OFF by
-> default**. These two lanes do **not** affect production, so their numbers are
-> ablation-only:
+> such number. Three lanes are **exposed on `retrieve_v2` but held OFF by
+> default**, so they do **not** affect a default install:
 >
 > - origin tie-break ([#1089](https://github.com/robotrocketscience/aelfrice/issues/1089)), refuted on LoCoMo ([#1013](https://github.com/robotrocketscience/aelfrice/issues/1013))
 > - HRR-expand ([#981](https://github.com/robotrocketscience/aelfrice/issues/981)), measured recall-neutral ([#1001](https://github.com/robotrocketscience/aelfrice/issues/1001))
+> - breadth-first search (BFS), which stays off unless `AELFRICE_BFS` or
+>   `[retrieval] bfs_enabled` turns it on. The academic adapters pass
+>   `use_bfs=True`, so their numbers include BFS and don't describe a default
+>   install. With BFS on, the expansion gate still skips it on a broad prompt:
+>   one longer than 80 words, one that starts with a question word such as
+>   "what", or one with no issue reference, file path, identifier, or edge-type name.
+>
+> The numbers for origin tie-break and HRR-expand are ablation-only.
 >
 > The always-on lanes also reflect production behavior: BM25F, entity-index
-> L2.5, breadth-first search (BFS), and type-aware compression. Three lanes
+> L2.5, and type-aware compression. Three lanes
 > previously listed here as always-on are not always-on. The γ posterior rerank
 > and the ζ posterior rerank both resolve default-off, and
 > [#1162](https://github.com/robotrocketscience/aelfrice/issues/1162) returned
