@@ -92,7 +92,8 @@ def _run(root: Path, version: str) -> subprocess.CompletedProcess[str]:
 def _tree(tmp_path: Path, text: str, major: int = 5) -> Path:
     directory = tmp_path / "CHANGELOG"
     directory.mkdir()
-    (directory / f"v{major}.md").write_text(text, encoding="utf-8")
+    # Bytes, so a CRLF fixture reaches the file unchanged on every platform.
+    (directory / f"v{major}.md").write_bytes(text.encode("utf-8"))
     return tmp_path
 
 
@@ -257,3 +258,13 @@ def test_a_cut_with_one_entry_file_passes_the_check(tmp_path: Path) -> None:
     proc = _run(_tree(tmp_path, out), "5.4.1")
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+@pytest.mark.timeout(30)
+def test_a_crlf_empty_section_fails(tmp_path: Path) -> None:
+    """A CRLF line holds a bare `\\r`, which awk counts as a field."""
+    text = _with_section("## [5.4.1] - 2026-11-19\n\n### Fixed\n\n")
+    proc = _run(_tree(tmp_path, text.replace("\n", "\r\n")), "5.4.1")
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert _EMPTY_MESSAGE in proc.stdout, proc.stdout
