@@ -1,0 +1,3 @@
+### Documentation
+
+- **INSTALL.md describes the statusline, merge commits, the doctor hook check, and uninstall as the code behaves ([#1921](https://github.com/robotrocketscience/aelfrice/issues/1921)).** The statusline also shows `aelf L0=N L1=N` whenever the store holds beliefs, and `AELF_STATUSLINE_COUNTS=0` hides it. Git runs no `post-commit` for a merge that completes by itself, but a merge you resolve and commit runs it, and commit-ingest reads that message. `aelf doctor` reports every default-on manifest hook missing from `settings.json` unless you opted out of it. `aelf uninstall` has no default disposition: without `--keep-db`, `--purge`, or `--archive PATH`, it exits 2.
