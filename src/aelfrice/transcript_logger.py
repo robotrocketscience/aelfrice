@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import IO, Callable, Final, cast
 
 from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
+from aelfrice.hook_payload import payload_prompt_id
 
 # Imported lazily to keep module import fast for the hook hot path.
 # `_git_common_dir` is reused from cli.py; if that import is ever
@@ -351,15 +352,27 @@ def _append_turn(line: dict[str, object]) -> None:
 
 
 def _build_turn_line(
-    *, role: str, text: str, session_id: str | None, ctx: dict[str, str | None],
+    *,
+    role: str,
+    text: str,
+    session_id: str | None,
+    ctx: dict[str, str | None],
+    prompt_id: str | None = None,
 ) -> dict[str, object]:
+    """One turn line. `turn_id` is `prompt_id` when given, else a fresh id.
+
+    #1954: the caller passes the payload's validated `prompt_id`
+    (`aelfrice.hook_payload.payload_prompt_id`), which the retrieval hook also
+    writes as `injection_events.turn_id`, so the two join exactly. Without
+    one the line gets its own random id, as it did before.
+    """
     return {
         "schema_version": SCHEMA_VERSION,
         "ts": _now_iso(),
         "role": role,
         "text": text,
         "session_id": session_id,
-        "turn_id": _new_turn_id(),
+        "turn_id": prompt_id or _new_turn_id(),
         "context": ctx,
     }
 
@@ -760,6 +773,7 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
     sid = session_id if isinstance(session_id, str) else None
     line = _build_turn_line(
         role="user", text=prompt, session_id=sid, ctx=_turn_context(),
+        prompt_id=payload_prompt_id(payload),
     )
     _append_turn(line)
 
@@ -900,9 +914,10 @@ def _count_turn_lines_and_identity(path: Path) -> tuple[int, str | None] | None:
     (compaction_start, etc.) carry no `role` key, so they are excluded.
 
     The identity is a digest of the file's first line (#1749). Every line
-    this logger writes carries a timestamp, and turn lines a random
-    `turn_id`, so a new turns.jsonl starts with a line no earlier file
-    had. Unlike an inode, the first line reads the same from a host and a
+    this logger writes carries a microsecond timestamp, so a new
+    turns.jsonl starts with a line no earlier file had. (A turn line's
+    `turn_id` can repeat across files since #1954, when it is the host's
+    prompt id; the timestamp alone keeps the first line unique.) Unlike an inode, the first line reads the same from a host and a
     container that share the file, and a recreated file doesn't inherit
     it. The identity is None for an empty file; the whole result is None
     when the file can't be opened.

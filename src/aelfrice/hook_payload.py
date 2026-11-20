@@ -15,9 +15,14 @@ They are pure string substitution with no hook state, so they belong with
 the other things every hook fire's output shares. `aelfrice.hook` still
 binds them under their old private names. Check the cycles with
 `scripts/import_cycles.py`.
+
+The host's prompt id lives here too (#1954). The retrieval hook and the
+transcript logger both read it as the turn id, and the logger must not
+import `aelfrice.hook`.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Final
 
 HOOK_PAYLOAD_CHAR_LIMIT: Final[int] = 9_500
@@ -113,3 +118,53 @@ def escape_attr(value: str) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+PROMPT_ID_KEY: Final[str] = "prompt_id"
+"""The payload field that names the user prompt being processed (#1954).
+
+`aelf-hook` and `aelf-transcript-logger` run as separate processes on one
+UserPromptSubmit, and each used to mint its own random turn id, so
+`injection_events.turn_id` never equalled the logged turn's `turn_id`.
+The host sends this field on its UserPromptSubmit, Stop and PostToolUse
+payloads: "UUID identifying the user prompt currently being processed"
+(https://code.claude.com/docs/en/hooks, common input fields). When a
+payload carries a valid one, both writers use it as the turn id, so the
+two records join exactly. When it is absent or invalid, each writer mints
+its own id as before. There is no content-key fallback: on the measured
+turn logs, most records shared their text with another record of the same
+session.
+"""
+
+PROMPT_ID_MAX_CHARS: Final[int] = 128
+"""Longest `prompt_id` accepted as a turn id (#1954).
+
+The host sends a UUID, 36 characters. The bound keeps a malformed value
+from writing an unbounded string into every turn line and every
+`injection_events` row; a longer value counts as absent.
+"""
+
+
+def _has_control_char(value: str) -> bool:
+    """True when `value` holds a C0 or C1 control character, or DEL."""
+    return any(ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F for c in value)
+
+
+def payload_prompt_id(payload: Mapping[str, object]) -> str | None:
+    """The payload's `prompt_id` when it is usable as a turn id, else None.
+
+    Usable means a string that is not empty or whitespace only, is at
+    most `PROMPT_ID_MAX_CHARS` characters, and holds no control
+    character. Any other value, including a missing key, reads as
+    absent, and the caller mints its own id.
+    """
+    value = payload.get(PROMPT_ID_KEY)
+    if not isinstance(value, str):
+        return None
+    if not value.strip():
+        return None
+    if len(value) > PROMPT_ID_MAX_CHARS:
+        return None
+    if _has_control_char(value):
+        return None
+    return value
