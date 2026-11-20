@@ -42,10 +42,14 @@ from aelfrice.models import (
     BELIEF_SCOPE_PROJECT,
     CORROBORATION_SOURCE_TYPES,
     CORROBORATION_SPEAKERS,
+    DEFAULT_LOCK_TIER,
+    LOCK_TIERS,
     LOCK_USER,
     ORIGIN_UNKNOWN,
     ORIGIN_USER_CORRECTED,
     ORIGIN_USER_STATED,
+    RETENTION_CLASSES,
+    RETENTION_UNKNOWN,
     Belief,
     Edge,
 )
@@ -75,6 +79,10 @@ class MigrateCounts:
     # know is skipped and counted, and the rest of the migrate goes on.
     copied_corroborations: int = 0
     skipped_unknown_corroborations: int = 0
+    # #1911: retention_class and lock_tier values of the inserted beliefs
+    # that this version does not know. Each one is written as `unknown` or
+    # the default lock tier, as before #1911, so the belief still copies.
+    normalized_unknown_values: int = 0
 
 
 @dataclass(frozen=True)
@@ -105,8 +113,13 @@ _BELIEF_FIELDS: Final[tuple[str, ...]] = tuple(
 
 def _read_legacy_beliefs(
     conn: sqlite3.Connection, *, source_identity: str = "",
-) -> list[Belief]:
+) -> tuple[list[Belief], dict[str, int]]:
     """Read beliefs from a source DB, preserving project_context provenance.
+
+    Returns the beliefs and, per belief id, how many of its
+    retention_class and lock_tier values this version does not know.
+    Those values are replaced with `unknown` and the default lock tier,
+    so `insert_belief` accepts the row (#1911).
 
     #970: a migrate must not collapse every row to project_context=''. An
     already-stamped source value is carried over verbatim. A source row
@@ -123,6 +136,7 @@ def _read_legacy_beliefs(
     has_scope = "scope" in keys
     has_project_context = "project_context" in keys
     out: list[Belief] = []
+    normalized: dict[str, int] = {}
     for row in rows:
         scope = row["scope"] if has_scope else BELIEF_SCOPE_PROJECT
         lock_level = row["lock_level"]
@@ -157,8 +171,20 @@ def _read_legacy_beliefs(
             scope=scope,
             project_context=pc,
         )
+        # A source written by a newer version, or edited by hand, can hold
+        # a value `insert_belief` refuses. Normalize it so the migrate
+        # copies the belief instead of stopping at this row.
+        n = 0
+        if fields.get("retention_class", RETENTION_UNKNOWN) not in RETENTION_CLASSES:
+            fields["retention_class"] = RETENTION_UNKNOWN
+            n += 1
+        if fields.get("lock_tier", DEFAULT_LOCK_TIER) not in LOCK_TIERS:
+            fields["lock_tier"] = DEFAULT_LOCK_TIER
+            n += 1
+        if n:
+            normalized[row["id"]] = n
         out.append(Belief(**fields))
-    return out
+    return out, normalized
 
 
 def _read_legacy_edges(conn: sqlite3.Connection) -> list[Edge]:
@@ -273,7 +299,7 @@ def migrate(
     # home-dir / non-repo source.
     source_identity = repo_identity_from_db_path(legacy_path)
     try:
-        legacy_beliefs = _read_legacy_beliefs(
+        legacy_beliefs, normalized_by_belief = _read_legacy_beliefs(
             legacy_conn, source_identity=source_identity,
         )
         legacy_edges = _read_legacy_edges(legacy_conn)
@@ -305,6 +331,7 @@ def migrate(
     skipped_orphan_edges = 0
     copied_corroborations = 0
     skipped_unknown_corroborations = 0
+    normalized_unknown_values = 0
 
     if apply:
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -348,6 +375,7 @@ def migrate(
                 skipped_unknown_corroborations += unknown_corroborations.get(
                     b.id, 0,
                 )
+                normalized_unknown_values += normalized_by_belief.get(b.id, 0)
 
             # Copy edges only when both endpoints landed in the target.
             # Edges that reference an unmatched legacy belief are
@@ -387,6 +415,7 @@ def migrate(
             skipped_unknown_corroborations += unknown_corroborations.get(
                 b.id, 0,
             )
+            normalized_unknown_values += normalized_by_belief.get(b.id, 0)
         # Edges-would-copy = edges with both endpoints in matched_ids
         # (deduplicated against existing target edges only when applying).
         for e in legacy_edges:
@@ -405,6 +434,7 @@ def migrate(
         skipped_orphan_edges=skipped_orphan_edges,
         copied_corroborations=copied_corroborations,
         skipped_unknown_corroborations=skipped_unknown_corroborations,
+        normalized_unknown_values=normalized_unknown_values,
     )
     return MigrateReport(
         legacy_path=legacy_path,

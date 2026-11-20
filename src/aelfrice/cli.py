@@ -7963,6 +7963,7 @@ def _print_migrate_report(report: MigrateReport, out: object) -> None:
     copy_verb = "copied" if report.applied else "would copy"
     print(f"  {copy_verb} corroborations: {c.copied_corroborations}", file=out)  # type: ignore[arg-type]
     print(f"  skipped unknown corroborations: {c.skipped_unknown_corroborations}", file=out)  # type: ignore[arg-type]
+    print(f"  normalized unknown values: {c.normalized_unknown_values}", file=out)  # type: ignore[arg-type]
     if not report.applied:
         print("", file=out)  # type: ignore[arg-type]
         print(

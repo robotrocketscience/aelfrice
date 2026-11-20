@@ -15,6 +15,7 @@ AELFRICE_USER_DB to a temp dir.
 from __future__ import annotations
 
 import dataclasses
+import io
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from aelfrice.cli import _print_migrate_report
 from aelfrice.migrate import migrate
 from aelfrice.models import (
     BELIEF_FACTUAL,
@@ -31,6 +33,7 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_CLI_REMEMBER,
     CORROBORATION_SOURCE_TYPES,
     CORROBORATION_SPEAKERS,
+    DEFAULT_LOCK_TIER,
     EDGE_SUPPORTS,
     LOCK_LEVELS,
     LOCK_NONE,
@@ -42,6 +45,7 @@ from aelfrice.models import (
     ORIGINS,
     RETENTION_CLASSES,
     RETENTION_FACT,
+    RETENTION_UNKNOWN,
     Belief,
     Edge,
 )
@@ -589,3 +593,58 @@ def test_a_dry_run_counts_the_corroboration_rows_it_would_copy(
     c = report.counts
     assert (c.copied_corroborations, c.skipped_unknown_corroborations) == (1, 2)
     assert not dst.exists()
+
+
+# --- Belief values this version does not know are normalized ----------------
+
+
+def test_an_unknown_retention_class_or_lock_tier_is_normalized_and_counted(
+    tmp_path: Path,
+) -> None:
+    """A newer retention class or lock tier does not stop the migrate.
+
+    The target gets `unknown` and the default tier for those values, as
+    before #1911, and the later beliefs and edges still copy.
+    """
+    src, dst = tmp_path / "src.db", tmp_path / "dst.db"
+    s = MemoryStore(str(src))
+    try:
+        for bid in ("b1", "b2", "b3"):
+            s.insert_belief(_belief(bid))
+        s.insert_edge(Edge(src="b1", dst="b3", type=EDGE_SUPPORTS, weight=0.5))
+    finally:
+        s.close()
+    conn = sqlite3.connect(src)
+    try:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "UPDATE beliefs SET retention_class = 'archival' WHERE id = 'b2'",
+        )
+        conn.execute("UPDATE beliefs SET lock_tier = 'pinned' WHERE id = 'b3'")
+        conn.commit()
+    finally:
+        conn.close()
+    dry = migrate(legacy_path=src, target_path=dst, project_root=tmp_path,
+                  apply=False, copy_all=True)
+    assert dry.counts.normalized_unknown_values == 2
+    report = migrate(legacy_path=src, target_path=dst, project_root=tmp_path,
+                     apply=True, copy_all=True)
+    conn = sqlite3.connect(dst)
+    try:
+        ids = [r[0] for r in conn.execute("SELECT id FROM beliefs ORDER BY id")]
+        edges = conn.execute("SELECT src, dst FROM edges").fetchall()
+        b2 = conn.execute(
+            "SELECT retention_class FROM beliefs WHERE id = 'b2'",
+        ).fetchone()[0]
+        b3 = conn.execute(
+            "SELECT lock_tier FROM beliefs WHERE id = 'b3'",
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert ids == ["b1", "b2", "b3"]
+    assert edges == [("b1", "b3")]
+    assert (b2, b3) == (RETENTION_UNKNOWN, DEFAULT_LOCK_TIER)
+    assert report.counts.normalized_unknown_values == 2
+    out = io.StringIO()
+    _print_migrate_report(report, out=out)
+    assert "  normalized unknown values: 2\n" in out.getvalue()
