@@ -33,7 +33,7 @@ aelfrice doesn't report back to any server. **The shipped package contains no ne
 
 ## Onboard-time outbound call
 
-aelfrice runs LLM-quality classification once per project, at onboard time. The runtime stays local, and no day-to-day operation makes an outbound call.
+aelfrice runs LLM-quality classification once per project, at onboard time. Other paths make outbound calls in day-to-day use, and two that are on by default transmit data: the pre-issue guard and background labeling. For every path and its default, see the table of outbound paths later in this section.
 
 **The default flow at v1.5.0+ is host-driven and makes zero direct calls from the aelfrice CLI itself.** When you run `/aelf:onboard <path>` from a host that exposes a Task tool (Claude Code and similar), the slash command body in [`src/aelfrice/slash_commands/onboard.md`](../../src/aelfrice/slash_commands/onboard.md) drives the classifier through the host's own model dispatch, against the cheapest model in its stack. The host already has whatever credentials and billing it needs, aelfrice doesn't require an API key, and the aelfrice package never imports `anthropic` on this path. Your data already goes to your host LLM, so aelfrice reuses the cheapest model in that stack to classify once.
 
@@ -101,7 +101,7 @@ Before v4.2.0, this command hardcoded its gate to open and never read the sentin
 | `aelf onboard` (direct-API classifier) | on by default since v1.5.0, but runs only with the `[onboard-llm]` extra, `ANTHROPIC_API_KEY`, and recorded consent | candidate sentences the onboard scanner extracts |
 | `aelf doctor --classify-orphans` | opt-in, consent-gated | stored belief content |
 | `aelf gate list` — `gh issue list` and `gh issue view` against the repo aelfrice detects from your git remote (`gate_list.py`) | off; an explicit command, hidden from `--help` | repo identity and label filters; no belief content |
-| `aelf upgrade` and the one-shot uv-tool migration — `uv tool install aelfrice` (`lifecycle.py`) | off; an explicit command | nothing beyond the package request |
+| `aelf upgrade` and the one-shot uv-tool migration — `uv tool install aelfrice` (`lifecycle.py`) | `aelf upgrade` is off; an explicit command. The migration runs inside `aelf setup` when this machine has no uv-tool install of aelfrice and `uv` is on `PATH`, and it stops running after its first success | nothing beyond the package request |
 
 Of the three default-on paths, only the notifier transmits nothing; the pre-issue guard and background labeling do transmit. An audit is most likely to miss those two, because each reaches the network by running another program rather than through a socket. See the note on the verification grep above.
 
