@@ -4561,7 +4561,7 @@ def _cmd_retire(args: argparse.Namespace, out: object) -> int:
         )
         print(
             f"retired: {args.belief_id} "
-            f"(reversible — `{undo} {args.belief_id}` to undo)",
+            f"(reversible; run `{undo} {args.belief_id}` to undo)",
             file=out,  # type: ignore[arg-type]
         )
     finally:
@@ -4570,7 +4570,7 @@ def _cmd_retire(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_restore(args: argparse.Namespace, out: object) -> int:
-    """Restore a soft-deleted (retired) belief to active — inverse of `aelf retire`.
+    """Restore a soft-deleted (retired) belief to active, the inverse of `aelf retire`.
 
     `--user` selects the user lock store, as for `retire --user` (#1946).
     """
