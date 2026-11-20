@@ -4395,7 +4395,14 @@ def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_delete(args: argparse.Namespace, out: object) -> int:
-    """Hard-delete one belief from the store. Writes an audit row first (#440)."""
+    """Hard-delete one belief from the store. Writes an audit row first (#440).
+
+    #1946: the prompt names the belief by id, length and a sha256
+    prefix, never by its text, so a deleted secret is not written to
+    the terminal.
+    """
+    import hashlib
+
     from aelfrice.federation import ForeignBeliefError
     from aelfrice.models import LOCK_USER
 
@@ -4427,17 +4434,26 @@ def _cmd_delete(args: argparse.Namespace, out: object) -> int:
             return 1
 
         if not args.yes:
+            digest = hashlib.sha256(
+                belief.content.encode("utf-8", errors="surrogatepass")
+            ).hexdigest()
             print(
-                f"about to delete belief {args.belief_id}:",
+                f"about to delete belief {args.belief_id} "
+                f"({len(belief.content)} characters, sha256 {digest[:12]}); "
+                f"`aelf show {args.belief_id}` prints its text",
                 file=sys.stderr,
             )
-            print(f'  "{belief.content}"', file=sys.stderr)
             try:
                 answer = input(
                     "type the first 8 characters of the id to confirm: "
                 )
             except EOFError:
-                answer = ""
+                print(
+                    "aborted: no confirmation was read; pass --yes to "
+                    "delete without the prompt",
+                    file=sys.stderr,
+                )
+                return 1
             if answer != args.belief_id[:8]:
                 print("aborted: confirmation did not match", file=sys.stderr)
                 return 1
