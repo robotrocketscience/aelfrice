@@ -31,6 +31,7 @@ from aelfrice.models import (
     BELIEF_FACTUAL,
     BELIEF_TYPES,
     CORROBORATION_SOURCE_CLI_REMEMBER,
+    CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     CORROBORATION_SOURCE_TYPES,
     CORROBORATION_SPEAKERS,
     DEFAULT_LOCK_TIER,
@@ -593,6 +594,59 @@ def test_a_dry_run_counts_the_corroboration_rows_it_would_copy(
     c = report.counts
     assert (c.copied_corroborations, c.skipped_unknown_corroborations) == (1, 2)
     assert not dst.exists()
+
+
+def test_a_dry_run_counts_duplicate_source_rows_once(tmp_path: Path) -> None:
+    """A store from before v3.8.0 can hold duplicate rows for one source.
+
+    The apply keeps one row per (belief_id, session_id or '',
+    source_path_hash or '', source_type), so the dry run counts that key
+    too. NULL and '' are one key, as in `uq_belief_corroborations_source`.
+    """
+    src, dst = tmp_path / "src.db", tmp_path / "dst.db"
+    s = MemoryStore(str(src))
+    try:
+        s.insert_belief(_belief("b1"))
+        s.insert_belief(_belief("b2"))
+    finally:
+        s.close()
+    remember = CORROBORATION_SOURCE_CLI_REMEMBER
+    rows = [
+        ("b1", remember, "s1", None),
+        ("b1", remember, "s1", None),
+        ("b1", CORROBORATION_SOURCE_TRANSCRIPT_INGEST, "s1", None),
+        ("b2", remember, "s1", None),
+        ("b2", remember, None, None),
+        ("b2", remember, "", None),
+        ("b2", remember, None, "h1"),
+        ("b2", remember, None, "h1"),
+    ]
+    conn = sqlite3.connect(src)
+    try:
+        conn.execute("DROP INDEX uq_belief_corroborations_source")
+        conn.executemany(
+            "INSERT INTO belief_corroborations (belief_id, ingested_at, "
+            "source_type, session_id, source_path_hash, speaker) "
+            "VALUES (?, '2026-01-02T00:00:00+00:00', ?, ?, ?, NULL)",
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    dry = migrate(legacy_path=src, target_path=dst, project_root=tmp_path,
+                  apply=False, copy_all=True)
+    applied = migrate(legacy_path=src, target_path=dst, project_root=tmp_path,
+                      apply=True, copy_all=True)
+    conn = sqlite3.connect(dst)
+    try:
+        target_rows = conn.execute(
+            "SELECT COUNT(*) FROM belief_corroborations",
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert target_rows == 5
+    assert dry.counts.copied_corroborations == 5
+    assert applied.counts.copied_corroborations == 5
 
 
 # --- Belief values this version does not know are normalized ----------------

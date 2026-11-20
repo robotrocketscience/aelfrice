@@ -317,8 +317,17 @@ def migrate(
     matched_ids: set[str] = {b.id for b in matched}
     corroborations_by_belief: dict[str, list[_CorroborationRow]] = {}
     unknown_corroborations: dict[str, int] = {}
+    # A source from before v3.8.0 can hold duplicate rows for one source.
+    # `record_corroboration` keeps the first row per this key, the key of
+    # `uq_belief_corroborations_source`, so the dry run counts it once too.
+    seen_keys: set[tuple[str, str, str, str]] = set()
     for c in legacy_corroborations:
         if _is_known_corroboration(c):
+            key = (c.belief_id, c.session_id or "", c.source_path_hash or "",
+                   c.source_type)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
             corroborations_by_belief.setdefault(c.belief_id, []).append(c)
         else:
             unknown_corroborations[c.belief_id] = (
