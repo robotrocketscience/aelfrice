@@ -253,7 +253,7 @@ jobs:
       # still fail unless it passed.
       - if: steps.filter.outputs.code != 'true' && steps.filter.outputs.tree_reads == 'true' && github.event_name != 'workflow_dispatch'
         name: Run the tests that read every file a glob matches
-        run: uv run pytest tests/test_changelog_dupes.py tests/test_code_span_scanner_1556.py tests/test_codex_option_rejection_1429.py tests/test_collate_changelog.py tests/test_conflict_markers_1491.py tests/test_derived_figures_1469.py tests/test_docs_cross_file_anchors_1511.py tests/test_no_personal_paths.py tests/test_sdist_contents_1940.py tests/test_store_open_cost_1561.py --deselect tests/test_derived_figures_1469.py::test_the_repo_passes_the_producer_checks -q -rfEsxX
+        run: uv run pytest tests/test_changelog_dupes.py tests/test_code_span_scanner_1556.py tests/test_codex_option_rejection_1429.py tests/test_collate_changelog.py tests/test_conflict_markers_1491.py tests/test_derived_figures_1469.py tests/test_docs_cross_file_anchors_1511.py tests/test_no_personal_paths.py tests/test_release_section_entries_1939.py tests/test_sdist_contents_1940.py tests/test_store_open_cost_1561.py --deselect tests/test_derived_figures_1469.py::test_the_repo_passes_the_producer_checks -q -rfEsxX
       - if: steps.filter.outputs.code != 'true' && steps.filter.outputs.tree_reads != 'true' && github.event_name != 'workflow_dispatch'
         run: echo "No changed file matched a filter key; reporting pass."
       # `always()` so a red leg still keeps its report, which is the case the
