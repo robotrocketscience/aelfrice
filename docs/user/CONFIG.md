@@ -1520,7 +1520,7 @@ An injected user lock carries `scope="user"` on its `<belief>` element, for exam
 
 User locks reach every repository, so they get a share of each prompt instead of all of it ([#1944](https://github.com/robotrocketscience/aelfrice/issues/1944)). Together, they may claim at most `user_lock_share` of the prompt hook's output room and of the retrieval token budget. The default is `0.35`. A user lock past the share appears only in room that the repository's locks and the retrieval hits leave empty, so it never pushes either one out. The block's last line names each lock that it can't show, as it does for any lock that doesn't fit. A share of `1` restores the behavior before 5.5.0, where only the output limit bounds user locks. A share of `0` gives user locks only the room that nothing else uses.
 
-To change the share, set `[retrieval] user_lock_share` in `.aelfrice.toml`, or set `AELFRICE_USER_LOCK_SHARE`, which takes precedence. The value is a number from 0 to 1. If the value is outside that range or isn't a number, aelfrice prints one warning and uses the next setting. When the user store holds more locks than the share can show, `aelf doctor` prints a warning with the counts.
+To change the share, set `[retrieval] user_lock_share` in `.aelfrice.toml`, or set `AELFRICE_USER_LOCK_SHARE`, which takes precedence. The prompt hook reads the file from the folder the session runs in, as it does for its other settings. The value is a number from 0 to 1. If the value is outside that range or isn't a number, aelfrice prints one warning and uses the next setting. When the user store holds more locks than the share can show, `aelf doctor` prints a warning with the counts.
 
 ## When changes apply
 
