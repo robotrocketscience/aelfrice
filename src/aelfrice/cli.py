@@ -4306,13 +4306,15 @@ def _cmd_validate(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
-def _user_lock_hint(belief_id: str) -> str | None:
-    """A pointer to `--user` when `belief_id` is locked in the user store.
+def _user_store_belief(
+    belief_id: str, *, include_retired: bool = False,
+) -> Belief | None:
+    """`belief_id` as the user store holds it, for a `--user` hint.
 
     Never creates the user store. None when the store is absent, when
     it is the repository store, when it cannot be read, or when it has
-    no such lock. The hint is advice, so a broken user store never
-    turns a repository unlock into a failure.
+    no such belief. The hint is advice, so a broken user store never
+    turns a repository command into a failure.
     """
     import sqlite3
 
@@ -4323,15 +4325,36 @@ def _user_lock_hint(belief_id: str) -> str | None:
         if store is None:
             return None
         try:
-            b = store.get_belief(belief_id)
+            return store.get_belief(belief_id, include_retired=include_retired)
         finally:
             store.close()
     except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable):
         return None
+
+
+def _user_lock_hint(belief_id: str) -> str | None:
+    """A pointer to `--user` when `belief_id` is locked in the user store."""
+    b = _user_store_belief(belief_id)
     if b is None or b.lock_level != LOCK_USER:
         return None
     return (
         f"  {belief_id} is a user lock; run `aelf unlock --user {belief_id}`."
+    )
+
+
+def _user_scope_hint(args: argparse.Namespace, command: str) -> str | None:
+    """A pointer to `<command> --user` when only the user store has the id (#1946).
+
+    None under `--user`, and when the user store has no such belief,
+    retired or not. Reads the user store only; never creates it.
+    """
+    if getattr(args, "user_scope", False):
+        return None
+    if _user_store_belief(args.belief_id, include_retired=True) is None:
+        return None
+    return (
+        f"  {args.belief_id} is in the user store; run "
+        f"`aelf {command} --user {args.belief_id}`."
     )
 
 
@@ -4438,6 +4461,9 @@ def _cmd_delete(args: argparse.Namespace, out: object) -> int:
         belief = store.get_belief(args.belief_id, include_retired=True)
         if belief is None:
             print(f"belief not found: {args.belief_id}", file=sys.stderr)
+            hint = _user_scope_hint(args, "delete")
+            if hint is not None:
+                print(hint, file=sys.stderr)
             return 1
 
         if belief.lock_level == LOCK_USER and not args.force:
@@ -4509,6 +4535,9 @@ def _cmd_retire(args: argparse.Namespace, out: object) -> int:
         belief = store.get_belief(args.belief_id, include_retired=True)
         if belief is None:
             print(f"belief not found: {args.belief_id}", file=sys.stderr)
+            hint = _user_scope_hint(args, "retire")
+            if hint is not None:
+                print(hint, file=sys.stderr)
             return 1
         if belief.valid_to is not None:
             print(f"already retired: {args.belief_id}", file=out)  # type: ignore[arg-type]

@@ -447,3 +447,53 @@ def test_restore_user_naming_the_repo_store_is_refused(
     rc, _out, err = _run(["restore", "--user", bid])
     assert rc == 1
     assert "--user refused" in err
+
+
+# --- the --user hint on a plain delete or retire ----------------------------
+
+
+@pytest.mark.parametrize("verb", ["delete", "retire"])
+def test_a_plain_command_on_a_user_only_id_points_at_user(
+    stores: tuple[Path, Path], verb: str,
+) -> None:
+    bid = _lock(SECRET, "--user")
+    argv = [verb, bid, "--force"] + (["--yes"] if verb == "delete" else [])
+    rc, _out, err = _run(argv)
+    assert rc == 1
+    assert f"`aelf {verb} --user {bid}`" in err
+
+
+@pytest.mark.parametrize("verb", ["delete", "retire"])
+def test_the_hint_reaches_a_retired_user_belief(
+    stores: tuple[Path, Path], verb: str,
+) -> None:
+    bid = _lock(SECRET, "--user")
+    assert _run(["retire", "--user", bid, "--force"])[0] == 0
+    argv = [verb, bid, "--force"] + (["--yes"] if verb == "delete" else [])
+    _rc, _out, err = _run(argv)
+    assert f"`aelf {verb} --user {bid}`" in err
+
+
+@pytest.mark.parametrize("verb", ["delete", "retire"])
+def test_no_hint_without_a_user_store_and_none_is_created(
+    stores: tuple[Path, Path], verb: str,
+) -> None:
+    _repo, user = stores
+    _lock(OTHER)
+    argv = [verb, "aaaa000000001946", "--force"]
+    argv += ["--yes"] if verb == "delete" else []
+    rc, _out, err = _run(argv)
+    assert rc == 1
+    assert "--user" not in err
+    assert not user.exists()
+
+
+@pytest.mark.parametrize("verb", ["delete", "retire"])
+def test_no_hint_for_an_id_the_user_store_lacks(
+    stores: tuple[Path, Path], verb: str,
+) -> None:
+    _lock(OTHER, "--user")
+    argv = [verb, "aaaa000000001946", "--force"]
+    argv += ["--yes"] if verb == "delete" else []
+    _rc, _out, err = _run(argv)
+    assert "--user" not in err
