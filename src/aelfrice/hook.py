@@ -3175,7 +3175,7 @@ def user_prompt_submit(
     # legacy self-open path, preserving per-helper fail-softness.
     ups_store: MemoryStore | None = None
     # #1944: the user-lock share this fire pinned, released in `finally`.
-    share_token: Token[float | None] | None = None
+    share_token: Token[Any] | None = None
     try:
         # TTL-gated background update check, completely detached, never
         # blocks the hook. Statusline reads the cache it writes.
@@ -3331,16 +3331,15 @@ def user_prompt_submit(
         except Exception:
             payload_cwd = None
         # #1944: the user-lock share is project config, so it resolves from
-        # the payload's cwd, once, with this hook's stderr, and is pinned for
-        # the retrieval charge and the envelope's cut that read it later.
+        # the payload's cwd, once, with this hook's stderr, for the retrieval
+        # charge and the envelope's cut. Resolved on first read, so a fire
+        # with no user lock reads no configuration.
         try:
             from aelfrice.user_locks import (  # noqa: PLC0415
                 pin_user_lock_share,
-                resolve_user_lock_share,
             )
 
-            share_token = pin_user_lock_share(
-                resolve_user_lock_share(start=payload_cwd, stderr=serr))
+            share_token = pin_user_lock_share(payload_cwd, serr)
         except Exception:  # fail-soft: an unpinned read uses the default chain
             share_token = None
         # #1630: the store resolves from the PROCESS cwd, not `payload_cwd`,

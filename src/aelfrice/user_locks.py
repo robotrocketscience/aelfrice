@@ -326,24 +326,39 @@ def _share_or_none(value: float, source: str, serr: IO[str]) -> float | None:
     return None
 
 
-_PINNED_SHARE: ContextVar[float | None] = ContextVar(
+class _SharePin:
+    """Where a fire resolves the share from, and the value once it has."""
+
+    __slots__ = ("start", "stderr", "value")
+
+    def __init__(self, start: Path | None, stderr: IO[str] | None) -> None:
+        self.start = start
+        self.stderr = stderr
+        self.value: float | None = None
+
+
+_PINNED_SHARE: ContextVar[_SharePin | None] = ContextVar(
     "aelfrice_user_lock_share", default=None,
 )
 
 
-def pin_user_lock_share(share: float) -> Token[float | None]:
-    """Make `resolve_user_lock_share` return `share` until unpinned.
+def pin_user_lock_share(
+    start: Path | None, stderr: IO[str] | None,
+) -> Token[_SharePin | None]:
+    """Resolve the share from `start` with `stderr` for every read until unpinned.
 
-    A hook fire resolves the share once, from the payload's cwd and with
-    its own stderr, and pins it, so every later read in the fire (the
-    retrieval charge and the envelope's cut) gets the same value without
-    reading the configuration again or repeating a warning. Pass the
+    A hook fire pins the payload's cwd and its own stderr, so every read
+    in the fire (the retrieval charge and the envelope's cut) resolves
+    from the project the session is in and gets one value, with any
+    warning printed once, on the hook's stream. The first read resolves
+    it; a fire that reads none never loads the configuration, so a
+    gate-skipped prompt stays off the retrieval import path. Pass the
     token to `unpin_user_lock_share`.
     """
-    return _PINNED_SHARE.set(share)
+    return _PINNED_SHARE.set(_SharePin(start, stderr))
 
 
-def unpin_user_lock_share(token: Token[float | None]) -> None:
+def unpin_user_lock_share(token: Token[_SharePin | None]) -> None:
     _PINNED_SHARE.reset(token)
 
 
@@ -352,16 +367,23 @@ def resolve_user_lock_share(
 ) -> float:
     """The user-lock share, a fraction from 0 to 1 (#1944).
 
-    A share pinned by `pin_user_lock_share` wins. Otherwise the
+    Inside `pin_user_lock_share`, the pinned `start` and `stderr` are
+    used, and the first read's value is kept. Otherwise the
     precedence is the retrieval budget's: `AELFRICE_USER_LOCK_SHARE`,
     then `[retrieval] user_lock_share` in the nearest `.aelfrice.toml`
     from `start`, then `DEFAULT_USER_LOCK_SHARE`. A value that isn't a
     number, or is outside 0 to 1, prints one line to `stderr` and falls
     through to the next tier.
     """
-    pinned = _PINNED_SHARE.get()
-    if pinned is not None:
-        return pinned
+    pin = _PINNED_SHARE.get()
+    if pin is not None:
+        if pin.value is None:
+            pin.value = _resolve_share(start=pin.start, stderr=pin.stderr)
+        return pin.value
+    return _resolve_share(start=start, stderr=stderr)
+
+
+def _resolve_share(*, start: Path | None, stderr: IO[str] | None) -> float:
     from aelfrice.retrieval import (  # noqa: PLC0415
         RETRIEVAL_SECTION,
         _read_toml_float_for,  # pyright: ignore[reportPrivateUsage]
