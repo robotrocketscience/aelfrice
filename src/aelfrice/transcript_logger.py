@@ -38,6 +38,7 @@ import os
 import secrets
 import subprocess  # noqa: F401 — used by _spawn_background_ingest
 import sys
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -104,6 +105,14 @@ DUP_WINDOW_SECONDS: Final[float] = 2.0
 # Bounds the dedup read at O(1) in file size, holding the per-append cost
 # inside the sub-10ms budget even when rotation has not run recently.
 _TAIL_READ_BYTES: Final[int] = 65536
+# #1956: longest wait, in seconds, for the lock that makes the duplicate
+# guard's read and append one step. The host runs a duplicated registration
+# in parallel, so the guard needs the lock to see the other copy's line. A
+# holder keeps the lock for one tail read and one append, well under this.
+# Past it, the turn is appended through the unlocked guard, so the hook
+# never stalls.
+_TURN_LOCK_TIMEOUT_SECONDS: float = 0.25
+_TURN_LOCK_POLL_SECONDS: Final[float] = 0.005
 
 # #1780: bytes read from the tail of the host transcript to find the record
 # for the prompt being submitted. The host writes that record before it
@@ -333,11 +342,76 @@ def _append_turn(line: dict[str, object]) -> None:
     `_append_jsonl` directly and are never deduped. When the previous
     record in turns.jsonl matches on (session_id, role, text) within
     DUP_WINDOW_SECONDS, the write is skipped and the drop is noted in
-    hook_audit.jsonl. The guard targets the sequential burst of re-fires a
-    duplicated hook registration produces; it adds no locking, preserving
-    the lock-free non-blocking contract.
+    hook_audit.jsonl.
+
+    #1956: the host starts a duplicated registration's copies in parallel,
+    so the read and the append run under an advisory lock on a sibling
+    `turns.jsonl.lock`. A lock still held after `_TURN_LOCK_TIMEOUT_SECONDS`
+    falls back to the unlocked guard, and a host or filesystem that can't
+    lock runs it unlocked too, so the hook never blocks or drops a turn.
     """
     path = turns_path()
+    lock_fd = _acquire_turn_lock(path)
+    try:
+        _append_unless_duplicate(path, line)
+    finally:
+        if lock_fd is not None:
+            _release_turn_lock(lock_fd)
+
+
+def _acquire_turn_lock(path: Path) -> int | None:
+    """Lock `<path>.lock` within `_TURN_LOCK_TIMEOUT_SECONDS`, or return None.
+
+    #1956. Uses `file_lock` directly rather than `session_ring`, whose
+    module-level `db_paths` import added about 9 ms to a run with
+    `$AELFRICE_TRANSCRIPTS_DIR` set. None means "run the guard unlocked":
+    the lock is held elsewhere past the timeout, or it can't be taken here.
+    """
+    from aelfrice.file_lock import try_lock_exclusive  # noqa: PLC0415
+
+    lock_path = path.with_name(path.name + ".lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return None
+    deadline = time.monotonic() + _TURN_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            try_lock_exclusive(fd)
+            return fd
+        except BlockingIOError:
+            # Contention, normalised to BlockingIOError on every backend.
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_TURN_LOCK_POLL_SECONDS)
+        except OSError:
+            # The file system can't lock: nothing to wait for.
+            break
+    _close_quietly(fd)
+    return None
+
+
+def _release_turn_lock(fd: int) -> None:
+    from aelfrice.file_lock import unlock  # noqa: PLC0415
+
+    try:
+        unlock(fd)
+    except OSError:
+        # Closing the descriptor below releases the lock anyway.
+        pass
+    _close_quietly(fd)
+
+
+def _close_quietly(fd: int) -> None:
+    try:
+        os.close(fd)
+    except OSError:
+        # Best-effort: the descriptor is unusable either way.
+        pass
+
+
+def _append_unless_duplicate(path: Path, line: dict[str, object]) -> None:
     last = _read_last_turn_line(path)
     if _is_consecutive_duplicate(last, line):
         role = line.get("role")
