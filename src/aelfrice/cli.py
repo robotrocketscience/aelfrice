@@ -4345,11 +4345,10 @@ def _user_lock_hint(belief_id: str) -> str | None:
 def _user_scope_hint(args: argparse.Namespace, command: str) -> str | None:
     """A pointer to `<command> --user` when only the user store has the id (#1946).
 
-    None under `--user`, and when the user store has no such belief,
-    retired or not. Reads the user store only; never creates it.
+    None when the user store has no such belief, retired or not, which
+    is always so under `--user`, since the command read that store.
+    Reads the user store only; never creates it.
     """
-    if getattr(args, "user_scope", False):
-        return None
     if _user_store_belief(args.belief_id, include_retired=True) is None:
         return None
     return (
