@@ -6741,6 +6741,12 @@ class MemoryStore:
         without it: an unlocked row no longer matches the select, so a
         rerun writes nothing. The marker saves the per-open query, since
         the fixed `soft_delete_belief` leaves no such row.
+
+        Each row's UPDATE repeats the select's predicate and an audit row
+        is written only when it matched. Two processes opening the store
+        at once can both select the same rows; whichever updates a row
+        second finds it already unlocked, so each row gets one
+        `lock:retire` row.
         """
         if self.get_schema_meta(SCHEMA_META_RETIRED_LOCK_CLEANUP) is not None:
             return 0
@@ -6753,29 +6759,30 @@ class MemoryStore:
                 (LOCK_NONE,),
             )
         ]
-        if due:
-            marks = ",".join("?" * len(due))
-            self._conn.execute(
-                "UPDATE beliefs SET lock_level = ?, locked_at = NULL, "
-                f"lock_expires_at = NULL WHERE id IN ({marks})",
-                (LOCK_NONE, *due),
-            )
+        cleared = [
+            bid for bid in due
+            if self._conn.execute(
+                _CLEAR_LOCK_SQL + " AND valid_to IS NOT NULL",
+                (LOCK_NONE, bid, LOCK_NONE),
+            ).rowcount > 0
+        ]
+        if cleared:
             self._conn.executemany(
                 "INSERT INTO feedback_history "
                 "(belief_id, valence, source, created_at) VALUES (?, 0.0, ?, ?)",
-                [(bid, FEEDBACK_SOURCE_LOCK_RETIRE, ts) for bid in due],
+                [(bid, FEEDBACK_SOURCE_LOCK_RETIRE, ts) for bid in cleared],
             )
-            for bid in due:
+            for bid in cleared:
                 self._bump_belief_version(bid)
         self._conn.execute(
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
             (SCHEMA_META_RETIRED_LOCK_CLEANUP, ts),
         )
-        if due:
+        if cleared:
             self._commit_mutation()
         else:
             self._commit()
-        return len(due)
+        return len(cleared)
 
     def sweep_expired_locks(self, *, now: str | None = None) -> int:
         """Flip every due time-boxed lock to `lock_level='none'`.
