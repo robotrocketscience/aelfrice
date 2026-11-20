@@ -397,6 +397,103 @@ _LEADING_REMINDERS_RE: Final[re.Pattern[str]] = re.compile(
 _PASTE_OPENER_RE: Final[re.Pattern[str]] = re.compile(
     r"<pasted_content\b[^>\n]{0,200}>", re.IGNORECASE,
 )
+# #1691: a `<pasted_content>` opening or closing tag, with or without an id.
+# The attribute run is bounded, so a flood of unterminated tags stays linear.
+# `paste_segments` is its one reader, shared by ingest and the transcript
+# logger (#1955) so the two read a paste the same way.
+PASTE_TAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"<(/?)pasted_content\b[^>\n]{0,200}>", re.IGNORECASE,
+)
+
+
+def paste_segments(text: str) -> list[tuple[int, int, int]]:
+    """`text` cut at its paste tags into `(block, start, end)` pieces.
+
+    `block` is -1 for typed text and otherwise the paste's 0-based index.
+    The pieces cover `text` in order with every tag left out. A paste runs
+    from an opening tag to the next closing tag of any id, or to the end of
+    the record when none follows. An opening tag inside a paste is dropped
+    and the paste goes on, so its text after the tag is a further piece of
+    the same block. A closing tag outside a paste is dropped. Every tag is
+    found once, so the scan is linear however many tags there are.
+    """
+    out: list[tuple[int, int, int]] = []
+    pos = 0
+    block = -1
+    start: int | None = None
+    for m in PASTE_TAG_RE.finditer(text):
+        closing = m.group(1) == "/"
+        if start is None:
+            out.append((-1, pos, m.start()))
+            if not closing:
+                block += 1
+                start = m.end()
+        else:
+            out.append((block, start, m.start()))
+            start = None if closing else m.end()
+        pos = m.end()
+    if start is not None:
+        out.append((block, start, len(text)))
+    else:
+        out.append((-1, pos, len(text)))
+    return out
+
+
+# Opens on its own line, like every harness block: a reminder a user quotes
+# mid-sentence is their text (review, PR #1671).
+SYSTEM_REMINDER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<system-reminder\b[^>]*>.*?</system-reminder\s*>",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+# A closed block of a harness tag (`HARNESS_BLOCK_TAGS`), from its opening
+# line to its closer. Words after the closer on the same line are the user's
+# and stay.
+HARNESS_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<(" + HARNESS_TAG_ALT + r")\b[^>]*>.*?</\1\s*>",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+# A harness opening line whose block never closes: cut from it to the end.
+UNCLOSED_HARNESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<(?:" + HARNESS_TAG_ALT + r")\b[^>]*>.*\Z",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+
+
+def speech_before_pastes(cut: str) -> str | None:
+    """A relay-cut user record with all but speech and pastes cut, or None.
+
+    The steps of `ingest._user_speech` between `cut_relay` and reading
+    pastes, here so the transcript logger's paste counts (#1955) read the
+    same text: the host's marker lines, `<system-reminder>` blocks, and
+    harness blocks, closed or not. `cut` is `cut_relay`'s output; each
+    caller makes that call itself. None when nothing is left or the record
+    is a slash command's wrapper, which ingest drops whole.
+    """
+    rest = HOST_MARKER_LINE_RE.sub("", cut)
+    rest = SYSTEM_REMINDER_RE.sub("", rest).strip()
+    if not rest or COMMAND_WRAPPER_RE.match(rest):
+        return None
+    rest = HARNESS_BLOCK_RE.sub("", rest)
+    return UNCLOSED_HARNESS_RE.sub("", rest)
+
+
+def paste_fields(text: str) -> tuple[int, int]:
+    """(pastes ingest reads in a user record, UTF-8 bytes of their text).
+
+    Counted on `speech_before_pastes(cut_relay(text))` with
+    `paste_segments`, the text and the rule `ingest._user_speech` uses. The
+    bytes leave tags out and keep line breaks. A record with no pastes left,
+    or none at all, gives (0, 0).
+    """
+    rest = speech_before_pastes(cut_relay(text))
+    if rest is None:
+        return 0, 0
+    segments = paste_segments(rest)
+    blocks = 1 + max((b for b, _, _ in segments), default=-1)
+    nbytes = sum(
+        len(rest[s:e].encode("utf-8")) for b, s, e in segments if b >= 0
+    )
+    return blocks, nbytes
 
 
 class _Reminders:

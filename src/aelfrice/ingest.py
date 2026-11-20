@@ -28,10 +28,9 @@ from aelfrice.classification_core import INGEST_CLASSIFIER_VERSION, rule_set_has
 from aelfrice.derivation import META_DERIVED_FROM, META_HOLED, META_TURN_SHA, TURN_SHA_LEN
 from aelfrice.derivation_worker import run_worker
 from aelfrice.noise_filter import (
-    COMMAND_WRAPPER_RE as _COMMAND_WRAPPER_RE,
-    HARNESS_TAG_ALT as _TAG_ALT,
-    HOST_MARKER_LINE_RE as _HOST_MARKER_LINE_RE,
     cut_relay,
+    paste_segments,
+    speech_before_pastes,
 )
 from aelfrice.session_resolution import resolve_session_id
 from aelfrice.models import (
@@ -486,32 +485,8 @@ def _normalize_jsonl_turn(obj: dict[str, object]) -> dict[str, str | None] | Non
     }
 
 
-# Opens on its own line, like every harness block: a reminder a user quotes
-# mid-sentence is their text (review, PR #1671).
-_SYSTEM_REMINDER_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[ \t]*<system-reminder\b[^>]*>.*?</system-reminder\s*>",
-    re.DOTALL | re.IGNORECASE | re.MULTILINE,
-)
-
-# A closed block of a harness tag (`noise_filter.HARNESS_BLOCK_TAGS`), from
-# its opening line to its closer. Words after the closer on the same line are
-# the user's and stay.
-_HARNESS_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[ \t]*<(" + _TAG_ALT + r")\b[^>]*>.*?</\1\s*>",
-    re.DOTALL | re.IGNORECASE | re.MULTILINE,
-)
-# A harness opening line whose block never closes: cut from it to the end.
-_UNCLOSED_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[ \t]*<(?:" + _TAG_ALT + r")\b[^>]*>.*\Z",
-    re.DOTALL | re.IGNORECASE | re.MULTILINE,
-)
 
 
-# #1691: a `<pasted_content>` opening or closing tag, with or without an id.
-# The attribute run is bounded, so a flood of unterminated tags stays linear.
-_PASTE_TAG_RE: Final[re.Pattern[str]] = re.compile(
-    r"<(/?)pasted_content\b[^>\n]{0,200}>", re.IGNORECASE,
-)
 # An interactive shell prompt followed by a command. Shells print the short
 # host name, with no dot, so an email address (a dotted domain) that opens a
 # sentence is never a prompt:
@@ -623,33 +598,13 @@ def _pasted_prose(body: str) -> str:
 def _filter_pastes(text: str) -> str:
     """`text` with each pasted block reduced to its prose, in one pass.
 
-    A paste runs from an opening tag to the next closing tag, or to the end
-    of the record when none follows. An opening tag inside a paste and a
-    closing tag outside one are dropped. Every tag is found once, so the
-    scan is linear however many tags there are.
+    What counts as a paste is `noise_filter.paste_segments`, which the
+    transcript logger's paste counts read too (#1955).
     """
-    out: list[str] = []
-    pos = 0
-    start: int | None = None
-    for m in _PASTE_TAG_RE.finditer(text):
-        closing = m.group(1) == "/"
-        if start is None:
-            out.append(text[pos:m.start()])
-            if not closing:
-                start = m.end()
-        elif closing:
-            out.append(_pasted_prose(text[start:m.start()]))
-            start = None
-        else:
-            # A nested opener: drop the tag, keep the paste going.
-            out.append(_pasted_prose(text[start:m.start()]))
-            start = m.end()
-        pos = m.end()
-    if start is not None:
-        out.append(_pasted_prose(text[start:]))
-    else:
-        out.append(text[pos:])
-    return "".join(out)
+    return "".join(
+        text[s:e] if block < 0 else _pasted_prose(text[s:e])
+        for block, s, e in paste_segments(text)
+    )
 
 
 def _user_speech(text: str) -> str | None:
@@ -692,12 +647,9 @@ def _user_speech(text: str) -> str | None:
     first paste, the user's words in it included. Since the speech of a
     relay-opened record changes, so does its `user_turn_key`.
     """
-    rest = _HOST_MARKER_LINE_RE.sub("", cut_relay(text))
-    rest = _SYSTEM_REMINDER_RE.sub("", rest).strip()
-    if not rest or _COMMAND_WRAPPER_RE.match(rest):
+    rest = speech_before_pastes(cut_relay(text))
+    if rest is None:
         return None
-    rest = _HARNESS_BLOCK_RE.sub("", rest)
-    rest = _UNCLOSED_BLOCK_RE.sub("", rest)
     rest = _filter_pastes(rest).strip()
     return rest or None
 

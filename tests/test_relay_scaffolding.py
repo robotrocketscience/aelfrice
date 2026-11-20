@@ -18,11 +18,11 @@ from pathlib import Path
 import pytest
 
 from aelfrice.ingest import (
-    _HARNESS_BLOCK_RE,  # pyright: ignore[reportPrivateUsage]
-    _SYSTEM_REMINDER_RE,  # pyright: ignore[reportPrivateUsage]
     _user_speech,
     ingest_jsonl,
 )
+from aelfrice.noise_filter import HARNESS_BLOCK_RE as _HARNESS_BLOCK_RE
+from aelfrice.noise_filter import SYSTEM_REMINDER_RE as _SYSTEM_REMINDER_RE
 from aelfrice.noise_filter import (
     _block_spans,  # pyright: ignore[reportPrivateUsage]
     _HARNESS_CLOSER_RE,  # pyright: ignore[reportPrivateUsage]
