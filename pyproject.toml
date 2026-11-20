@@ -231,6 +231,12 @@ also_copy = [
 #   test_insert_belief_gate (six `test_gate_on_*` cases): the gate names the
 #     module that called `insert_belief`, and under mutmut every call comes
 #     through `mutmut.mutation.trampoline`, so it refuses all of them.
+#   test_core_gate_background_windows_1761 (the non-UTF-8 locale reply): the
+#     test opens a batch under the classifier version of `mutants/src`, and
+#     its subprocess labels it under the version of the original source.
+#     The version is a digest of the prompt functions' source, so in a shard
+#     that mutates `core_gate.py` the two differ, the child reports
+#     `stale_version`, and the stats pass stops there (#1938).
 # Two whole groups are left out as well:
 #   `-m "not source_scan"`: tests that read `src/aelfrice` as text. Inside
 #     `mutants/` they read mutmut's mutated copies, which hold each function
@@ -247,6 +253,7 @@ pytest_add_cli_args = [
     "--deselect", "tests/test_docs_cross_file_anchors_1511.py::test_the_scan_is_not_vacuous",
     "--deselect", "tests/test_block_ceiling_hermetic_home_1716.py::test_a_home_config_does_not_move_the_session_start_figures",
     "--deselect", "tests/test_user_lock_injection_1681.py::test_a_user_store_in_the_env_does_not_move_a_published_figure",
+    "--deselect", "tests/test_core_gate_background_windows_1761.py::test_the_reply_decodes_as_utf8_under_a_non_utf8_locale",
     "--deselect", "tests/test_insert_belief_gate.py::test_gate_on_test_module_raises",
     "--deselect", "tests/test_insert_belief_gate.py::test_gate_on_worker_path_passes",
     "--deselect", "tests/test_insert_belief_gate.py::test_gate_on_allowlisted_module_passes",
