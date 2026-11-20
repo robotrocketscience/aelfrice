@@ -25,9 +25,9 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice import file_lock
 from aelfrice import transcript_logger as tl
 from aelfrice.print_mode import ENV_HOST_ENTRYPOINT
-from aelfrice.session_ring import FileLockTimeout
 
 _READ_HOLD_SECONDS = 2.0
 # Longer than the hold, so the waiting child gets the lock instead of
@@ -133,47 +133,85 @@ def tdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+@pytest.fixture
+def held_lock(tdir: Path, monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    """Hold `turns.jsonl.lock` on a separate descriptor for the test.
+
+    An advisory lock belongs to the open file, so the logger's own
+    descriptor sees contention even inside this process.
+    """
+    if not file_lock.HAVE_ADVISORY_LOCKS:
+        pytest.skip("no advisory lock backend on this host")
+    monkeypatch.setattr(tl, "_TURN_LOCK_TIMEOUT_SECONDS", 0.05)
+    fd = os.open(
+        str(tdir / (tl.TURNS_FILENAME + ".lock")), os.O_CREAT | os.O_RDWR, 0o600,
+    )
+    file_lock.lock_exclusive(fd)
+    try:
+        yield fd
+    finally:
+        file_lock.unlock(fd)
+        os.close(fd)
+
+
 def _run_main() -> int:
     return tl.main(stdin=io.StringIO(json.dumps(_PAYLOAD)), stderr=io.StringIO())
 
 
-def test_lock_timeout_still_appends_the_turn(
-    tdir: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_lock_timeout_still_appends_the_turn(tdir: Path, held_lock: int) -> None:
     """A lock held past the timeout must not cost the hook its turn."""
-    import contextlib
-
-    from aelfrice import session_ring
-
-    @contextlib.contextmanager
-    def held(*_a: object, **_k: object):  # type: ignore[no-untyped-def]
-        raise FileLockTimeout("held by another process")
-        yield  # pragma: no cover
-
-    monkeypatch.setattr(session_ring, "exclusive_file_lock", held)
     assert _run_main() == 0
     assert len(_user_rows(tdir / tl.TURNS_FILENAME)) == 1
 
 
 def test_lock_timeout_fallback_keeps_the_sequential_guard(
-    tdir: Path, monkeypatch: pytest.MonkeyPatch,
+    tdir: Path, held_lock: int,
 ) -> None:
     """The unlocked fallback still drops a sequential re-fire (#968)."""
-    import contextlib
-
-    from aelfrice import session_ring
-
-    @contextlib.contextmanager
-    def held(*_a: object, **_k: object):  # type: ignore[no-untyped-def]
-        raise FileLockTimeout("held by another process")
-        yield  # pragma: no cover
-
-    monkeypatch.setattr(session_ring, "exclusive_file_lock", held)
     assert _run_main() == 0
     assert _run_main() == 0
     assert len(_user_rows(tdir / tl.TURNS_FILENAME)) == 1
 
 
+def test_lock_is_released_after_the_append(tdir: Path) -> None:
+    """A second process must be able to take the lock once a turn lands."""
+    assert _run_main() == 0
+    fd = os.open(str(tdir / (tl.TURNS_FILENAME + ".lock")), os.O_RDWR)
+    try:
+        file_lock.try_lock_exclusive(fd)
+        file_lock.unlock(fd)
+    finally:
+        os.close(fd)
+
+
 def test_lock_wait_is_short() -> None:
     """The hook must not stall behind another process's lock."""
     assert 0 < tl._TURN_LOCK_TIMEOUT_SECONDS <= 0.5
+
+
+@pytest.mark.timeout(60)
+def test_locked_append_does_not_import_the_store_resolver(tmp_path: Path) -> None:
+    """With the transcripts folder set, a logged turn stays off `db_paths`.
+
+    The resolver drags in the store modules; importing it on the hot path
+    cost about 9 ms per turn (#1956 review).
+    """
+    (tmp_path / "home").mkdir()
+    code = (
+        "import io, json, sys\n"
+        "from aelfrice import transcript_logger as tl\n"
+        "tl.main(stdin=io.StringIO(sys.argv[1]), stderr=io.StringIO())\n"
+        "print('aelfrice.db_paths' in sys.modules)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code, json.dumps(_PAYLOAD)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_child_env(tmp_path),
+        cwd=tmp_path,
+        check=False,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    assert _user_rows(tmp_path / "transcripts" / tl.TURNS_FILENAME)
+    assert proc.stdout.decode().strip().splitlines()[-1] == "False"

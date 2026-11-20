@@ -40,6 +40,7 @@ import os
 import secrets
 import subprocess  # noqa: F401 — used by _spawn_background_ingest
 import sys
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -113,6 +114,7 @@ _TAIL_READ_BYTES: Final[int] = 65536
 # Past it, the turn is appended through the unlocked guard, so the hook
 # never stalls.
 _TURN_LOCK_TIMEOUT_SECONDS: float = 0.25
+_TURN_LOCK_POLL_SECONDS: Final[float] = 0.005
 
 PASTE_COUNT_MAX_CHARS: Final[int] = 2_000_000
 """Longest prompt the logger counts pastes in (#1955).
@@ -361,18 +363,64 @@ def _append_turn(line: dict[str, object]) -> None:
     lock runs it unlocked too, so the hook never blocks or drops a turn.
     """
     path = turns_path()
-    from aelfrice.session_ring import (  # noqa: PLC0415
-        FileLockTimeout,
-        exclusive_file_lock,
-    )
+    lock_fd = _acquire_turn_lock(path)
+    try:
+        _append_unless_duplicate(path, line)
+    finally:
+        if lock_fd is not None:
+            _release_turn_lock(lock_fd)
+
+
+def _acquire_turn_lock(path: Path) -> int | None:
+    """Lock `<path>.lock` within `_TURN_LOCK_TIMEOUT_SECONDS`, or return None.
+
+    #1956. Uses `file_lock` directly rather than `session_ring`, whose
+    module-level `db_paths` import added about 9 ms to a run with
+    `$AELFRICE_TRANSCRIPTS_DIR` set. None means "run the guard unlocked":
+    the lock is held elsewhere past the timeout, or it can't be taken here.
+    """
+    from aelfrice.file_lock import try_lock_exclusive  # noqa: PLC0415
+
+    lock_path = path.with_name(path.name + ".lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return None
+    deadline = time.monotonic() + _TURN_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            try_lock_exclusive(fd)
+            return fd
+        except BlockingIOError:
+            # Contention, normalised to BlockingIOError on every backend.
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_TURN_LOCK_POLL_SECONDS)
+        except OSError:
+            # The file system can't lock: nothing to wait for.
+            break
+    _close_quietly(fd)
+    return None
+
+
+def _release_turn_lock(fd: int) -> None:
+    from aelfrice.file_lock import unlock  # noqa: PLC0415
 
     try:
-        with exclusive_file_lock(path, timeout=_TURN_LOCK_TIMEOUT_SECONDS):
-            _append_unless_duplicate(path, line)
-        return
-    except FileLockTimeout:
+        unlock(fd)
+    except OSError:
+        # Closing the descriptor below releases the lock anyway.
         pass
-    _append_unless_duplicate(path, line)
+    _close_quietly(fd)
+
+
+def _close_quietly(fd: int) -> None:
+    try:
+        os.close(fd)
+    except OSError:
+        # Best-effort: the descriptor is unusable either way.
+        pass
 
 
 def _append_unless_duplicate(path: Path, line: dict[str, object]) -> None:
