@@ -22,6 +22,7 @@ import `aelfrice.hook`.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Final
 
@@ -145,26 +146,29 @@ from writing an unbounded string into every turn line and every
 """
 
 
-def _has_control_char(value: str) -> bool:
-    """True when `value` holds a C0 or C1 control character, or DEL."""
-    return any(ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F for c in value)
+_PROMPT_ID_RE: Final[re.Pattern[str]] = re.compile(
+    r"[0-9A-Za-z_-]{1,%d}" % PROMPT_ID_MAX_CHARS,
+)
+"""A usable `prompt_id`: ASCII letters, digits, `_` and `-` only.
+
+An allowlist, so a value the writers can't store never gets through. A
+lone surrogate passed a deny list of control characters, and then the
+logger's UTF-8 write raised and lost the user line, and the hook lost its
+whole `injection_events` batch. Padding and non-ASCII letters are refused
+the same way.
+"""
 
 
 def payload_prompt_id(payload: Mapping[str, object]) -> str | None:
     """The payload's `prompt_id` when it is usable as a turn id, else None.
 
-    Usable means a string that is not empty or whitespace only, is at
-    most `PROMPT_ID_MAX_CHARS` characters, and holds no control
-    character. Any other value, including a missing key, reads as
+    Usable means a string of 1 to `PROMPT_ID_MAX_CHARS` ASCII letters,
+    digits, `_` or `-`. Any other value, including a missing key, reads as
     absent, and the caller mints its own id.
     """
     value = payload.get(PROMPT_ID_KEY)
     if not isinstance(value, str):
         return None
-    if not value.strip():
-        return None
-    if len(value) > PROMPT_ID_MAX_CHARS:
-        return None
-    if _has_control_char(value):
+    if _PROMPT_ID_RE.fullmatch(value) is None:
         return None
     return value
