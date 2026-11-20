@@ -4,7 +4,9 @@
 (`db_paths.user_db_path()`), which every repository and worktree shares.
 This module is the read side: it puts those locks into the same L0 set
 the repository's locks form, so they are injected with them and count
-against the same budget, relevance floor, and payload ceiling.
+against the same budget, relevance floor, and payload ceiling, up to
+their share of the budget and of the hook's room
+(`DEFAULT_USER_LOCK_SHARE`, #1944).
 
 Three rules, each deterministic and with no embeddings:
 
@@ -39,7 +41,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Final
@@ -277,6 +279,165 @@ def merge_lock_sets(
             continue
         out.append(u)
     return out
+
+
+DEFAULT_USER_LOCK_SHARE: Final[float] = 0.35
+"""Share of the hook's room, and of the retrieval budget, user locks may claim (#1944).
+
+User locks are injected in every repository. Without a bound of their
+own they took a whole hook fire: on a 5.4.0 install whose user store held
+70 locks, 98.5% of the rows a prompt injected were locks, and the median
+block sat at the 9,500-character payload limit. This share is what they
+may claim when anything else wants the room: at most this fraction of
+the hook envelope's room (`HOOK_PAYLOAD_CHAR_LIMIT` less what the fire's
+other blocks take), and of the retrieval token budget. A user lock past
+the share is shown only in room nothing else wants, so it never displaces
+a repository lock or a retrieval hit, and the block names any it can't
+show in its last line.
+
+0.35 is measured. On copies of 24 repository stores (2026-11-20), the
+repository's own locks took at most 3,005 rendered characters in 23 of
+them, and 8,835 in the last. The prompt hook's retrieval budget,
+`DEFAULT_HOOK_TOKEN_BUDGET` of 1,500 tokens, is 6,000 characters at 4
+characters a token, which leaves 3,500 characters of the 9,500, or
+36.8%. The same floor follows from the repository side: 3,005 characters
+of locks plus the 3,000-character relevance floor
+(`RELEVANCE_BUDGET_FLOOR_FRACTION` of that budget) leave 3,495, or
+36.8%. 0.35 is the 5% step below both. The 24th store's locks take 93%
+of the room alone, so no share changes what it shows.
+
+`[retrieval] user_lock_share` in `.aelfrice.toml` and
+`AELFRICE_USER_LOCK_SHARE` set it; see `resolve_user_lock_share`. A share
+of 1.0 is the old behavior, with user locks bounded by the room alone.
+"""
+
+ENV_USER_LOCK_SHARE: Final[str] = "AELFRICE_USER_LOCK_SHARE"
+USER_LOCK_SHARE_FLAG: Final[str] = "user_lock_share"
+
+
+def _share_or_none(value: float, source: str, serr: IO[str]) -> float | None:
+    if 0.0 <= value <= 1.0:
+        return value
+    print(
+        f"aelfrice: ignoring {source}={value!r} (must be from 0 to 1)",
+        file=serr,
+    )
+    return None
+
+
+def resolve_user_lock_share(
+    *, start: Path | None = None, stderr: IO[str] | None = None,
+) -> float:
+    """The user-lock share, a fraction from 0 to 1 (#1944).
+
+    Precedence, as for the retrieval budget: `AELFRICE_USER_LOCK_SHARE`,
+    then `[retrieval] user_lock_share` in the nearest `.aelfrice.toml`
+    from `start`, then `DEFAULT_USER_LOCK_SHARE`. A value that isn't a
+    number, or is outside 0 to 1, prints one line to `stderr` and falls
+    through to the next tier.
+    """
+    from aelfrice.retrieval import (  # noqa: PLC0415
+        RETRIEVAL_SECTION,
+        _read_toml_float_for,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    serr = stderr if stderr is not None else sys.stderr
+    raw = os.environ.get(ENV_USER_LOCK_SHARE)
+    if raw is not None and raw.strip():
+        try:
+            env = _share_or_none(float(raw), ENV_USER_LOCK_SHARE, serr)
+        except ValueError:
+            print(
+                f"aelfrice: ignoring {ENV_USER_LOCK_SHARE}={raw!r} "
+                "(expected a number)",
+                file=serr,
+            )
+            env = None
+        if env is not None:
+            return env
+    toml_value = _read_toml_float_for(USER_LOCK_SHARE_FLAG, start)
+    if toml_value is not None:
+        toml_share = _share_or_none(
+            toml_value, f"[{RETRIEVAL_SECTION}] {USER_LOCK_SHARE_FLAG}", serr,
+        )
+        if toml_share is not None:
+            return toml_share
+    return DEFAULT_USER_LOCK_SHARE
+
+
+def fit_user_lock_share(
+    costs: Sequence[tuple[str, int]], room: int,
+) -> tuple[list[str], list[str]]:
+    """Split user locks into those the share holds and those past it (#1944).
+
+    `costs` is `(id, cost)` in render order; `room` is the share, in the
+    same unit. First fit: each lock stays when it fits beside the ones
+    kept before it, else it is past the share, so one long lock doesn't
+    push out every shorter one after it. Returns `(kept, past)`, each in
+    render order.
+    """
+    kept: list[str] = []
+    past: list[str] = []
+    used = 0
+    for bid, cost in costs:
+        if used + cost <= room:
+            used += cost
+            kept.append(bid)
+        else:
+            past.append(bid)
+    return kept, past
+
+
+def l0_charge(
+    locked: Sequence[Belief], cost: Callable[[Belief], int], budget: int,
+) -> int:
+    """What the L0 set charges against a retrieval budget (#1944).
+
+    Repository locks are charged in full, as before. User locks are
+    charged up to `resolve_user_lock_share()` of `budget` together, so a
+    large user store can't reduce the room for retrieval hits to the
+    relevance floor. Every lock is still returned and rendered; this
+    changes only what the packer reserves for them. With no user lock in
+    `locked`, it is the plain sum and reads no configuration.
+    """
+    repo = 0
+    user = 0
+    for b in locked:
+        if is_user_scope_lock(b):
+            user += cost(b)
+        else:
+            repo += cost(b)
+    if not user:
+        return repo
+    return repo + min(user, int(budget * resolve_user_lock_share()))
+
+
+def user_lock_render_chars(b: Belief) -> int:
+    """Characters one user lock costs in a hook block, newline included.
+
+    The estimate `aelf doctor` uses (#1944): the `<belief>` element with
+    its `scope="user"` marker and escaped content, or, for a
+    reference-tier lock, its one-line `ref` manifest entry. The hook
+    measures the block it renders instead, which also counts a `seen`
+    pointer to the lock.
+    """
+    from aelfrice.hook_payload import escape_for_hook_block  # noqa: PLC0415
+    from aelfrice.render_cost import (  # noqa: PLC0415
+        MANIFEST_LINE_WRAPPER_CHARS,
+        belief_line_chars,
+    )
+    from aelfrice.retrieval import (  # noqa: PLC0415
+        is_reference_lock,
+        lock_manifest_line,
+    )
+
+    if is_reference_lock(b):
+        return len(escape_for_hook_block(lock_manifest_line(b))) + (
+            MANIFEST_LINE_WRAPPER_CHARS
+        )
+    return belief_line_chars(
+        len(escape_for_hook_block(b.content)), user_scope=True,
+    )
 
 
 def l0_lock_set(
