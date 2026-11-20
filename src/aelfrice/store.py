@@ -28,6 +28,7 @@ from typing import (
     Iterator,
     Sequence,
     TypeVar,
+    cast,
 )
 
 if TYPE_CHECKING:
@@ -3759,7 +3760,63 @@ class MemoryStore:
         self._conn.execute(
             "DELETE FROM belief_entities WHERE belief_id = ?", (belief_id,)
         )
+        self._purge_ingest_text(belief_id)
         self._commit_mutation()
+
+    def _purge_ingest_text(self, belief_id: str) -> int:
+        """Clear the text of the log rows that derived only deleted beliefs (#1946).
+
+        A row is cleared when its `derived_belief_ids` names `belief_id`
+        and no id it names is still a `beliefs` row. A retired belief is
+        still a row and still holds its text, so a row that derived one
+        keeps its text. `raw_text` becomes `''`, since the column is NOT
+        NULL, and `raw_meta` becomes `INGEST_META_PURGED_AT` and
+        `INGEST_META_PURGED_SHA256` only, so whatever the meta carried
+        (frontmatter, spans, turn hashes) goes too. A row cleared before
+        keeps its first marker. Runs inside the caller's transaction.
+        Returns the number of rows cleared.
+        """
+        # `instr` narrows the scan; the JSON decode below decides, so an id
+        # that is a substring of another id never matches.
+        rows = self._conn.execute(
+            "SELECT id, raw_text, derived_belief_ids FROM ingest_log "
+            "WHERE derived_belief_ids IS NOT NULL "
+            "AND instr(derived_belief_ids, ?) > 0",
+            (belief_id,),
+        ).fetchall()
+        now = datetime.now(timezone.utc).isoformat()
+        cleared = 0
+        for row in rows:
+            try:
+                ids = json.loads(row["derived_belief_ids"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(ids, list):
+                continue
+            names = [str(i) for i in cast(list[object], ids)]
+            if belief_id not in names:
+                continue
+            ph = ",".join("?" for _ in names)
+            live = self._conn.execute(
+                f"SELECT 1 FROM beliefs WHERE id IN ({ph}) LIMIT 1", names,
+            ).fetchone()
+            if live is not None:
+                continue
+            raw_text = str(row["raw_text"])
+            if raw_text == "":
+                continue
+            meta = {
+                INGEST_META_PURGED_AT: now,
+                INGEST_META_PURGED_SHA256: hashlib.sha256(
+                    raw_text.encode("utf-8", errors="surrogatepass")
+                ).hexdigest(),
+            }
+            self._conn.execute(
+                "UPDATE ingest_log SET raw_text = '', raw_meta = ? WHERE id = ?",
+                (json.dumps(meta), row["id"]),
+            )
+            cleared += 1
+        return cleared
 
     def soft_delete_belief(self, belief_id: str, ts: str | None = None) -> None:
         """Set `valid_to` on a belief to soft-delete it (v2.1 #548 wonder GC).
