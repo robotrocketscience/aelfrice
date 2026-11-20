@@ -121,6 +121,10 @@ def _with_section(section: str) -> str:
             id="sub-heading-only",
         ),
         pytest.param(
+            "## [5.4.1] - 2026-11-19\n\n   ### Fixed\n\n",
+            id="heading-indented-three-spaces",
+        ),
+        pytest.param(
             "## [5.4.1] - 2026-11-19\n   \n\t\n \t \n\n",
             id="whitespace-only",
         ),
@@ -187,6 +191,10 @@ def test_a_heading_for_a_longer_version_does_not_stand_in(
         pytest.param(
             "## [5.4.1] - 2026-11-19\n\nA summary paragraph and nothing else.\n\n",
             id="summary-only",
+        ),
+        pytest.param(
+            "## [5.4.1] - 2026-11-19\n\n    # four spaces make a code block\n\n",
+            id="indented-code-block",
         ),
     ],
 )
