@@ -6811,8 +6811,14 @@ class MemoryStore:
         return [_row_to_belief(r) for r in rows]
 
     def count_locked(self) -> int:
+        """Count active locks, with the filter `list_locked_beliefs` uses.
+
+        #1945: without `valid_to IS NULL` this counted retired rows that
+        `aelf locked` does not list.
+        """
         cur = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM beliefs WHERE lock_level != 'none'"
+            "SELECT COUNT(*) AS n FROM beliefs "
+            "WHERE lock_level != 'none' AND valid_to IS NULL"
         )
         row = cur.fetchone()
         return int(row["n"]) if row else 0
