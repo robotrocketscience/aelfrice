@@ -236,16 +236,42 @@ def test_user_unlock_with_one_copy_says_nothing_more(
     assert not repo.exists()
 
 
+
+
 @pytest.mark.timeout(60)
-def test_user_unlock_ignores_an_expired_repo_lock(
+def test_repo_unlock_again_points_at_the_user_copy(
     stores: tuple[Path, Path],
 ) -> None:
-    repo, _ = stores
-    assert _run(["lock", "--for", "1w", STATEMENT])[0] == 0
+    assert _run(["lock", STATEMENT])[0] == 0
     assert _run(["lock", "--user", STATEMENT])[0] == 0
     bid = _lock_id(STATEMENT)
-    # Past its window on disk, as a store no writable open has swept yet.
-    conn = sqlite3.connect(repo)
+    assert _run(["unlock", bid])[0] == 0
+    rc, out, err = _run(["unlock", bid])
+    assert rc == 0
+    assert out.strip() == f"already unlocked: {bid}"
+    assert f"`aelf unlock --user {bid}`" in err
+
+
+@pytest.mark.timeout(60)
+def test_user_unlock_again_points_at_the_repo_copy(
+    stores: tuple[Path, Path],
+) -> None:
+    assert _run(["lock", STATEMENT])[0] == 0
+    assert _run(["lock", "--user", STATEMENT])[0] == 0
+    bid = _lock_id(STATEMENT)
+    assert _run(["unlock", "--user", bid])[0] == 0
+    rc, out, err = _run(["unlock", "--user", bid])
+    assert rc == 0
+    assert out.strip() == f"already unlocked: {bid}"
+    assert f"`aelf unlock {bid}`" in err
+
+
+# --- the other store is read, never swept, migrated, or created -----------
+
+
+def _expire(db: Path, bid: str) -> None:
+    """Put a lock past its window on disk, as no writable open has swept yet."""
+    conn = sqlite3.connect(db)
     try:
         conn.execute(
             "UPDATE beliefs SET lock_expires_at = ? WHERE id = ?",
@@ -254,7 +280,104 @@ def test_user_unlock_ignores_an_expired_repo_lock(
         conn.commit()
     finally:
         conn.close()
+
+
+def _file_sig(db: Path) -> tuple[int, int]:
+    st = db.stat()
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _lock_level(db: Path, bid: str) -> str:
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            "SELECT lock_level FROM beliefs WHERE id = ?", (bid,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    return str(row[0])
+
+
+@pytest.mark.timeout(60)
+def test_repo_unlock_leaves_an_expired_user_lock_unswept(
+    stores: tuple[Path, Path],
+) -> None:
+    _, user = stores
+    assert _run(["lock", "--user", "--for", "1w", STATEMENT])[0] == 0
+    assert _run(["lock", STATEMENT])[0] == 0
+    bid = _lock_id(STATEMENT)
+    _expire(user, bid)
+    before = _file_sig(user)
+    rc, out, err = _run(["unlock", bid])
+    assert rc == 0
+    assert out.strip() == f"unlocked: {bid}"
+    # Expired, so it is not reported as still locked.
+    assert err == ""
+    assert _lock_level(user, bid) == "user"
+    assert _file_sig(user) == before
+
+
+@pytest.mark.timeout(60)
+def test_user_unlock_leaves_an_expired_repo_lock_unswept(
+    stores: tuple[Path, Path],
+) -> None:
+    repo, _ = stores
+    assert _run(["lock", "--for", "1w", STATEMENT])[0] == 0
+    assert _run(["lock", "--user", STATEMENT])[0] == 0
+    bid = _lock_id(STATEMENT)
+    _expire(repo, bid)
+    before = _file_sig(repo)
     rc, out, err = _run(["unlock", "--user", bid])
     assert rc == 0
     assert out.strip() == f"unlocked: {bid}"
+    assert err == ""
+    assert _lock_level(repo, bid) == "user"
+    assert _file_sig(repo) == before
+
+
+@pytest.mark.timeout(60)
+def test_plain_lock_leaves_an_expired_user_lock_unswept(
+    stores: tuple[Path, Path],
+) -> None:
+    _, user = stores
+    assert _run(["lock", "--user", "--for", "1w", STATEMENT])[0] == 0
+    bid = _lock_id(STATEMENT)
+    _expire(user, bid)
+    before = _file_sig(user)
+    rc, out, err = _run(["lock", STATEMENT])
+    assert rc == 0
+    assert "`aelf unlock" not in out
+    assert err == ""
+    assert _lock_level(user, bid) == "user"
+    assert _file_sig(user) == before
+
+
+@pytest.mark.timeout(60)
+def test_lock_user_leaves_an_expired_repo_lock_unswept(
+    stores: tuple[Path, Path],
+) -> None:
+    repo, _ = stores
+    assert _run(["lock", "--for", "1w", STATEMENT])[0] == 0
+    bid = _lock_id(STATEMENT)
+    _expire(repo, bid)
+    before = _file_sig(repo)
+    rc, out, err = _run(["lock", "--user", STATEMENT])
+    assert rc == 0
+    assert "`aelf unlock" not in out
+    assert err == ""
+    assert _lock_level(repo, bid) == "user"
+    assert _file_sig(repo) == before
+
+
+@pytest.mark.timeout(60)
+def test_lock_with_one_file_for_both_scopes_says_nothing(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _ = stores
+    assert _run(["lock", OTHER_STATEMENT])[0] == 0
+    monkeypatch.setenv("AELFRICE_USER_DB", str(repo))
+    rc, out, err = _run(["lock", STATEMENT])
+    assert rc == 0
+    assert "`aelf unlock" not in out
     assert err == ""
