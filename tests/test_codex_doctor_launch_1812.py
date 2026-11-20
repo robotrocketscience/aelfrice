@@ -4048,7 +4048,8 @@ def _write_fake_uv(folder: Path) -> Path:
     XDG_DATA_HOME/../bin, then HOME/.local/bin, or, under FAKE_UV_MODE,
     fails (exit 2), hangs, prints a relative path, two lines, or nothing.
     `uv tool install` writes each aelfrice program in that folder, or in
-    FAKE_UV_INSTALL_DIR when it is set. It never runs a real uv."""
+    FAKE_UV_INSTALL_DIR when it is set, or, when FAKE_UV_INSTALL_FAILS is
+    1, writes nothing and exits 1. It never runs a real uv."""
     uv = folder / "uv"
     uv.write_text(
         "#!/bin/sh\n"
@@ -4070,6 +4071,7 @@ def _write_fake_uv(folder: Path) -> Path:
         "  bindir; exit 0\n"
         "fi\n"
         'if [ "$1 $2" = "tool install" ]; then\n'
+        '  [ "$FAKE_UV_INSTALL_FAILS" = 1 ] && { echo "error: offline" >&2; exit 1; }\n'
         '  d="${FAKE_UV_INSTALL_DIR:-$(bindir)}"\n'
         '  mkdir -p "$d"\n'
         f"  for n in {_UV_PROGRAMS}; do\n"
@@ -4225,7 +4227,7 @@ def _fake_uv_dir(tmp_path: Path) -> Path:
 def _clear_uv_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "UV_TOOL_BIN_DIR", "XDG_BIN_HOME", "XDG_DATA_HOME", "FAKE_UV_MODE",
-        "FAKE_UV_INSTALL_DIR",
+        "FAKE_UV_INSTALL_DIR", "FAKE_UV_INSTALL_FAILS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -4608,6 +4610,120 @@ def test_setup_claude_refuses_a_migration_that_moves_the_hooks_before_it(
         assert marker.is_file()
         assert _uv_log(uv)[-1] == "tool install --force aelfrice", _uv_log(uv)
         assert (uv_bin / "aelf-hook").is_file()
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@_needs_sh
+@pytest.mark.parametrize(
+    "state", ["install fails", "lands elsewhere", "goes on"],
+)
+def test_setup_claude_clears_the_opt_out_only_after_the_migration_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str,
+) -> None:
+    """With a `~/.claude` you can't write in, a pending uv migration and
+    uv naming its folder, plain setup clears the Claude auto-install
+    opt-out only after the check after the migration passes. When that
+    check refuses, because the install failed while the settings already
+    name uv's programs or the install wrote them in a folder ahead of
+    uv's, setup exits 1 and the ledger is byte-identical; nothing under
+    `tmp_path` changes but the marker a successful install writes. When
+    the check passes, setup clears the opt-out before its next step
+    (#1812)."""
+    import aelfrice.cli as cli
+    import aelfrice.mcp_cleanup as mcp_cleanup
+    from aelfrice import lifecycle
+
+    p = _setup_files(tmp_path, monkeypatch)
+    args = _setup_parse([])
+    uv = _write_fake_uv(_fake_uv_dir(tmp_path))
+    _clear_uv_env(monkeypatch)
+    uv_bin = uv.parent / "uv-bin"
+    other = uv.parent / "other-bin"
+    current = Path(cli.resolve_hook_command(cli._effective_scope(args))).parent  # noqa: SLF001
+    if state == "install fails":
+        uv_bin.mkdir()
+        for name in _UV_PROGRAMS.split():
+            program = uv_bin / name
+            program.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            program.chmod(0o755)
+        order = [uv_bin, current]
+    elif state == "lands elsewhere":
+        order = [other, current, uv_bin]
+    else:
+        order = [current, uv_bin]
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([str(uv.parent), *map(str, order), os.environ["PATH"]]),
+    )
+    _wire_claude(p, args)
+    if state == "install fails":
+        assert str(uv_bin / "aelf-hook") in p["settings"].read_text("utf-8")
+        shutil.rmtree(uv_bin)
+        monkeypatch.setenv("FAKE_UV_INSTALL_FAILS", "1")
+    elif state == "lands elsewhere":
+        monkeypatch.setenv("FAKE_UV_INSTALL_DIR", str(other))
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv_bin))
+    monkeypatch.setattr(
+        lifecycle, "MIGRATED_TO_UV_SENTINEL", p["dotdir"] / "migrated-to-uv",
+    )
+    monkeypatch.setattr(
+        lifecycle, "upgrade_advice", lambda: argparse.Namespace(context="pipx"),
+    )
+    p["ledger"].write_text(_CLAUDE_OPTED_OUT, encoding="utf-8")
+    seen: list[bytes] = []
+
+    def went_on() -> None:
+        seen.append(p["ledger"].read_bytes())
+        raise AssertionError("setup went on past the migration check")
+
+    monkeypatch.setattr(mcp_cleanup, "maybe_clean_up_mcp", went_on)
+    monkeypatch.setattr(cli, "_maybe_reconcile_claude_memory_at_setup", went_on)
+    monkeypatch.setattr(cli, "_open_store", went_on)
+    ledger = p["ledger"].read_bytes()
+    before = _contents(tmp_path)
+    out = io.StringIO()
+    os.chmod(p["claude"], 0o500)
+    try:
+        if state == "goes on":
+            with pytest.raises(AssertionError, match="past the migration check"):
+                cli._cmd_setup_claude(args, out)  # noqa: SLF001
+            rc = None
+        else:
+            rc = cli._cmd_setup_claude(args, out)  # noqa: SLF001
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    assert _uv_log(uv)[-1] == "tool install --force aelfrice", _uv_log(uv)
+    marker = p["dotdir"] / "migrated-to-uv"
+    if state == "goes on":
+        # The first step after the check is the MCP cleanup, which setup
+        # runs under `except Exception`, so the later stubs run too.
+        assert seen, seen
+        assert "claude" not in json.loads(seen[0]).get("opt_out_hosts", [])
+        assert out.getvalue().startswith(
+            "cleared claude host auto-install opt-out (#1053)\n"
+        ), out.getvalue()
+        return
+    assert rc == 1, err
+    assert err.endswith(
+        f"aelf setup: {p['claude']} can't be written to (Permission "
+        "denied), and with the hook programs on PATH after the uv "
+        f"migration it just ran, setup would change {p['settings']}; the "
+        f"settings weren't changed. {_FIX_PERMS}\n"
+    ), err
+    assert p["ledger"].read_bytes() == ledger
+    assert "cleared claude" not in out.getvalue(), out.getvalue()
+    assert seen == []
+    after = _contents(tmp_path)
+    changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+    if state == "install fails":
+        assert changed == [], changed
+        assert not marker.exists()
+    else:
+        assert changed == [str(marker)], changed
+        assert (other / "aelf-hook").is_file()
 
 
 @pytest.mark.timeout(20)
