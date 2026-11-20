@@ -123,6 +123,15 @@ from aelfrice.ulid import ulid
 # `entity_persistence_scores`.
 _BARE_NUMBER_RE: Final[re.Pattern[str]] = re.compile(r"^#?\d+$")
 
+# #1946: the `raw_meta` keys of an `ingest_log` row whose text a hard
+# delete cleared. `delete_belief` empties `raw_text` and replaces
+# `raw_meta` with exactly these two keys once no belief the row derived
+# still exists. `replay` skips such a row, and `lock_gaps` reads the
+# hash to match a deleted lock to a failed lock request; it spells the
+# key as a literal, which a test pins to this one.
+INGEST_META_PURGED_AT: Final[str] = "purged_at"
+INGEST_META_PURGED_SHA256: Final[str] = "raw_text_sha256"
+
 _ENV_WRITE_LOG_AUTHORITATIVE: Final[str] = "AELFRICE_WRITE_LOG_AUTHORITATIVE"
 _WLAUTH_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 
