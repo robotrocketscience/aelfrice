@@ -4335,6 +4335,42 @@ def _user_lock_hint(belief_id: str) -> str | None:
     )
 
 
+def _open_scoped_store(
+    args: argparse.Namespace, command: str, done: str,
+) -> MemoryStore | None:
+    """The store a `--user`-aware command acts on (#1681, #1946).
+
+    Without `--user`, the repository store. With it, the user lock
+    store, which this never creates. None, after one stderr line, when
+    `--user` names the repository store or the user store is missing or
+    unreadable. `done` is the past participle for "nothing was <done>".
+    """
+    import sqlite3
+
+    if not getattr(args, "user_scope", False):
+        return _open_store()
+    if _user_store_is_repo_store():
+        print(_user_scope_conflict_message(command), file=sys.stderr)
+        return None
+    try:
+        user_store = open_user_store_if_present()
+    except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable) as exc:
+        print(
+            f"aelf {command}: cannot read the user lock store at "
+            f"{user_db_path()}: {exc}; nothing was {done}.",
+            file=sys.stderr,
+        )
+        return None
+    if user_store is None:
+        print(
+            f"aelf {command}: no user lock store at {user_db_path()}; "
+            f"nothing was {done}.",
+            file=sys.stderr,
+        )
+        return None
+    return user_store
+
+
 def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
     """Drop a user-lock without touching origin. Inverse of `aelf lock`.
 
@@ -4344,33 +4380,11 @@ def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
     text, so the same statement locked in both scopes has one id in
     each: a lookup could not tell which one to drop.
     """
-    import sqlite3
-
     from aelfrice.promotion import unlock
 
-    if getattr(args, "user_scope", False):
-        if _user_store_is_repo_store():
-            print(_user_scope_conflict_message("unlock"), file=sys.stderr)
-            return 1
-        try:
-            user_store = open_user_store_if_present()
-        except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable) as exc:
-            print(
-                f"aelf unlock: cannot read the user lock store at "
-                f"{user_db_path()}: {exc}; nothing was unlocked.",
-                file=sys.stderr,
-            )
-            return 1
-        if user_store is None:
-            print(
-                f"aelf unlock: no user lock store at {user_db_path()}; "
-                f"nothing was unlocked.",
-                file=sys.stderr,
-            )
-            return 1
-        store = user_store
-    else:
-        store = _open_store()
+    store = _open_scoped_store(args, "unlock", "unlocked")
+    if store is None:
+        return 1
     try:
         try:
             result = unlock(store, args.belief_id)
@@ -4399,14 +4413,16 @@ def _cmd_delete(args: argparse.Namespace, out: object) -> int:
 
     #1946: the prompt names the belief by id, length and a sha256
     prefix, never by its text, so a deleted secret is not written to
-    the terminal.
+    the terminal. `--user` selects the user lock store, as for `unlock`.
     """
     import hashlib
 
     from aelfrice.federation import ForeignBeliefError
     from aelfrice.models import LOCK_USER
 
-    store = _open_store()
+    store = _open_scoped_store(args, "delete", "deleted")
+    if store is None:
+        return 1
     try:
         # #655 read-only federation: foreign ids must not be deleted
         # through the local DB. Check before the local `get_belief`
@@ -4483,7 +4499,9 @@ def _cmd_retire(args: argparse.Namespace, out: object) -> int:
     from aelfrice.federation import ForeignBeliefError
     from aelfrice.models import LOCK_USER
 
-    store = _open_store()
+    store = _open_scoped_store(args, "retire", "retired")
+    if store is None:
+        return 1
     try:
         try:
             store.assert_local_ownership(args.belief_id)
@@ -11268,6 +11286,13 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         action="store_true",
         help="allow deletion of beliefs with lock_level=user",
     )
+    p_delete.add_argument(
+        "--user", dest="user_scope", action="store_true", default=False,
+        help=(
+            "delete from the user-scope store instead of this "
+            "repository's store (#1681, #1946)"
+        ),
+    )
     p_delete.set_defaults(func=_cmd_delete)
 
     # Soft-delete (retire) — the reversible sibling of `delete`. Sets
@@ -11282,6 +11307,13 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="allow retiring beliefs with lock_level=user",
+    )
+    p_retire.add_argument(
+        "--user", dest="user_scope", action="store_true", default=False,
+        help=(
+            "retire in the user-scope store instead of this "
+            "repository's store (#1681, #1946)"
+        ),
     )
     p_retire.set_defaults(func=_cmd_retire)
 
