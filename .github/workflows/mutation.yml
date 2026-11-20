@@ -90,7 +90,8 @@ jobs:
         run: |
           uv run --with 'mutmut==3.8.1' pytest -q \
               tests/test_mutation_shards_1747.py \
-              tests/test_mutation_function_scope_1632.py
+              tests/test_mutation_function_scope_1632.py \
+              tests/test_mutation_harness_1938.py
       - name: Plan the shards
         id: plan
         run: |
