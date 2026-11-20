@@ -3812,6 +3812,29 @@ class MemoryStore:
         self._bump_belief_version(belief_id)
         self._commit_mutation()
 
+    def clear_lock(self, belief_id: str) -> bool:
+        """Clear the lock fields on one belief, retired or not.
+
+        Sets `lock_level = 'none'` and nulls `locked_at` and
+        `lock_expires_at`; `origin` and `lock_tier` are untouched. Returns
+        True when a locked row was unlocked, False for an unlocked or
+        unknown id. Writes no audit row: the caller owns that.
+
+        `promotion.unlock` uses this rather than `update_belief` (#1945)
+        because `update_belief` re-inserts the FTS row, which would put
+        a retired belief back into keyword search, and because a
+        three-column write cannot clobber a concurrent writer's columns
+        the way a whole-row snapshot can (#1168).
+        """
+        cur = self._conn.execute(
+            _CLEAR_LOCK_SQL, (LOCK_NONE, belief_id, LOCK_NONE)
+        )
+        if cur.rowcount == 0:
+            return False
+        self._bump_belief_version(belief_id)
+        self._commit_mutation()
+        return True
+
     def restore_belief(self, belief_id: str) -> bool:
         """Clear ``valid_to`` on a soft-deleted belief, returning it to active.
 
