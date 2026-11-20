@@ -386,3 +386,64 @@ def test_lock_gaps_spells_the_hash_key_as_the_store_does() -> None:
     from aelfrice import lock_gaps
 
     assert lock_gaps._INGEST_META_PURGED_SHA256 == INGEST_META_PURGED_SHA256  # pyright: ignore[reportPrivateUsage]
+
+
+# --- restore --user ---------------------------------------------------------
+
+
+def test_retire_user_names_restore_user_as_the_undo(
+    stores: tuple[Path, Path],
+) -> None:
+    bid = _lock(SECRET, "--user")
+    _rc, out, _err = _run(["retire", "--user", bid, "--force"])
+    assert f"`aelf restore --user {bid}` to undo" in out
+
+
+def test_plain_retire_names_plain_restore_as_the_undo(
+    stores: tuple[Path, Path],
+) -> None:
+    bid = _lock(SECRET)
+    _rc, out, _err = _run(["retire", bid, "--force"])
+    assert f"`aelf restore {bid}` to undo" in out
+    assert "--user" not in out
+
+
+def test_restore_user_restores_the_user_lock(stores: tuple[Path, Path]) -> None:
+    repo, user = stores
+    _lock(OTHER)
+    bid = _lock(SECRET, "--user")
+    assert _run(["retire", "--user", bid, "--force"])[0] == 0
+    rc, out, err = _run(["restore", "--user", bid])
+    assert rc == 0, err
+    assert f"restored: {bid}" in out
+    conn = sqlite3.connect(f"file:{user}?mode=ro", uri=True)
+    try:
+        (valid_to,) = conn.execute(
+            "SELECT valid_to FROM beliefs WHERE id = ?", (bid,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert valid_to is None
+    assert _run(["restore", bid])[0] == 1
+
+
+def test_restore_user_with_no_user_store_fails_and_creates_nothing(
+    stores: tuple[Path, Path],
+) -> None:
+    _repo, user = stores
+    rc, _out, err = _run(["restore", "--user", "aaaa000000001946"])
+    assert rc == 1
+    assert "no user lock store" in err
+    assert not user.exists()
+
+
+def test_restore_user_naming_the_repo_store_is_refused(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _user = stores
+    bid = _lock(SECRET)
+    assert _run(["retire", bid, "--force"])[0] == 0
+    monkeypatch.setenv("AELFRICE_USER_DB", str(repo))
+    rc, _out, err = _run(["restore", "--user", bid])
+    assert rc == 1
+    assert "--user refused" in err
