@@ -326,6 +326,25 @@ def _index(steps: list[str], pattern: str) -> list[int]:
     return [i for i, s in enumerate(steps) if re.search(pattern, s)]
 
 
+_RUN = re.compile(r"^\s*(?:-\s+)?run:\s*(?P<cmd>.*?)\s*$")
+
+
+def _runs(steps: list[str], pattern: str) -> list[int]:
+    """Steps whose one-line `run:` command matches `pattern` from its start.
+
+    `_index` searches the whole step, so `run: echo uv build` would count as
+    a build. This reads the command the step executes instead.
+    """
+    found = []
+    for i, step in enumerate(steps):
+        for line in step.splitlines():
+            match = _RUN.match(line)
+            if match and re.match(pattern, match.group("cmd")):
+                found.append(i)
+                break
+    return found
+
+
 _BUILD_OR_PUBLISH = (
     r"setup-uv@|uv sync|pytest|uv build"
     r"|attest-build-provenance@|gh-action-pypi-publish@|gh release"
@@ -371,8 +390,8 @@ def test_the_build_runs_before_pytest_and_the_upload_after_it() -> None:
     them, so a failed test stops the job before anything leaves it.
     """
     steps = _steps(_jobs(_publish_text())["publish"])
-    build = _index(steps, r"\buv build\b")
-    pytest_ = _index(steps, r"\bpytest\b")
+    build = _runs(steps, r"uv build(\s|$)")
+    pytest_ = _runs(steps, r"uv run pytest(\s|$)")
     shipped = _index(steps, r"attest-build-provenance@|gh-action-pypi-publish@")
     assert len(build) == 1, build
     assert len(pytest_) == 1, pytest_
