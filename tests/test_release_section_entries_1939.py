@@ -287,3 +287,35 @@ def test_a_crlf_changelog_with_entries_passes(tmp_path: Path) -> None:
     proc = _run(_tree(tmp_path, text.replace("\n", "\r\n")), "5.4.1")
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+@pytest.mark.timeout(30)
+def test_a_plain_heading_ends_the_section(tmp_path: Path) -> None:
+    """Prose under a later `## Notes` is not the release's content."""
+    text = _with_section(
+        "## [5.4.1] - 2026-11-19\n\n## Notes\n\nProse under a plain heading.\n\n"
+    )
+    proc = _run(_tree(tmp_path, text), "5.4.1")
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert _EMPTY_MESSAGE in proc.stdout, proc.stdout
+
+
+@pytest.mark.timeout(30)
+def test_only_a_line_that_starts_with_the_heading_opens_the_section(
+    tmp_path: Path,
+) -> None:
+    """A preamble line that quotes the heading mid-line is not the section."""
+    text = (
+        "# Changelog\n\n"
+        "Each release opens with a ## [5.4.1] style heading.\n"
+        "More preamble.\n\n"
+        "## [Unreleased]\n\n"
+        "## [5.4.1] - 2026-11-19\n\n"
+        + _SHIPPED
+        + _FOOTNOTES
+    )
+    proc = _run(_tree(tmp_path, text), "5.4.1")
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert _EMPTY_MESSAGE in proc.stdout, proc.stdout
