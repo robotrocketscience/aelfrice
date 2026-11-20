@@ -237,6 +237,25 @@ jobs:
             if ! grep -qE "^## \[${head_ver}\]" "$changelog_file"; then
               echo "::error file=${changelog_file}::Missing '## [${head_ver}]' section. Move [Unreleased] entries into a dated [${head_ver}] block in this file."
               fail=1
+            else
+              # #1939: the dated section must list something. A cut from
+              # a tree with no entry files collates to a bare heading,
+              # and the release PR body built from it is empty too. The
+              # section runs to the next '## ' heading or end of file;
+              # headings, blank lines and link footnotes
+              # ('[X.Y.Z]: https://...') are not content. A summary
+              # paragraph is, which is how [2.0.0] shipped in v2.md.
+              # 'index' rather than a regex, so the version's dots are
+              # literal and [5.4.10] cannot stand in for [5.4.1].
+              section_body=$(awk -v heading="## [${head_ver}]" '
+                index($0, heading) == 1 { in_section=1; next }
+                /^## / && in_section { exit }
+                in_section && NF > 0 && !/^#/ && !/^\[[^]]*\]:/ { print }
+              ' "$changelog_file")
+              if [ -z "$section_body" ]; then
+                echo "::error file=${changelog_file}::The [${head_ver}] section in ${changelog_file} has no entries. Add the release's entry files to CHANGELOG/unreleased/ and collate again, or write the entries into the section by hand."
+                fail=1
+              fi
             fi
             if ! grep -qE "^\[${head_ver}\]:\s*https://github.com/" "$changelog_file"; then
               echo "::error file=${changelog_file}::Missing compare-link footnote '[${head_ver}]: https://github.com/...' near bottom of this file."
