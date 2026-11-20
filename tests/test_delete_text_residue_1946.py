@@ -480,6 +480,8 @@ def test_no_hint_without_a_user_store_and_none_is_created(
 ) -> None:
     _repo, user = stores
     _lock(OTHER)
+    # The folder exists, so an open that creates the store would succeed.
+    user.parent.mkdir(parents=True)
     argv = [verb, "aaaa000000001946", "--force"]
     argv += ["--yes"] if verb == "delete" else []
     rc, _out, err = _run(argv)
@@ -497,3 +499,48 @@ def test_no_hint_for_an_id_the_user_store_lacks(
     argv += ["--yes"] if verb == "delete" else []
     _rc, _out, err = _run(argv)
     assert "--user" not in err
+
+
+# --- malformed raw_meta -----------------------------------------------------
+
+
+def test_replay_survives_a_row_with_malformed_raw_meta(
+    stores: tuple[Path, Path],
+) -> None:
+    """The cleared-row filter reads `raw_meta` as JSON; bad JSON is not cleared."""
+    repo, _user = stores
+    _lock(OTHER)
+    s = MemoryStore(str(repo))
+    try:
+        log_id = s.record_ingest(
+            source_kind=INGEST_SOURCE_FILESYSTEM, raw_text=OTHER,
+            source_path="notes.md", derived_belief_ids=[],
+        )
+        s._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "UPDATE ingest_log SET raw_meta = ? WHERE id = ?",
+            ("{not json", log_id),
+        )
+        s._conn.commit()  # pyright: ignore[reportPrivateUsage]
+        report = replay_full_equality(s)
+    finally:
+        s.close()
+    assert report.excluded_purged == 0
+    # The bad row itself re-derives an orphan, so only the report is checked.
+    _rc, out, _err = _run(["doctor", "--replay"])
+    assert "excluded (deleted):        0" in out
+
+
+@pytest.mark.parametrize(
+    "meta", [None, "{not json", "[1, 2]", '{"raw_text_sha256": 7}'],
+)
+def test_lock_gaps_reads_no_hash_from_a_bad_cleared_row(meta: str | None) -> None:
+    from aelfrice import lock_gaps
+
+    assert lock_gaps._logged_statement_digest("", meta) is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_lock_gaps_reads_the_hash_from_a_cleared_row() -> None:
+    from aelfrice import lock_gaps
+
+    meta = json.dumps({INGEST_META_PURGED_SHA256: "ab" * 32})
+    assert lock_gaps._logged_statement_digest("", meta) == "ab" * 32  # pyright: ignore[reportPrivateUsage]
