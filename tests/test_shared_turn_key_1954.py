@@ -114,7 +114,9 @@ def test_valid_prompt_id_is_returned() -> None:
 
 
 def test_prompt_id_at_the_length_bound_is_accepted() -> None:
-    value = "a" * PROMPT_ID_MAX_CHARS
+    # Literal, not derived from the constant, so moving the bound fails here.
+    assert PROMPT_ID_MAX_CHARS == 128
+    value = "a" * 128
     assert payload_prompt_id({"prompt_id": value}) == value
 
 
@@ -143,7 +145,7 @@ _REFUSED_ON_BOTH_WRITERS = [
     pytest.param({"prompt_id": [_PROMPT_ID]}, id="list"),
     pytest.param({"prompt_id": ""}, id="empty"),
     pytest.param({"prompt_id": "   "}, id="whitespace"),
-    pytest.param({"prompt_id": "a" * (PROMPT_ID_MAX_CHARS + 1)}, id="too-long"),
+    pytest.param({"prompt_id": "a" * 129}, id="too-long"),
     pytest.param({"prompt_id": "abc\ndef"}, id="newline"),
     pytest.param({"prompt_id": "abc\x00"}, id="nul"),
     pytest.param({"prompt_id": "\x1fabc"}, id="unit-separator"),
@@ -218,7 +220,7 @@ def test_hook_injection_rows_mint_on_invalid_prompt_id(
     roots: tuple[Path, Path],
 ) -> None:
     db, _ = roots
-    _fire_hook(_payload(prompt_id="a" * (PROMPT_ID_MAX_CHARS + 1)))
+    _fire_hook(_payload(prompt_id="a" * 129))
     (turn_id,) = _injection_turn_ids(db)
     assert _MINTED.match(turn_id)
 
