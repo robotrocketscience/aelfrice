@@ -2161,6 +2161,52 @@ def _open_lock_store(user_scope: bool) -> MemoryStore | None:
     return _open_user_store_or_report("lock") if user_scope else _open_store()
 
 
+def _warn_other_scope_copies(
+    lock_id: str, *, user_scope: bool, repo_store_path: str, out: object,
+) -> None:
+    """Warn when the other scope holds this lock or a near-duplicate (#1947).
+
+    A lock's id is derived from its text, so one statement locked in both
+    scopes is one id in two stores, and the L0 merge injects the
+    repository copy in place of the user copy. The pairs are the ones
+    that merge drops (`doctor.diagnose_user_lock_duplicates`), read with
+    `mode=ro` connections, so neither store is created. The warning names
+    the command that removes the other copy. A store that can't be read
+    gets one stderr line and never fails the lock.
+    """
+    from aelfrice.doctor import diagnose_user_lock_duplicates
+
+    report = diagnose_user_lock_duplicates(repo_store_path)
+    if not report.known:
+        print(
+            f"aelf lock: could not check the other scope for a copy of this "
+            f"lock: {report.unknown_reason}.",
+            file=sys.stderr,
+        )
+        return
+    if user_scope:
+        others = [rid for rid, _, uids in report.pairs if lock_id in uids]
+        cmds = " and ".join(f"`aelf unlock {rid}`" for rid in others)
+        msg = (
+            f"  warning: this repository also locks this statement as "
+            f"{', '.join(others)} and injects that copy in place of the "
+            f"user lock. To drop the repository copy, run {cmds}."
+        )
+    else:
+        others = [
+            uid for rid, _, uids in report.pairs if rid == lock_id
+            for uid in uids
+        ]
+        cmds = " and ".join(f"`aelf unlock --user {uid}`" for uid in others)
+        msg = (
+            f"  warning: the user store also locks this statement as "
+            f"{', '.join(others)}. This repository injects its own copy in "
+            f"place of the user copy. To drop the user copy, run {cmds}."
+        )
+    if others:
+        print(msg, file=out)  # type: ignore[arg-type]
+
+
 # `lock --promote-user` flags the copy can't honour (#1681): the copy
 # carries the repository lock's tier and window, and the user store has
 # no document anchors or categories.
@@ -2958,6 +3004,12 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 f"(#1016).",
                 file=out,
             )
+        _warn_other_scope_copies(
+            actual_id,
+            user_scope=user_scope,
+            repo_store_path=str(db_path()) if user_scope else store.db_path,
+            out=out,
+        )
 
         # #435 doc-linker manual anchor. Idempotent on (belief_id,
         # doc_uri); subsequent lock --doc with the same URI is a no-op
@@ -3034,7 +3086,12 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
     # in the store's own order (`locked_at` DESC, then id). The order is
     # fixed so two runs over the same stores print the same listing.
     scoped: list[tuple[str, Belief]] = [("repo", b) for b in locked]
-    scoped += [("user", b) for b in _list_user_locks()]
+    user_locked = _list_user_locks()
+    scoped += [("user", b) for b in user_locked]
+    # #1947: one statement locked in both scopes is one id in each store.
+    # This repository injects the repository copy, so unlocking either
+    # copy alone leaves the statement locked.
+    in_both = {b.id for b in locked} & {b.id for b in user_locked}
     if getattr(args, "json", False):
         import json as _json
         rows = [
@@ -3045,6 +3102,7 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
                 "lock_tier": getattr(b, "lock_tier", "frozen"),
                 "locked_at": b.locked_at,
                 "lock_expires_at": getattr(b, "lock_expires_at", None),
+                "in_both_scopes": b.id in in_both,
             }
             for scope, b in scoped
         ]
@@ -3074,7 +3132,16 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
         # #1681: a user lock is tagged; a repository lock prints as it
         # always has, so existing readers of this listing see no change.
         tag = " [user]" if scope == "user" else ""
+        if b.id in in_both:
+            tag += " [also locked in the other scope]"
         print(f"{b.id}{tag}{marker} [{window}]: {b.content}", file=out)  # type: ignore[arg-type]
+    for bid in sorted(in_both):
+        print(
+            f"note: {bid} is locked in both scopes, and this repository "
+            f"injects the repository copy. To drop the lock, run "
+            f"`aelf unlock {bid}` and `aelf unlock --user {bid}`.",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -4306,32 +4373,58 @@ def _cmd_validate(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
-def _user_lock_hint(belief_id: str) -> str | None:
-    """A pointer to `--user` when `belief_id` is locked in the user store.
+def _user_store_locks(belief_id: str) -> bool:
+    """Whether `belief_id` is locked in the user store.
 
-    Never creates the user store. None when the store is absent, when
+    Never creates the user store. False when the store is absent, when
     it is the repository store, when it cannot be read, or when it has
-    no such lock. The hint is advice, so a broken user store never
-    turns a repository unlock into a failure.
+    no such lock. The answer only feeds advice, so a broken user store
+    never turns a repository unlock into a failure.
     """
     import sqlite3
 
     if _user_store_is_repo_store():
-        return None
+        return False
     try:
         store = open_user_store_if_present()
         if store is None:
-            return None
+            return False
         try:
             b = store.get_belief(belief_id)
         finally:
             store.close()
     except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable):
-        return None
-    if b is None or b.lock_level != LOCK_USER:
-        return None
+        return False
+    return b is not None and b.lock_level == LOCK_USER
+
+
+def _repo_store_locks(belief_id: str) -> bool:
+    """Whether `belief_id` is an unexpired lock in the repository store (#1947).
+
+    For `aelf unlock --user`, which never otherwise opens the repository
+    store. Read with a `mode=ro` handle, so a missing store is not
+    created; a store that can't be read answers False. The read-only
+    handle skips the expiry sweep, so the window is checked here.
+    """
+    import sqlite3
+
+    from aelfrice.db_paths import store_file_present
+
+    p = db_path()
+    try:
+        if str(p) == ":memory:" or not store_file_present(p):
+            return False
+        store = MemoryStore(str(p), project_context_default="", read_only=True)
+        try:
+            b = store.get_belief(belief_id)
+        finally:
+            store.close()
+    except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable):
+        return False
+    now = datetime.now(timezone.utc).isoformat()
     return (
-        f"  {belief_id} is a user lock; run `aelf unlock --user {belief_id}`."
+        b is not None and b.lock_level == LOCK_USER
+        and (b.lock_expires_at is None or b.lock_expires_at > now)
     )
 
 
@@ -4372,26 +4465,57 @@ def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
     else:
         store = _open_store()
     try:
+        bid: str = args.belief_id
+        user_scope = bool(getattr(args, "user_scope", False))
+        # #1947: the other scope may hold the same id, because a lock's id
+        # is derived from its text. Said on stderr, so stdout keeps its
+        # one line.
+        if user_scope:
+            other_hint = (
+                f"  {bid} is a repository lock; run `aelf unlock {bid}`."
+            )
+        else:
+            other_hint = (
+                f"  {bid} is a user lock; run `aelf unlock --user {bid}`."
+            )
         try:
-            result = unlock(store, args.belief_id)
+            result = unlock(store, bid)
         except ValueError as e:
             print(str(e), file=sys.stderr)
-            if not getattr(args, "user_scope", False):
-                hint = _user_lock_hint(args.belief_id)
-                if hint is not None:
-                    print(hint, file=sys.stderr)
+            if _other_scope_locks(bid, user_scope):
+                print(other_hint, file=sys.stderr)
             return 1
         if result.already_unlocked:
-            print(f"already unlocked: {args.belief_id}", file=out)  # type: ignore[arg-type]
-            if not getattr(args, "user_scope", False):
-                hint = _user_lock_hint(args.belief_id)
-                if hint is not None:
-                    print(hint, file=sys.stderr)
+            print(f"already unlocked: {bid}", file=out)  # type: ignore[arg-type]
+            if _other_scope_locks(bid, user_scope):
+                print(other_hint, file=sys.stderr)
             return 0
-        print(f"unlocked: {args.belief_id}", file=out)  # type: ignore[arg-type]
+        print(f"unlocked: {bid}", file=out)  # type: ignore[arg-type]
+        if _other_scope_locks(bid, user_scope):
+            if user_scope:
+                print(
+                    f"  {bid} is still locked in the repository store, and "
+                    f"this repository injects that copy. To drop it too, "
+                    f"run `aelf unlock {bid}`.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"  {bid} is still locked in the user store, and this "
+                    f"repository now injects that copy. To drop it too, "
+                    f"run `aelf unlock --user {bid}`.",
+                    file=sys.stderr,
+                )
     finally:
         store.close()
     return 0
+
+
+def _other_scope_locks(belief_id: str, user_scope: bool) -> bool:
+    """Whether the scope `aelf unlock` did not touch locks `belief_id`."""
+    if user_scope:
+        return _repo_store_locks(belief_id)
+    return _user_store_locks(belief_id)
 
 
 def _cmd_delete(args: argparse.Namespace, out: object) -> int:
