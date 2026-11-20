@@ -1,0 +1,3 @@
+### Documentation
+
+- **PRIVACY.md no longer denies day-to-day outbound calls or calls the uv migration an explicit command ([#1927](https://github.com/robotrocketscience/aelfrice/issues/1927)).** The onboard section said no day-to-day operation makes an outbound call, while its own table lists two default-on paths that transmit data: the pre-issue guard and background labeling. It now points to that table. The table row for the uv-tool migration now says that the migration runs inside `aelf setup` when the machine has no uv-tool install of aelfrice and `uv` is on `PATH`, and that it stops after its first success.
