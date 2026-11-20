@@ -1,0 +1,3 @@
+### Changed
+
+- **The retrieval hook and the transcript logger record the host's prompt id as the turn id ([#1954](https://github.com/robotrocketscience/aelfrice/issues/1954)).** When a UserPromptSubmit or Stop payload carries a `prompt_id` that is a non-empty string of at most 128 characters with no control characters, `injection_events.turn_id` and the `turn_id` of the logger's user and assistant lines in `turns.jsonl` are that value, so injected beliefs join their turn exactly instead of by time. A payload without a valid `prompt_id`, such as one from Codex, which sends none, keeps the old behavior: each writer mints its own id, and the two don't match. Existing rows and lines are unchanged.
