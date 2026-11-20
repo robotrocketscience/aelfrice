@@ -1,7 +1,7 @@
 ---
 name: aelf:delete
 description: Hard-delete a belief from the store. Writes an audit row before the cascade. Confirmation prompt required unless --yes is passed; locked beliefs require --force.
-argument-hint: The belief ID to delete
+argument-hint: The belief ID to delete, plus optional --force, --yes, and --user
 allowed-tools:
   - Bash
 ---
@@ -24,9 +24,9 @@ you want the belief to decay gradually rather than disappear outright.
 Safety note: `/aelf:delete` does NOT imply `--yes`. The invoking surface
 must let the user respond to the confirmation prompt (type the first 8
 characters of the belief id) before the delete proceeds. The prompt
-names the belief by id, length, and a sha256 prefix, never by its text.
-Without a terminal the prompt reads no input and the delete aborts. To
-skip the prompt the user must explicitly pass `--yes`.
+names the belief by id, origin, and creation date, never by its text.
+The prompt reads one line from stdin; if stdin is at end of file, the
+delete aborts. To skip the prompt the user must explicitly pass `--yes`.
 </objective>
 
 <process>

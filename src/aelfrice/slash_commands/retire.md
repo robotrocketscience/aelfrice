@@ -1,7 +1,7 @@
 ---
 name: aelf:retire
 description: Soft-delete (retire) a belief — the reversible sibling of delete. Drops it out of retrieval and search while preserving its evidence trail; undo with aelf restore. Locked beliefs require --force.
-argument-hint: The belief ID to retire
+argument-hint: The belief ID to retire, plus optional --force and --user
 allowed-tools:
   - Bash
 ---
@@ -19,7 +19,7 @@ soft-delete, so the forensic record survives.
 
 Locked beliefs (lock_level=user) are protected: pass `--force` to retire one.
 Retiring an already-retired belief is a no-op. Pass `--user` to retire
-a belief in the user store.
+a belief in the user store; undo it with `aelf restore --user <id>`.
 </objective>
 
 <process>
