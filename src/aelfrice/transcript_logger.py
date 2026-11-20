@@ -866,8 +866,9 @@ def _handle_stop(payload: dict[str, object]) -> None:
     # #1634: a headless session's reply is not recorded either. The flush
     # below still runs: it folds turns other sessions already logged.
     if not _skip_headless(payload):
-        # #1954: the host sends the same `prompt_id` on a turn's Stop as on
-        # its UserPromptSubmit, so the answer's line carries its prompt's id.
+        # #1954: in a live probe the host sent each turn's Stop the same
+        # `prompt_id` as its UserPromptSubmit (7 of 7), so the answer's line
+        # carries its prompt's id.
         line = _build_turn_line(
             role="assistant", text=text, session_id=sid, ctx=_turn_context(),
             prompt_id=payload_prompt_id(payload),
@@ -969,8 +970,9 @@ def _count_turn_lines_and_identity(path: Path) -> tuple[int, str | None] | None:
     this logger writes carries a microsecond timestamp, so a new
     turns.jsonl starts with a line no earlier file had. (A turn line's
     `turn_id` can repeat across files since #1954, when it is the host's
-    prompt id; the timestamp alone keeps the first line unique.) Unlike an inode, the first line reads the same from a host and a
-    container that share the file, and a recreated file doesn't inherit
+    prompt id; the timestamp alone keeps the first line unique.) Unlike an
+    inode, the first line reads the same from a host and a container that
+    share the file, and a recreated file doesn't inherit
     it. The identity is None for an empty file; the whole result is None
     when the file can't be opened.
 
