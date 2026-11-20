@@ -304,7 +304,9 @@ class UserLockShareReport:
     """How many user locks the user-lock share can show (#1944).
 
     `known` False means the check couldn't tell (`unknown_reason`).
-    `fit` is how many of the `total` active user locks fit the share,
+    `total` leaves out a user lock the hooks drop because it shares an id
+    with, or near-duplicates, a repository lock. `fit` is how many of the
+    `total` active user locks fit the share,
     first fit in the store's lock order, by `user_locks.
     user_lock_render_chars`. `share_chars` is the share of the full
     `HOOK_PAYLOAD_CHAR_LIMIT`; a fire whose other blocks take room holds
@@ -347,6 +349,7 @@ def diagnose_user_lock_share(
     from aelfrice.user_locks import (  # noqa: PLC0415
         USER_STORE_BUSY_TIMEOUT_MS,
         fit_user_lock_share,
+        repo_locks_duplicating_user_locks,
         resolve_user_lock_share,
         user_lock_render_chars,
     )
@@ -389,6 +392,26 @@ def diagnose_user_lock_share(
             known=False, user_store=user_path, user_store_present=True,
             unknown_reason=f"the user lock store could not be read: {exc}",
         )
+    # The hooks inject the repository copy of a user lock that one
+    # near-duplicates, so that user lock costs the share nothing. An
+    # unreadable repository store leaves every user lock counted.
+    repo_present = False
+    try:
+        repo_present = (store_path is not None and store_path != ":memory:"
+                        and store_file_present(store_path))
+    except OSError:
+        pass
+    if repo_present and locks and store_path is not None:
+        try:
+            repo_pairs = _read_active_lock_pairs(store_path, ts)
+        except (sqlite3.Error, OSError):
+            repo_pairs = []
+        dropped = {
+            uid for _rid, _rc, uids in repo_locks_duplicating_user_locks(
+                repo_pairs, [(b.id, b.content) for b in locks])
+            for uid in uids
+        }
+        locks = [b for b in locks if b.id not in dropped]
     share = resolve_user_lock_share(start=project_root, stderr=io.StringIO())
     share_chars = int(HOOK_PAYLOAD_CHAR_LIMIT * share)
     kept, _past = fit_user_lock_share(
