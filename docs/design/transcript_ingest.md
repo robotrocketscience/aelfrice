@@ -158,8 +158,14 @@ Notes:
 - `session_id` is derived once per Claude-Code session start and
   stays stable for the duration. Source: a session-start hook that
   writes a `session_id` env var the per-turn hooks read.
-- `turn_id` is unique per line; used by the rebuilder to thread
-  user→assistant pairs.
+- `turn_id` is the host's `prompt_id` when the hook payload carries
+  a valid one (#1954): a non-empty string of at most 128 characters
+  with no control characters. A turn's user line and assistant line
+  then share it, and the retrieval hook writes the same value to
+  `injection_events.turn_id`, so the two join exactly. Without a
+  valid `prompt_id`, each line gets its own id from the clock and 4
+  random bytes, which joins nothing. No reader in `src/aelfrice`
+  parses `turn_id` from this file.
 - `context.git_*` is populated cheaply from `git rev-parse` and
   `git symbolic-ref --short HEAD`. Failures (non-git directories)
   set the fields to `null`; never block the hook.
