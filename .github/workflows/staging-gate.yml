@@ -242,8 +242,9 @@ jobs:
               # a tree with no entry files collates to a bare heading,
               # and the release PR body built from it is empty too. The
               # section runs to the next '## ' heading or end of file;
-              # headings, blank lines and link footnotes
-              # ('[X.Y.Z]: https://...') are not content. A summary
+              # headings, blank lines and link reference definitions,
+              # such as the '[X.Y.Z]: https://...' compare-link
+              # footnote, are not content. A summary
               # paragraph is, which is how [2.0.0] shipped in v2.md.
               # A heading may sit up to three spaces in (CommonMark);
               # four spaces make a code block, which is content.
