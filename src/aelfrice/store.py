@@ -45,6 +45,7 @@ from aelfrice.models import (
     CORROBORATION_MIN_EPISODES,
     DEFAULT_LOCK_TIER,
     FEEDBACK_SOURCE_LOCK_EXPIRE,
+    FEEDBACK_SOURCE_LOCK_RETIRE,
     LOCK_NONE,
     LOCK_TIERS,
     LOCK_USER,
@@ -995,6 +996,15 @@ SCHEMA_META_CORROBORATIONS_BELIEF_ID_RETYPED: Final[str] = (
 # completion; fresh stores stamp the marker after a no-op dedup.
 SCHEMA_META_CORROBORATION_SOURCE_DEDUP: Final[str] = (
     "corroboration_source_dedup_complete"
+)
+
+# #1945. Ends a lock on one belief, as `aelf unlock` does: `lock_level`
+# back to 'none', `locked_at` and `lock_expires_at` cleared. Binds
+# (LOCK_NONE, id, LOCK_NONE); the last guard makes the rowcount say
+# whether a lock was actually ended.
+_CLEAR_LOCK_SQL: Final[str] = (
+    "UPDATE beliefs SET lock_level = ?, locked_at = NULL, "
+    "lock_expires_at = NULL WHERE id = ? AND lock_level != ?"
 )
 
 # v1.0 -> v1.2 column additions. Each ALTER runs after _SCHEMA. ALTERs
@@ -3770,6 +3780,15 @@ class MemoryStore:
         ``propagate_valence``, feedback, context assembly — still saw the
         tombstone. It is true now, and :meth:`get_belief` is where it is
         enforced.
+
+        Retiring a locked belief also ends its lock (#1945): it clears
+        ``lock_level``, ``locked_at`` and ``lock_expires_at``, as
+        ``aelf unlock`` does, and writes one ``lock:retire`` audit row
+        stamped with the retire time. Before #1945 the retired row kept
+        ``lock_level = 'user'``: ``aelf status`` counted it, ``aelf locked``
+        did not list it, and ``aelf unlock`` could not find it.
+        ``lock_tier`` is kept, as ``unlock`` keeps it; it means nothing
+        without a lock.
         """
         now = ts if ts is not None else datetime.now(timezone.utc).isoformat()
         cur = self._conn.execute(
@@ -3780,6 +3799,16 @@ class MemoryStore:
             self._conn.execute(
                 "DELETE FROM beliefs_fts WHERE id = ?", (belief_id,)
             )
+            unlocked = self._conn.execute(
+                _CLEAR_LOCK_SQL, (LOCK_NONE, belief_id, LOCK_NONE)
+            )
+            if unlocked.rowcount > 0:
+                self._conn.execute(
+                    "INSERT INTO feedback_history "
+                    "(belief_id, valence, source, created_at) "
+                    "VALUES (?, 0.0, ?, ?)",
+                    (belief_id, FEEDBACK_SOURCE_LOCK_RETIRE, now),
+                )
         self._bump_belief_version(belief_id)
         self._commit_mutation()
 

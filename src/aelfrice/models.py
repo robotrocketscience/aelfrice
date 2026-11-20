@@ -355,6 +355,13 @@ FEEDBACK_SOURCE_REASSERT_REVIVE: Final[str] = "reassert:revive"
 # is the automatic sibling of: an expiry says nothing about whether the
 # belief is true, only that its injection privilege ran out.
 FEEDBACK_SOURCE_LOCK_EXPIRE: Final[str] = "lock:expire"
+# #1945: written once per lock that a soft-delete clears. Retiring a
+# locked belief ends its lock, and this row records that the belief was
+# at lock level `user` when it was retired, the only level a lock can
+# have, so `aelf feed` shows the lock ended there. The one-time open
+# migration writes the same row for retired rows that older releases
+# left locked. Valence 0.0, like `lock:expire`.
+FEEDBACK_SOURCE_LOCK_RETIRE: Final[str] = "lock:retire"
 
 # v2.0 #205 ingest_log source_kind enum. Wire-format strings; do not
 # rename without a migration. Spec: docs/design/write-log-as-truth.md.
