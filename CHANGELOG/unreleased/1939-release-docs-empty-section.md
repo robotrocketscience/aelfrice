@@ -1,0 +1,3 @@
+### CI
+
+- **`release-docs-check` refuses a release whose dated CHANGELOG section has no entries ([#1939](https://github.com/robotrocketscience/aelfrice/issues/1939)).** The check looked for the `## [X.Y.Z]` heading, the compare-link footnote, and two drained unreleased surfaces, but not for anything in the section. Collation still cuts a section when there are no entry files, so a release cut from such a tree published a bare heading and an empty release PR body. The check now fails when the section holds nothing but headings, blank lines, and link reference definitions such as the compare-link footnote, and its error names the version and the file. A summary paragraph counts as content, which keeps every committed dated section passing.
