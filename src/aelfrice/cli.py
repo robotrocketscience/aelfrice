@@ -4411,12 +4411,10 @@ def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
 def _cmd_delete(args: argparse.Namespace, out: object) -> int:
     """Hard-delete one belief from the store. Writes an audit row first (#440).
 
-    #1946: the prompt names the belief by id, length and a sha256
-    prefix, never by its text, so a deleted secret is not written to
-    the terminal. `--user` selects the user lock store, as for `unlock`.
+    #1946: the prompt names the belief by id, origin and creation date
+    only, never by its text, so a deleted secret is not written to the
+    terminal. `--user` selects the user lock store, as for `unlock`.
     """
-    import hashlib
-
     from aelfrice.federation import ForeignBeliefError
     from aelfrice.models import LOCK_USER
 
@@ -4450,13 +4448,9 @@ def _cmd_delete(args: argparse.Namespace, out: object) -> int:
             return 1
 
         if not args.yes:
-            digest = hashlib.sha256(
-                belief.content.encode("utf-8", errors="surrogatepass")
-            ).hexdigest()
             print(
                 f"about to delete belief {args.belief_id} "
-                f"({len(belief.content)} characters, sha256 {digest[:12]}); "
-                f"`aelf show {args.belief_id}` prints its text",
+                f"(origin {belief.origin}, created {belief.created_at[:10]})",
                 file=sys.stderr,
             )
             try:

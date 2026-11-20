@@ -128,15 +128,26 @@ def test_the_prompt_names_the_id_and_never_prints_the_text(
     assert SECRET[:12] not in err
 
 
-def test_the_prompt_hint_shows_a_hash_prefix_of_the_text(
+def test_the_prompt_shows_only_the_id_origin_and_date(
     stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    repo, _user = stores
     bid = _lock(SECRET)
+    s = MemoryStore(str(repo))
+    try:
+        b = s.get_belief(bid)
+    finally:
+        s.close()
+    assert b is not None
     monkeypatch.setattr("builtins.input", lambda _prompt: "wrong")
     _rc, _out, err = _run(["delete", bid, "--force"])
+    assert err.splitlines()[0] == (
+        f"about to delete belief {bid} "
+        f"(origin {b.origin}, created {b.created_at[:10]})"
+    )
     digest = hashlib.sha256(SECRET.encode("utf-8")).hexdigest()
-    assert digest[:12] in err
-    assert digest not in err
+    assert digest[:8] not in err
+    assert str(len(SECRET)) not in err
 
 
 def test_eof_at_the_prompt_says_to_pass_yes(
