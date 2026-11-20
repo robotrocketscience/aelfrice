@@ -48,8 +48,11 @@ microseconds and `+00:00` where every other writer stamps
 
 `aelf delete` removes the `beliefs` row, so `content_hash` alone cannot
 find a deleted belief. The detector also reads the `cli_remember` rows
-of `ingest_log`, which is append-only and records the statement and the
-belief id every `aelf lock` resolved to, and hashes their text.
+of `ingest_log`, which holds a row for every `aelf lock` with the
+statement and the belief id it resolved to, and hashes their text. A
+hard delete clears the text of a row once no belief it derived exists
+(#1946) and keeps the text's sha256 in `raw_meta`, which the detector
+reads in place of the text.
 
 Removals are judged per belief id. Retiring or deleting any one belief
 that carries the statement closes the gap, even while another belief
@@ -363,6 +366,35 @@ def _strictly_after(value: object, failed_at: datetime) -> bool:
     return parsed is not None and parsed > failed_at
 
 
+# `store.INGEST_META_PURGED_SHA256`, spelled here for the import-cost
+# reason above and pinned to it by a test (#1946).
+_INGEST_META_PURGED_SHA256: Final[str] = "raw_text_sha256"
+
+
+def _logged_statement_digest(raw_text: str, raw_meta: object) -> str | None:
+    """The sha256 of the statement an `ingest_log` row recorded.
+
+    A row whose text `aelf delete` cleared (#1946) has `''` in
+    `raw_text` and the statement's hash in `raw_meta`. Hashing `''`
+    would match nothing, so the hash in the meta is read instead. None
+    when a cleared row's meta carries no usable hash.
+    """
+    if raw_text:
+        return hashlib.sha256(
+            raw_text.encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
+    if not isinstance(raw_meta, str):
+        return None
+    try:
+        meta = json.loads(raw_meta)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(meta, dict):
+        return None
+    digest = cast(dict[str, object], meta).get(_INGEST_META_PURGED_SHA256)
+    return digest if isinstance(digest, str) else None
+
+
 def _statement_belief_ids(
     conn: sqlite3.Connection, digests: set[str],
 ) -> dict[str, dict[str, list[str]]]:
@@ -373,9 +405,10 @@ def _statement_belief_ids(
 
     Two sources. `beliefs.content_hash` covers a belief that still exists,
     including a retired one. `ingest_log` covers one `aelf delete`
-    removed: it is append-only and records, for every `aelf lock`, the
-    statement and the belief id the lock resolved to. Its text is hashed
-    here because the log stores no hash. The `source_kind` filter uses
+    removed: it keeps a row for every `aelf lock`, with the statement
+    and the belief id the lock resolved to. The text is hashed here
+    because a live row stores no hash; a row a hard delete cleared keeps
+    only the hash (#1946), which is read as is. The `source_kind` filter uses
     the log's index and keeps the scan to `aelf lock` and `aelf remember`
     rows.
     """
@@ -385,17 +418,15 @@ def _statement_belief_ids(
             "SELECT id FROM beliefs WHERE content_hash = ?", (digest,),
         ):
             out[digest].setdefault(str(bid), [])
-    for raw_text, derived, ts in conn.execute(
-        "SELECT raw_text, derived_belief_ids, ts FROM ingest_log "
+    for raw_text, raw_meta, derived, ts in conn.execute(
+        "SELECT raw_text, raw_meta, derived_belief_ids, ts FROM ingest_log "
         "WHERE source_kind = ?",
         (_INGEST_SOURCE_LOCK,),
     ):
         if not isinstance(raw_text, str) or not isinstance(derived, str):
             continue
-        digest = hashlib.sha256(
-            raw_text.encode("utf-8", errors="surrogatepass")
-        ).hexdigest()
-        if digest not in out:
+        digest = _logged_statement_digest(raw_text, raw_meta)
+        if digest is None or digest not in out:
             continue
         try:
             ids = json.loads(derived)
