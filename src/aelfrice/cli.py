@@ -4527,9 +4527,13 @@ def _cmd_retire(args: argparse.Namespace, out: object) -> int:
             created_at=_utc_now_iso(),
         )
         store.soft_delete_belief(args.belief_id)
+        undo = (
+            "aelf restore --user" if getattr(args, "user_scope", False)
+            else "aelf restore"
+        )
         print(
             f"retired: {args.belief_id} "
-            f"(reversible — `aelf restore {args.belief_id}` to undo)",
+            f"(reversible — `{undo} {args.belief_id}` to undo)",
             file=out,  # type: ignore[arg-type]
         )
     finally:
@@ -4538,10 +4542,15 @@ def _cmd_retire(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_restore(args: argparse.Namespace, out: object) -> int:
-    """Restore a soft-deleted (retired) belief to active — inverse of `aelf retire`."""
+    """Restore a soft-deleted (retired) belief to active — inverse of `aelf retire`.
+
+    `--user` selects the user lock store, as for `retire --user` (#1946).
+    """
     from aelfrice.federation import ForeignBeliefError
 
-    store = _open_store()
+    store = _open_scoped_store(args, "restore", "restored")
+    if store is None:
+        return 1
     try:
         try:
             store.assert_local_ownership(args.belief_id)
@@ -11317,6 +11326,13 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="restore a retired (soft-deleted) belief to active — inverse of `aelf retire`",
     )
     p_restore.add_argument("belief_id", help="id of the belief to restore")
+    p_restore.add_argument(
+        "--user", dest="user_scope", action="store_true", default=False,
+        help=(
+            "restore in the user-scope store instead of this "
+            "repository's store (#1946)"
+        ),
+    )
     p_restore.set_defaults(func=_cmd_restore)
 
     # Explicit user affirmation — bumps Beta-Bernoulli alpha without freezing.
