@@ -449,9 +449,15 @@ def unlock(
     Idempotent: unlocking an already-unlocked belief is a no-op
     (returns `already_unlocked=True`, writes no audit row).
 
-    Reaches retired rows (#1945). Releases before #1945 retired a locked
-    belief without clearing its lock, and `aelf unlock` is the user's
-    way to clear one of those. The row stays retired.
+    Reaches retired rows (#1945) and leaves them retired. Releases
+    before #1945 retired a locked belief without clearing its lock; the
+    store's one-time open migration clears those, and this covers any
+    retired row still locked.
+
+    The lock is read from a snapshot, so a concurrent unlock can clear it
+    between the read and the write. When `clear_lock` reports that
+    nothing was cleared, this returns `already_unlocked=True` and writes
+    no audit row, as for a belief that was never locked.
 
     Refusal cases (raise ValueError):
       - belief not found
@@ -464,13 +470,12 @@ def unlock(
     belief = store.get_belief(belief_id, include_retired=True)
     if belief is None:
         raise ValueError(f"belief not found: {belief_id}")
-    if belief.lock_level != LOCK_USER:
+    if belief.lock_level != LOCK_USER or not store.clear_lock(belief_id):
         return UnlockResult(
             belief_id=belief_id,
             already_unlocked=True,
             audit_event_id=None,
         )
-    store.clear_lock(belief_id)
     timestamp = now if now is not None else _utc_now_iso()
     audit_id = store.insert_feedback_event(
         belief_id=belief_id,
