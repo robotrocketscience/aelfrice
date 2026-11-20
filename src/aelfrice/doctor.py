@@ -1597,25 +1597,41 @@ class CrossScopeLoggerEntry:
     project_path: Path
 
 
-def _events_wiring(settings_path: Path, basename: str) -> set[str]:
-    """Return the hook events in `settings_path` with an entry for `basename`."""
+def _commands_by_event(settings_path: Path, basename: str) -> dict[str, set[str]]:
+    """Map each hook event in `settings_path` to its `basename` commands.
+
+    Commands are kept as written, so two spellings of one path count as
+    two handlers, as they would to the host.
+    """
     try:
         data = _load_settings_json(settings_path)
     except (ValueError, OSError):
-        return set()
+        return {}
     hooks_obj = data.get(_HOOKS_KEY)
     if not isinstance(hooks_obj, dict):
-        return set()
-    events: set[str] = set()
+        return {}
+    found: dict[str, set[str]] = {}
     for event_name, event_list in cast(dict[str, object], hooks_obj).items():
         if not isinstance(event_list, list):
             continue
         for entry in cast(list[object], event_list):
-            key = _entry_duplicate_key(entry)
-            if key is not None and basename in key[1].split("\x00"):
-                events.add(event_name)
-                break
-    return events
+            if not isinstance(entry, dict):
+                continue
+            inner = cast(dict[str, object], entry).get(_INNER_HOOKS_KEY)
+            if not isinstance(inner, list):
+                continue
+            for hook in cast(list[object], inner):
+                if not isinstance(hook, dict):
+                    continue
+                hook_dict = cast(dict[str, object], hook)
+                cmd = hook_dict.get(_COMMAND_KEY)
+                if hook_dict.get(_TYPE_KEY) != _HOOK_TYPE_COMMAND:
+                    continue
+                if not isinstance(cmd, str) or not cmd.strip():
+                    continue
+                if basename in launcher.command_program_keys(cmd.strip()):
+                    found.setdefault(event_name, set()).add(cmd)
+    return found
 
 
 def find_cross_scope_logger_entries(
@@ -1629,6 +1645,10 @@ def find_cross_scope_logger_entries(
     project-scope install are two handlers, and each turn is logged by
     both. `find_duplicate_hook_entries` counts per file and misses this.
 
+    An event is reported when both files wire the logger on it and the two
+    files hold more than one distinct logger command between them. Both
+    files holding the same command is one handler, so it is not reported.
+
     Read-only. Quiet when either file is missing, or when both names
     resolve to one file, as they do for a doctor run from the home folder.
     """
@@ -1639,15 +1659,15 @@ def find_cross_scope_logger_entries(
             return []
     except OSError:
         return []
-    shared = (
-        _events_wiring(user_path, _setup.TRANSCRIPT_LOGGER_SCRIPT_NAME)
-        & _events_wiring(project_path, _setup.TRANSCRIPT_LOGGER_SCRIPT_NAME)
-    )
+    name = _setup.TRANSCRIPT_LOGGER_SCRIPT_NAME
+    user_cmds = _commands_by_event(user_path, name)
+    project_cmds = _commands_by_event(project_path, name)
     return [
         CrossScopeLoggerEntry(
             event=event, user_path=user_path, project_path=project_path,
         )
-        for event in sorted(shared)
+        for event in sorted(user_cmds.keys() & project_cmds.keys())
+        if len(user_cmds[event] | project_cmds[event]) > 1
     ]
 
 

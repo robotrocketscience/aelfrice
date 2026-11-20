@@ -70,6 +70,41 @@ def test_logger_in_both_settings_files_is_reported(tmp_path: Path) -> None:
     assert report.broken == []
 
 
+def test_identical_logger_command_in_both_files_is_not_reported(
+    tmp_path: Path,
+) -> None:
+    """The host runs one handler for a command both files define the same way."""
+    logger = _exec(tmp_path / "bin" / TRANSCRIPT_LOGGER_SCRIPT_NAME)
+    user_path = tmp_path / "home" / ".claude" / "settings.json"
+    project_root = tmp_path / "proj"
+    _write(user_path, _logger_settings(str(logger), TRANSCRIPT_INGEST_EVENTS))
+    _write(
+        project_root / PROJECT_SETTINGS_RELPATH,
+        _logger_settings(str(logger), TRANSCRIPT_INGEST_EVENTS),
+    )
+
+    report = diagnose(user_settings=user_path, project_root=project_root)
+
+    assert report.cross_scope_logger_entries == []
+
+
+def test_only_events_with_differing_commands_are_reported(tmp_path: Path) -> None:
+    shared = _exec(tmp_path / "bin" / TRANSCRIPT_LOGGER_SCRIPT_NAME)
+    other = _exec(tmp_path / "venv" / "bin" / TRANSCRIPT_LOGGER_SCRIPT_NAME)
+    user_path = tmp_path / "home" / ".claude" / "settings.json"
+    project_root = tmp_path / "proj"
+    _write(user_path, _logger_settings(str(shared), TRANSCRIPT_INGEST_EVENTS))
+    project = _logger_settings(str(shared), TRANSCRIPT_INGEST_EVENTS)
+    project["hooks"]["Stop"] = [  # type: ignore[index]
+        {"hooks": [{"type": "command", "command": str(other)}]},
+    ]
+    _write(project_root / PROJECT_SETTINGS_RELPATH, project)
+
+    report = diagnose(user_settings=user_path, project_root=project_root)
+
+    assert [e.event for e in report.cross_scope_logger_entries] == ["Stop"]
+
+
 def test_logger_in_one_settings_file_is_not_reported(tmp_path: Path) -> None:
     logger = _exec(tmp_path / "bin" / TRANSCRIPT_LOGGER_SCRIPT_NAME)
     other = _exec(tmp_path / "bin" / "aelf-hook")
@@ -92,11 +127,21 @@ def test_logger_in_one_settings_file_is_not_reported(tmp_path: Path) -> None:
 def test_project_settings_that_are_the_user_settings_are_not_reported(
     tmp_path: Path,
 ) -> None:
-    """Doctor run from the home folder scans one file under both names."""
+    """Doctor run from the home folder scans one file under both names.
+
+    The file holds two different logger commands on Stop, which the
+    per-file duplicate check reports. Read as two files, it would also
+    look like a logger wired in both scopes.
+    """
     logger = _exec(tmp_path / "bin" / TRANSCRIPT_LOGGER_SCRIPT_NAME)
+    other = _exec(tmp_path / "venv" / "bin" / TRANSCRIPT_LOGGER_SCRIPT_NAME)
     home = tmp_path / "home"
     user_path = home / PROJECT_SETTINGS_RELPATH
-    _write(user_path, _logger_settings(str(logger), TRANSCRIPT_INGEST_EVENTS))
+    settings = _logger_settings(str(logger), TRANSCRIPT_INGEST_EVENTS)
+    settings["hooks"]["Stop"].append(  # type: ignore[index]
+        {"hooks": [{"type": "command", "command": str(other)}]},
+    )
+    _write(user_path, settings)
 
     report = diagnose(user_settings=user_path, project_root=home)
 
