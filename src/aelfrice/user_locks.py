@@ -42,6 +42,7 @@ import os
 import sqlite3
 import sys
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Final
@@ -325,17 +326,42 @@ def _share_or_none(value: float, source: str, serr: IO[str]) -> float | None:
     return None
 
 
+_PINNED_SHARE: ContextVar[float | None] = ContextVar(
+    "aelfrice_user_lock_share", default=None,
+)
+
+
+def pin_user_lock_share(share: float) -> Token[float | None]:
+    """Make `resolve_user_lock_share` return `share` until unpinned.
+
+    A hook fire resolves the share once, from the payload's cwd and with
+    its own stderr, and pins it, so every later read in the fire (the
+    retrieval charge and the envelope's cut) gets the same value without
+    reading the configuration again or repeating a warning. Pass the
+    token to `unpin_user_lock_share`.
+    """
+    return _PINNED_SHARE.set(share)
+
+
+def unpin_user_lock_share(token: Token[float | None]) -> None:
+    _PINNED_SHARE.reset(token)
+
+
 def resolve_user_lock_share(
     *, start: Path | None = None, stderr: IO[str] | None = None,
 ) -> float:
     """The user-lock share, a fraction from 0 to 1 (#1944).
 
-    Precedence, as for the retrieval budget: `AELFRICE_USER_LOCK_SHARE`,
+    A share pinned by `pin_user_lock_share` wins. Otherwise the
+    precedence is the retrieval budget's: `AELFRICE_USER_LOCK_SHARE`,
     then `[retrieval] user_lock_share` in the nearest `.aelfrice.toml`
     from `start`, then `DEFAULT_USER_LOCK_SHARE`. A value that isn't a
     number, or is outside 0 to 1, prints one line to `stderr` and falls
     through to the next tier.
     """
+    pinned = _PINNED_SHARE.get()
+    if pinned is not None:
+        return pinned
     from aelfrice.retrieval import (  # noqa: PLC0415
         RETRIEVAL_SECTION,
         _read_toml_float_for,  # pyright: ignore[reportPrivateUsage]

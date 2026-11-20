@@ -34,6 +34,7 @@ import time
 import tomllib
 import traceback
 from contextlib import contextmanager
+from contextvars import Token
 from dataclasses import dataclass
 from enum import Enum
 from datetime import datetime, timezone
@@ -3172,6 +3173,8 @@ def user_prompt_submit(
     # (open failure or in-memory DB) lets every helper fall back to its
     # legacy self-open path, preserving per-helper fail-softness.
     ups_store: MemoryStore | None = None
+    # #1944: the user-lock share this fire pinned, released in `finally`.
+    share_token: Token[float | None] | None = None
     try:
         # TTL-gated background update check, completely detached, never
         # blocks the hook. Statusline reads the cache it writes.
@@ -3326,6 +3329,19 @@ def user_prompt_submit(
                 payload_cwd = Path(cwd_field)
         except Exception:
             payload_cwd = None
+        # #1944: the user-lock share is project config, so it resolves from
+        # the payload's cwd, once, with this hook's stderr, and is pinned for
+        # the retrieval charge and the envelope's cut that read it later.
+        try:
+            from aelfrice.user_locks import (  # noqa: PLC0415
+                pin_user_lock_share,
+                resolve_user_lock_share,
+            )
+
+            share_token = pin_user_lock_share(
+                resolve_user_lock_share(start=payload_cwd, stderr=serr))
+        except Exception:  # fail-soft: an unpinned read uses the default chain
+            share_token = None
         # #1630: the store resolves from the PROCESS cwd, not `payload_cwd`,
         # and so do the executor, the outcome row and the session-state
         # files above. The host runs this hook in the session's current
@@ -4205,6 +4221,12 @@ def user_prompt_submit(
                 ups_store.close()
             except Exception:
                 pass
+        if share_token is not None:
+            from aelfrice.user_locks import (  # noqa: PLC0415
+                unpin_user_lock_share,
+            )
+
+            unpin_user_lock_share(share_token)
     return 0
 
 
