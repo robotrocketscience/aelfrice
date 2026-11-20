@@ -118,9 +118,22 @@ def test_prompt_id_at_the_length_bound_is_accepted() -> None:
     assert payload_prompt_id({"prompt_id": value}) == value
 
 
-def test_prompt_id_with_inner_spaces_and_tilde_is_accepted() -> None:
-    """Space (0x20) and `~` (0x7E) sit just outside the control ranges."""
-    assert payload_prompt_id({"prompt_id": "a b~c"}) == "a b~c"
+def test_prompt_id_uses_the_whole_allowlist() -> None:
+    value = "AZaz09_-"
+    assert payload_prompt_id({"prompt_id": value}) == value
+
+
+_SURROGATE = "ab\ud800"
+_PADDED = "  P1  "
+_NON_ASCII = "P\u00e91"
+
+# Values the writers must refuse: a lone surrogate can't be encoded to
+# UTF-8, so accepting it loses the logger's line and the hook's batch.
+_REFUSED_ON_BOTH_WRITERS = [
+    pytest.param(_SURROGATE, id="lone-surrogate"),
+    pytest.param(_PADDED, id="padded"),
+    pytest.param(_NON_ASCII, id="non-ascii-letter"),
+]
 
 
 @pytest.mark.parametrize("payload", [
@@ -137,6 +150,15 @@ def test_prompt_id_with_inner_spaces_and_tilde_is_accepted() -> None:
     pytest.param({"prompt_id": "abc\x7f"}, id="del"),
     pytest.param({"prompt_id": "abc\x9f"}, id="c1-last"),
     pytest.param({"prompt_id": "abc\x80"}, id="c1-first"),
+    pytest.param({"prompt_id": "a b"}, id="inner-space"),
+    pytest.param({"prompt_id": "a~b"}, id="tilde"),
+    pytest.param({"prompt_id": "a.b"}, id="dot"),
+    pytest.param({"prompt_id": _PADDED}, id="padded"),
+    pytest.param({"prompt_id": "P1\n"}, id="trailing-newline"),
+    pytest.param({"prompt_id": _SURROGATE}, id="lone-surrogate"),
+    pytest.param({"prompt_id": _NON_ASCII}, id="latin-letter"),
+    pytest.param({"prompt_id": "\u043f\u0440\u043e"}, id="cyrillic"),
+    pytest.param({"prompt_id": "\uff11\uff12"}, id="fullwidth-digits"),
 ])
 def test_invalid_prompt_id_reads_as_absent(payload: dict[str, object]) -> None:
     assert payload_prompt_id(payload) is None
@@ -197,6 +219,26 @@ def test_hook_injection_rows_mint_on_invalid_prompt_id(
 ) -> None:
     db, _ = roots
     _fire_hook(_payload(prompt_id="a" * (PROMPT_ID_MAX_CHARS + 1)))
+    (turn_id,) = _injection_turn_ids(db)
+    assert _MINTED.match(turn_id)
+
+
+@pytest.mark.parametrize("value", _REFUSED_ON_BOTH_WRITERS)
+def test_logger_user_line_survives_a_refused_prompt_id(
+    roots: tuple[Path, Path], value: str,
+) -> None:
+    _, tdir = roots
+    _fire_logger(_payload(prompt_id=value))
+    (line,) = _logged_lines(tdir)
+    assert _MINTED.match(str(line["turn_id"]))
+
+
+@pytest.mark.parametrize("value", _REFUSED_ON_BOTH_WRITERS)
+def test_hook_batch_survives_a_refused_prompt_id(
+    roots: tuple[Path, Path], value: str,
+) -> None:
+    db, _ = roots
+    _fire_hook(_payload(prompt_id=value))
     (turn_id,) = _injection_turn_ids(db)
     assert _MINTED.match(turn_id)
 
@@ -262,6 +304,9 @@ def test_assistant_line_carries_its_prompt_id(
 @pytest.mark.parametrize("extra", [
     pytest.param({}, id="missing"),
     pytest.param({"prompt_id": "bad\nid"}, id="invalid"),
+    pytest.param({"prompt_id": _SURROGATE}, id="lone-surrogate"),
+    pytest.param({"prompt_id": _PADDED}, id="padded"),
+    pytest.param({"prompt_id": _NON_ASCII}, id="non-ascii-letter"),
 ])
 def test_assistant_line_mints_without_a_valid_prompt_id(
     roots: tuple[Path, Path],
