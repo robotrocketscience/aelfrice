@@ -2162,30 +2162,47 @@ def _open_lock_store(user_scope: bool) -> MemoryStore | None:
 
 
 def _warn_other_scope_copies(
-    lock_id: str, *, user_scope: bool, repo_store_path: str, out: object,
+    lock_id: str, content: str, *, user_scope: bool, out: object,
 ) -> None:
     """Warn when the other scope holds this lock or a near-duplicate (#1947).
 
     A lock's id is derived from its text, so one statement locked in both
     scopes is one id in two stores, and the L0 merge injects the
-    repository copy in place of the user copy. The pairs are the ones
-    that merge drops (`doctor.diagnose_user_lock_duplicates`), read with
-    `mode=ro` connections, so neither store is created. The warning names
-    the command that removes the other copy. A store that can't be read
-    gets one stderr line and never fails the lock.
+    repository copy in place of the user copy. Only the new lock is
+    checked, against each lock in the other scope, by the merge's test
+    and in its direction: a user lock's text against the repository
+    locks. The other store is read with a `mode=ro` connection, so it is
+    never created, migrated, or swept. The warning names the command
+    that removes the other copy. A store that can't be read gets one
+    stderr line and never fails the lock.
     """
-    from aelfrice.doctor import diagnose_user_lock_duplicates
+    import sqlite3
 
-    report = diagnose_user_lock_duplicates(repo_store_path)
-    if not report.known:
+    from aelfrice.db_paths import store_file_present
+    from aelfrice.dedup import near_duplicate_locks_among
+    from aelfrice.doctor import _read_active_lock_pairs
+
+    if not user_scope and _user_store_is_repo_store():
+        return
+    other = db_path() if user_scope else user_db_path()
+    label = "repository store" if user_scope else "user lock store"
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        if str(other) == ":memory:" or not store_file_present(other):
+            return
+        pairs = _read_active_lock_pairs(str(other), now)
+    except (sqlite3.Error, OSError) as exc:
         print(
             f"aelf lock: could not check the other scope for a copy of this "
-            f"lock: {report.unknown_reason}.",
+            f"lock: the {label} could not be read: {exc}.",
             file=sys.stderr,
         )
         return
     if user_scope:
-        others = [rid for rid, _, uids in report.pairs if lock_id in uids]
+        dup_ids = {
+            p.belief_a_id for p in near_duplicate_locks_among(pairs, content)
+        }
+        others = [rid for rid, _ in pairs if rid == lock_id or rid in dup_ids]
         cmds = " and ".join(f"`aelf unlock {rid}`" for rid in others)
         msg = (
             f"  warning: this repository also locks this statement as "
@@ -2193,9 +2210,10 @@ def _warn_other_scope_copies(
             f"user lock. To drop the repository copy, run {cmds}."
         )
     else:
+        mine = [(lock_id, content)]
         others = [
-            uid for rid, _, uids in report.pairs if rid == lock_id
-            for uid in uids
+            uid for uid, ucontent in pairs
+            if uid == lock_id or near_duplicate_locks_among(mine, ucontent)
         ]
         cmds = " and ".join(f"`aelf unlock --user {uid}`" for uid in others)
         msg = (
@@ -3005,10 +3023,7 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 file=out,
             )
         _warn_other_scope_copies(
-            actual_id,
-            user_scope=user_scope,
-            repo_store_path=str(db_path()) if user_scope else store.db_path,
-            out=out,
+            actual_id, verified.content, user_scope=user_scope, out=out,
         )
 
         # #435 doc-linker manual anchor. Idempotent on (belief_id,
@@ -4373,48 +4388,23 @@ def _cmd_validate(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
-def _user_store_locks(belief_id: str) -> bool:
-    """Whether `belief_id` is locked in the user store.
+def _is_active_lock_read_only(path: Path, belief_id: str) -> bool:
+    """Whether `belief_id` is an unexpired lock in the store at `path` (#1947).
 
-    Never creates the user store. False when the store is absent, when
-    it is the repository store, when it cannot be read, or when it has
-    no such lock. The answer only feeds advice, so a broken user store
-    never turns a repository unlock into a failure.
-    """
-    import sqlite3
-
-    if _user_store_is_repo_store():
-        return False
-    try:
-        store = open_user_store_if_present()
-        if store is None:
-            return False
-        try:
-            b = store.get_belief(belief_id)
-        finally:
-            store.close()
-    except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable):
-        return False
-    return b is not None and b.lock_level == LOCK_USER
-
-
-def _repo_store_locks(belief_id: str) -> bool:
-    """Whether `belief_id` is an unexpired lock in the repository store (#1947).
-
-    For `aelf unlock --user`, which never otherwise opens the repository
-    store. Read with a `mode=ro` handle, so a missing store is not
-    created; a store that can't be read answers False. The read-only
-    handle skips the expiry sweep, so the window is checked here.
+    For the scope `aelf unlock` didn't touch. Read with a `mode=ro`
+    handle, so the store is never created, migrated, or swept. The
+    handle skips the expiry sweep, so the window is checked here. False
+    when the store is absent or can't be read: the answer only feeds
+    advice, so a broken store never turns an unlock into a failure.
     """
     import sqlite3
 
     from aelfrice.db_paths import store_file_present
 
-    p = db_path()
     try:
-        if str(p) == ":memory:" or not store_file_present(p):
+        if str(path) == ":memory:" or not store_file_present(path):
             return False
-        store = MemoryStore(str(p), project_context_default="", read_only=True)
+        store = MemoryStore(str(path), project_context_default="", read_only=True)
         try:
             b = store.get_belief(belief_id)
         finally:
@@ -4426,6 +4416,22 @@ def _repo_store_locks(belief_id: str) -> bool:
         b is not None and b.lock_level == LOCK_USER
         and (b.lock_expires_at is None or b.lock_expires_at > now)
     )
+
+
+def _user_store_locks(belief_id: str) -> bool:
+    """Whether the user store holds `belief_id` as an unexpired lock.
+
+    False when the user store is the repository store, since that file
+    has one set of locks.
+    """
+    if _user_store_is_repo_store():
+        return False
+    return _is_active_lock_read_only(user_db_path(), belief_id)
+
+
+def _repo_store_locks(belief_id: str) -> bool:
+    """Whether the repository store holds `belief_id` as an unexpired lock."""
+    return _is_active_lock_read_only(db_path(), belief_id)
 
 
 def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
