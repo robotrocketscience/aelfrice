@@ -18,7 +18,8 @@ source=user_retired, or user_retired_force when --force is used) before the
 soft-delete, so the forensic record survives.
 
 Locked beliefs (lock_level=user) are protected: pass `--force` to retire one.
-Retiring an already-retired belief is a no-op.
+Retiring an already-retired belief is a no-op. Pass `--user` to retire
+a belief in the user store.
 </objective>
 
 <process>

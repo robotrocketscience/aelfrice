@@ -212,6 +212,10 @@ Inline code and URLs that aelfrice keeps are part of the belief. You can search 
 
 The rule covers sentences from your prompts and nothing else. The commit hook reads a commit message without it, so a token in a message can reach a belief through the words it stores, and the edge keeps about 80 characters of the message as written. The transcript log, `turns.jsonl`, holds each prompt as you typed it, and an edge between two turns of a session keeps the start of the earlier prompt as you typed it.
 
+To remove a stored secret, run `aelf delete <id>`, or `aelf delete --user <id>` for a user lock. The confirmation prompt shows the id, the text's length, and the first 12 characters of the text's sha256, never the text ([#1946](https://github.com/robotrocketscience/aelfrice/issues/1946)). The delete removes the belief and clears the text of each ingest log row once no belief that row derived exists. A cleared row keeps the text's sha256 and the time the text was cleared. A row that also derived a belief that still exists keeps its text. `aelf retire` keeps the text, so that `aelf restore` can bring the belief back.
+
+A delete changes only the store file in place. A backup or other copy of the store file made before the delete keeps the text, and so do `turns.jsonl` and any terminal, transcript, or log that showed it. The store file itself can also keep pieces of the text in unused pages and in its full-text search index after the delete.
+
 ## Batch ingest of historical sessions
 
 `aelf ingest-transcript --batch ~/.claude/projects/` pulls existing Claude Code session JSONL files into the local belief graph. Those files might contain pasted secrets, customer data, or anything else you typed in chat, and the v1.2 ingest path has no scrubber for personally identifiable information (PII). Review them before you backfill. If older logs predate your secret-handling discipline, use `--since` to scope the run to recent sessions.
