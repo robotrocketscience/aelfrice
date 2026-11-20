@@ -5711,8 +5711,8 @@ def _settings_change_after_migration(
     refuses there, before it writes the settings, when they would now
     change them: the install failed, or uv wrote the programs somewhere
     other than the folder `uv tool dir --bin` named. By then the
-    migration has run, and setup may have cleared the Claude auto-install
-    opt-out.
+    migration has run. Setup clears the Claude auto-install opt-out only
+    after this check passes, so a refusal here leaves it as it was.
     """
     if not migration.attempted:
         return None
@@ -6127,15 +6127,6 @@ def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
     except _UvMigrationSkipped as exc:
         print(_doctor_text(exc.notice), file=sys.stderr)
         return 0
-    # #1053: an explicit claude-host setup is explicit re-consent —
-    # clear any persistent claude auto-install opt-out.
-    from aelfrice.auto_install import remove_host_opt_out
-
-    if remove_host_opt_out(CLAUDE_HOST):
-        print(
-            "cleared claude host auto-install opt-out (#1053)",
-            file=out,  # type: ignore[arg-type]
-        )
     # #733: auto-migrate non-uv aelfrice installs to uv tool on first
     # post-upgrade setup. Gated on a one-shot sentinel inside
     # maybe_migrate_to_uv so re-running setup for unrelated reasons
@@ -6159,6 +6150,16 @@ def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
     if refusal is not None:
         print(_doctor_text(refusal), file=sys.stderr)
         return 1
+    # #1053: an explicit claude-host setup is explicit re-consent, so
+    # clear any persistent claude auto-install opt-out. #1812: after the
+    # check above, so a setup it refuses leaves the opt-out as it was.
+    from aelfrice.auto_install import remove_host_opt_out
+
+    if remove_host_opt_out(CLAUDE_HOST):
+        print(
+            "cleared claude host auto-install opt-out (#1053)",
+            file=out,  # type: ignore[arg-type]
+        )
     # #1422: one-shot report of what the removed MCP surface left behind —
     # a `[mcp]` extra in the uv environment, a host registration pointing at
     # the deleted `aelf mcp`. Report-only by design: aelfrice never wrote
