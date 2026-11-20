@@ -917,6 +917,11 @@ SCHEMA_META_EXPLORATION_FIRE_IDX: Final[str] = "exploration_fire_idx"
 # means no lock has ever expired on this store.
 SCHEMA_META_LOCK_SWEEP_AT: Final[str] = "lock_expiry_sweep_at"
 SCHEMA_META_LOCK_SWEEP_COUNT: Final[str] = "lock_expiry_sweep_count"
+# #1945. Set after the one-time pass that unlocks every retired row an
+# older release left at `lock_level = 'user'` (before the fix,
+# `soft_delete_belief` set only `valid_to`). ISO timestamp on
+# completion; fresh stores stamp it after a pass that matches nothing.
+SCHEMA_META_RETIRED_LOCK_CLEANUP: Final[str] = "retired_lock_cleanup_complete"
 
 # v1.5.0 #204 federation forward-compat. Stable per-DB scope id,
 # generated on first v1.5+ open and persisted in `schema_meta`.
@@ -1880,6 +1885,10 @@ class MemoryStore:
         # store rather than making it unopenable — the cost of a skipped
         # sweep is a lock that stays injected one session too long,
         # which is strictly better than a store that will not open.
+        # #1945 one-time unlock of retired rows older releases left
+        # locked. Before the expiry sweep, so a retired lock that is also
+        # past its window is recorded as ended by the retire, which it was.
+        self._run_guarded_migration(self._maybe_clear_retired_locks)
         self._run_guarded_migration(self.sweep_expired_locks)
         # #1135: process-lifetime BM25F cache slot, managed by
         # `aelfrice.retrieval._store_scoped_bm25f_cache`. Typed loosely
@@ -6717,6 +6726,56 @@ class MemoryStore:
         cur = self._conn.execute("SELECT COUNT(*) AS n FROM edges")
         row = cur.fetchone()
         return int(row["n"]) if row else 0
+
+    def _maybe_clear_retired_locks(self) -> int:
+        """#1945 one-time pass: unlock every retired row still locked.
+
+        Before #1945, `soft_delete_belief` set only `valid_to`, so
+        `aelf retire --force` left the row at `lock_level = 'user'`.
+        This clears `lock_level`, `locked_at` and `lock_expires_at` on
+        each such row and writes one `lock:retire` audit row per row,
+        stamped with the time of this pass (the retire time is the row's
+        `valid_to`). Returns the number of rows unlocked.
+
+        One-time via `SCHEMA_META_RETIRED_LOCK_CLEANUP`, and idempotent
+        without it: an unlocked row no longer matches the select, so a
+        rerun writes nothing. The marker saves the per-open query, since
+        the fixed `soft_delete_belief` leaves no such row.
+        """
+        if self.get_schema_meta(SCHEMA_META_RETIRED_LOCK_CLEANUP) is not None:
+            return 0
+        ts = datetime.now(timezone.utc).isoformat()
+        due = [
+            str(row["id"])
+            for row in self._conn.execute(
+                "SELECT id FROM beliefs "
+                "WHERE valid_to IS NOT NULL AND lock_level != ?",
+                (LOCK_NONE,),
+            )
+        ]
+        if due:
+            marks = ",".join("?" * len(due))
+            self._conn.execute(
+                "UPDATE beliefs SET lock_level = ?, locked_at = NULL, "
+                f"lock_expires_at = NULL WHERE id IN ({marks})",
+                (LOCK_NONE, *due),
+            )
+            self._conn.executemany(
+                "INSERT INTO feedback_history "
+                "(belief_id, valence, source, created_at) VALUES (?, 0.0, ?, ?)",
+                [(bid, FEEDBACK_SOURCE_LOCK_RETIRE, ts) for bid in due],
+            )
+            for bid in due:
+                self._bump_belief_version(bid)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            (SCHEMA_META_RETIRED_LOCK_CLEANUP, ts),
+        )
+        if due:
+            self._commit_mutation()
+        else:
+            self._commit()
+        return len(due)
 
     def sweep_expired_locks(self, *, now: str | None = None) -> int:
         """Flip every due time-boxed lock to `lock_level='none'`.
