@@ -357,6 +357,69 @@ def test_user_locks_past_the_share_never_shed_the_recent_work_lane(
     assert len(_rendered(text, "u")) + _named(text) == N_USER
 
 
+def _prompt_from(
+    payload_cwd: Path, prompt: str, session: str, err: io.StringIO,
+) -> str:
+    out = io.StringIO()
+    payload = json.dumps({
+        "prompt": prompt, "session_id": session, "cwd": str(payload_cwd),
+    })
+    assert user_prompt_submit(
+        stdin=io.StringIO(payload), stdout=out, stderr=err,
+    ) == 0
+    return out.getvalue()
+
+
+@pytest.mark.timeout(120)
+def test_the_share_resolves_from_the_payload_cwd_not_the_process_cwd(
+    stores: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Project config follows the payload's cwd (#909/#887), as the rest does."""
+    repo, user = stores
+    _seed(repo, _repo_beliefs())
+    _seed(user, _user_locks())
+    project = tmp_path / "project"
+    elsewhere = tmp_path / "elsewhere"
+    project.mkdir()
+    elsewhere.mkdir()
+    (project / ".aelfrice.toml").write_text("[retrieval]\nuser_lock_share = 1\n")
+    (elsewhere / ".aelfrice.toml").write_text("[retrieval]\nuser_lock_share = 0\n")
+    monkeypatch.chdir(elsewhere)
+    text = _prompt_from(project, "widget calibration step order", "cwd1",
+                        io.StringIO())
+    # Share 1: the user locks take the room, as before #1944.
+    assert len(_rendered(text, "u")) > 10
+    assert len(_rendered(text, "p")) <= 2
+    monkeypatch.chdir(project)
+    ul._CACHE.clear()  # pyright: ignore[reportPrivateUsage]
+    text = _prompt_from(elsewhere, "widget calibration step order", "cwd2",
+                        io.StringIO())
+    # Share 0: user locks take only room the hits leave.
+    assert len(_rendered(text, "p")) >= 5
+
+
+@pytest.mark.timeout(120)
+def test_a_bad_share_warns_once_per_prompt_on_the_hook_stderr(
+    stores: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, _repo_beliefs())
+    _seed(user, _user_locks())
+    monkeypatch.setenv(ul.ENV_USER_LOCK_SHARE, "lots")
+    err = io.StringIO()
+    text = _prompt_from(tmp_path, "widget calibration step order", "bad1", err)
+    assert err.getvalue().count(ul.ENV_USER_LOCK_SHARE) == 1
+    assert ul.ENV_USER_LOCK_SHARE not in capsys.readouterr().err
+    # It fell through to the default share.
+    assert len(_rendered(text, "p")) >= 5
+    # The pin ends with the fire: a later read resolves the env again.
+    assert ul.resolve_user_lock_share(stderr=io.StringIO()) == (
+        ul.DEFAULT_USER_LOCK_SHARE)
+    monkeypatch.setenv(ul.ENV_USER_LOCK_SHARE, "0.5")
+    assert ul.resolve_user_lock_share() == 0.5
+
+
 @pytest.mark.timeout(120)
 def test_a_user_lock_sharing_a_repo_id_is_not_capped_as_a_user_lock(
     stores: tuple[Path, Path],
@@ -521,6 +584,39 @@ def test_doctor_does_not_count_an_expired_user_lock(
         now="2026-11-01T00:00:00+00:00",
     )
     assert st.total == 2
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_the_share_from_the_project_root(
+    stores: tuple[Path, Path], tmp_path: Path,
+) -> None:
+    repo, user = stores
+    _seed(repo, _repo_beliefs())
+    _seed(user, _user_locks(12))
+    project = tmp_path / "project"
+    project.mkdir()
+    st = diagnose_user_lock_share(str(repo), str(user), project_root=project)
+    assert st.fit < 12
+    (project / ".aelfrice.toml").write_text("[retrieval]\nuser_lock_share = 1\n")
+    st = diagnose_user_lock_share(str(repo), str(user), project_root=project)
+    assert st.share == 1.0
+    assert st.share_chars == 9500
+    assert st.fit == st.total == 12
+
+
+@pytest.mark.timeout(60)
+def test_doctor_leaves_out_user_locks_the_hooks_drop_as_duplicates(
+    stores: tuple[Path, Path], tmp_path: Path,
+) -> None:
+    repo, user = stores
+    rule = "This repository builds with make, not cmake."
+    _seed(repo, _repo_beliefs())
+    _seed(user, _user_locks(3) + [
+        _lock("r1", rule, locked_at="2026-10-01T00:00:00+00:00"),
+        _lock("dup1", rule.replace(".", "!"), locked_at="2026-10-01T00:00:00+00:00"),
+    ])
+    st = diagnose_user_lock_share(str(repo), str(user), project_root=tmp_path)
+    assert st.total == 3
 
 
 @pytest.mark.timeout(60)
