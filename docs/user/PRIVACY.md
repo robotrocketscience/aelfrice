@@ -101,7 +101,7 @@ Before v4.2.0, this command hardcoded its gate to open and never read the sentin
 | `aelf onboard` (direct-API classifier) | on by default since v1.5.0, but runs only with the `[onboard-llm]` extra, `ANTHROPIC_API_KEY`, and recorded consent | candidate sentences the onboard scanner extracts |
 | `aelf doctor --classify-orphans` | opt-in, consent-gated | stored belief content |
 | `aelf gate list` — `gh issue list` and `gh issue view` against the repo aelfrice detects from your git remote (`gate_list.py`) | off; an explicit command, hidden from `--help` | repo identity and label filters; no belief content |
-| `aelf upgrade` and the one-shot uv-tool migration — `uv tool install aelfrice` (`lifecycle.py`) | off; an explicit command | nothing beyond the package request |
+| `aelf upgrade` and the one-shot uv-tool migration — `uv tool install aelfrice` (`lifecycle.py`) | `aelf upgrade` is off; an explicit command. The migration runs inside `aelf setup` when this machine has no uv-tool install of aelfrice and `uv` is on `PATH`, and it stops running after its first success | nothing beyond the package request |
 
 Of the three default-on paths, only the notifier transmits nothing; the pre-issue guard and background labeling do transmit. An audit is most likely to miss those two, because each reaches the network by running another program rather than through a socket. See the note on the verification grep above.
 
