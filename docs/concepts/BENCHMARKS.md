@@ -513,7 +513,7 @@ scorer logic.
 
 ## Audit record
 
-Every academic run produces:
+The audit record for an academic run has this shape:
 
 ```json
 {
@@ -529,8 +529,12 @@ Every academic run produces:
 }
 ```
 
-The audit record is required for the run to count. A run without an audit
-record does not enter `benchmarks/results/`.
+Nothing enforces the audit record. No code writes `contamination_check`, and
+`aelf bench all` (`benchmarks/run.py`) writes a different set of fields, such
+as `git_commit`, `aelfrice_version`, and `results`. Of the 11 JSON files at the
+top level of `benchmarks/results/`, only `v1.2.0-pre.json` has
+`contamination_check`, and `lane_firing_probe_1366.json` and
+`temporal_half_life_sweep.json` have no `git_commit` field.
 
 ## See also
 
