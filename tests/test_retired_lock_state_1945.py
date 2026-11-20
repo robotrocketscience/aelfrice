@@ -16,6 +16,8 @@ These tests pin each part of the fix:
 from __future__ import annotations
 
 import io
+import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -73,7 +75,9 @@ def _seed_locked(db: Path, bid: str = _BID, content: str = "synthetic") -> str:
     return bid
 
 
-def _seed_legacy_retired_lock(db: Path, bid: str = _BID) -> str:
+def _seed_legacy_retired_lock(
+    db: Path, bid: str = _BID, expires_at: str = _EXPIRES_AT,
+) -> str:
     """Leave the row an older release's `retire --force` left behind.
 
     Seeds a locked belief, then sets `valid_to` with raw SQL (the old
@@ -84,7 +88,8 @@ def _seed_legacy_retired_lock(db: Path, bid: str = _BID) -> str:
     s = MemoryStore(str(db))
     try:
         s._conn.execute(  # noqa: SLF001, reproduce the pre-fix row
-            "UPDATE beliefs SET valid_to = ? WHERE id = ?", (_RETIRED_AT, bid)
+            "UPDATE beliefs SET valid_to = ?, lock_expires_at = ? WHERE id = ?",
+            (_RETIRED_AT, expires_at, bid),
         )
         s._conn.execute(  # noqa: SLF001
             "DELETE FROM beliefs_fts WHERE id = ?", (bid,)
@@ -343,3 +348,203 @@ def test_restore_of_formerly_locked_belief_is_active_and_unlocked(
     assert [src for src, _ in _sources(isolated_db, bid)] == [
         "user_retired_force", FEEDBACK_SOURCE_LOCK_RETIRE, "user_restored",
     ]
+
+
+# --- review round 1 ------------------------------------------------------------
+
+
+def test_restore_of_formerly_locked_belief_prints_relock_hint(
+    isolated_db: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    bid = _seed_locked(isolated_db)
+    _run("retire", "--force", bid)
+    capsys.readouterr()
+    code, out = _run("restore", bid)
+    err = capsys.readouterr().err
+    assert code == 0
+    assert out == f"restored: {bid}\n"
+    lines = [line for line in err.splitlines() if "aelf lock" in line]
+    assert len(lines) == 1
+    assert bid in lines[0]
+
+
+def test_restore_of_never_locked_belief_prints_no_hint(
+    isolated_db: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    bid = _seed_locked(isolated_db)
+    s = MemoryStore(str(isolated_db))
+    try:
+        s._conn.execute(  # noqa: SLF001
+            "UPDATE beliefs SET lock_level = ?, locked_at = NULL WHERE id = ?",
+            (LOCK_NONE, bid),
+        )
+        s._conn.commit()  # noqa: SLF001
+    finally:
+        s.close()
+    _run("retire", bid)
+    capsys.readouterr()
+    code, _ = _run("restore", bid)
+    assert code == 0
+    assert "aelf lock" not in capsys.readouterr().err
+
+
+def test_migration_hint_after_restore_of_legacy_row(
+    isolated_db: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    _seed_legacy_retired_lock(isolated_db)
+    MemoryStore(str(isolated_db)).close()
+    capsys.readouterr()
+    code, _ = _run("restore", _BID)
+    assert code == 0
+    assert "aelf lock" in capsys.readouterr().err
+
+
+class _BeforeFirstLockUpdate:
+    """Connection proxy: run `hook` once, just before the first
+    lock-clearing UPDATE, so another writer's change lands between this
+    connection's select and its update."""
+
+    def __init__(self, conn: object, hook: Callable[[], None]) -> None:
+        self._c = conn
+        self._hook = hook
+        self.fired = False
+
+    def execute(self, sql: str, *args: object) -> object:
+        if not self.fired and sql.startswith("UPDATE beliefs SET lock_level"):
+            self.fired = True
+            self._hook()
+        return self._c.execute(sql, *args)  # type: ignore[attr-defined]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._c, name)
+
+
+def test_migration_writes_one_audit_row_when_two_openers_race(
+    isolated_db: Path,
+) -> None:
+    _seed_legacy_retired_lock(isolated_db)
+    b = MemoryStore(str(isolated_db))
+    try:
+        # Put the pre-fix state back, so B's own pass is due again.
+        b._conn.execute(  # noqa: SLF001
+            "UPDATE beliefs SET lock_level = ? WHERE id = ?", (LOCK_USER, _BID)
+        )
+        b._conn.execute("DELETE FROM feedback_history")  # noqa: SLF001
+        b._conn.execute(  # noqa: SLF001
+            "DELETE FROM schema_meta WHERE key = ?",
+            (SCHEMA_META_RETIRED_LOCK_CLEANUP,),
+        )
+        b._conn.commit()  # noqa: SLF001
+        real = b._conn  # noqa: SLF001
+        proxy = _BeforeFirstLockUpdate(
+            real, lambda: MemoryStore(str(isolated_db)).close()
+        )
+        b._conn = proxy  # type: ignore[assignment]  # noqa: SLF001
+        try:
+            cleared = b._maybe_clear_retired_locks()  # noqa: SLF001
+        finally:
+            b._conn = real  # noqa: SLF001
+        assert proxy.fired
+        assert cleared == 0
+    finally:
+        b.close()
+    assert _sources(isolated_db, _BID) == [(FEEDBACK_SOURCE_LOCK_RETIRE, 0.0)]
+
+
+def test_migration_runs_before_the_expiry_sweep(isolated_db: Path) -> None:
+    """A retired lock past its window is recorded as ended by the retire.
+
+    The sweep has no `valid_to` filter, so if it ran first it would flip
+    the row and write `lock:expire`, leaving the migration nothing to do.
+    """
+    _seed_legacy_retired_lock(isolated_db, expires_at="2026-01-01T00:00:00+00:00")
+    MemoryStore(str(isolated_db)).close()
+    assert _sources(isolated_db, _BID) == [(FEEDBACK_SOURCE_LOCK_RETIRE, 0.0)]
+
+
+def test_clear_lock_bumps_belief_version_and_fires_invalidation(
+    isolated_db: Path,
+) -> None:
+    bid = _seed_locked(isolated_db)
+    s = MemoryStore(str(isolated_db))
+    try:
+        def counter() -> int:
+            row = s._conn.execute(  # noqa: SLF001
+                "SELECT COALESCE(SUM(counter), 0) AS n FROM belief_versions "
+                "WHERE belief_id = ?",
+                (bid,),
+            ).fetchone()
+            return int(row["n"])
+
+        fired: list[int] = []
+        s.add_invalidation_callback(lambda: fired.append(1))
+        before = counter()
+        assert s.clear_lock(bid) is True
+        assert counter() == before + 1
+        assert fired == [1]
+    finally:
+        s.close()
+
+
+def test_unlock_writes_nothing_when_clear_lock_clears_nothing(
+    isolated_db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale locked snapshot, with the row already unlocked underneath
+    (a concurrent unlock), must not produce a second `lock:unlock` row."""
+    bid = _seed_locked(isolated_db)
+    s = MemoryStore(str(isolated_db))
+    try:
+        stale = s.get_belief(bid)
+        assert stale is not None and stale.lock_level == LOCK_USER
+        s._conn.execute(  # noqa: SLF001
+            "UPDATE beliefs SET lock_level = ? WHERE id = ?", (LOCK_NONE, bid)
+        )
+        s._conn.commit()  # noqa: SLF001
+        monkeypatch.setattr(s, "get_belief", lambda *a, **k: stale)
+        result = unlock(s, bid)
+    finally:
+        s.close()
+    assert result.already_unlocked is True
+    assert result.audit_event_id is None
+    assert _sources(isolated_db, bid) == []
+
+
+def test_migration_leaves_a_row_restored_after_its_select_locked(
+    isolated_db: Path,
+) -> None:
+    _seed_legacy_retired_lock(isolated_db)
+    b = MemoryStore(str(isolated_db))
+    try:
+        b._conn.execute(  # noqa: SLF001, put the pre-fix state back
+            "UPDATE beliefs SET lock_level = ? WHERE id = ?", (LOCK_USER, _BID)
+        )
+        b._conn.execute("DELETE FROM feedback_history")  # noqa: SLF001
+        b._conn.execute(  # noqa: SLF001
+            "DELETE FROM schema_meta WHERE key = ?",
+            (SCHEMA_META_RETIRED_LOCK_CLEANUP,),
+        )
+        b._conn.commit()  # noqa: SLF001
+
+        def restore_elsewhere() -> None:
+            # A second process restores the row, raw, so its own open
+            # migration cannot clear the lock first.
+            c = sqlite3.connect(str(isolated_db))
+            try:
+                c.execute("UPDATE beliefs SET valid_to = NULL WHERE id = ?", (_BID,))
+                c.commit()
+            finally:
+                c.close()
+
+        real = b._conn  # noqa: SLF001
+        proxy = _BeforeFirstLockUpdate(real, restore_elsewhere)
+        b._conn = proxy  # type: ignore[assignment]  # noqa: SLF001
+        try:
+            cleared = b._maybe_clear_retired_locks()  # noqa: SLF001
+        finally:
+            b._conn = real  # noqa: SLF001
+        assert proxy.fired
+        assert cleared == 0
+    finally:
+        b.close()
+    assert _raw_lock_fields(isolated_db, _BID)[0] == LOCK_USER
+    assert _sources(isolated_db, _BID) == []
