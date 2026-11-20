@@ -229,3 +229,48 @@ def test_both_writers_stay_independent_without_prompt_id(
     assert _MINTED.match(str(line["turn_id"]))
     assert injected != line["turn_id"]
 
+
+# --- Stop -----------------------------------------------------------------
+
+def _stop_payload(**extra: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "session_id": _SESSION,
+        "transcript_path": None,
+        "cwd": "/tmp",
+        "hook_event_name": "Stop",
+        "stop_hook_active": False,
+        "last_assistant_message": "There are twelve barrels in the cellar.",
+    }
+    base.update(extra)
+    return base
+
+
+def test_assistant_line_carries_its_prompt_id(
+    roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A turn's user and assistant lines share the host's prompt id."""
+    _, tdir = roots
+    monkeypatch.setattr(tl, "_maybe_stop_flush", lambda _d: None)
+    _fire_logger(_payload(prompt_id=_PROMPT_ID))
+    _fire_logger(_stop_payload(prompt_id=_PROMPT_ID))
+    lines = _logged_lines(tdir)
+    assert [(ln["role"], ln["turn_id"]) for ln in lines] == [
+        ("user", _PROMPT_ID), ("assistant", _PROMPT_ID),
+    ]
+
+
+@pytest.mark.parametrize("extra", [
+    pytest.param({}, id="missing"),
+    pytest.param({"prompt_id": "bad\nid"}, id="invalid"),
+])
+def test_assistant_line_mints_without_a_valid_prompt_id(
+    roots: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    extra: dict[str, object],
+) -> None:
+    _, tdir = roots
+    monkeypatch.setattr(tl, "_maybe_stop_flush", lambda _d: None)
+    _fire_logger(_stop_payload(**extra))
+    (line,) = _logged_lines(tdir)
+    assert line["role"] == "assistant"
+    assert _MINTED.match(str(line["turn_id"]))
