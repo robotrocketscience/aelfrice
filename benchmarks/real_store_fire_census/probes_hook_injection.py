@@ -75,8 +75,9 @@ SPECULATIVE_SENTENCE_HEAD = ' Items marked speculative="1" are machine-synthesis
 TRUNCATION_MARKER = " […truncated]"                     # hook._cap_belief_content
 PROVENANCE_SECTIONS = ("user-locked", "observed", "inferred")  # provenance_render
 COVERAGE_RE = re.compile(r"retrieved \d+ of \d+ matching beliefs for \"")
+# "space" since #1944; audit logs written before it say "limit".
 LOCK_OVERFLOW_RE = re.compile(
-    r"\naelfrice: \d+ user lock\(s\) did not fit this hook's output limit")
+    r"\naelfrice: \d+ user lock\(s\) did not fit this hook's output (?:limit|space)")
 SEEN_LINE_RE = re.compile(r"\n  seen [^\s:]+: \"")       # retrieval.seen_manifest_line
 CORE_LINE_RE = re.compile(r'^<belief id="[^"]*" corr="')  # hook._core_belief_line
 NONLOCK_ELEM_RE = re.compile(r'<belief id="[^"]*" lock="none"[^>]*>.*?</belief>', re.DOTALL)

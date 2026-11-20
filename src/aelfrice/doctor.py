@@ -295,6 +295,135 @@ def diagnose_user_lock_duplicates(
 
 
 # ---------------------------------------------------------------------------
+# User locks past their share of a hook fire (#1944)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UserLockShareReport:
+    """How many user locks the user-lock share can show (#1944).
+
+    `known` False means the check couldn't tell (`unknown_reason`).
+    `total` leaves out a user lock the hooks drop because it shares an id
+    with, or near-duplicates, a repository lock. `fit` is how many of the
+    `total` active user locks fit the share,
+    first fit in the store's lock order, by `user_locks.
+    user_lock_render_chars`. `share_chars` is the share of the full
+    `HOOK_PAYLOAD_CHAR_LIMIT`; a fire whose other blocks take room holds
+    fewer.
+    """
+
+    known: bool
+    user_store: str = ""
+    user_store_present: bool = False
+    total: int = 0
+    fit: int = 0
+    share: float = 0.0
+    share_chars: int = 0
+    unknown_reason: str | None = None
+
+
+def diagnose_user_lock_share(
+    store_path: str | None,
+    user_store_path: str | None = None,
+    *,
+    project_root: Path | None = None,
+    now: str | None = None,
+) -> UserLockShareReport:
+    """Count the user locks past their share of a hook fire (#1944).
+
+    The user store is opened read-only and never created, as the hooks
+    open it. A missing store, or one that is the repository store, has
+    no user locks to count. The share is resolved from `project_root`'s
+    `.aelfrice.toml`, as a hook fired there resolves it.
+    """
+    import io  # noqa: PLC0415
+
+    from aelfrice.db_paths import (  # noqa: PLC0415
+        store_file_present,
+        user_db_path,
+    )
+    from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT  # noqa: PLC0415
+    from aelfrice.models import LOCK_USER  # noqa: PLC0415
+    from aelfrice.store import MemoryStore  # noqa: PLC0415
+    from aelfrice.user_locks import (  # noqa: PLC0415
+        USER_STORE_BUSY_TIMEOUT_MS,
+        fit_user_lock_share,
+        repo_locks_duplicating_user_locks,
+        resolve_user_lock_share,
+        user_lock_render_chars,
+    )
+
+    user_path = (
+        user_store_path if user_store_path is not None
+        else str(user_db_path())
+    )
+    try:
+        present = user_path != ":memory:" and store_file_present(user_path)
+    except OSError as exc:
+        return UserLockShareReport(
+            known=False, user_store=user_path,
+            unknown_reason=f"the user lock store could not be read: {exc}",
+        )
+    if not present:
+        return UserLockShareReport(known=True, user_store=user_path)
+    if store_path is not None and store_path != ":memory:":
+        try:
+            if os.path.samefile(user_path, store_path):
+                return UserLockShareReport(known=True, user_store=user_path)
+        except OSError:
+            pass
+    ts = now if now is not None else datetime.now(timezone.utc).isoformat()
+    try:
+        store = MemoryStore(
+            user_path, project_context_default="", read_only=True,
+            busy_timeout_ms=USER_STORE_BUSY_TIMEOUT_MS,
+        )
+        try:
+            locks = [
+                b for b in store.list_locked_beliefs()
+                if b.lock_level == LOCK_USER
+                and (b.lock_expires_at is None or b.lock_expires_at > ts)
+            ]
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001 - any open failure is unknown
+        return UserLockShareReport(
+            known=False, user_store=user_path, user_store_present=True,
+            unknown_reason=f"the user lock store could not be read: {exc}",
+        )
+    # The hooks inject the repository copy of a user lock that one
+    # near-duplicates, so that user lock costs the share nothing. An
+    # unreadable repository store leaves every user lock counted.
+    repo_present = False
+    try:
+        repo_present = (store_path is not None and store_path != ":memory:"
+                        and store_file_present(store_path))
+    except OSError:
+        pass
+    if repo_present and locks and store_path is not None:
+        try:
+            repo_pairs = _read_active_lock_pairs(store_path, ts)
+        except (sqlite3.Error, OSError):
+            repo_pairs = []
+        dropped = {
+            uid for _rid, _rc, uids in repo_locks_duplicating_user_locks(
+                repo_pairs, [(b.id, b.content) for b in locks])
+            for uid in uids
+        }
+        locks = [b for b in locks if b.id not in dropped]
+    share = resolve_user_lock_share(start=project_root, stderr=io.StringIO())
+    share_chars = int(HOOK_PAYLOAD_CHAR_LIMIT * share)
+    kept, _past = fit_user_lock_share(
+        [(b.id, user_lock_render_chars(b)) for b in locks], share_chars,
+    )
+    return UserLockShareReport(
+        known=True, user_store=user_path, user_store_present=True,
+        total=len(locks), fit=len(kept), share=share, share_chars=share_chars,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Dangling-edge check (#1375)
 # ---------------------------------------------------------------------------
 
@@ -813,6 +942,10 @@ class DoctorReport:
     # paths; None means no store path was supplied. Informational: it
     # never changes the exit code.
     user_lock_duplicates: UserLockDuplicateReport | None = None
+    # #1944: user locks past their share of a hook fire. Rendered on both
+    # `format_report` paths only when some are; None means the check did
+    # not run. A warning only: it never changes the exit code.
+    user_lock_share: UserLockShareReport | None = None
     # #1652: `$HOME/.aelfrice.toml` when it exists and the project has no
     # config of its own, so its settings silently do not apply (#1582).
     # A warning only: it never changes the exit code.
@@ -960,6 +1093,16 @@ def diagnose(
             )
         except Exception as exc:  # noqa: BLE001 - fail-soft section
             report.user_lock_duplicates = UserLockDuplicateReport(
+                known=False,
+                unknown_reason=f"the check failed: {type(exc).__name__}",
+            )
+        # #1944: read-only like the check above, and fail-soft.
+        try:
+            report.user_lock_share = diagnose_user_lock_share(
+                store_path, user_store_path, project_root=project_root,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail-soft section
+            report.user_lock_share = UserLockShareReport(
                 known=False,
                 unknown_reason=f"the check failed: {type(exc).__name__}",
             )
@@ -1790,6 +1933,8 @@ def format_report(report: DoctorReport) -> str:
         _format_lock_gaps_section(report, lines)
         # #1681: store-derived, independent of settings.json.
         _format_user_lock_duplicates_section(report, lines)
+        # #1944: store-derived, independent of settings.json.
+        _format_user_lock_share_section(report, lines)
         # #1652: config-derived, independent of settings.json.
         _format_ignored_home_config_section(report, lines)
         return "\n".join(lines)
@@ -1864,6 +2009,7 @@ def format_report(report: DoctorReport) -> str:
     _format_memory_block_section(report, lines)
     _format_lock_gaps_section(report, lines)
     _format_user_lock_duplicates_section(report, lines)
+    _format_user_lock_share_section(report, lines)
     _format_ignored_home_config_section(report, lines)
     _format_mirror_consent_section(report, lines)
     return "\n".join(lines)
@@ -2522,6 +2668,36 @@ def _format_user_lock_duplicates_section(
         lines.append(f"  - {rid}: {content}")
         lines.append(f"      user lock: {', '.join(uids)}")
         lines.append(f"      fix: aelf unlock {rid}")
+
+
+def _format_user_lock_share_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Warn when the user store holds more locks than its share shows (#1944).
+
+    Silent otherwise, and when the check couldn't tell: the duplicate
+    block above already reports an unreadable user store.
+    """
+    st = report.user_lock_share
+    if st is None or not st.known or st.fit >= st.total:
+        return
+    lines.append("")
+    lines.append(
+        f"warning: the user lock store ({st.user_store}) holds {st.total} "
+        f"locks, and about {st.fit} fit the user-lock share "
+        f"({st.share:g} of the hook output limit, {st.share_chars} "
+        "characters)."
+    )
+    lines.append(
+        f"  On a prompt with retrieval hits, the other {st.total - st.fit} "
+        "are shown only in room the hits leave, and the block's last line "
+        "names the ones it can't show."
+    )
+    lines.append(
+        "  fix: unlock user locks you no longer need with "
+        "`aelf unlock --user <id>`, or raise `[retrieval] user_lock_share` "
+        "in .aelfrice.toml."
+    )
 
 
 def _format_dangling_edges_section(

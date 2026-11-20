@@ -121,7 +121,7 @@ from aelfrice.scoring import (
     zeta_posterior_score,
 )
 from aelfrice.store import MemoryStore
-from aelfrice.user_locks import is_user_scope_lock, merge_lock_sets
+from aelfrice.user_locks import is_user_scope_lock, l0_charge, merge_lock_sets
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # #1351: these modules pull numpy/scipy, so they are imported inside the
@@ -2796,11 +2796,13 @@ def _route_structural_query(
         if include_locked else []
     )
     locked_ids: set[str] = {b.id for b in locked}
-    locked_used: int = sum(
-        lock_injection_tokens(
+    # #1944: user locks are charged up to their share of the budget.
+    locked_used: int = l0_charge(
+        locked,
+        lambda b: lock_injection_tokens(
             b, manifest_reference_locks=manifest_reference_locks
-        )
-        for b in locked
+        ),
+        budget,
     )
     relevance_budget: int = max(
         int(budget * RELEVANCE_BUDGET_FLOOR_FRACTION),
@@ -4247,8 +4249,9 @@ def retrieve(
     locks the caller has already read, or `()` for repository locks
     only, which a benchmark over a fixed corpus does. They are merged by
     `user_locks.merge_lock_sets`: repository locks first, then each user
-    lock that doesn't near-duplicate one, and they count against the
-    same budget and relevance floor as the repository's locks.
+    lock that doesn't near-duplicate one. They count against the same
+    budget and relevance floor as the repository's locks, up to
+    `user_locks.resolve_user_lock_share()` of the budget (#1944).
     """
     from aelfrice.user_locks import read_user_locks  # noqa: PLC0415
 
@@ -4560,13 +4563,18 @@ def retrieve_with_tiers(
     # `belief_cost_fn` covers the locks too: a lane that renders its own
     # line shape renders locks in that shape as well, so charging them the
     # `<belief …>` shape reserves budget against bytes it never emits.
-    locked_used: int = sum(
-        belief_cost_fn(b)
-        if belief_cost_fn is not None
-        else lock_injection_tokens(
-            b, manifest_reference_locks=manifest_reference_locks
-        )
-        for b in locked
+    # #1944: user locks are charged up to their share of the budget, so a
+    # large user store leaves the hits more than the relevance floor.
+    locked_used: int = l0_charge(
+        locked,
+        lambda b: (
+            belief_cost_fn(b)
+            if belief_cost_fn is not None
+            else lock_injection_tokens(
+                b, manifest_reference_locks=manifest_reference_locks
+            )
+        ),
+        effective_budget,
     )
     # #379 locks are uncapped + never trimmed; reserve a relevance floor so
     # they can't starve L2.5/L1 to zero. No-op (byte-identical) unless locks
