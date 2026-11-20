@@ -5,7 +5,7 @@ The weekly job ran mutmut over the whole tree in one job and never got past
 mutant generation: every run hit the job's 240-minute limit while mutmut was
 still generating, so no mutant was ever executed. Two costs did it.
 
-* **One file.** mutmut 3.8.0 writes every mutant of a function as a full copy
+* **One file.** mutmut 3.8.1 writes every mutant of a function as a full copy
   of that function, then parses the result. `cli.py` produced 17k mutants in
   a 650 MB file, and parsing it had not finished after 23 CPU-minutes. A third
   of those mutants came from `build_parser`, which is argparse help text.
@@ -140,7 +140,7 @@ def count_mutants(path: str, source: str) -> dict[str, int]:
     """Mutants mutmut generates for each unit of `source`, in source order.
 
     Groups `create_mutations` output by top-level function exactly as
-    `combine_mutations_to_source` does in mutmut 3.8.0: a module-level
+    `combine_mutations_to_source` does in mutmut 3.8.1: a module-level
     function, or a method of a module-level class with an indented body.
     A unit with no mutants maps to 0.
     """
@@ -273,7 +273,7 @@ def assign(pieces: Sequence[Piece], shards: int) -> list[Shard]:
 def do_not_mutate(root: Path) -> list[str]:
     """`[tool.mutmut] do_not_mutate` from `root`'s `pyproject.toml`.
 
-    mutmut 3.8.0 matches each pattern with `fnmatch` against the file's
+    mutmut 3.8.1 matches each pattern with `fnmatch` against the file's
     path relative to the root, and generates nothing for a match, so the
     plan leaves those files out the same way. Function-name patterns
     (`do_not_mutate_patterns`) aren't modelled, so the plan refuses them
@@ -593,7 +593,7 @@ DEFAULT_GRACE_MINUTES: Final[float] = 2.0
 class MetaSnapshots:
     """The last copy of each mutmut `.meta` file that parsed.
 
-    mutmut 3.8.0 saves a source file's results by rewriting its `.meta`
+    mutmut 3.8.1 saves a source file's results by rewriting its `.meta`
     file in place (`SourceFileMutationData.save`), after every mutant. A
     signal that lands mid-write leaves the file truncated, and `mutmut
     results` then fails on it. The time box has to signal mutmut, so it

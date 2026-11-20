@@ -226,7 +226,7 @@ class Box:
 
 
 def test_a_method_mutmut_skips_by_name_is_reported_not_mutated(ms: Any) -> None:
-    """mutmut 3.8.0 never mutates these three, so no mutant name exists."""
+    """mutmut 3.8.1 never mutates these three, so no mutant name exists."""
     after = (
         _DUNDER.replace("value + 1", "value + 2")
         .replace("return super().__new__(cls)", "return object.__new__(cls)")
@@ -817,7 +817,7 @@ def test_the_per_pr_job_pins_mutmut_exactly() -> None:
         if "pip install" in line and "mutmut" in line
         and not line.lstrip().startswith("#")
     ]
-    assert installs == ["run: uv pip install 'mutmut==3.8.0'"]
+    assert installs == ["run: uv pip install 'mutmut==3.8.1'"]
 
 
 def test_the_workflow_runs_the_writer_where_ci_is_set() -> None:

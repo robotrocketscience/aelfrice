@@ -18,7 +18,7 @@ import subprocess
 import sys
 import threading
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -1025,16 +1025,23 @@ def _create_without_system(*, model: str, max_tokens: int, messages: Any) -> Any
     raise AssertionError("the bind check refuses the call first")
 
 
+# Factories, not instances: a parametrize value lives as long as the module,
+# so an instance's close count carries into any later session in the same
+# process. mutmut runs its stats pass and its clean run that way, and the
+# clean run then saw 2 closes (#1938).
 @pytest.mark.parametrize(
-    ("sdk", "field"),
+    ("make_sdk", "field"),
     [
-        (_FailingBuildSdk(TypeError("no such keyword")), "sdk_mismatch_error"),
-        (_FailingBuildSdk(ValueError("bad proxy")), "warning"),
-        (_FailingBuildSdk(None, _create_without_system), "sdk_mismatch_error"),
+        (lambda: _FailingBuildSdk(TypeError("no such keyword")), "sdk_mismatch_error"),
+        (lambda: _FailingBuildSdk(ValueError("bad proxy")), "warning"),
+        (lambda: _FailingBuildSdk(None, _create_without_system), "sdk_mismatch_error"),
     ],
     ids=["constructor-type-error", "constructor-config-error", "bind-mismatch"],
 )
-def test_the_http_client_is_closed_when_the_build_fails(sdk: _FailingBuildSdk, field: str) -> None:
+def test_the_http_client_is_closed_when_the_build_fails(
+    make_sdk: Callable[[], _FailingBuildSdk], field: str,
+) -> None:
+    sdk = make_sdk()
     candidates = [llm.CandidateInput(index=0, text="a sentence", source="doc:a.md:p1")]
 
     result = llm.classify_batch(candidates, api_key=_KEY, sdk_module=sdk)
