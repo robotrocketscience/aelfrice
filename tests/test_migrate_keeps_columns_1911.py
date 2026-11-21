@@ -713,13 +713,17 @@ def test_an_unknown_retention_class_or_lock_tier_is_normalized_and_counted(
     """A newer retention class or lock tier does not stop the migrate.
 
     The target gets `unknown` and the default tier for those values, as
-    before #1911, and the later beliefs and edges still copy.
+    before #1911, and the later beliefs and edges still copy. A lock tier
+    counts only on a locked belief, where it takes effect.
     """
     src, dst = tmp_path / "src.db", tmp_path / "dst.db"
     s = MemoryStore(str(src))
     try:
-        for bid in ("b1", "b2", "b3"):
+        for bid in ("b1", "b2", "b4"):
             s.insert_belief(_belief(bid))
+        s.insert_belief(_belief(
+            "b3", lock_level=LOCK_USER, locked_at="2026-01-01T00:00:00+00:00",
+        ))
         s.insert_edge(Edge(src="b1", dst="b3", type=EDGE_SUPPORTS, weight=0.5))
     finally:
         s.close()
@@ -729,7 +733,9 @@ def test_an_unknown_retention_class_or_lock_tier_is_normalized_and_counted(
         conn.execute(
             "UPDATE beliefs SET retention_class = 'archival' WHERE id = 'b2'",
         )
-        conn.execute("UPDATE beliefs SET lock_tier = 'pinned' WHERE id = 'b3'")
+        conn.execute(
+            "UPDATE beliefs SET lock_tier = 'pinned' WHERE id IN ('b3', 'b4')",
+        )
         conn.commit()
     finally:
         conn.close()
@@ -745,14 +751,15 @@ def test_an_unknown_retention_class_or_lock_tier_is_normalized_and_counted(
         b2 = conn.execute(
             "SELECT retention_class FROM beliefs WHERE id = 'b2'",
         ).fetchone()[0]
-        b3 = conn.execute(
-            "SELECT lock_tier FROM beliefs WHERE id = 'b3'",
-        ).fetchone()[0]
+        tiers = conn.execute(
+            "SELECT lock_tier FROM beliefs WHERE id IN ('b3', 'b4') ORDER BY id",
+        ).fetchall()
     finally:
         conn.close()
-    assert ids == ["b1", "b2", "b3"]
+    assert ids == ["b1", "b2", "b3", "b4"]
     assert edges == [("b1", "b3")]
-    assert (b2, b3) == (RETENTION_UNKNOWN, DEFAULT_LOCK_TIER)
+    assert b2 == RETENTION_UNKNOWN
+    assert tiers == [(DEFAULT_LOCK_TIER,), (DEFAULT_LOCK_TIER,)]
     assert report.counts.normalized_unknown_values == 2
     out = io.StringIO()
     _print_migrate_report(report, out=out)

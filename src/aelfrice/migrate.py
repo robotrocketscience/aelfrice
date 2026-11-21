@@ -81,9 +81,11 @@ class MigrateCounts:
     # know is skipped and counted, and the rest of the migrate goes on.
     copied_corroborations: int = 0
     skipped_unknown_corroborations: int = 0
-    # #1911: retention_class and lock_tier values of the inserted beliefs
-    # that this version does not know. Each one is written as `unknown` or
-    # the default lock tier, as before #1911, so the belief still copies.
+    # #1911: retention_class values of the inserted beliefs, and lock_tier
+    # values of the inserted locked beliefs, that this version does not
+    # know. Each one is written as `unknown` or the default lock tier, as
+    # before #1911, so the belief still copies. An unlocked belief gets
+    # the default tier too, but it is not counted.
     normalized_unknown_values: int = 0
 
 
@@ -182,7 +184,10 @@ def _read_legacy_beliefs(
             n += 1
         if fields.get("lock_tier", DEFAULT_LOCK_TIER) not in LOCK_TIERS:
             fields["lock_tier"] = DEFAULT_LOCK_TIER
-            n += 1
+            # A tier takes effect only on a locked belief, so only there
+            # does the replaced value change anything.
+            if lock_level == LOCK_USER:
+                n += 1
         if n:
             normalized[row["id"]] = n
         out.append(Belief(**fields))
