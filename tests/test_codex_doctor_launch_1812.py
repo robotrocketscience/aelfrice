@@ -1161,34 +1161,44 @@ def test_doctor_prints_a_codex_home_that_is_not_utf8_on_a_strict_stream(
 def test_setup_and_unsetup_print_paths_that_are_not_utf8_on_strict_streams(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Setup and unsetup print each path through the escape doctor uses,
-    on stdout and stderr. The skills folder and the second hooks.json need
-    not exist, so this runs where a name must be UTF-8, such as macOS APFS,
-    where setup's skills install fails and prints the path to stderr."""
+    """Setup prints its refusal on stderr, and unsetup its lines on
+    stdout, with each path through the escape doctor uses. The skills
+    folder sits under a regular file, so no file system can create it:
+    setup refuses before it writes, and unsetup finds no skills, whether
+    or not the file system stores a name that isn't UTF-8."""
     raw = os.fsencode(str(tmp_path))
-    skills = Path(os.fsdecode(raw + b"/s\xff"))
+    (tmp_path / "f").write_text("", encoding="utf-8")
+    skills = Path(os.fsdecode(raw + b"/f/s\xff"))
     missing = Path(os.fsdecode(raw + b"/c\xff/hooks.json"))
     hooks = tmp_path / "codex" / "hooks.json"
     hooks.parent.mkdir()
     args = argparse.Namespace(
         host="codex", force=False, status_message=None, codex_skills=True,
     )
-    streams: dict[str, tuple[io.TextIOWrapper, io.TextIOWrapper]] = {}
+    streams: dict[str, tuple[int, io.TextIOWrapper, io.TextIOWrapper]] = {}
     for verb, call, path in (
         ("setup", _cmd_setup_codex, hooks),
         ("unsetup", _cmd_unsetup_codex, missing),
     ):
         out, err = _strict_utf8(), _strict_utf8()
         monkeypatch.setattr(sys, "stderr", err)
-        call(args, out, hooks_path=path, skills_dest=skills)
-        streams[verb] = (out, err)
-    setup = _written(streams["setup"][0]) + _written(streams["setup"][1])
-    assert f"{tmp_path}/s\\udcff" in setup, setup
-    unsetup = _written(streams["unsetup"][0])
-    assert unsetup == (
+        rc = call(args, out, hooks_path=path, skills_dest=skills)
+        streams[verb] = (rc, out, err)
+    rc, out, err = streams["setup"]
+    assert (rc, _written(out), _written(err)) == (
+        1, "",
+        f"setup --host codex: {tmp_path}/f isn't a folder, so setup can't "
+        f"create {tmp_path}/f/s\\udcff; nothing was written. Fix or move "
+        "it, and run setup again\n",
+    )
+    assert not hooks.exists()
+    rc, out, err = streams["unsetup"]
+    assert (rc, _written(out), _written(err)) == (
+        0,
         f"no aelfrice entries in {tmp_path}/c\\udcff/hooks.json\n"
-        f"no aelfrice Codex skills in {tmp_path}/s\\udcff\n"
-    ), unsetup + _written(streams["unsetup"][1])
+        f"no aelfrice Codex skills in {tmp_path}/f/s\\udcff\n",
+        "",
+    )
 
 
 @pytest.mark.timeout(60)
