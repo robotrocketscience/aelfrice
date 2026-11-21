@@ -2166,15 +2166,6 @@ def _open_lock_store(user_scope: bool) -> MemoryStore | None:
 _OTHER_SCOPE_IDS_SHOWN: Final[int] = 3
 
 
-def _statement_key(text: str) -> str:
-    """What two locks share when they are one statement: the text, spaces collapsed.
-
-    A lock that corroborated an ingested belief keeps that belief's id,
-    so one statement locked in both scopes can have two ids (#1947).
-    """
-    return " ".join(text.split())
-
-
 def _join_serial(items: Sequence[str]) -> str:
     """`a`, `a and b`, or `a, b, and c`."""
     if len(items) <= 2:
@@ -3150,19 +3141,21 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
     scoped: list[tuple[str, Belief]] = [("repo", b) for b in locked]
     user_locked = _list_user_locks()
     scoped += [("user", b) for b in user_locked]
-    # #1947: one statement locked in both scopes, by id or by its text (a
-    # lock that corroborated an ingested belief keeps that belief's id).
-    # This repository injects the repository copy, so unlocking either
-    # copy alone leaves the statement locked. Exact text only, so this is
-    # one dict lookup per lock; `aelf doctor` lists near-duplicates.
+    # #1947: one statement locked in both scopes, by id or by identical
+    # text (a lock that corroborated an ingested belief keeps that belief's
+    # id). The L0 merge drops both kinds of user copy, so this repository
+    # injects the repository copy and unlocking either copy alone leaves
+    # the statement locked. Identical text is one dict lookup per lock;
+    # the merge's near-duplicate test over every pair is left to
+    # `aelf doctor`, which lists those.
     user_ids = {u.id for u in user_locked}
-    user_by_key: dict[str, list[str]] = {}
+    user_by_text: dict[str, list[str]] = {}
     for u in user_locked:
-        user_by_key.setdefault(_statement_key(u.content), []).append(u.id)
+        user_by_text.setdefault(u.content, []).append(u.id)
     both_pairs: list[tuple[str, str]] = []
     for r in locked:
-        same = ([r.id] if r.id in user_ids else []) + user_by_key.get(
-            _statement_key(r.content), [],
+        same = ([r.id] if r.id in user_ids else []) + user_by_text.get(
+            r.content, [],
         )
         both_pairs += [(r.id, uid) for uid in dict.fromkeys(same)]
     in_both = {("repo", rid) for rid, _ in both_pairs} | {
@@ -4457,24 +4450,34 @@ def _cmd_validate(args: argparse.Namespace, out: object) -> int:
 def _other_scope_lock_ids(
     belief_id: str, content: str | None, *, other_is_user: bool,
 ) -> list[str]:
-    """Ids of the other scope's locks that are `belief_id`'s statement (#1947).
+    """Ids of the other scope's locks that the L0 merge pairs with `belief_id` (#1947).
 
-    Matched by id and, when `content` is known, by the statement text. []
-    when the other store is absent or can't be read: the answer only
-    feeds advice, so a broken store never turns an unlock into a failure.
+    Matched by id and, when `content` is known, by the merge's
+    near-duplicate test in its direction: a user lock's text against the
+    repository locks. [] when the other store is absent or can't be read:
+    the answer only feeds advice, so a broken store never turns an unlock
+    into a failure.
     """
     import sqlite3
+
+    from aelfrice.dedup import near_duplicate_locks_among
 
     try:
         pairs = _other_scope_lock_pairs(other_is_user)
     except (sqlite3.Error, OSError):
         return []
-    key = _statement_key(content) if content is not None else None
-    return [
-        oid for oid, ocontent in pairs
-        if oid == belief_id
-        or (key is not None and _statement_key(ocontent) == key)
-    ]
+    if content is None:
+        return [oid for oid, _ in pairs if oid == belief_id]
+    if other_is_user:
+        mine = [(belief_id, content)]
+        return [
+            oid for oid, ocontent in pairs
+            if oid == belief_id or near_duplicate_locks_among(mine, ocontent)
+        ]
+    dup_ids = {
+        d.belief_a_id for d in near_duplicate_locks_among(pairs, content)
+    }
+    return [oid for oid, _ in pairs if oid == belief_id or oid in dup_ids]
 
 
 def _other_scope_unlock_hint(
