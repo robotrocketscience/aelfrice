@@ -375,7 +375,7 @@ def test_linear_cut_equals_the_regex_cut_on_the_agreement_inputs(text: str) -> N
     "<\u017ftatus>\n<status>\n</status>\nafter",
     "<status>\n<\u017ftatus>\nx\n</\u017ftatus>\n</status>\nafter",
     "<task-notificat\u0131on>\nx\n</task-notification>\n<task-notification>\ny\n"
-    "</task-notification>\nafter",
+    + "</task-notification>\nafter",
     "<tas\u212a-id>\nx\n</task-id>\nafter",
     "<\u017fystem-reminder>\nx\n</system-reminder>\nafter",
 ])
