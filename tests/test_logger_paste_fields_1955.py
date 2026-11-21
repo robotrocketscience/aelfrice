@@ -350,6 +350,9 @@ _CUT_PIECES = [
     "<tas\u212a-id>", "</tas\u212a-id>", "</TASK-ID>", "<\u017fystem-reminder>",
     "</\u017fystem-reminder>", "<task-notificat\u0131on>", "</task-notificat\u0131on>",
     "</TASK-NOTIFICATION>", "<task-notificat\u0130on>", "</task-notificat\u0130on>",
+    # A long s as the last character: names that differ only there.
+    "<statuſ>", "</statuſ>", "<command-argſ>", "</command-argſ>",
+    "<command-args>", "</command-args>",
 ]
 
 
