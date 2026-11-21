@@ -91,7 +91,7 @@ Before v4.2.0, this command hardcoded its gate to open and never read the sentin
 
 **Telemetry remains zero.** aelfrice sends no report about its own LLM usage. It prints the tokens consumed on stdout for you to read, and never writes them to a network endpoint or a logging service. On the direct-API path, `aelf onboard --llm-classify` makes one or more requests to `https://api.anthropic.com/`, and nothing else. On the host-driven path, the aelfrice CLI makes zero direct outbound calls, because the host LLM handles its own network I/O under its own credentials.
 
-**The shipped aelfrice package has seven outbound-capable paths. Three of these paths are on by default.** This page counts paths, not calls, because either LLM path can issue several batched requests in one run.
+**The shipped aelfrice package has seven outbound-capable paths. Three of these paths run by default, with no extra, API key, or consent.** `aelf onboard` is on by default too, but it calls out only when all three are in place. This page counts paths, not calls, because either LLM path can issue several batched requests in one run.
 
 | Path | Default | Transmits |
 |---|---|---|
