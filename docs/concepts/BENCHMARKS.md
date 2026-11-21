@@ -42,11 +42,17 @@ see [`benchmarks/README.md`](../../benchmarks/README.md).
 > - origin tie-break ([#1089](https://github.com/robotrocketscience/aelfrice/issues/1089)), refuted on LoCoMo ([#1013](https://github.com/robotrocketscience/aelfrice/issues/1013))
 > - HRR-expand ([#981](https://github.com/robotrocketscience/aelfrice/issues/981)), measured recall-neutral ([#1001](https://github.com/robotrocketscience/aelfrice/issues/1001))
 > - breadth-first search (BFS), which stays off unless `AELFRICE_BFS` or
->   `[retrieval] bfs_enabled` turns it on. The academic adapters pass
->   `use_bfs=True`, so their numbers include BFS and don't describe a default
->   install. With BFS on, the expansion gate still skips it on a broad prompt:
->   one longer than 80 words, one that starts with a question word such as
->   "what", or one with no issue reference, file path, identifier, or edge-type name.
+>   `[retrieval] bfs_enabled` turns it on. The academic adapters request it
+>   with `use_bfs=True`, and `AELFRICE_BFS=0` overrides that request. A
+>   requested BFS still runs only when the expansion gate lets it: the query
+>   has 80 words or fewer, doesn't start with a question word such as "what",
+>   "how", or "tell me", and has a structural marker. A marker is an issue
+>   reference such as `#123`, a file path under `src/`, `tests/`, `docs/`,
+>   `benchmarks/`, or `scripts/`, a snake_case or camelCase identifier, or an
+>   edge-type name. A question in plain words has no marker, so the gate skips
+>   BFS on it. To run BFS past the gate, set
+>   `AELFRICE_FORCE_EXPANSION=1` or `AELFRICE_NO_EXPANSION_GATE=1`, or set
+>   `[retrieval] expansion_gate_enabled = false`.
 >
 > The numbers for origin tie-break and HRR-expand are ablation-only.
 >
