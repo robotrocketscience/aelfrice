@@ -37,5 +37,9 @@ tests.test_real_store_fire_census_runner::test_guard_sees_through_a_firmlink
 # macOS-only (#1887): needs the macOS /dev/fd reopen behavior verified for sqlite, so both Linux legs skip it.
 tests.test_real_store_fire_census_runner::test_open_ro_reads_the_file_it_checked_even_if_the_path_is_swapped
 
+# mutmut-only (#1938): they skip without mutmut, which the pytest legs don't install. The weekly plan job's contract step runs them with mutmut 3.8.1 and AELF_REQUIRE_MUTMUT=1, which turns the skip into a failure.
+tests.test_mutation_function_scope_1632::test_mutmut_generates_no_mutant_for_the_enum_hooks
+tests.test_mutation_harness_1938::test_the_pinned_mutmut_kills_a_mutant_under_this_pytest
+
 # Skips by design while CHANGELOG/unreleased and the [Unreleased] block are both empty, which every release cut leaves until the next entry lands.
 tests.test_collate_changelog::test_the_committed_v4_changelog_collates_without_loss
