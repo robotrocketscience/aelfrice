@@ -59,7 +59,11 @@ from aelfrice.config_discovery import (
     config_discovery_scope,
     discover_config,
 )
-from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT, lock_overflow_line
+from aelfrice.hook_payload import (
+    HOOK_PAYLOAD_CHAR_LIMIT,
+    lock_overflow_line,
+    payload_prompt_id,
+)
 # #1631: the escapers moved to the leaf `hook_payload`, so the search hook
 # and `provenance_render` can share them without importing this module.
 # `_escape_for_hook_block` is bound under its old name for the call sites
@@ -3780,7 +3784,12 @@ def user_prompt_submit(
                     ))
                     for h in emitted_hits
                 )
-                _injection_turn_id = _new_injection_event_turn_id()
+                # #1954: the host's prompt id when the payload carries a
+                # valid one, so these rows join the logger's turn line
+                # exactly; otherwise a fresh id, as before.
+                _injection_turn_id = (
+                    _extract_prompt_id(raw) or _new_injection_event_turn_id()
+                )
                 _record_injection_events(
                     session_id=session_id,
                     turn_id=_injection_turn_id,
@@ -4263,14 +4272,13 @@ def _maybe_phantom_promotion_block(
 
 
 def _new_injection_event_turn_id() -> str:
-    """Generate a turn id for an injection_events batch.
+    """Generate a turn id for an injection_events batch with no prompt id.
 
-    Same shape as ``transcript_logger._new_turn_id`` so the sort
-    semantics (lexicographic = chronological because of the
-    ``%Y%m%dT%H%M%S%fZ`` prefix) work across the two writers, but
-    independent — the sweeper joins on ``session_id`` and temporal
-    order, not on string-equality of turn ids between transcript and
-    injection-event rows.
+    Used only when the payload carries no valid ``prompt_id``
+    (:func:`aelfrice.hook_payload.payload_prompt_id`, #1954). Same shape as
+    ``transcript_logger._new_turn_id``, but minted in a separate process,
+    so the two ids never match: a batch written with this id joins the
+    logged turn only by ``session_id`` and time.
     """
     return (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -4528,10 +4536,13 @@ def _record_injection_events(
     """Append one ``injection_events`` row per injected belief.
 
     Fires from the UPS hook after retrieval has decided which beliefs
-    will appear in the rendered ``<aelfrice-memory>`` block. The
-    sweeper at the *next* UPS turn (#779 Layer 3) reads these rows,
-    scores ``referenced`` against the assistant transcript, and pushes
-    one update per active consumer into the meta-belief substrate.
+    will appear in the rendered ``<aelfrice-memory>`` block. Every row
+    of the batch shares ``turn_id``, which is the host's ``prompt_id``
+    when the payload carries a valid one, so the rows join the
+    transcript logger's lines for the same turn (#1954). The sweeper
+    that scored ``referenced`` was removed (#1655), so the column stays
+    NULL; ``MemoryStore.exploration_pool`` reads the rows only to tell
+    whether a belief has been shown.
 
     Fail-soft: any path-resolution, store-open, or insert failure
     prints one line to stderr and never propagates. injection_events
@@ -4676,6 +4687,24 @@ def _extract_session_id(raw: str) -> str | None:
     if isinstance(sid, str) and sid:
         return sid
     return None
+
+
+def _extract_prompt_id(raw: str) -> str | None:
+    """The payload's valid ``prompt_id``, or None (#1954).
+
+    Validation is :func:`aelfrice.hook_payload.payload_prompt_id`, shared
+    with the transcript logger so both writers accept the same values.
+    Returns None on any parse failure; never raises.
+    """
+    if not raw.strip():
+        return None
+    try:
+        payload = json.loads(raw)  # pyright: ignore[reportAny]
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload_prompt_id(cast(dict[str, object], payload))
 
 
 def _extract_prompt(raw: str) -> str | None:

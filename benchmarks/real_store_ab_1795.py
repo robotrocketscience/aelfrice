@@ -1183,10 +1183,15 @@ def write_packet(packet: Sequence[Mapping[str, Any]], key: Sequence[Mapping[str,
 
 
 def _find_turn(turns: Sequence[Turn], prompt: Mapping[str, Any]) -> int | None:
-    """Index of the prompt's turn: by turn id, else by session, timestamp, and text."""
+    """Index of the prompt's user turn: by turn id, else by session, timestamp, and text.
+
+    The role check matters since #1954: a turn's assistant line can carry its
+    prompt's turn id too.
+    """
     tid = prompt.get("turn_id")
     for i, t in enumerate(turns):
-        if tid is not None and t.turn_id == tid and t.session_id == prompt.get("session_id"):
+        if (tid is not None and t.role == "user" and t.turn_id == tid
+                and t.session_id == prompt.get("session_id")):
             return i
     for i, t in enumerate(turns):
         if (t.role == "user" and t.session_id == prompt.get("session_id")
