@@ -610,6 +610,57 @@ def test_a_plain_command_leaves_the_user_store_unchanged(
     assert _user_store_state(user) == before
 
 
+def test_plain_restore_of_a_user_only_id_points_at_user(
+    stores: tuple[Path, Path],
+) -> None:
+    _lock(OTHER)
+    bid = _lock(SECRET, "--user")
+    assert _run(["retire", "--user", bid, "--force"])[0] == 0
+    rc, _out, err = _run(["restore", bid])
+    assert rc == 1
+    assert f"`aelf restore --user {bid}`" in err
+
+
+def test_plain_restore_of_an_active_id_gives_no_hint(
+    stores: tuple[Path, Path],
+) -> None:
+    """An id this store holds is not restorable here for another reason."""
+    bid = _lock(SECRET)
+    _lock(SECRET, "--user")
+    _rc, _out, err = _run(["restore", bid])
+    assert "--user" not in err
+
+
+@pytest.mark.parametrize("verb", ["delete", "retire", "restore"])
+def test_a_user_command_on_a_repository_only_id_names_the_plain_form(
+    stores: tuple[Path, Path], verb: str,
+) -> None:
+    _lock(OTHER, "--user")
+    bid = _lock(SECRET)
+    if verb == "restore":
+        assert _run(["retire", bid, "--force"])[0] == 0
+    argv = [verb, "--user", bid]
+    argv += {"delete": ["--force", "--yes"], "retire": ["--force"]}.get(verb, [])
+    rc, _out, err = _run(argv)
+    assert rc == 1
+    assert f"is in this repository's store; run `aelf {verb} {bid}`." in err
+
+
+@pytest.mark.parametrize("verb", ["delete", "retire", "restore"])
+def test_the_plain_form_hint_never_creates_the_repository_store(
+    stores: tuple[Path, Path], verb: str,
+) -> None:
+    repo, _user = stores
+    _lock(OTHER, "--user")
+    assert not repo.exists()
+    argv = [verb, "--user", "0123456789abcdef"]
+    argv += {"delete": ["--force", "--yes"], "retire": ["--force"]}.get(verb, [])
+    rc, _out, err = _run(argv)
+    assert rc == 1
+    assert "repository's store" not in err
+    assert not repo.exists()
+
+
 def test_the_unlock_hint_skips_a_user_lock_past_its_expiry(
     stores: tuple[Path, Path],
 ) -> None:
