@@ -118,11 +118,26 @@ MUTATED_DECORATORS: Final[frozenset[str]] = frozenset(
 #: Function names mutmut never mutates, whatever their decorators or
 #: position. mutmut 3.8.1, `mutmut/mutation/file_mutation.py:37`
 #: (`NEVER_MUTATE_FUNCTION_NAMES`), checked by
-#: `MutationVisitor._skip_node_and_children` at line 319. mutmut 3.8.1 also
-#: skips `__init__` and `_generate_next_value_` in an Enum subclass
-#: (`NEVER_MUTATE_ENUM_FUNCTION_NAMES`), which this set doesn't model.
+#: `MutationVisitor._skip_node_and_children` at line 319.
 MUTMUT_SKIPPED_NAMES: Final[frozenset[str]] = frozenset(
     {"__getattribute__", "__setattr__", "__new__"},
+)
+
+#: Method names mutmut never mutates in an Enum class. mutmut 3.8.1,
+#: `mutmut/mutation/file_mutation.py:38`
+#: (`NEVER_MUTATE_ENUM_FUNCTION_NAMES`), checked by
+#: `MutationVisitor._skip_node_and_children` at line 306.
+MUTMUT_ENUM_SKIPPED_NAMES: Final[frozenset[str]] = frozenset(
+    {"__init__", "_generate_next_value_"},
+)
+
+#: The base-class names that make mutmut read a class as an Enum. mutmut
+#: 3.8.1, `mutmut/mutation/file_mutation.py:39` (`ENUM_BASE_NAMES`), read
+#: by `_is_enum_class` at line 359. It matches a bare name or the last part
+#: of a dotted one, so `Enum` and `enum.Enum` both count, and a subclass of
+#: an Enum subclass does not.
+MUTMUT_ENUM_BASE_NAMES: Final[frozenset[str]] = frozenset(
+    {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"},
 )
 
 #: The summary's reason for each kind of unit mutmut skips.
@@ -229,13 +244,30 @@ class Unit:
         return f"x_{name}"
 
 
-def _skip_reason(node: _FunctionNode) -> str | None:
+def _is_enum_class(node: ast.ClassDef) -> bool:
+    """True when mutmut 3.8.1 reads `node` as an Enum class."""
+    for base in node.bases:
+        if isinstance(base, ast.Name):
+            name = base.id
+        elif isinstance(base, ast.Attribute):
+            name = base.attr
+        else:
+            continue
+        if name in MUTMUT_ENUM_BASE_NAMES:
+            return True
+    return False
+
+
+def _skip_reason(node: _FunctionNode, *, in_enum: bool = False) -> str | None:
     """Why mutmut never mutates `node`, or None when it does.
 
     mutmut skips a function by name before it looks at decorators, and
-    never mutates a decorated function, with one exception.
+    never mutates a decorated function, with one exception. `in_enum` is
+    True for a method of a class `_is_enum_class` accepts.
     """
     if node.name in MUTMUT_SKIPPED_NAMES:
+        return SKIP_NAMED
+    if in_enum and node.name in MUTMUT_ENUM_SKIPPED_NAMES:
         return SKIP_NAMED
     decorators = node.decorator_list
     if not decorators:
@@ -247,11 +279,14 @@ def _skip_reason(node: _FunctionNode) -> str | None:
     return SKIP_DECORATED
 
 
-def _unit(node: _FunctionNode, qualname: str) -> Unit:
+def _unit(
+    node: _FunctionNode, qualname: str, *, in_enum: bool = False,
+) -> Unit:
     first = min([node.lineno, *(d.lineno for d in node.decorator_list)])
     end = node.end_lineno
     assert end is not None, "ast.parse always sets end_lineno"
-    return Unit(qualname, first, end, _skip_reason(node), node)
+    reason = _skip_reason(node, in_enum=in_enum)
+    return Unit(qualname, first, end, reason, node)
 
 
 def mutation_units(tree: ast.Module) -> list[Unit]:
@@ -266,9 +301,12 @@ def mutation_units(tree: ast.Module) -> list[Unit]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             units.append(_unit(node, node.name))
         elif isinstance(node, ast.ClassDef):
+            in_enum = _is_enum_class(node)
             for member in node.body:
                 if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    units.append(_unit(member, f"{node.name}.{member.name}"))
+                    units.append(_unit(
+                        member, f"{node.name}.{member.name}", in_enum=in_enum,
+                    ))
     return units
 
 
