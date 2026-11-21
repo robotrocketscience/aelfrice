@@ -2161,6 +2161,108 @@ def _open_lock_store(user_scope: bool) -> MemoryStore | None:
     return _open_user_store_or_report("lock") if user_scope else _open_store()
 
 
+#: How many ids a cross-scope message names before it counts the rest
+#: (#1947), as the same-store near-duplicate warning does.
+_OTHER_SCOPE_IDS_SHOWN: Final[int] = 3
+
+
+def _join_serial(items: Sequence[str]) -> str:
+    """`a`, `a and b`, or `a, b, and c`."""
+    if len(items) <= 2:
+        return " and ".join(items)
+    return ", ".join(items[:-1]) + ", and " + items[-1]
+
+
+def _capped_list(items: Sequence[str]) -> str:
+    """The first `_OTHER_SCOPE_IDS_SHOWN` items, then `(+N more)`."""
+    shown = _join_serial(items[:_OTHER_SCOPE_IDS_SHOWN])
+    rest = len(items) - _OTHER_SCOPE_IDS_SHOWN
+    return f"{shown} (+{rest} more)" if rest > 0 else shown
+
+
+def _other_scope_lock_pairs(other_is_user: bool) -> list[tuple[str, str]]:
+    """`(id, content)` of the unexpired locks in the other scope's store (#1947).
+
+    Read with a percent-encoded `mode=ro` URI
+    (`doctor._read_active_lock_pairs`), so the store is never created,
+    migrated, or swept. [] when the store is absent, or when the user
+    store is the repository store, which has one set of locks. Raises
+    `sqlite3.Error` or `OSError` when the store can't be read.
+    """
+    from aelfrice.db_paths import store_file_present
+    from aelfrice.doctor import _read_active_lock_pairs
+
+    if _user_store_is_repo_store():
+        return []
+    path = user_db_path() if other_is_user else db_path()
+    if str(path) == ":memory:" or not store_file_present(path):
+        return []
+    return _read_active_lock_pairs(
+        str(path), datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _warn_other_scope_copies(
+    lock_id: str, content: str, *, user_scope: bool, out: object,
+) -> None:
+    """Warn when the other scope holds this lock or a near-duplicate (#1947).
+
+    One statement locked in both scopes is injected once: the L0 merge
+    injects the repository copy in place of the user copy. Only the new
+    lock is checked, against each lock in the other scope: by id, and by
+    the merge's near-duplicate test in its direction, a user lock's text
+    against the repository locks. That test also matches the same text
+    under another id: identical text scores 1.0 on both signals. The
+    warning goes to `out`, names at most `_OTHER_SCOPE_IDS_SHOWN` ids,
+    and gives the commands that remove the other copies. A store that
+    can't be read gets one stderr line and never fails the lock.
+    """
+    import sqlite3
+
+    from aelfrice.dedup import near_duplicate_locks_among
+
+    label = "repository store" if user_scope else "user lock store"
+    try:
+        pairs = _other_scope_lock_pairs(other_is_user=not user_scope)
+    except (sqlite3.Error, OSError) as exc:
+        print(
+            f"aelf lock: could not check the other scope for a copy of this "
+            f"lock: the {label} could not be read: {exc}.",
+            file=sys.stderr,
+        )
+        return
+    if user_scope:
+        dup_ids = {
+            p.belief_a_id for p in near_duplicate_locks_among(pairs, content)
+        }
+        others = [rid for rid, _ in pairs if rid == lock_id or rid in dup_ids]
+        cmds = [f"`aelf unlock {rid}`" for rid in others]
+    else:
+        mine = [(lock_id, content)]
+        others = [
+            uid for uid, ucontent in pairs
+            if uid == lock_id or near_duplicate_locks_among(mine, ucontent)
+        ]
+        cmds = [f"`aelf unlock --user {uid}`" for uid in others]
+    if not others:
+        return
+    copy, them = ("that copy", "it") if len(others) == 1 else ("those copies", "them")
+    if user_scope:
+        msg = (
+            f"  warning: this repository also locks this statement "
+            f"({_capped_list(others)}) and injects {copy} in place of the "
+            f"user lock. To drop {them}, run {_capped_list(cmds)}."
+        )
+    else:
+        msg = (
+            f"  warning: the user store also locks this statement "
+            f"({_capped_list(others)}). This repository injects its own "
+            f"copy in place of {copy}. To drop {them}, run "
+            f"{_capped_list(cmds)}."
+        )
+    print(msg, file=out)  # type: ignore[arg-type]
+
+
 # `lock --promote-user` flags the copy can't honour (#1681): the copy
 # carries the repository lock's tier and window, and the user store has
 # no document anchors or categories.
@@ -2958,6 +3060,9 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 f"(#1016).",
                 file=out,
             )
+        _warn_other_scope_copies(
+            actual_id, verified.content, user_scope=user_scope, out=out,
+        )
 
         # #435 doc-linker manual anchor. Idempotent on (belief_id,
         # doc_uri); subsequent lock --doc with the same URI is a no-op
@@ -3034,7 +3139,28 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
     # in the store's own order (`locked_at` DESC, then id). The order is
     # fixed so two runs over the same stores print the same listing.
     scoped: list[tuple[str, Belief]] = [("repo", b) for b in locked]
-    scoped += [("user", b) for b in _list_user_locks()]
+    user_locked = _list_user_locks()
+    scoped += [("user", b) for b in user_locked]
+    # #1947: one statement locked in both scopes, by id or by identical
+    # text (a lock that corroborated an ingested belief keeps that belief's
+    # id). The L0 merge drops both kinds of user copy, so this repository
+    # injects the repository copy and unlocking either copy alone leaves
+    # the statement locked. Identical text is one dict lookup per lock;
+    # the merge's near-duplicate test over every pair is left to
+    # `aelf doctor`, which lists those.
+    user_ids = {u.id for u in user_locked}
+    user_by_text: dict[str, list[str]] = {}
+    for u in user_locked:
+        user_by_text.setdefault(u.content, []).append(u.id)
+    both_pairs: list[tuple[str, str]] = []
+    for r in locked:
+        same = ([r.id] if r.id in user_ids else []) + user_by_text.get(
+            r.content, [],
+        )
+        both_pairs += [(r.id, uid) for uid in dict.fromkeys(same)]
+    in_both = {("repo", rid) for rid, _ in both_pairs} | {
+        ("user", uid) for _, uid in both_pairs
+    }
     if getattr(args, "json", False):
         import json as _json
         rows = [
@@ -3045,6 +3171,7 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
                 "lock_tier": getattr(b, "lock_tier", "frozen"),
                 "locked_at": b.locked_at,
                 "lock_expires_at": getattr(b, "lock_expires_at", None),
+                "in_both_scopes": (scope, b.id) in in_both,
             }
             for scope, b in scoped
         ]
@@ -3074,7 +3201,21 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
         # #1681: a user lock is tagged; a repository lock prints as it
         # always has, so existing readers of this listing see no change.
         tag = " [user]" if scope == "user" else ""
+        if (scope, b.id) in in_both:
+            tag += " [also locked in the other scope]"
         print(f"{b.id}{tag}{marker} [{window}]: {b.content}", file=out)  # type: ignore[arg-type]
+    for rid, uid in both_pairs:
+        which = (
+            f"{rid} is locked in both scopes" if rid == uid
+            else f"the repository lock {rid} and the user lock {uid} are one "
+            f"statement"
+        )
+        print(
+            f"note: {which}, and this repository injects the repository "
+            f"copy. To drop the lock, run `aelf unlock {rid}` and "
+            f"`aelf unlock --user {uid}`.",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -4306,32 +4447,54 @@ def _cmd_validate(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
-def _user_lock_hint(belief_id: str) -> str | None:
-    """A pointer to `--user` when `belief_id` is locked in the user store.
+def _other_scope_lock_ids(
+    belief_id: str, content: str | None, *, other_is_user: bool,
+) -> list[str]:
+    """Ids of the other scope's locks that the L0 merge pairs with `belief_id` (#1947).
 
-    Never creates the user store. None when the store is absent, when
-    it is the repository store, when it cannot be read, or when it has
-    no such lock. The hint is advice, so a broken user store never
-    turns a repository unlock into a failure.
+    Matched by id and, when `content` is known, by the merge's
+    near-duplicate test in its direction: a user lock's text against the
+    repository locks. [] when the other store is absent or can't be read:
+    the answer only feeds advice, so a broken store never turns an unlock
+    into a failure.
     """
     import sqlite3
 
-    if _user_store_is_repo_store():
-        return None
+    from aelfrice.dedup import near_duplicate_locks_among
+
     try:
-        store = open_user_store_if_present()
-        if store is None:
-            return None
-        try:
-            b = store.get_belief(belief_id)
-        finally:
-            store.close()
-    except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable):
-        return None
-    if b is None or b.lock_level != LOCK_USER:
-        return None
+        pairs = _other_scope_lock_pairs(other_is_user)
+    except (sqlite3.Error, OSError):
+        return []
+    if content is None:
+        return [oid for oid, _ in pairs if oid == belief_id]
+    if other_is_user:
+        mine = [(belief_id, content)]
+        return [
+            oid for oid, ocontent in pairs
+            if oid == belief_id or near_duplicate_locks_among(mine, ocontent)
+        ]
+    dup_ids = {
+        d.belief_a_id for d in near_duplicate_locks_among(pairs, content)
+    }
+    return [oid for oid, _ in pairs if oid == belief_id or oid in dup_ids]
+
+
+def _other_scope_unlock_hint(
+    ids: Sequence[str], *, other_is_user: bool, unlocked: bool,
+) -> str:
+    """The stderr line `aelf unlock` prints when the other scope still locks it."""
+    flag = " --user" if other_is_user else ""
+    where = "user store" if other_is_user else "repository store"
+    shown = _capped_list(list(ids))
+    cmds = _capped_list([f"`aelf unlock{flag} {i}`" for i in ids])
+    if not unlocked:
+        return f"  the {where} locks this statement ({shown}); run {cmds}."
+    copy, them = ("that copy", "it") if len(ids) == 1 else ("those copies", "them")
+    now = " now" if other_is_user else ""
     return (
-        f"  {belief_id} is a user lock; run `aelf unlock --user {belief_id}`."
+        f"  the {where} still locks this statement ({shown}), and this "
+        f"repository{now} injects {copy}. To drop {them} too, run {cmds}."
     )
 
 
@@ -4367,28 +4530,68 @@ def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
                 f"nothing was unlocked.",
                 file=sys.stderr,
             )
+            repo_ids = _other_scope_lock_ids(
+                args.belief_id, None, other_is_user=False,
+            )
+            if repo_ids:
+                print(
+                    _other_scope_unlock_hint(
+                        repo_ids, other_is_user=False, unlocked=False,
+                    ),
+                    file=sys.stderr,
+                )
             return 1
         store = user_store
     else:
         store = _open_store()
     try:
+        bid: str = args.belief_id
+        user_scope = bool(getattr(args, "user_scope", False))
+        # #1947: the other scope may lock the same statement, under this id
+        # or, when one copy corroborated an ingested belief, another. Said
+        # on stderr, so stdout keeps its one line.
+        before = store.get_belief(bid)
+        content = before.content if before is not None else None
+        other_is_user = not user_scope
+
+        def other_ids() -> list[str]:
+            return _other_scope_lock_ids(
+                bid, content, other_is_user=other_is_user,
+            )
+
         try:
-            result = unlock(store, args.belief_id)
+            result = unlock(store, bid)
         except ValueError as e:
             print(str(e), file=sys.stderr)
-            if not getattr(args, "user_scope", False):
-                hint = _user_lock_hint(args.belief_id)
-                if hint is not None:
-                    print(hint, file=sys.stderr)
+            ids = other_ids()
+            if ids:
+                print(
+                    _other_scope_unlock_hint(
+                        ids, other_is_user=other_is_user, unlocked=False,
+                    ),
+                    file=sys.stderr,
+                )
             return 1
         if result.already_unlocked:
-            print(f"already unlocked: {args.belief_id}", file=out)  # type: ignore[arg-type]
-            if not getattr(args, "user_scope", False):
-                hint = _user_lock_hint(args.belief_id)
-                if hint is not None:
-                    print(hint, file=sys.stderr)
+            print(f"already unlocked: {bid}", file=out)  # type: ignore[arg-type]
+            ids = other_ids()
+            if ids:
+                print(
+                    _other_scope_unlock_hint(
+                        ids, other_is_user=other_is_user, unlocked=False,
+                    ),
+                    file=sys.stderr,
+                )
             return 0
-        print(f"unlocked: {args.belief_id}", file=out)  # type: ignore[arg-type]
+        print(f"unlocked: {bid}", file=out)  # type: ignore[arg-type]
+        ids = other_ids()
+        if ids:
+            print(
+                _other_scope_unlock_hint(
+                    ids, other_is_user=other_is_user, unlocked=True,
+                ),
+                file=sys.stderr,
+            )
     finally:
         store.close()
     return 0

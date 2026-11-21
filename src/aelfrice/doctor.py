@@ -197,8 +197,16 @@ def _read_active_lock_pairs(path: str, now: str) -> list[tuple[str, str]]:
     Without the sweep, a lock past its window is still `lock_level =
     'user'` on disk, so it is filtered here with the comparison the
     sweep makes, as `user_locks.read_user_locks` does.
+
+    This reader's URI comes from `store.read_only_uri`, which
+    percent-encodes the path: pasted in raw, a `#` or `?` in it would cut
+    the path short and drop `mode=ro`, creating an empty file at the
+    prefix (#1416, #1947). Other `mode=ro` connections in this module
+    still build the URI by hand.
     """
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    from aelfrice.store import read_only_uri
+
+    conn = sqlite3.connect(read_only_uri(path), uri=True)
     try:
         rows = conn.execute(_ACTIVE_LOCKS_SQL).fetchall()
     finally:
