@@ -169,9 +169,12 @@ Notes:
   Stop re-fire, one with `stop_hook_active` set after a Stop hook
   blocked, writes a further assistant line with the same `turn_id`,
   so one prompt can own several assistant lines. That a Stop carries
-  its prompt's id was observed in a live probe (7 of 7 turns). A Stop
-  with no new prompt, such as a scheduled continuation or a
-  background wake, may carry the previous prompt's id, so its line
+  its prompt's id was observed in a live probe (7 of 7 turns). The
+  host fires UserPromptSubmit on turns it starts itself, such as a
+  scheduled task or a background subagent's report
+  ([hooks reference](https://code.claude.com/docs/en/hooks#userpromptsubmit)),
+  so those turns have a prompt of their own. A Stop that follows no
+  UserPromptSubmit may carry the previous prompt's id, so its line
   would join that prompt (unverified). No reader in `src/aelfrice`
   parses `turn_id` from this file.
 - `context.git_*` is populated cheaply from `git rev-parse` and
