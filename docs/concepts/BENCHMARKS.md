@@ -52,13 +52,15 @@ see [`benchmarks/README.md`](../../benchmarks/README.md).
 >   `use_bfs=True`, and `aelf wonder QUERY` requests BFS unless you pass
 >   `--axes-depth 0`, so a default install runs BFS through that command. When
 >   these settings turn BFS on, it still runs only when the expansion gate
->   lets it: the query has 80 words or fewer, doesn't start with a question
->   word such as "what", "how", or "tell me", and has a structural marker. A
->   marker is an issue reference such as `#123`, a file path under `src/`,
->   `tests/`, `docs/`, `benchmarks/`, or `scripts/`, a snake_case or camelCase
->   identifier, or an edge-type name. A question in plain words has no marker,
->   so the gate skips BFS on it. To run BFS past the gate, set
->   `AELFRICE_FORCE_EXPANSION=1` or `AELFRICE_NO_EXPANSION_GATE=1`, or set
+>   lets it: the query has 80 or fewer whitespace-separated tokens, doesn't
+>   start with a question word such as "what", "how", or "tell me", and has a
+>   structural marker. The count splits on whitespace only, so `a - b` is
+>   three tokens and `one/two/three` is one. A marker is an issue reference
+>   such as `#123`, a file path under `src/`, `tests/`, `docs/`,
+>   `benchmarks/`, or `scripts/`, a snake_case or camelCase identifier, or an
+>   edge-type name. A question in plain words has no marker, so the gate skips
+>   BFS on it. To run BFS past the gate, set `AELFRICE_FORCE_EXPANSION=1` or
+>   `AELFRICE_NO_EXPANSION_GATE=1`, or set
 >   `[retrieval] expansion_gate_enabled = false`.
 >
 > The numbers for origin tie-break and HRR-expand are ablation-only.
