@@ -426,6 +426,8 @@ def check_opt_out_ledger(
             try:
                 _setup.parse_setup_json(opt_out_path, text)
             except _setup.SetupJSONSyntaxError:
+                # A ledger that isn't JSON reads as empty, as the readers
+                # read it; only the other refusals stop setup here.
                 pass
     hosts = read_host_opt_outs(opt_out_path)
     hooks = read_opt_outs(opt_out_path)
