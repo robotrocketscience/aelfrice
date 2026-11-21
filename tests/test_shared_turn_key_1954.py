@@ -321,3 +321,75 @@ def test_assistant_line_mints_without_a_valid_prompt_id(
     (line,) = _logged_lines(tdir)
     assert line["role"] == "assistant"
     assert _MINTED.match(str(line["turn_id"]))
+
+
+# --- fallback ids differ from turn to turn --------------------------------
+#
+# A shape check on one id passes if a fallback returns the same well-formed
+# id on every turn, so each fallback writer runs two turns here.
+
+_FALLBACK_PAYLOADS = [
+    pytest.param({}, id="missing"),
+    pytest.param({"prompt_id": "a" * 129}, id="invalid"),
+]
+
+
+def _all_injection_rows(db: Path) -> list[tuple[str, str]]:
+    s = MemoryStore(str(db))
+    try:
+        rows = s._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "SELECT session_id, turn_id FROM injection_events",
+        ).fetchall()
+        return sorted({(str(r[0]), str(r[1])) for r in rows})
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("extra", _FALLBACK_PAYLOADS)
+def test_hook_fallback_ids_differ_across_turns(
+    roots: tuple[Path, Path], extra: dict[str, object],
+) -> None:
+    db, _ = roots
+    # Two sessions, so each turn's batch is injected whatever the hook
+    # remembers about the session.
+    _fire_hook(_payload(session_id="sess-1954-a", **extra))
+    _fire_hook(_payload(session_id="sess-1954-b", **extra))
+    rows = _all_injection_rows(db)
+    assert [sid for sid, _ in rows] == ["sess-1954-a", "sess-1954-b"]
+    first, second = (tid for _, tid in rows)
+    assert _MINTED.match(first)
+    assert _MINTED.match(second)
+    assert first != second
+
+
+@pytest.mark.parametrize("extra", _FALLBACK_PAYLOADS)
+def test_logger_user_fallback_ids_differ_across_turns(
+    roots: tuple[Path, Path], extra: dict[str, object],
+) -> None:
+    _, tdir = roots
+    _fire_logger(_payload(prompt="first prompt about the cellar door", **extra))
+    _fire_logger(_payload(prompt="second prompt about the cellar door", **extra))
+    lines = _logged_lines(tdir)
+    assert [ln["role"] for ln in lines] == ["user", "user"]
+    first, second = (str(ln["turn_id"]) for ln in lines)
+    assert _MINTED.match(first)
+    assert _MINTED.match(second)
+    assert first != second
+
+
+@pytest.mark.parametrize("extra", _FALLBACK_PAYLOADS)
+def test_logger_assistant_fallback_ids_differ_across_turns(
+    roots: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    extra: dict[str, object],
+) -> None:
+    _, tdir = roots
+    monkeypatch.setattr(tl, "_maybe_stop_flush", lambda _d: None)
+    _fire_logger(_stop_payload(last_assistant_message="First answer.", **extra))
+    _fire_logger(_stop_payload(last_assistant_message="Second answer.", **extra))
+    lines = _logged_lines(tdir)
+    assert [ln["role"] for ln in lines] == ["assistant", "assistant"]
+    first, second = (str(ln["turn_id"]) for ln in lines)
+    assert _MINTED.match(first)
+    assert _MINTED.match(second)
+    assert first != second
