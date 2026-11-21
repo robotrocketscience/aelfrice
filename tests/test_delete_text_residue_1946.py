@@ -128,6 +128,30 @@ def test_the_prompt_names_the_id_and_never_prints_the_text(
     assert SECRET[:12] not in err
 
 
+@pytest.mark.parametrize("answer", ["wrong", None])
+def test_the_prompt_never_prints_the_text_on_stdout(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], answer: str | None,
+) -> None:
+    """Both the process's stdout and the command's `out` stream stay clean."""
+    bid = _lock(SECRET)
+    capsys.readouterr()
+
+    def _input(prompt: str) -> str:
+        sys.stdout.write(prompt)
+        if answer is None:
+            raise EOFError
+        return answer
+
+    monkeypatch.setattr("builtins.input", _input)
+    out = io.StringIO()
+    assert cli.main(["delete", bid, "--force"], out=out) == 1
+    captured = capsys.readouterr()
+    for stream in (captured.out, out.getvalue(), captured.err):
+        assert "zq7" not in stream
+        assert SECRET[:12] not in stream
+
+
 def test_the_prompt_shows_only_the_id_origin_and_date(
     stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
