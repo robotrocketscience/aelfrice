@@ -231,7 +231,7 @@ def _dated_versions() -> list[tuple[str, str]]:
 @pytest.mark.parametrize(
     ("name", "version"),
     _dated_versions(),
-    ids=lambda value: str(value),
+    ids=str,
 )
 def test_every_committed_dated_section_has_entries(
     name: str, version: str
