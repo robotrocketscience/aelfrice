@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/pypi/l/aelfrice.svg)](LICENSE)
 [![CI](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml/badge.svg)](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml)
 <!-- bench-canonical-badge:start -->
-reproducibility: ⚠️ 6/11 ok · last run 2026-11-20
+reproducibility: ⚠️ 6/11 ok · last run 2026-11-21
 <!-- bench-canonical-badge:end -->
 
 **aelfrice gives an AI coding agent a local memory: before the model reads each prompt, a hook adds your locked beliefs and the best-ranked matches to it.** An agent forgets your corrections between sessions, so you repeat them. A belief is one statement that aelfrice has stored.
@@ -35,7 +35,7 @@ Each belief records its source, type, and Bayesian confidence score. Every 12 lo
 
 aelfrice supports the `claude` CLI fully. Codex support works but isn't yet on par with the `claude` CLI:
 
-- Codex keeps hook output over about 2,500 tokens in a file and gives the model only a preview, so a large memory block reaches the model cut short.
+- Codex keeps hook output over about 2,500 tokens in a file and gives the model only a preview, so a large memory block can reach the model cut short.
 - A forked Codex thread gets no baseline block of your locked rules.
 - Codex shows no status line when aelfrice runs.
 - Codex doesn't get the git hook that reads commit messages.
