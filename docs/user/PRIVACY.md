@@ -212,6 +212,25 @@ Inline code and URLs that aelfrice keeps are part of the belief. You can search 
 
 The rule covers sentences from your prompts and nothing else. The commit hook reads a commit message without it, so a token in a message can reach a belief through the words it stores, and the edge keeps about 80 characters of the message as written. The transcript log, `turns.jsonl`, holds each prompt as you typed it, and an edge between two turns of a session keeps the start of the earlier prompt as you typed it.
 
+To remove a stored secret, run `aelf delete <id>`, or `aelf delete --user <id>` for a user lock. The confirmation prompt shows the id, the origin, and the creation date, never the text ([#1946](https://github.com/robotrocketscience/aelfrice/issues/1946)). The delete removes the belief and clears the text of its own ingest log rows, each row once no belief that row derived exists. A cleared row keeps the text's sha256 and the time the text was cleared. A row that also derived a belief that still exists keeps its text. `aelf retire` keeps the text, so that `aelf restore` can bring the belief back; for a user lock, `aelf retire --user` and `aelf restore --user` do the same in the user store.
+
+A delete changes only the store file in place. A backup or other copy of the store file made before the delete keeps the text, and so does any terminal or transcript that showed it. These logs keep it too, and a delete doesn't touch them:
+
+- `turns.jsonl` holds each prompt as you typed it.
+- `feed.jsonl` holds the first 120 characters of each lock.
+- `hook_audit.jsonl` holds each block the hooks injected, in full, so it holds a lock's text from every prompt that injected it.
+- `command_outcomes.jsonl` holds the first 500 characters of each typed `/aelf:lock`.
+
+These logs sit next to the repository store that wrote them. For a user lock, they sit next to each repository store that locked or injected it, not in the user store's folder.
+
+Inside the store, a delete can also leave the text in these places:
+
+- A copy in the next sentence's log row, as `derived_from.prior_text`. Ingest writes that copy only when short fragments that aren't stored as beliefs sit between the two sentences.
+- Anchor text on edges. The edge from a later turn keeps the start of the earlier turn as its anchor, even when the deleted sentence's belief is neither end of that edge.
+- Log rows from deletes made before this release. Those rows keep their text, and `aelf doctor --replay` can print it in its drift examples.
+- The full-text search index and unused space inside the store file's pages, until SQLite reuses that space ([#1961](https://github.com/robotrocketscience/aelfrice/issues/1961)).
+- The search sidecar `memory.db.bm25f`, which keeps the text's search terms until a command or hook that can write the store rebuilds it.
+
 ## Batch ingest of historical sessions
 
 `aelf ingest-transcript --batch ~/.claude/projects/` pulls existing Claude Code session JSONL files into the local belief graph. Those files might contain pasted secrets, customer data, or anything else you typed in chat, and the v1.2 ingest path has no scrubber for personally identifiable information (PII). Review them before you backfill. If older logs predate your secret-handling discipline, use `--since` to scope the run to recent sessions.

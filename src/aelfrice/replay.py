@@ -25,7 +25,7 @@ from typing import Literal
 from aelfrice.derivation import DerivationInput, derive
 from aelfrice.derivation_worker import _route_overrides_from_raw_meta
 from aelfrice.models import INGEST_SOURCE_LEGACY_UNKNOWN
-from aelfrice.store import MemoryStore
+from aelfrice.store import INGEST_META_PURGED_AT, MemoryStore
 
 
 @dataclass(frozen=True)
@@ -125,8 +125,11 @@ class FullEqualityReport:
     Counters:
 
     `implemented`: always True in this implementation.
-    `total_log_rows`: ingest_log rows considered (excludes legacy_unknown).
+    `total_log_rows`: ingest_log rows considered (excludes legacy_unknown
+        and cleared rows).
     `excluded_legacy_unknown`: legacy_unknown rows skipped.
+    `excluded_purged`: rows whose text `aelf delete` cleared (#1946), so
+        that no belief they derived exists. Skipped, never drift.
     `matched`: rows where re-derivation produces a shape-equal belief.
     `mismatched`: canonical belief exists but shape-equality fails on a
         non-origin field (content_hash or type mismatch).
@@ -171,6 +174,7 @@ class FullEqualityReport:
     mutable_divergence: int = 0             # ≥1 mutable field differs (informational)
     mutable_field_counts: dict[str, int] = field(default_factory=dict)
     edge_set_divergence: int = 0            # logged edges != re-derived edges (DRIFT)
+    excluded_purged: int = 0                # rows a hard delete cleared (#1946)
 
     @property
     def has_drift(self) -> bool:
@@ -380,6 +384,23 @@ def replay_full_equality(
     )
     excluded_legacy = int(cur.fetchone()["n"])
 
+    # --- Count rows a hard delete cleared (#1946) --------------------------
+    # Their text is gone, so re-deriving one would mint a belief from ''.
+    # The beliefs they derived were deleted on purpose, so they are not
+    # drift either.
+    # CASE, not AND: SQLite does not promise to short-circuit, and
+    # `json_type` raises on malformed JSON.
+    purged_sql = (
+        "(CASE WHEN json_valid(raw_meta) "
+        "THEN json_type(raw_meta, '$.' || ?) END) IS NOT NULL"
+    )
+    cur = conn.execute(
+        f"SELECT COUNT(*) AS n FROM ingest_log "
+        f"WHERE source_kind != ? AND {purged_sql}",
+        (INGEST_SOURCE_LEGACY_UNKNOWN, INGEST_META_PURGED_AT),
+    )
+    excluded_purged = int(cur.fetchone()["n"])
+
     # --- Walk non-legacy_unknown log rows ----------------------------------
     # Both "all" and "since-v2" reduce to the same filter post-#263.
     cur = conn.execute(
@@ -388,8 +409,9 @@ def replay_full_equality(
         "       classifier_version, rule_set_hash, session_id "
         "FROM ingest_log "
         "WHERE source_kind != ? "
+        f"AND NOT {purged_sql} "
         "ORDER BY id",
-        (INGEST_SOURCE_LEGACY_UNKNOWN,),
+        (INGEST_SOURCE_LEGACY_UNKNOWN, INGEST_META_PURGED_AT),
     )
     rows = cur.fetchall()
 
@@ -593,6 +615,7 @@ def replay_full_equality(
         implemented=True,
         total_log_rows=total_log_rows,
         excluded_legacy_unknown=excluded_legacy,
+        excluded_purged=excluded_purged,
         matched=matched,
         mismatched=mismatched,
         derived_orphan=derived_orphan,
