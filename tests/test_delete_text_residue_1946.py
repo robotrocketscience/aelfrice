@@ -544,3 +544,65 @@ def test_lock_gaps_reads_the_hash_from_a_cleared_row() -> None:
 
     meta = json.dumps({INGEST_META_PURGED_SHA256: "ab" * 32})
     assert lock_gaps._logged_statement_digest("", meta) == "ab" * 32  # pyright: ignore[reportPrivateUsage]
+
+
+# --- the --user hints only read the other store -----------------------------
+
+
+def _user_store_state(user: Path) -> tuple[object, ...]:
+    conn = sqlite3.connect(f"file:{user}?mode=ro", uri=True)
+    try:
+        return (
+            conn.execute(
+                "SELECT id, lock_level, lock_expires_at FROM beliefs ORDER BY id"
+            ).fetchall(),
+            conn.execute("SELECT key, value FROM schema_meta ORDER BY key").fetchall(),
+        )
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("argv", [
+    ["delete", "--yes"], ["retire"], ["restore"], ["unlock"],
+])
+def test_a_plain_command_leaves_the_user_store_unchanged(
+    stores: tuple[Path, Path], argv: list[str],
+) -> None:
+    """A writable open sweeps expired locks; a hint must not write the store."""
+    _repo, user = stores
+    _lock(OTHER)
+    bid = _lock(SECRET, "--user", "--for", "1d")
+    conn = sqlite3.connect(user)
+    try:
+        conn.execute(
+            "UPDATE beliefs SET lock_expires_at = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", bid),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    before = _user_store_state(user)
+    _run([*argv, "0123456789abcdef"])
+    assert _user_store_state(user) == before
+
+
+def test_the_unlock_hint_skips_a_user_lock_past_its_expiry(
+    stores: tuple[Path, Path],
+) -> None:
+    """The read-only open sweeps nothing, so the hint checks the expiry itself."""
+    _repo, user = stores
+    _lock(OTHER)
+    bid = _lock(SECRET, "--user", "--for", "1d")
+    _rc, _out, err = _run(["unlock", bid])
+    assert f"unlock --user {bid}" in err
+    conn = sqlite3.connect(user)
+    try:
+        conn.execute(
+            "UPDATE beliefs SET lock_expires_at = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", bid),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _rc, _out, err = _run(["unlock", bid])
+    assert "--user" not in err
