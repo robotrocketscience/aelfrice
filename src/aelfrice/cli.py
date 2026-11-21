@@ -4353,13 +4353,46 @@ def _user_lock_hint(belief_id: str) -> str | None:
     )
 
 
-def _user_scope_hint(args: argparse.Namespace, command: str) -> str | None:
-    """A pointer to `<command> --user` when only the user store has the id (#1946).
+def _repo_store_belief(belief_id: str) -> Belief | None:
+    """`belief_id` as the repository store holds it, retired or not (#1946).
 
-    None when the user store has no such belief, retired or not, which
-    is always so under `--user`, since the command read that store.
-    Reads the user store only; never creates it.
+    For the hint a `--user` command prints when only the repository store
+    has the id. Opens the store read-only and never creates it; None when
+    it is absent or can't be read, so the hint never turns the command
+    into a different failure.
     """
+    import sqlite3
+
+    from aelfrice.db_paths import store_file_present
+
+    path = db_path()
+    try:
+        if str(path) == ":memory:" or not store_file_present(path):
+            return None
+        store = MemoryStore(str(path), read_only=True)
+        try:
+            return store.get_belief(belief_id, include_retired=True)
+        finally:
+            store.close()
+    except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable):
+        return None
+
+
+def _user_scope_hint(args: argparse.Namespace, command: str) -> str | None:
+    """A pointer to the other store's form when only it has the id (#1946).
+
+    Without `--user`, names `<command> --user` when the user store has
+    the id; with it, names the plain form when the repository store does.
+    Retired beliefs count. Reads the other store read-only; never
+    creates it.
+    """
+    if getattr(args, "user_scope", False):
+        if _repo_store_belief(args.belief_id) is None:
+            return None
+        return (
+            f"  {args.belief_id} is in this repository's store; run "
+            f"`aelf {command} {args.belief_id}`."
+        )
     if _user_store_belief(args.belief_id, include_retired=True) is None:
         return None
     return (
@@ -4603,6 +4636,10 @@ def _cmd_restore(args: argparse.Namespace, out: object) -> int:
                 "(already active, or unknown id)",
                 file=sys.stderr,
             )
+            if store.get_belief(args.belief_id, include_retired=True) is None:
+                hint = _user_scope_hint(args, "restore")
+                if hint is not None:
+                    print(hint, file=sys.stderr)
             return 1
         store.insert_feedback_event(
             belief_id=args.belief_id,
