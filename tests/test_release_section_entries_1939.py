@@ -136,6 +136,11 @@ def _with_section(section: str) -> str:
             "## [5.4.1] - 2026-11-19\n   \n\t\n \t \n\n",
             id="whitespace-only",
         ),
+        pytest.param(
+            "## [5.4.1] - 2026-11-19\n\n [a]: https://example.com/a\n"
+            "   [b]: https://example.com/b\n\n",
+            id="link-reference-definitions-indented",
+        ),
     ],
 )
 def test_an_empty_dated_section_fails_naming_the_version_and_file(
@@ -207,6 +212,10 @@ def test_a_heading_for_a_longer_version_does_not_stand_in(
         pytest.param(
             "## [5.4.1] - 2026-11-19\n\n    ## four spaces make a code block\n\n",
             id="four-space-level-two-code-block",
+        ),
+        pytest.param(
+            "## [5.4.1] - 2026-11-19\n\n    [a]: four spaces make a code block\n\n",
+            id="four-space-link-reference-code-block",
         ),
         pytest.param(
             "## [5.4.1] - 2026-11-19\n\n#1939 shipped the empty-section check.\n\n",

@@ -247,7 +247,8 @@ jobs:
               # footnote, are not content. A summary
               # paragraph is, which is how [2.0.0] shipped in v2.md.
               # A heading may sit up to three spaces in (CommonMark);
-              # four spaces make a code block, which is content. An ATX
+              # four spaces make a code block, which is content, and the
+              # same holds for a link reference definition. An ATX
               # heading is one to six '#' and then a space, a tab or the
               # end of the line, so '#1939 shipped' is a paragraph.
               # 'index' rather than a regex, so the version's dots are
@@ -256,7 +257,7 @@ jobs:
                 { sub(/\r$/, "") }
                 index($0, heading) == 1 { in_section=1; next }
                 /^ ? ? ?##([ \t]|$)/ && in_section { exit }
-                in_section && NF > 0 && !/^ ? ? ?(#|##|###|####|#####|######)([ \t]|$)/ && !/^\[[^]]*\]:/ { print }
+                in_section && NF > 0 && !/^ ? ? ?(#|##|###|####|#####|######)([ \t]|$)/ && !/^ ? ? ?\[[^]]*\]:/ { print }
               ' "$changelog_file")
               if [ -z "$section_body" ]; then
                 echo "::error file=${changelog_file}::The [${head_ver}] section in ${changelog_file} has no entries. Add the release's entry files to CHANGELOG/unreleased/ and collate again, or write the entries into the section by hand."
