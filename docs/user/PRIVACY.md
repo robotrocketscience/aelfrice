@@ -33,7 +33,7 @@ aelfrice doesn't report back to any server. **The shipped package contains no ne
 
 ## Onboard-time outbound call
 
-aelfrice runs LLM-quality classification once per project, at onboard time. The runtime stays local, and no day-to-day operation makes an outbound call.
+aelfrice runs LLM-quality classification once per project, at onboard time. Retrieval and storage stay local. Two default-on paths still send content during routine use: the pre-issue duplicate guard sends words from an issue title you type, and background core-gate labeling sends the session's new core candidates. The table at the end of this section lists every outbound path and its default.
 
 **The default flow at v1.5.0+ is host-driven and makes zero direct calls from the aelfrice CLI itself.** When you run `/aelf:onboard <path>` from a host that exposes a Task tool (Claude Code and similar), the slash command body in [`src/aelfrice/slash_commands/onboard.md`](../../src/aelfrice/slash_commands/onboard.md) drives the classifier through the host's own model dispatch, against the cheapest model in its stack. The host already has whatever credentials and billing it needs, aelfrice doesn't require an API key, and the aelfrice package never imports `anthropic` on this path. Your data already goes to your host LLM, so aelfrice reuses the cheapest model in that stack to classify once.
 
