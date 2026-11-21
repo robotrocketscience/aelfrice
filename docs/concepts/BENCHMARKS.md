@@ -59,9 +59,11 @@ see [`benchmarks/README.md`](../../benchmarks/README.md).
 >   such as `#123`, a file path under `src/`, `tests/`, `docs/`,
 >   `benchmarks/`, or `scripts/`, a snake_case or camelCase identifier, or an
 >   edge-type name. A question in plain words has no marker, so the gate skips
->   BFS on it. To run BFS past the gate, set `AELFRICE_FORCE_EXPANSION=1` or
+>   BFS on it. To skip the gate, set `AELFRICE_FORCE_EXPANSION=1` or
 >   `AELFRICE_NO_EXPANSION_GATE=1`, or set
->   `[retrieval] expansion_gate_enabled = false`.
+>   `[retrieval] expansion_gate_enabled = false`. None of these turns BFS on.
+>   BFS runs past the gate only when the settings at the start of this item
+>   turn it on, and `AELFRICE_BFS=0` still turns it off.
 >
 > The numbers for origin tie-break and HRR-expand are ablation-only.
 >
