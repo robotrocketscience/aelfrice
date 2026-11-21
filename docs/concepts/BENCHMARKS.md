@@ -37,7 +37,8 @@ see [`benchmarks/README.md`](../../benchmarks/README.md).
 > Uplift attributable to these lanes therefore reflects production behavior, not
 > only the eval surface. The temporal spine's +14.6pp LoCoMo coverage is one
 > such number. Three lanes are **exposed on `retrieve_v2` but held OFF by
-> default**, so they do **not** affect a default install:
+> default**, so they do **not** affect a default install, apart from the
+> `aelf wonder` exception that the BFS item describes:
 >
 > - origin tie-break ([#1089](https://github.com/robotrocketscience/aelfrice/issues/1089)), refuted on LoCoMo ([#1013](https://github.com/robotrocketscience/aelfrice/issues/1013))
 > - HRR-expand ([#981](https://github.com/robotrocketscience/aelfrice/issues/981)), measured recall-neutral ([#1001](https://github.com/robotrocketscience/aelfrice/issues/1001))
@@ -48,15 +49,16 @@ see [`benchmarks/README.md`](../../benchmarks/README.md).
 >   turns BFS on for a call that passes `use_bfs=False`, `AELFRICE_BFS=0`
 >   turns it off for a call that passes `use_bfs=True`, and `use_bfs=False`
 >   turns it off when `bfs_enabled = true`. The academic adapters pass
->   `use_bfs=True`. When these settings turn BFS on, it still runs only when
->   the expansion gate lets it: the query has 80 words or fewer, doesn't start
->   with a question word such as "what", "how", or "tell me", and has a
->   structural marker. A marker is an issue reference such as `#123`, a file
->   path under `src/`, `tests/`, `docs/`, `benchmarks/`, or `scripts/`, a
->   snake_case or camelCase identifier, or an edge-type name. A question in
->   plain words has no marker, so the gate skips BFS on it. To run BFS past
->   the gate, set `AELFRICE_FORCE_EXPANSION=1` or
->   `AELFRICE_NO_EXPANSION_GATE=1`, or set
+>   `use_bfs=True`, and `aelf wonder QUERY` requests BFS unless you pass
+>   `--axes-depth 0`, so a default install runs BFS through that command. When
+>   these settings turn BFS on, it still runs only when the expansion gate
+>   lets it: the query has 80 words or fewer, doesn't start with a question
+>   word such as "what", "how", or "tell me", and has a structural marker. A
+>   marker is an issue reference such as `#123`, a file path under `src/`,
+>   `tests/`, `docs/`, `benchmarks/`, or `scripts/`, a snake_case or camelCase
+>   identifier, or an edge-type name. A question in plain words has no marker,
+>   so the gate skips BFS on it. To run BFS past the gate, set
+>   `AELFRICE_FORCE_EXPANSION=1` or `AELFRICE_NO_EXPANSION_GATE=1`, or set
 >   `[retrieval] expansion_gate_enabled = false`.
 >
 > The numbers for origin tie-break and HRR-expand are ablation-only.
