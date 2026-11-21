@@ -198,9 +198,11 @@ def _read_active_lock_pairs(path: str, now: str) -> list[tuple[str, str]]:
     'user'` on disk, so it is filtered here with the comparison the
     sweep makes, as `user_locks.read_user_locks` does.
 
-    The URI comes from `store.read_only_uri`, which percent-encodes the
-    path: pasted in raw, a `#` or `?` in it would cut the path short and
-    drop `mode=ro`, creating an empty file at the prefix (#1416, #1947).
+    This reader's URI comes from `store.read_only_uri`, which
+    percent-encodes the path: pasted in raw, a `#` or `?` in it would cut
+    the path short and drop `mode=ro`, creating an empty file at the
+    prefix (#1416, #1947). Other `mode=ro` connections in this module
+    still build the URI by hand.
     """
     from aelfrice.store import read_only_uri
 
