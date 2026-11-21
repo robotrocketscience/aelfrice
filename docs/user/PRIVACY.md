@@ -18,14 +18,15 @@ grep -rE "requests|httpx|urllib|aiohttp|socket\.|http\." src/aelfrice/
 grep -rE "subprocess|Popen|os\.system" src/aelfrice/
 ```
 
-Then read the argv of each hit. `git` is local; `gh` and `claude` are not.
+Then read the argv of each hit. `git` is local; `gh`, `claude`, and `uv tool install` are not.
 
 
-Three exceptions are on by default:
+Four exceptions are on by default:
 
 - **The update notifier** (`lifecycle.py`) makes one GET request to `https://pypi.org/pypi/aelfrice/json` to check for new releases, gated by a time-to-live (TTL). It transmits nothing; it only reads. To disable the notifier, run `export AELF_NO_UPDATE_CHECK=1`.
 - **The pre-issue duplicate guard** (`pre_issue_create_hook.py`, installed by default since v3.4.0) runs `gh issue list --search <tokens>` before a `gh issue create` tool call, and warns you about duplicates. **This guard does transmit data:** the tokens come from the issue title you typed. It fires only on `gh issue create`, never on ordinary retrieval, on ingest, or on any other command. To disable the guard, run `export AELFRICE_NO_PRE_ISSUE_GUARD=1`. To bypass a single call, set `ALLOW_DUP_ISSUE=1`. To never install the guard, run `aelf setup --no-pre-issue-guard`.
 - **Background core-gate labeling** (`core_gate_background.py`, on by default since #1741) runs your `claude` CLI as `claude -p` on its smallest model in a detached process when the Stop hook finds new core candidates. **This path does transmit data:** the stored text of up to 50 beliefs that the session created, inside the classifier prompt, to the model behind your `claude` login, which is the same provider your conversation already goes to. aelfrice passes the run only what a CLI needs to start: `PATH`, your home folder, user, and shell, the locale and time zone, the temporary folder, the terminal, and `CLAUDE_CONFIG_DIR`. No key, token, cloud credential, provider switch, endpoint, proxy, or model override you exported reaches it. It also loads none of your user, project, or local `claude` settings for the run, so an `apiKeyHelper` or a key in a settings `env` block isn't used either. Managed settings that your organization deploys still apply, including any credentials they set. It runs only when `claude` is on your `PATH`, and never in a headless session or on the Codex host. Since #1761 it also runs on Windows. To disable it, set `AELFRICE_CORE_GATE_BACKGROUND=0` or `[core_gate] background = false`.
+- **The one-shot uv-tool migration** (`lifecycle.py`) runs inside `aelf setup` when this machine has no uv-tool install of aelfrice and `uv` is on your `PATH`. `aelf setup --host codex` doesn't run it. It runs `uv tool install --force aelfrice`, which downloads aelfrice from your package index and transmits nothing beyond that package request. It also installs every aelfrice command, `aelf` and the hook programs, into uv's tool bin folder (`~/.local/bin` by default), replacing any copies there, and on success it writes `~/.aelfrice/migrated-to-uv`. After its first success it doesn't run again. It has no switch of its own.
 
 ## No telemetry
 
@@ -33,7 +34,7 @@ aelfrice doesn't report back to any server. **The shipped package contains no ne
 
 ## Onboard-time outbound call
 
-aelfrice runs LLM-quality classification once per project, at onboard time. The runtime stays local, and no day-to-day operation makes an outbound call.
+aelfrice runs LLM-quality classification once per project, at onboard time. Other paths make outbound calls in day-to-day use, and two that are on by default transmit data: the pre-issue guard and background labeling. For every path and its default, see the table of outbound paths later in this section.
 
 **The default flow at v1.5.0+ is host-driven and makes zero direct calls from the aelfrice CLI itself.** When you run `/aelf:onboard <path>` from a host that exposes a Task tool (Claude Code and similar), the slash command body in [`src/aelfrice/slash_commands/onboard.md`](../../src/aelfrice/slash_commands/onboard.md) drives the classifier through the host's own model dispatch, against the cheapest model in its stack. The host already has whatever credentials and billing it needs, aelfrice doesn't require an API key, and the aelfrice package never imports `anthropic` on this path. Your data already goes to your host LLM, so aelfrice reuses the cheapest model in that stack to classify once.
 
@@ -91,21 +92,22 @@ Before v4.2.0, this command hardcoded its gate to open and never read the sentin
 
 **Telemetry remains zero.** aelfrice sends no report about its own LLM usage. It prints the tokens consumed on stdout for you to read, and never writes them to a network endpoint or a logging service. On the direct-API path, `aelf onboard --llm-classify` makes one or more requests to `https://api.anthropic.com/`, and nothing else. On the host-driven path, the aelfrice CLI makes zero direct outbound calls, because the host LLM handles its own network I/O under its own credentials.
 
-**The shipped aelfrice package has seven outbound-capable paths. Three of these paths are on by default.** This page counts paths, not calls, because either LLM path can issue several batched requests in one run.
+**The shipped aelfrice package has eight outbound-capable paths. Four of these paths are on by default.** This page counts paths, not calls, because either LLM path can issue several batched requests in one run.
 
 | Path | Default | Transmits |
 |---|---|---|
 | Update notifier — a TTL-gated GET to `https://pypi.org/pypi/aelfrice/json`. To disable it, set `AELF_NO_UPDATE_CHECK=1`. | **on** | nothing; the notifier only reads |
 | Pre-issue duplicate guard — `gh issue list --search <tokens>` before `gh issue create`. To disable it, set `AELFRICE_NO_PRE_ISSUE_GUARD=1`. To bypass it once, set `ALLOW_DUP_ISSUE=1`. To never install it, run `aelf setup --no-pre-issue-guard`. | **on** since v3.4.0 | **yes** — the tokens come from the issue title you typed |
 | Background core-gate labeling — `claude -p` on its smallest model in a detached process (`core_gate_background.py`). To disable it, set `AELFRICE_CORE_GATE_BACKGROUND=0` or `[core_gate] background = false`. | **on** since #1741, and on Windows since #1761, when `claude` is on `PATH` | **yes** — the text of the session's new core candidates, to the model behind your `claude` login |
+| One-shot uv-tool migration in `aelf setup`, not in `aelf setup --host codex`: `uv tool install --force aelfrice` (`lifecycle.py`). It installs every aelfrice command into uv's tool bin folder (`~/.local/bin` by default) and writes `~/.aelfrice/migrated-to-uv` on success. | **on**, when this machine has no uv-tool install of aelfrice and `uv` is on `PATH`; it stops after its first success | nothing beyond the package request |
 | `aelf onboard` (direct-API classifier) | on by default since v1.5.0, but runs only with the `[onboard-llm]` extra, `ANTHROPIC_API_KEY`, and recorded consent | candidate sentences the onboard scanner extracts |
 | `aelf doctor --classify-orphans` | opt-in, consent-gated | stored belief content |
 | `aelf gate list` — `gh issue list` and `gh issue view` against the repo aelfrice detects from your git remote (`gate_list.py`) | off; an explicit command, hidden from `--help` | repo identity and label filters; no belief content |
-| `aelf upgrade` and the one-shot uv-tool migration — `uv tool install aelfrice` (`lifecycle.py`) | off; an explicit command | nothing beyond the package request |
+| `aelf upgrade`: an in-process GET to `https://pypi.org/pypi/aelfrice/json` (`lifecycle.py`). With `AELF_NO_UPDATE_CHECK=1`, it reads the cached result instead. It prints the upgrade command and installs nothing. | off; an explicit command | nothing; the command only reads |
 
-Of the three default-on paths, only the notifier transmits nothing; the pre-issue guard and background labeling do transmit. An audit is most likely to miss those two, because each reaches the network by running another program rather than through a socket. See the note on the verification grep above.
+Of the four default-on paths, the notifier transmits nothing and the uv-tool migration sends only the package request; the pre-issue guard and background labeling do transmit. An audit is most likely to miss those two, because each reaches the network by running another program rather than through a socket. See the note on the verification grep above.
 
-Four rows are of that kind: the pre-issue guard, background labeling, `aelf gate list`, and `aelf upgrade`, each of which runs another program. Those rows are why the count in this section has been wrong before: the in-process grep can't see a program a path runs, and it finds the files of `aelf onboard` and `aelf doctor --classify-orphans` only through incidental words, because both call the model vendor's Python SDK, which its pattern doesn't name. To find every row, run both greps and also search for that SDK's imports. When you add an outbound path, add its row here, then check which of the two greps would have found that path.
+Four rows are of that kind: the pre-issue guard, background labeling, the uv-tool migration, and `aelf gate list`, each of which runs another program. Those rows are why the count in this section has been wrong before: the in-process grep can't see a program a path runs, and it finds the files of `aelf onboard` and `aelf doctor --classify-orphans` only through incidental words, because both call the model vendor's Python SDK, which its pattern doesn't name. To find every row, run both greps and also search for that SDK's imports. When you add an outbound path, add its row here, then check which of the two greps would have found that path.
 
 **Confirm at the source:**
 
