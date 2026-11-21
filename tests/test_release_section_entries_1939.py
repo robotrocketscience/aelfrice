@@ -15,6 +15,7 @@ matches nothing, and it failed before the predicate existed.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -73,11 +74,13 @@ def _run(root: Path, version: str) -> subprocess.CompletedProcess[str]:
     """Run the block under the step's `set -euo pipefail`, in bash.
 
     GitHub's default `run:` shell on Linux is `bash -e {0}`, and the
-    step opens `set -euo pipefail`; dash would reject `pipefail`.
+    step opens `set -euo pipefail`; dash would reject `pipefail`. The
+    version reaches the script as an environment value, never as script
+    text, because some callers read it from a committed file.
     """
     script = (
         "set -euo pipefail\n"
-        f'head_ver="{version}"\n'
+        'head_ver="$HEAD_VER_1939"\n'
         'base_ver="0.0.0"\n'
         "fail=0\n"
         + _changelog_block()
@@ -86,6 +89,7 @@ def _run(root: Path, version: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", "-c", script],
         cwd=root, capture_output=True, text=True, check=False, timeout=20,
+        env={**os.environ, "HEAD_VER_1939": version},
     )
 
 
@@ -208,6 +212,11 @@ def test_a_dated_section_with_content_passes(
     assert _EMPTY_MESSAGE not in proc.stdout
 
 
+# The release versions the committed files use: X.Y.Z, and one PEP 440
+# pre-release, [0.9.0rc0] in v0.md.
+_VERSION = re.compile(r"\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?")
+
+
 def _dated_versions() -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     for path in sorted((_REPO / "CHANGELOG").glob("v*.md")):
@@ -232,6 +241,7 @@ def test_every_committed_dated_section_has_entries(
     Only the new message is asserted: older files lack some footnotes,
     and those checks are not under test here.
     """
+    assert _VERSION.fullmatch(version), version
     proc = _run(_REPO, version)
 
     assert f"v{version.split('.')[0]}.md" == name
@@ -319,3 +329,19 @@ def test_only_a_line_that_starts_with_the_heading_opens_the_section(
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert _EMPTY_MESSAGE in proc.stdout, proc.stdout
+
+
+@pytest.mark.timeout(30)
+def test_shell_syntax_in_the_version_stays_text(tmp_path: Path) -> None:
+    """A heading's version text reaches the block as data, not as script.
+
+    `_dated_versions` reads versions out of committed headings, so a
+    heading that holds a double quote and a command must not run it.
+    """
+    version = '5.4.1"; touch INJECTED; echo "'
+    _tree(tmp_path, _with_section("## [5.4.1] - 2026-11-19\n\n- x\n\n"))
+
+    proc = _run(tmp_path, version)
+
+    assert not (tmp_path / "INJECTED").exists(), proc.stdout + proc.stderr
+    assert f"## [{version}]" in proc.stdout, proc.stdout
