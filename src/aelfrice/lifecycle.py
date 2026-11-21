@@ -19,6 +19,7 @@ can offer hash-pinned installs without an extra round trip.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -1408,6 +1409,95 @@ class MigrationResult:
     attempted: bool
     succeeded: bool
     reason: str
+
+
+# Maximum wall-clock seconds for `uv tool dir --bin`, which `aelf setup`
+# runs before its first write to learn where a migration would put the
+# hook programs (#1812). It only prints a path, so it is bounded tightly:
+# setup's preflight runs twice, so a uv that hangs costs at most twice this.
+UV_TOOL_DIR_TIMEOUT_SECONDS: Final[int] = 5
+
+#: The `os.stat` errors `pending_uv_migration` reads as no sentinel: the
+#: ones `pathlib.Path.exists` ignores on Python 3.12 and 3.13 (#1812).
+_NO_SENTINEL_ERRNOS: Final[frozenset[int]] = frozenset({
+    errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP,
+})
+
+
+def pending_uv_migration(*, sentinel_path: Path | None = None) -> str | None:
+    """The `uv` program `maybe_migrate_to_uv` would run now, or None when
+    it would skip the migration (#1812).
+
+    It takes the first three steps of that function's short-circuit
+    order: a sentinel that exists, a running install that is already a uv
+    tool, and no `uv` on `PATH` each mean no migration.
+
+    Raises `OSError` when the sentinel can't be checked, for example
+    under a `~/.aelfrice` you can't search. A missing path, a file where
+    a folder goes, and a symbolic link loop read as no sentinel, the
+    errors `Path.exists` reads as False on Python 3.12 and 3.13, so the
+    answer doesn't change with the Python version.
+    """
+    if sentinel_path is None:
+        sentinel_path = MIGRATED_TO_UV_SENTINEL
+    try:
+        os.stat(sentinel_path)
+    except OSError as exc:
+        if exc.errno not in _NO_SENTINEL_ERRNOS:
+            raise
+    else:
+        return None
+    if upgrade_advice().context == "uv_tool":
+        return None
+    return shutil.which("uv")
+
+
+@dataclass(frozen=True)
+class UvToolBinDir:
+    """Outcome of a `uv_tool_bin_dir()` call (#1812).
+
+    `path` is the absolute folder `uv tool install` writes programs in,
+    or None when uv didn't say, and then `reason` says why.
+    """
+
+    path: Path | None
+    reason: str
+
+
+def uv_tool_bin_dir(uv_bin: str, *, timeout: int | None = None) -> UvToolBinDir:
+    """Ask `uv_bin` for the folder `uv tool install` writes programs in,
+    with `uv tool dir --bin` (#1812). Never raises.
+
+    uv picks the folder from `UV_TOOL_BIN_DIR`, `XDG_BIN_HOME`,
+    `XDG_DATA_HOME` and `HOME`, so the call inherits this process's
+    environment, as the migration's `uv tool install` does. Output that
+    isn't one absolute path, such as the relative path uv prints for a
+    relative `UV_TOOL_BIN_DIR`, gives no folder. `timeout` resolves from
+    `UV_TOOL_DIR_TIMEOUT_SECONDS` when omitted, late-bound like
+    `maybe_migrate_to_uv`'s sentinel.
+    """
+    if timeout is None:
+        timeout = UV_TOOL_DIR_TIMEOUT_SECONDS
+    command = f"`{uv_bin} tool dir --bin`"
+    try:
+        proc = subprocess.run(
+            [uv_bin, "tool", "dir", "--bin"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return UvToolBinDir(None, f"{command} timed out after {timeout}s")
+    except OSError as exc:
+        return UvToolBinDir(None, f"{command} failed to start: {exc}")
+    if proc.returncode != 0:
+        return UvToolBinDir(None, f"{command} exited {proc.returncode}")
+    text = os.fsdecode(proc.stdout).rstrip("\r\n")
+    if not text or "\n" in text or "\r" in text or not os.path.isabs(text):
+        return UvToolBinDir(
+            None, f"{command} printed {text!r}, not one absolute path",
+        )
+    return UvToolBinDir(Path(text), "")
 
 
 def maybe_migrate_to_uv(

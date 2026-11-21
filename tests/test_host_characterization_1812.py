@@ -426,15 +426,20 @@ _CODEX_EVENTS = (
 )
 
 
-def _codex_handler(command: str) -> dict[str, object]:
-    return {"type": "command", "command": command}
+def _codex_handler(
+    command: str, *, context_limit: int | None = None,
+) -> dict[str, object]:
+    handler: dict[str, object] = {"type": "command", "command": command}
+    if context_limit is not None:
+        handler["additionalContextLimit"] = context_limit
+    return handler
 
 
 _CODEX_HOOKS = {
     "hooks": {
         "UserPromptSubmit": [
             {"hooks": [
-                _codex_handler("aelf-hook"),
+                _codex_handler("aelf-hook", context_limit=9500),
                 _codex_handler("aelf-transcript-logger"),
             ]},
         ],
@@ -448,15 +453,20 @@ _CODEX_HOOKS = {
         "PostCompact": [{"hooks": [_codex_handler("aelf-transcript-logger")]}],
         "SessionStart": [
             {
-                "matcher": "startup|resume|clear|compact",
-                "hooks": [_codex_handler("aelf-session-start-hook")],
+                "matcher": "startup|resume|clear|compact|fork",
+                "hooks": [
+                    _codex_handler(
+                        "aelf-session-start-hook --host codex",
+                        context_limit=9500,
+                    ),
+                ],
             },
         ],
         "PreToolUse": [
             {
                 "matcher": "Bash",
                 "hooks": [
-                    _codex_handler("aelf-search-tool-hook"),
+                    _codex_handler("aelf-search-tool-hook", context_limit=9500),
                     _codex_handler("aelf-pre-issue-hook"),
                 ],
             },

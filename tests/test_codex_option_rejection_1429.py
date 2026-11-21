@@ -37,13 +37,14 @@ from aelfrice.cli import (
 )
 from aelfrice.host_codex import _bundled_codex_skills
 
-# Measured from the parser on 2026-09-17: setup rejects 18 options and
-# unsetup rejects 14, matching the counts the issue reports. The sets
+# Measured from the parser on 2026-09-17: setup rejected 18 options and
+# unsetup 14, matching the counts the issue reports. Setup rejects 17
+# since `--status-message` became the Codex `statusMessage` field (#1812). The sets
 # themselves are always derived below, never hard-coded, so an option
 # added to either parser is covered by the gate the moment it is
 # registered; these two numbers exist so that a *silent* change in the
 # population is visible in a diff.
-_EXPECTED_INAPPLICABLE_COUNTS: dict[str, int] = {"setup": 18, "unsetup": 14}
+_EXPECTED_INAPPLICABLE_COUNTS: dict[str, int] = {"setup": 17, "unsetup": 14}
 
 
 def _sample_value(action: argparse.Action) -> str | None:
@@ -232,6 +233,7 @@ def test_applicable_dests_are_the_ones_the_codex_path_reads() -> None:
     setup_src = inspect.getsource(_cmd_setup_codex)
     assert 'getattr(args, "force"' in setup_src
     assert 'getattr(args, "codex_skills"' in setup_src
+    assert 'getattr(args, "status_message"' in setup_src
     # unsetup reads nothing off the namespace at all.
     unsetup_src = inspect.getsource(_cmd_unsetup_codex)
     assert re.search(r"^\s+_ = args$", unsetup_src, re.M)
@@ -332,7 +334,12 @@ def test_omission_control_setup_then_unsetup_exit_0(
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize(
     "extra",
-    [["--force"], ["--codex-skills"], ["--no-codex-skills"]],
+    [
+        ["--force"],
+        ["--codex-skills"],
+        ["--no-codex-skills"],
+        ["--status-message", "aelfrice"],
+    ],
 )
 def test_applicable_options_are_still_accepted(
     extra: list[str], codex_env: CodexEnv, capsys: pytest.CaptureFixture[str]
@@ -427,3 +434,18 @@ def test_generated_setup_skill_states_the_refusal_contract() -> None:
     assert "--force" in text
     assert "--codex-skills" in text
     assert "#1429" in text
+
+
+@pytest.mark.timeout(60)
+def test_generated_setup_skill_names_every_option_codex_setup_accepts() -> None:
+    """The skill lists what setup accepts, so an agent following it knows
+    `--status-message` works on this host (#1812)."""
+    text = _bundled_codex_skills()["aelf-setup"]
+    sub = _subcommand_parser(build_parser(), "setup")
+    assert sub is not None
+    accepted = {
+        opt for dest, opt in _option_dests(sub).items()
+        if dest in _CODEX_APPLICABLE_DESTS["setup"] and dest != "host"
+    }
+    assert "--status-message" in accepted
+    assert sorted(opt for opt in accepted if opt not in text) == []
