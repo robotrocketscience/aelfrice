@@ -141,6 +141,18 @@ def _with_section(section: str) -> str:
             "   [b]: https://example.com/b\n\n",
             id="link-reference-definitions-indented",
         ),
+        pytest.param(
+            "## [5.4.1] - 2026-11-19\n\nRelease notes\n=============\n\n",
+            id="setext-level-one",
+        ),
+        pytest.param(
+            "## [5.4.1] - 2026-11-19\n\nRelease notes\nin two lines\n   =\n\n",
+            id="setext-two-lines-underline-indented",
+        ),
+        pytest.param(
+            "## [5.4.1] - 2026-11-19\n\nRelease notes\n-\n",
+            id="setext-level-two",
+        ),
     ],
 )
 def test_an_empty_dated_section_fails_naming_the_version_and_file(
@@ -216,6 +228,26 @@ def test_a_heading_for_a_longer_version_does_not_stand_in(
         pytest.param(
             "## [5.4.1] - 2026-11-19\n\n    [a]: four spaces make a code block\n\n",
             id="four-space-link-reference-code-block",
+        ),
+        pytest.param(
+            "## [5.4.1] - 2026-11-19\n\n- **A ([#2](u)).** x\n---\n\n",
+            id="list-item-then-thematic-break",
+        ),
+        pytest.param(
+            "## [5.4.1] - 2026-11-19\n\n> A quoted note.\n---\n\n",
+            id="block-quote-then-thematic-break",
+        ),
+        pytest.param(
+            "## [5.4.1] - 2026-11-19\n\n    code\n===\n\n",
+            id="code-block-then-equals-line",
+        ),
+        pytest.param(
+            "## [5.4.1] - 2026-11-19\n\nA paragraph\n    ===\n\n",
+            id="four-space-underline-continues-the-paragraph",
+        ),
+        pytest.param(
+            "## [5.4.1] - 2026-11-19\n\nA paragraph\n= =\n\n",
+            id="spaced-equals-continue-the-paragraph",
         ),
         pytest.param(
             "## [5.4.1] - 2026-11-19\n\n#1939 shipped the empty-section check.\n\n",
@@ -333,6 +365,7 @@ def test_a_crlf_changelog_with_entries_passes(tmp_path: Path) -> None:
         pytest.param("   ## Notes", id="three-spaces"),
         pytest.param("##\tNotes", id="tab"),
         pytest.param("##", id="no-text"),
+        pytest.param("Notes\n-----", id="setext"),
     ],
 )
 def test_a_plain_heading_ends_the_section(tmp_path: Path, heading: str) -> None:

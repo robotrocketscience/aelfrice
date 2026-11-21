@@ -241,23 +241,42 @@ jobs:
               # #1939: the dated section must list something. A cut from
               # a tree with no entry files collates to a bare heading,
               # and the release PR body built from it is empty too. The
-              # section runs to the next level-two heading or end of file;
-              # headings, blank lines and link reference definitions,
+              # section runs to the next level-two heading or end of file.
+              # Headings, blank lines and link reference definitions,
               # such as the '[X.Y.Z]: https://...' compare-link
-              # footnote, are not content. A summary
-              # paragraph is, which is how [2.0.0] shipped in v2.md.
-              # A heading may sit up to three spaces in (CommonMark);
-              # four spaces make a code block, which is content, and the
-              # same holds for a link reference definition. An ATX
+              # footnote, are not content. A summary paragraph is, which
+              # is how [2.0.0] shipped in v2.md.
+              # The CommonMark rules: a heading or a link reference
+              # definition may sit up to three spaces in, and four
+              # spaces make a code block, which is content. An ATX
               # heading is one to six '#' and then a space, a tab or the
-              # end of the line, so '#1939 shipped' is a paragraph.
+              # end of the line, so '#1939 shipped' is a paragraph. A
+              # Setext heading is a paragraph whose next line is a run
+              # of '=' (level one) or '-' (level two, so it ends the
+              # section). 'run' holds the open paragraph, and 'plain' is
+              # cleared when a line in it opens a list item, a block
+              # quote, a fence, HTML, a thematic break or a code block;
+              # such a run is content, and a '---' under it is a
+              # thematic break.
               # 'index' rather than a regex, so the version's dots are
               # literal and [5.4.10] cannot stand in for [5.4.1].
               section_body=$(awk -v heading="## [${head_ver}]" '
+                function flush() { if (run != "") print run; run = ""; plain = 0 }
                 { sub(/\r$/, "") }
-                index($0, heading) == 1 { in_section=1; next }
-                /^ ? ? ?##([ \t]|$)/ && in_section { exit }
-                in_section && NF > 0 && !/^ ? ? ?(#|##|###|####|#####|######)([ \t]|$)/ && !/^ ? ? ?\[[^]]*\]:/ { print }
+                !in_section { if (index($0, heading) == 1) in_section = 1; next }
+                /^ ? ? ?##([ \t]|$)/ { exit }
+                NF == 0 { flush(); next }
+                /^ ? ? ?(#|##|###|####|#####|######)([ \t]|$)/ { flush(); next }
+                run != "" && plain && /^ ? ? ?(=+|-+)[ \t]*$/ {
+                  run = ""; plain = 0
+                  if (/-/) exit
+                  next
+                }
+                run == "" && /^ ? ? ?\[[^]]*\]:/ { next }
+                run == "" { plain = !/^( ? ? ?\t|    | ? ? ?([-+*]|[0-9]+[.)])([ \t]|$)| ? ? ?(>|<|```|~~~)| ? ? ?(\*[ \t]*\*[ \t]*\*[ \t*]*|_[ \t]*_[ \t]*_[ \t_]*|-[ \t]*-[ \t]*-[ \t-]*)$)/ }
+                run != "" && /^ ? ? ?([-+*][ \t]+[^ \t]|1[.)][ \t]+[^ \t]|>|<|```|~~~|(\*[ \t]*\*[ \t]*\*[ \t*]*|_[ \t]*_[ \t]*_[ \t_]*|-[ \t]*-[ \t]*-[ \t-]*)$)/ { plain = 0 }
+                { run = (run == "" ? $0 : run "\n" $0) }
+                END { flush() }
               ' "$changelog_file")
               if [ -z "$section_body" ]; then
                 echo "::error file=${changelog_file}::The [${head_ver}] section in ${changelog_file} has no entries. Add the release's entry files to CHANGELOG/unreleased/ and collate again, or write the entries into the section by hand."
