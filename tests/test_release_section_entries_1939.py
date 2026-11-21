@@ -129,6 +129,10 @@ def _with_section(section: str) -> str:
             id="heading-indented-three-spaces",
         ),
         pytest.param(
+            "## [5.4.1] - 2026-11-19\n\n###\tFixed\n\n###\n\n",
+            id="heading-with-a-tab-or-no-text",
+        ),
+        pytest.param(
             "## [5.4.1] - 2026-11-19\n   \n\t\n \t \n\n",
             id="whitespace-only",
         ),
@@ -199,6 +203,14 @@ def test_a_heading_for_a_longer_version_does_not_stand_in(
         pytest.param(
             "## [5.4.1] - 2026-11-19\n\n    # four spaces make a code block\n\n",
             id="indented-code-block",
+        ),
+        pytest.param(
+            "## [5.4.1] - 2026-11-19\n\n#1939 shipped the empty-section check.\n\n",
+            id="hash-without-a-space",
+        ),
+        pytest.param(
+            "## [5.4.1] - 2026-11-19\n\n####### seven hashes are not a heading\n\n",
+            id="seven-hashes",
         ),
     ],
 )
