@@ -647,6 +647,30 @@ def test_a_user_command_on_a_repository_only_id_names_the_plain_form(
 
 
 @pytest.mark.parametrize("verb", ["delete", "retire", "restore"])
+def test_the_plain_form_hint_leaves_the_repository_store_unchanged(
+    stores: tuple[Path, Path], verb: str,
+) -> None:
+    """A writable open sweeps expired locks; the hint must not write the store."""
+    repo, _user = stores
+    _lock(OTHER, "--user")
+    bid = _lock(SECRET, "--for", "1d")
+    conn = sqlite3.connect(repo)
+    try:
+        conn.execute(
+            "UPDATE beliefs SET lock_expires_at = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", bid),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    before = _user_store_state(repo)
+    argv = [verb, "--user", "0123456789abcdef"]
+    argv += {"delete": ["--force", "--yes"], "retire": ["--force"]}.get(verb, [])
+    assert _run(argv)[0] == 1
+    assert _user_store_state(repo) == before
+
+
+@pytest.mark.parametrize("verb", ["delete", "retire", "restore"])
 def test_the_plain_form_hint_never_creates_the_repository_store(
     stores: tuple[Path, Path], verb: str,
 ) -> None:
