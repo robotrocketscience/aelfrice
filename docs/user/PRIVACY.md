@@ -4,7 +4,7 @@ This page lists verifiable properties of the codebase, not marketing claims. You
 
 <p align="center"><img src="../assets/08-setr.png" width="60%" alt="A single figure split down its midline — a blue-robed teacher on the left, a red-black dragon on the right — flanked by a spiral glass tower and a basalt column"></p>
 
-## Your data never leaves your machine
+## Local storage and retrieval
 
 The store, retrieval, scoring, scanner, and feedback paths all run locally against SQLite. These files contain no network code: `store.py`, `retrieval.py`, `scoring.py`, `feedback.py`, `scanner.py`, and `cli.py`. To confirm that, run this command:
 

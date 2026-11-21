@@ -182,7 +182,7 @@ additive; old configs without it default OFF.
 **This is the first outbound network call in the default install path
 that carries user content.** The update notifier in `lifecycle.py`
 makes a TTL-gated GET to PyPI but never transmits anything (PRIVACY.md
-§ Your data never leaves your machine). The LLM-classify path does
+§ Local storage and retrieval). The LLM-classify path does
 transmit content from the user's repo to Anthropic.
 
 The boundary policy is therefore non-negotiable.
