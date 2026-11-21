@@ -203,7 +203,9 @@ def test_retire_force_writes_force_source(isolated_db: Path) -> None:
         events = s.list_feedback_events(belief_id=bid)
     finally:
         s.close()
-    assert events[0].source == "user_retired_force"
+    # Newest first: the lock:retire row the soft-delete writes for a
+    # locked belief (#1945) follows the retire's own audit row.
+    assert events[-1].source == "user_retired_force"
 
 
 def test_retire_already_retired_is_noop(isolated_db: Path) -> None:

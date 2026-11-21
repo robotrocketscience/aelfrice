@@ -18,6 +18,10 @@ source=user_retired, or user_retired_force when --force is used) before the
 soft-delete, so the forensic record survives.
 
 Locked beliefs (lock_level=user) are protected: pass `--force` to retire one.
+Retiring a locked belief ends its lock: lock_level, locked_at, and
+lock_expires_at are cleared, and a second audit row (valence=0.0,
+source=lock:retire) records it. `aelf restore` brings the belief back
+unlocked.
 Retiring an already-retired belief is a no-op.
 </objective>
 

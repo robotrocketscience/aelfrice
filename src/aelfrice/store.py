@@ -45,6 +45,7 @@ from aelfrice.models import (
     CORROBORATION_MIN_EPISODES,
     DEFAULT_LOCK_TIER,
     FEEDBACK_SOURCE_LOCK_EXPIRE,
+    FEEDBACK_SOURCE_LOCK_RETIRE,
     LOCK_NONE,
     LOCK_TIERS,
     LOCK_USER,
@@ -916,6 +917,11 @@ SCHEMA_META_EXPLORATION_FIRE_IDX: Final[str] = "exploration_fire_idx"
 # means no lock has ever expired on this store.
 SCHEMA_META_LOCK_SWEEP_AT: Final[str] = "lock_expiry_sweep_at"
 SCHEMA_META_LOCK_SWEEP_COUNT: Final[str] = "lock_expiry_sweep_count"
+# #1945. Set after the one-time pass that unlocks every retired row an
+# older release left at `lock_level = 'user'` (before the fix,
+# `soft_delete_belief` set only `valid_to`). ISO timestamp on
+# completion; fresh stores stamp it after a pass that matches nothing.
+SCHEMA_META_RETIRED_LOCK_CLEANUP: Final[str] = "retired_lock_cleanup_complete"
 
 # v1.5.0 #204 federation forward-compat. Stable per-DB scope id,
 # generated on first v1.5+ open and persisted in `schema_meta`.
@@ -995,6 +1001,15 @@ SCHEMA_META_CORROBORATIONS_BELIEF_ID_RETYPED: Final[str] = (
 # completion; fresh stores stamp the marker after a no-op dedup.
 SCHEMA_META_CORROBORATION_SOURCE_DEDUP: Final[str] = (
     "corroboration_source_dedup_complete"
+)
+
+# #1945. Ends a lock on one belief, as `aelf unlock` does: `lock_level`
+# back to 'none', `locked_at` and `lock_expires_at` cleared. Binds
+# (LOCK_NONE, id, LOCK_NONE); the last guard makes the rowcount say
+# whether a lock was actually ended.
+_CLEAR_LOCK_SQL: Final[str] = (
+    "UPDATE beliefs SET lock_level = ?, locked_at = NULL, "
+    "lock_expires_at = NULL WHERE id = ? AND lock_level != ?"
 )
 
 # v1.0 -> v1.2 column additions. Each ALTER runs after _SCHEMA. ALTERs
@@ -1870,6 +1885,10 @@ class MemoryStore:
         # store rather than making it unopenable — the cost of a skipped
         # sweep is a lock that stays injected one session too long,
         # which is strictly better than a store that will not open.
+        # #1945 one-time unlock of retired rows older releases left
+        # locked. Before the expiry sweep, so a retired lock that is also
+        # past its window is recorded as ended by the retire, which it was.
+        self._run_guarded_migration(self._maybe_clear_retired_locks)
         self._run_guarded_migration(self.sweep_expired_locks)
         # #1135: process-lifetime BM25F cache slot, managed by
         # `aelfrice.retrieval._store_scoped_bm25f_cache`. Typed loosely
@@ -3770,6 +3789,15 @@ class MemoryStore:
         ``propagate_valence``, feedback, context assembly — still saw the
         tombstone. It is true now, and :meth:`get_belief` is where it is
         enforced.
+
+        Retiring a locked belief also ends its lock (#1945): it clears
+        ``lock_level``, ``locked_at`` and ``lock_expires_at``, as
+        ``aelf unlock`` does, and writes one ``lock:retire`` audit row
+        stamped with the retire time. Before #1945 the retired row kept
+        ``lock_level = 'user'``: ``aelf status`` counted it, ``aelf locked``
+        did not list it, and ``aelf unlock`` could not find it.
+        ``lock_tier`` is kept, as ``unlock`` keeps it; it means nothing
+        without a lock.
         """
         now = ts if ts is not None else datetime.now(timezone.utc).isoformat()
         cur = self._conn.execute(
@@ -3780,8 +3808,41 @@ class MemoryStore:
             self._conn.execute(
                 "DELETE FROM beliefs_fts WHERE id = ?", (belief_id,)
             )
+            unlocked = self._conn.execute(
+                _CLEAR_LOCK_SQL, (LOCK_NONE, belief_id, LOCK_NONE)
+            )
+            if unlocked.rowcount > 0:
+                self._conn.execute(
+                    "INSERT INTO feedback_history "
+                    "(belief_id, valence, source, created_at) "
+                    "VALUES (?, 0.0, ?, ?)",
+                    (belief_id, FEEDBACK_SOURCE_LOCK_RETIRE, now),
+                )
         self._bump_belief_version(belief_id)
         self._commit_mutation()
+
+    def clear_lock(self, belief_id: str) -> bool:
+        """Clear the lock fields on one belief, retired or not.
+
+        Sets `lock_level = 'none'` and nulls `locked_at` and
+        `lock_expires_at`; `origin` and `lock_tier` are untouched. Returns
+        True when a locked row was unlocked, False for an unlocked or
+        unknown id. Writes no audit row: the caller owns that.
+
+        `promotion.unlock` uses this rather than `update_belief` (#1945)
+        because `update_belief` re-inserts the FTS row, which would put
+        a retired belief back into keyword search, and because a
+        three-column write cannot clobber a concurrent writer's columns
+        the way a whole-row snapshot can (#1168).
+        """
+        cur = self._conn.execute(
+            _CLEAR_LOCK_SQL, (LOCK_NONE, belief_id, LOCK_NONE)
+        )
+        if cur.rowcount == 0:
+            return False
+        self._bump_belief_version(belief_id)
+        self._commit_mutation()
+        return True
 
     def restore_belief(self, belief_id: str) -> bool:
         """Clear ``valid_to`` on a soft-deleted belief, returning it to active.
@@ -6666,6 +6727,63 @@ class MemoryStore:
         row = cur.fetchone()
         return int(row["n"]) if row else 0
 
+    def _maybe_clear_retired_locks(self) -> int:
+        """#1945 one-time pass: unlock every retired row still locked.
+
+        Before #1945, `soft_delete_belief` set only `valid_to`, so
+        `aelf retire --force` left the row at `lock_level = 'user'`.
+        This clears `lock_level`, `locked_at` and `lock_expires_at` on
+        each such row and writes one `lock:retire` audit row per row,
+        stamped with the time of this pass (the retire time is the row's
+        `valid_to`). Returns the number of rows unlocked.
+
+        One-time via `SCHEMA_META_RETIRED_LOCK_CLEANUP`, and idempotent
+        without it: an unlocked row no longer matches the select, so a
+        rerun writes nothing. The marker saves the per-open query, since
+        the fixed `soft_delete_belief` leaves no such row.
+
+        Each row's UPDATE repeats the select's predicate and an audit row
+        is written only when it matched. Two processes opening the store
+        at once can both select the same rows; whichever updates a row
+        second finds it already unlocked, so each row gets one
+        `lock:retire` row.
+        """
+        if self.get_schema_meta(SCHEMA_META_RETIRED_LOCK_CLEANUP) is not None:
+            return 0
+        ts = datetime.now(timezone.utc).isoformat()
+        due = [
+            str(row["id"])
+            for row in self._conn.execute(
+                "SELECT id FROM beliefs "
+                "WHERE valid_to IS NOT NULL AND lock_level != ?",
+                (LOCK_NONE,),
+            )
+        ]
+        cleared = [
+            bid for bid in due
+            if self._conn.execute(
+                _CLEAR_LOCK_SQL + " AND valid_to IS NOT NULL",
+                (LOCK_NONE, bid, LOCK_NONE),
+            ).rowcount > 0
+        ]
+        if cleared:
+            self._conn.executemany(
+                "INSERT INTO feedback_history "
+                "(belief_id, valence, source, created_at) VALUES (?, 0.0, ?, ?)",
+                [(bid, FEEDBACK_SOURCE_LOCK_RETIRE, ts) for bid in cleared],
+            )
+            for bid in cleared:
+                self._bump_belief_version(bid)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            (SCHEMA_META_RETIRED_LOCK_CLEANUP, ts),
+        )
+        if cleared:
+            self._commit_mutation()
+        else:
+            self._commit()
+        return len(cleared)
+
     def sweep_expired_locks(self, *, now: str | None = None) -> int:
         """Flip every due time-boxed lock to `lock_level='none'`.
 
@@ -6782,8 +6900,14 @@ class MemoryStore:
         return [_row_to_belief(r) for r in rows]
 
     def count_locked(self) -> int:
+        """Count active locks, with the filter `list_locked_beliefs` uses.
+
+        #1945: without `valid_to IS NULL` this counted retired rows that
+        `aelf locked` does not list.
+        """
         cur = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM beliefs WHERE lock_level != 'none'"
+            "SELECT COUNT(*) AS n FROM beliefs "
+            "WHERE lock_level != 'none' AND valid_to IS NULL"
         )
         row = cur.fetchone()
         return int(row["n"]) if row else 0

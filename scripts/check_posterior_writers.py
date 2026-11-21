@@ -158,12 +158,6 @@ MANIFEST: dict[str, tuple[str, str]] = {
         "whole row back. Audits at valence 0.0, which apply_feedback "
         "rejects, so the posterior is carried unchanged rather than moved",
     ),
-    "promotion.py::unlock::update_belief": (
-        MOVES,
-        "clears lock_level/locked_at/lock_expires_at and writes the whole "
-        "row back; audits at valence 0.0, so the posterior rides along "
-        "unchanged rather than being updated",
-    ),
     "review.py::apply_decisions::update_belief": (
         MOVES,
         "carries the snapshot's posterior back on a review decision",

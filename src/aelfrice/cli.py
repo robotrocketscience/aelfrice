@@ -4512,6 +4512,7 @@ def _cmd_retire(args: argparse.Namespace, out: object) -> int:
 def _cmd_restore(args: argparse.Namespace, out: object) -> int:
     """Restore a soft-deleted (retired) belief to active — inverse of `aelf retire`."""
     from aelfrice.federation import ForeignBeliefError
+    from aelfrice.models import FEEDBACK_SOURCE_LOCK_RETIRE
 
     store = _open_store()
     try:
@@ -4528,6 +4529,10 @@ def _cmd_restore(args: argparse.Namespace, out: object) -> int:
                 file=sys.stderr,
             )
             return 1
+        # #1945: retiring a locked belief ends its lock, so it comes back
+        # unlocked. Read the latest audit row before writing this one.
+        latest = store.list_feedback_events(belief_id=args.belief_id, limit=1)
+        was_locked = bool(latest) and latest[0].source == FEEDBACK_SOURCE_LOCK_RETIRE
         store.insert_feedback_event(
             belief_id=args.belief_id,
             valence=1.0,
@@ -4535,6 +4540,13 @@ def _cmd_restore(args: argparse.Namespace, out: object) -> int:
             created_at=_utc_now_iso(),
         )
         print(f"restored: {args.belief_id}", file=out)  # type: ignore[arg-type]
+        if was_locked:
+            print(
+                f"hint: {args.belief_id} was locked when it was retired and "
+                "is now unlocked; to lock it again, run `aelf lock` with its "
+                f"text (`aelf show {args.belief_id}` prints it)",
+                file=sys.stderr,
+            )
     finally:
         store.close()
     return 0

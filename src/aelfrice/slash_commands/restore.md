@@ -12,7 +12,10 @@ re-enters keyword search and retrieval. This is the inverse of
 `aelf retire`.
 
 One audit row is written to feedback_history (valence=+1.0,
-source=user_restored) on a successful restore. Restoring a belief that is
+source=user_restored) on a successful restore. A belief that was locked
+when it was retired comes back unlocked, and restore prints a one-line
+hint naming `aelf lock`; to lock it again, run `aelf lock` with its text.
+Nothing is locked automatically. Restoring a belief that is
 already active, or an id that does not exist, is a no-op that reports
 "not restorable" and exits non-zero.
 </objective>
