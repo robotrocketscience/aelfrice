@@ -147,7 +147,9 @@ on the brain graph in extracted form locally, and that's it.
     "cwd": "/abs/path/to/project",
     "git_branch": "main",
     "git_head": "abc1234"
-  }
+  },
+  "paste_blocks": 0,
+  "paste_bytes": 0
 }
 ```
 
@@ -163,6 +165,24 @@ Notes:
   set the fields to `null`; never block the hook.
 - `schema_version` lets future readers detect format drift without
   breaking existing logs.
+- A user line also carries `paste_blocks` and `paste_bytes` (#1955):
+  the number of `<pasted_content>` pastes in `text` and the UTF-8
+  bytes of their text, tags left out and line breaks kept. A paste is
+  what ingest filters as one: it runs from an opening tag to the next
+  closing tag of any id, or to the end of the line's text when none
+  follows, and an opening tag inside it is dropped. The counts read
+  the text ingest segments: `cut_relay` and then
+  `noise_filter.speech_before_pastes` cut relay text, marker lines,
+  system reminders and harness blocks, so a paste inside one of those
+  doesn't count, and a slash command's record counts nothing. Then
+  `noise_filter.paste_segments` reads the pastes, as in ingest. Every
+  step is one forward scan, for any spelling of a tag name, so the
+  count is linear in the prompt's length. A line without tags carries
+  `0` and `0`. The fields are left out, with one `aelf-logger:` line
+  on the hook's stderr, when the prompt is over 2,000,000 characters
+  or when the count raises; a failing stderr doesn't stop the line.
+  Assistant lines and lines written before #1955 have neither field,
+  and readers ignore both.
 
 ### Batch ingest
 
