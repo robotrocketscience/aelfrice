@@ -54,7 +54,7 @@ aelf setup
 `aelf setup` is idempotent. Run it again whenever you change Python environments, and again whenever you move projects. The command writes:
 
 1. **A `UserPromptSubmit` hook** in `settings.json`. Every prompt then goes through `aelf-hook` for retrieval before the agent receives it.
-2. **A `statusLine` notifier**. The notifier shows a one-line update banner when a new release is available. When the store holds beliefs, it also shows their counts, such as `aelf L0=3 L1=120 ?=2`: `L0` counts locked beliefs, `L1` counts unlocked beliefs, and `?` counts the beliefs that a potentially-stale edge points at. The `?` badge appears only when that count is above 0. To hide the counts, set `AELF_STATUSLINE_COUNTS=0`.
+2. **A `statusLine` notifier**. The notifier shows a one-line update banner when a new release is available. When the notifier can read the store and the store holds beliefs, it also shows their counts, such as `aelf L0=3 L1=120 ?=2`: `L0` counts locked beliefs, `L1` counts unlocked beliefs, and `?` counts the beliefs that a potentially-stale edge points at. The `?` badge appears only when that count is above 0. All three counts include retired beliefs. A time-boxed lock that has expired stays in `L0` until aelfrice next opens the store for writing. When the notifier can't read the store, for example because you lack read permission on the file or the file isn't a SQLite database, it omits the counts and shows no error. To hide the counts, set `AELF_STATUSLINE_COUNTS=0`.
 3. **The full default-on auto-capture hook set and the bundled `/aelf:*` slash commands**. See [Hooks installed by `aelf setup`](#hooks-installed-by-aelf-setup) later on this page.
 
 Automatic detection selects the scope and the command path:
