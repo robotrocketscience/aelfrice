@@ -542,3 +542,64 @@ def test_doctor_reads_a_store_path_with_uri_characters_in_place(
     assert report.known
     assert [(rid, uids) for rid, _, uids in report.pairs] == [(bid, (bid,))]
     assert sorted(p.name for p in base.iterdir()) == before
+
+
+# --- the three commands agree with the L0 merge ---------------------------
+
+
+SPACED = "Run uv sync first."
+SPACED_APART = "Run uv\n\n\n\n\n\n            sync first."
+
+
+@pytest.mark.timeout(60)
+def test_text_the_merge_keeps_apart_is_not_called_one_statement(
+    stores: tuple[Path, Path],
+) -> None:
+    from aelfrice.store import MemoryStore
+    from aelfrice.user_locks import merge_lock_sets, read_user_locks
+
+    repo, _ = stores
+    assert _run(["lock", SPACED])[0] == 0
+    rc, out, err = _run(["lock", "--user", SPACED_APART])
+    assert rc == 0
+    assert "`aelf unlock" not in out
+    s = MemoryStore(str(repo))
+    try:
+        merged = merge_lock_sets(s.list_locked_beliefs(), read_user_locks(str(repo)))
+    finally:
+        s.close()
+    # The merge injects both, so no command may say one hides the other.
+    assert sorted(b.content for b in merged) == sorted([SPACED, SPACED_APART])
+    rc, out, err = _run(["locked"])
+    assert rc == 0
+    assert "[also locked in the other scope]" not in out
+    assert err == ""
+    rid = _ids("repo")[SPACED]
+    rc, _, err = _run(["unlock", rid])
+    assert rc == 0
+    assert err == ""
+
+
+@pytest.mark.timeout(60)
+def test_unlock_names_a_near_duplicate_the_merge_drops(
+    stores: tuple[Path, Path],
+) -> None:
+    assert _run(["lock", STATEMENT])[0] == 0
+    assert _run(["lock", "--user", NEAR_STATEMENT])[0] == 0
+    rid = _ids("repo")[STATEMENT]
+    uid = _ids("user")[NEAR_STATEMENT]
+    rc, _, err = _run(["unlock", rid])
+    assert rc == 0
+    assert err == (
+        f"  the user store still locks this statement ({uid}), and this "
+        f"repository now injects that copy. To drop it too, run "
+        f"`aelf unlock --user {uid}`.\n"
+    )
+    assert _run(["lock", STATEMENT])[0] == 0
+    rc, _, err = _run(["unlock", "--user", uid])
+    assert rc == 0
+    assert err == (
+        f"  the repository store still locks this statement ({rid}), and "
+        f"this repository injects that copy. To drop it too, run "
+        f"`aelf unlock {rid}`.\n"
+    )
