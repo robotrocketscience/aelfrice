@@ -205,6 +205,10 @@ def test_a_heading_for_a_longer_version_does_not_stand_in(
             id="indented-code-block",
         ),
         pytest.param(
+            "## [5.4.1] - 2026-11-19\n\n    ## four spaces make a code block\n\n",
+            id="four-space-level-two-code-block",
+        ),
+        pytest.param(
             "## [5.4.1] - 2026-11-19\n\n#1939 shipped the empty-section check.\n\n",
             id="hash-without-a-space",
         ),
@@ -312,10 +316,23 @@ def test_a_crlf_changelog_with_entries_passes(tmp_path: Path) -> None:
 
 
 @pytest.mark.timeout(30)
-def test_a_plain_heading_ends_the_section(tmp_path: Path) -> None:
-    """Prose under a later `## Notes` is not the release's content."""
+@pytest.mark.parametrize(
+    "heading",
+    [
+        pytest.param("## Notes", id="flush"),
+        pytest.param(" ## Notes", id="one-space"),
+        pytest.param("   ## Notes", id="three-spaces"),
+        pytest.param("##\tNotes", id="tab"),
+        pytest.param("##", id="no-text"),
+    ],
+)
+def test_a_plain_heading_ends_the_section(tmp_path: Path, heading: str) -> None:
+    """Prose under a later level-two heading is not the release's content.
+
+    CommonMark reads each of these as a level-two heading.
+    """
     text = _with_section(
-        "## [5.4.1] - 2026-11-19\n\n## Notes\n\nProse under a plain heading.\n\n"
+        f"## [5.4.1] - 2026-11-19\n\n{heading}\n\nProse under a plain heading.\n\n"
     )
     proc = _run(_tree(tmp_path, text), "5.4.1")
 
