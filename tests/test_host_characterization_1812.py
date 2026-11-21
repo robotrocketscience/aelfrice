@@ -161,7 +161,7 @@ def test_every_host_option_defaults_to_claude() -> None:
             if "--host" in action.option_strings:
                 seen[cmd] = (action.default, tuple(action.choices or ()))
     assert seen == {
-        cmd: ("claude", ("claude", "codex"))
+        cmd: ("claude", ("claude", "codex", "gemini"))
         for cmd in ("setup", "unsetup", "uninstall", "doctor")
     }
 

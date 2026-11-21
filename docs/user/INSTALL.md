@@ -126,6 +126,54 @@ aelfrice can merge only into the documented `{"hooks": {"<Event>": [...]}}` shap
 
 One window stays open. A process that takes no lock can still replace the file in the instant between the final check of aelfrice and the rename. Closing that window needs a mutation protocol from Codex, and Codex doesn't offer one today.
 
+### Gemini CLI host (unreleased)
+
+If you run Gemini CLI, add `--host gemini` to the same lifecycle verbs:
+
+```bash
+aelf setup --host gemini      # hooks into Gemini's user settings.json + /aelf:* commands
+aelf doctor --host gemini     # verify wiring; reports the installed command count
+aelf unsetup --host gemini    # remove the aelfrice hooks and commands together
+```
+
+Restart Gemini CLI after setup so it loads the hooks.
+
+`aelf setup --host gemini` writes to Gemini's user directory, `~/.gemini`. When `$GEMINI_CLI_HOME` is set, Gemini reads `$GEMINI_CLI_HOME/.gemini` instead, and so do all three verbs. A `$GEMINI_CLI_HOME` that isn't an existing directory is an error: the verbs refuse and create nothing.
+
+The verbs follow symlinks, as the Codex host follows a symlinked `$CODEX_HOME`. When `$GEMINI_CLI_HOME`, `.gemini`, or `commands/aelf` is a symlink, setup writes into the directory it points to, which is the directory Gemini reads through the same link, and keeps the link. Unsetup removes the generated commands through the link and never removes the link. When `commands/aelf` is the link, unsetup also keeps the directory it points to, even if that leaves the directory empty.
+
+Setup writes two things there, and nothing into your project:
+
+- **Hooks in `settings.json`.** Each hook runs `aelf-gemini-hook` at the absolute path setup resolves on your machine. When setup resolves none, for example because the only copy is in a venv under `.claude/worktrees/` (#928), it writes the bare name, and Gemini then looks it up on `PATH`. Setup quotes a path that holds a space so that a POSIX shell, or PowerShell on Windows, reads it as one word. The Gemini 0.68.0 docs show hook scripts for both shells but don't say which shell runs the command string. Gemini reads each hook `timeout` in milliseconds.
+- **Commands under `commands/aelf/`.** Each `/aelf:*` slash command becomes a TOML file that Gemini runs as `/aelf:<name>`, for example `/aelf:search`. aelfrice generates them from the same source as the Claude commands and the Codex skills. A first-line marker, `AELFRICE-GEMINI-COMMAND`, controls replacement and removal, so a command file of your own in that directory is never overwritten or removed.
+
+The hooks map Gemini's events onto the aelfrice handlers:
+
+| Gemini event | Hook name | What runs |
+|---|---|---|
+| `SessionStart` | `aelfrice-session-start` | Injects the locked beliefs. |
+| `BeforeAgent` | `aelfrice-prompt` | Injects the retrieval results for the prompt, then logs the turn. |
+| `AfterAgent` | `aelfrice-turn-end` | Logs the reply, then runs the end-of-turn lock prompt. It never returns a `deny` decision, so it never makes Gemini retry the turn. |
+| `PreCompress` | `aelfrice-pre-compress` | Rotates the turn log and starts its ingest in the background. |
+
+The Gemini 0.68.0 hooks reference says `PreCompress` fires asynchronously, but the 0.68.0 program waits for it: `ChatCompressionService.compress` in the installed bundle runs `await config2.getHookSystem()?.firePreCompressEvent(trigger)` and only then measures the history and compresses it. The rotation therefore ends before compression starts. Only the ingest that the hook starts in the background can still be running. Because the event fires before that measurement, a call with trigger `auto` fires it whether or not the history is long enough to compress, and with the default settings Gemini makes that call before each request to the model. Each of those fires that finds a turn log rotates it and starts an ingest, whether or not Gemini then compresses.
+
+After `/clear`, Gemini drops the session-start block. The 0.68.0 hooks reference lists `additionalContext` as a `SessionStart` output for every source, but the `/clear` command in the 0.68.0 bundle reads only `systemMessage` from the `SessionStart` result, while startup and resume read `getAdditionalContext()`. aelfrice prints no `systemMessage`, so after `/clear` the session-start block reaches neither you nor the model. The locked beliefs return in the `<locked>` part of the `BeforeAgent` block for your next prompt.
+
+To turn one hook off, run `/hooks disable <hook name>` in Gemini, for example `/hooks disable aelfrice-pre-compress`.
+
+The installed Gemini CLI 0.68.0 escapes hook context before the model reads it. `DefaultHookOutput.getAdditionalContext` in its bundle replaces every `<` with `&lt;` and every `>` with `&gt;`, on `SessionStart` and `BeforeAgent` alike. The model therefore reads aelfrice's tags, such as `<belief>`, as `&lt;belief&gt;`. Gemini then wraps the escaped text in a `<hook_context>` block, which no hook text can close. When hooks are on, its system prompt tells the model to treat that block as read-only data, not as instructions, and to follow its own system instructions where the two conflict. The 0.68.0 docs don't describe this. Your locked beliefs therefore reach a Gemini session as context. For a rule that Gemini must treat as an instruction, also put it in a `GEMINI.md` file, which Gemini reads as instructional context. aelfrice never writes `GEMINI.md`.
+
+Gemini has no event after compression, and no aelfrice hook acts on Gemini's tool calls. Gemini 0.68.0 saves memories by editing `GEMINI.md` with its file tools and has no `save_memory` tool, so aelfrice doesn't copy them into the store. The search, issue-duplicate, and commit hooks of the Claude host therefore have no Gemini counterpart yet. The Stop hook's core-gate follow-up turn and its background labeler don't run on Gemini either.
+
+On a machine whose Claude settings carry no aelfrice hook, setup also opts the Claude host out of auto-install, as `--host codex` does.
+
+`aelf setup --host gemini` accepts only `--force`, and `aelf unsetup --host gemini` accepts no option but `--host`. Any other option exits 2 and changes nothing (#1429).
+
+`settings.json` belongs to Gemini, and to you. Setup and unsetup change only the handlers that run `aelf-gemini-hook` and keep every other key, group, and handler. They take an advisory lock, kept in the temporary directory so that no lock file is left beside `settings.json`, check the file's content hash again just before they write, and replace the file atomically, as on the Codex host. When `settings.json` is a symlink, they replace the file it points to and keep the link; a symlink to a missing file is refused. When they write the file back, they keep the indent of its first indented line, its line endings, whether it ends in a newline, and whether it escapes non-ASCII characters. Everything else follows Python's `json.dumps`: keys stay in their order, a space follows each `:`, and in a one-line file a space follows each `,`. A compact `{"theme":"x"}` therefore comes back as `{"theme": "x"}`. Unsetup also drops an event or a `hooks` object that it leaves empty. A file that held neither, and that was already laid out the way `json.dumps` writes it with those traits, gets its original bytes back. It never deletes `settings.json`: aelfrice can't tell a file that setup created from one you already had, so a file with nothing else in it is left as `{}`. It removes `commands/aelf/`, and `commands/` too when that leaves it empty. aelfrice reads `settings.json` as plain JSON. A file it can't parse, such as one with comments, is refused and left unchanged; pass `--force` to replace it.
+
+`aelf doctor --host gemini` exits 1 when installed wiring is broken: a hook command that isn't on disk, a bare hook command that isn't on `PATH`, a hook path with a space that isn't quoted, a partial hook set, hooks turned off with `hooksConfig.enabled` set to `false`, a `settings.json` that can't be parsed as JSON but names `aelf-gemini-hook`, a generated command that differs from what this build writes, or an `aelf` that isn't on `PATH`, which the commands run by name. A machine that never ran `aelf setup --host gemini` exits 0, and so does a `settings.json` that can't be parsed but names no aelfrice hook; doctor prints a warning for it.
+
 ## 3. Verify wiring
 
 ```bash
