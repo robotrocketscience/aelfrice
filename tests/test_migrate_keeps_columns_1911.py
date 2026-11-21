@@ -34,6 +34,8 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     CORROBORATION_SOURCE_TYPES,
+    CORROBORATION_SPEAKER_ASSISTANT,
+    CORROBORATION_SPEAKER_USER,
     CORROBORATION_SPEAKERS,
     DEFAULT_LOCK_TIER,
     EDGE_SUPPORTS,
@@ -681,6 +683,25 @@ def test_every_consolidation_migration_row_copies(tmp_path: Path) -> None:
     assert len(target_rows) == 3
     assert dry == 3
     assert applied == 3
+
+
+def test_a_user_duplicate_makes_the_kept_row_the_users(tmp_path: Path) -> None:
+    """A user write for one source wins, as `record_corroboration` does it
+    (#1650): the kept row is the user's when any duplicate came from one."""
+    transcript = CORROBORATION_SOURCE_TRANSCRIPT_INGEST
+    dry, applied, target_rows = _migrate_raw_rows(tmp_path, [
+        ("b1", transcript, "s0", None, CORROBORATION_SPEAKER_ASSISTANT),
+        ("b1", transcript, "s1", None, CORROBORATION_SPEAKER_ASSISTANT),
+        ("b1", transcript, "s1", None, CORROBORATION_SPEAKER_USER),
+        ("b2", transcript, "s1", None, CORROBORATION_SPEAKER_USER),
+        ("b2", transcript, "s1", None, CORROBORATION_SPEAKER_ASSISTANT),
+    ])
+    assert (dry, applied) == (3, 3)
+    assert target_rows == [
+        ("b1", transcript, CORROBORATION_SPEAKER_ASSISTANT),
+        ("b1", transcript, CORROBORATION_SPEAKER_USER),
+        ("b2", transcript, CORROBORATION_SPEAKER_USER),
+    ]
 
 
 # --- Belief values this version does not know are normalized ----------------

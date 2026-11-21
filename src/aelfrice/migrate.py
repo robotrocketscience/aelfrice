@@ -42,6 +42,7 @@ from aelfrice.models import (
     BELIEF_SCOPE_PROJECT,
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_TYPES,
+    CORROBORATION_SPEAKER_USER,
     CORROBORATION_SPEAKERS,
     DEFAULT_LOCK_TIER,
     LOCK_TIERS,
@@ -322,17 +323,23 @@ def migrate(
     # `record_corroboration` keeps the first row per this key, the key of
     # `uq_belief_corroborations_source`, so the dry run counts it once too.
     # That index exempts consolidation_migration rows: #219 writes one per
-    # merged duplicate, so every one of them copies and counts.
-    seen_keys: set[tuple[str, str, str, str]] = set()
+    # merged duplicate, so every one of them copies and counts. A user
+    # write wins, as in `record_corroboration`: a duplicate from the user
+    # makes the kept row the user's.
+    kept_at: dict[tuple[str, str, str, str], int] = {}
     for c in legacy_corroborations:
         if _is_known_corroboration(c):
+            kept = corroborations_by_belief.setdefault(c.belief_id, [])
             if c.source_type != CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION:
                 key = (c.belief_id, c.session_id or "",
                        c.source_path_hash or "", c.source_type)
-                if key in seen_keys:
+                if key in kept_at:
+                    if c.speaker == CORROBORATION_SPEAKER_USER:
+                        i = kept_at[key]
+                        kept[i] = dataclasses.replace(kept[i], speaker=c.speaker)
                     continue
-                seen_keys.add(key)
-            corroborations_by_belief.setdefault(c.belief_id, []).append(c)
+                kept_at[key] = len(kept)
+            kept.append(c)
         else:
             unknown_corroborations[c.belief_id] = (
                 unknown_corroborations.get(c.belief_id, 0) + 1
