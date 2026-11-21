@@ -73,6 +73,13 @@ KNOWN: frozenset[str] = frozenset(
         "tests/test_bm25_index.py::test_build_under_1s_at_n10k",
         "tests/test_ingest_log.py::test_ingest_latency_within_budget",
         "tests/test_transcript_logger.py::test_per_turn_latency_under_budget",
+        # The quadratic paste cut took about 51 s on this input and the linear
+        # one takes milliseconds, so 0.5 s has a wide margin; a counting bound
+        # can't see time spent inside the regex engine (#1955).
+        "tests/test_logger_paste_fields_1955.py::test_handler_is_fast_on_a_flood_of_unclosed_openers",
+        # A cursor per opener spelling took about 10 s at the size bound on this
+        # shape and the grouped cursors take milliseconds; same margin (#1955).
+        "tests/test_logger_paste_fields_1955.py::test_handler_is_fast_on_many_opener_spellings_and_closers",
         # Stubs every git call, so it times only the projector's own code (#1853).
         "tests/test_working_state.py::TestLatency::test_projector_own_time_with_git_stubbed",
     }
