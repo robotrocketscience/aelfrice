@@ -212,7 +212,7 @@ Inline code and URLs that aelfrice keeps are part of the belief. You can search 
 
 The rule covers sentences from your prompts and nothing else. The commit hook reads a commit message without it, so a token in a message can reach a belief through the words it stores, and the edge keeps about 80 characters of the message as written. The transcript log, `turns.jsonl`, holds each prompt as you typed it, and an edge between two turns of a session keeps the start of the earlier prompt as you typed it.
 
-To remove a stored secret, run `aelf delete <id>`, or `aelf delete --user <id>` for a user lock. The confirmation prompt shows the id, the origin, and the creation date, never the text ([#1946](https://github.com/robotrocketscience/aelfrice/issues/1946)). The delete removes the belief and clears the text of each ingest log row once no belief that row derived exists. A cleared row keeps the text's sha256 and the time the text was cleared. A row that also derived a belief that still exists keeps its text. `aelf retire` keeps the text, so that `aelf restore` can bring the belief back; for a user lock, `aelf retire --user` and `aelf restore --user` do the same in the user store.
+To remove a stored secret, run `aelf delete <id>`, or `aelf delete --user <id>` for a user lock. The confirmation prompt shows the id, the origin, and the creation date, never the text ([#1946](https://github.com/robotrocketscience/aelfrice/issues/1946)). The delete removes the belief and clears the text of its own ingest log rows, each row once no belief that row derived exists. A cleared row keeps the text's sha256 and the time the text was cleared. A row that also derived a belief that still exists keeps its text. `aelf retire` keeps the text, so that `aelf restore` can bring the belief back; for a user lock, `aelf retire --user` and `aelf restore --user` do the same in the user store.
 
 A delete changes only the store file in place. A backup or other copy of the store file made before the delete keeps the text, and so does any terminal or transcript that showed it. These logs keep it too, and a delete doesn't touch them:
 
@@ -223,7 +223,13 @@ A delete changes only the store file in place. A backup or other copy of the sto
 
 These logs sit next to the repository store that wrote them. For a user lock, they sit next to each repository store that locked or injected it, not in the user store's folder.
 
-The store file itself can still hold pieces of the text after the delete, in its full-text search index and in database pages that SQLite hasn't overwritten yet ([#1961](https://github.com/robotrocketscience/aelfrice/issues/1961)).
+Inside the store, a delete also leaves the text in these places:
+
+- The copy that ingest wrote into the next sentence's log row, as `derived_from.prior_text`.
+- Anchor text on edges. The edge from a later turn keeps the start of the earlier turn as its anchor, even when the deleted sentence's belief is neither end of that edge.
+- Log rows from deletes made before this release. Those rows keep their text, and `aelf doctor --replay` can print it in its drift examples.
+- The full-text search index and unused space inside the store file's pages, until SQLite reuses that space ([#1961](https://github.com/robotrocketscience/aelfrice/issues/1961)).
+- The search sidecar `memory.db.bm25f`, which keeps the text's search terms until a command or hook that can write the store rebuilds it.
 
 ## Batch ingest of historical sessions
 
