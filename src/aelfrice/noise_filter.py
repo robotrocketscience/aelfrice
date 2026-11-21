@@ -459,6 +459,178 @@ UNCLOSED_HARNESS_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+def _indexed_alt(tags: tuple[str, ...]) -> str:
+    """`(?:(t0)|(t1)|...)`, so a match's `lastindex` names its tag."""
+    return "(?:" + "|".join("(" + re.escape(t) + ")" for t in tags) + ")"
+
+
+# The opening and closing tags of ingest's reminder and harness block
+# patterns, one group per tag name, for `_exact_block_spans`.
+_REMINDER_OPENER_IDX_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<" + _indexed_alt(("system-reminder",)) + r"\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+_REMINDER_CLOSER_IDX_RE: Final[re.Pattern[str]] = re.compile(
+    r"</" + _indexed_alt(("system-reminder",)) + r"\s*>", re.IGNORECASE,
+)
+_HARNESS_OPENER_IDX_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<" + _indexed_alt(HARNESS_BLOCK_TAGS) + r"\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+_HARNESS_CLOSER_IDX_RE: Final[re.Pattern[str]] = re.compile(
+    r"</" + _indexed_alt(HARNESS_BLOCK_TAGS) + r"\s*>", re.IGNORECASE,
+)
+# The regex engine's own case-blind backreference, applied to two names
+# joined by a NUL, which no tag name holds.
+_SAME_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"([^\x00]*)\x00\1", re.IGNORECASE | re.DOTALL,
+)
+
+
+class _NameClasses:
+    """Name classes under the engine's case-blind backreference.
+
+    The backreference accepts a closer name when each of its characters
+    lowercases, as the engine lowercases, to the same character as the
+    opener name's character at that position. That is equality of the two
+    names mapped character by character, so it splits names into classes,
+    and each character's class is found once by testing it against one
+    member of each class already seen. Few distinct characters can spell a
+    tag name, so the tests stay few however many spellings the text holds.
+    """
+
+    def __init__(self) -> None:
+        self._char: dict[str, int] = {}
+        self._reps: list[str] = []
+        self._name: dict[str, tuple[int, ...]] = {}
+
+    def _of_char(self, c: str) -> int:
+        cid = self._char.get(c)
+        if cid is None:
+            for i, rep in enumerate(self._reps):
+                if _SAME_NAME_RE.fullmatch(c + "\x00" + rep) is not None:
+                    cid = i
+                    break
+            else:
+                cid = len(self._reps)
+                self._reps.append(c)
+            self._char[c] = cid
+        return cid
+
+    def of(self, name: str) -> tuple[int, ...]:
+        key = self._name.get(name)
+        if key is None:
+            key = tuple(self._of_char(c) for c in name)
+            self._name[name] = key
+        return key
+
+
+def _exact_block_spans(
+    text: str,
+    opener_re: re.Pattern[str],
+    closer_re: re.Pattern[str],
+    *,
+    backref: bool,
+) -> list[tuple[int, int]]:
+    """The spans a lazy block pattern removes, for any tag name, linearly.
+
+    `_block_spans` gives up on a name that isn't ASCII, because it compares
+    names with `str.lower`. This reads the same blocks the way the pattern
+    does: an opener at a line start, the next `>`, then the first closer of
+    the same tag after it, with no overlap. With `backref`, as in
+    `HARNESS_BLOCK_RE`'s `\\1`, a closer counts only when its name is in
+    the opener name's class under the engine's case-blind backreference
+    (`_NameClasses`); without it, as in `SYSTEM_REMINDER_RE`, any closer of
+    the tag counts. Closers are grouped by tag and class, and each group
+    keeps one cursor that only moves forward, so the scan is linear in the
+    text: each opener reads one group, and each closer is passed once.
+    """
+    classes = _NameClasses()
+
+    def group(idx: int, name: str) -> tuple[int, tuple[int, ...]]:
+        return (idx, classes.of(name) if backref else ())
+
+    closers: dict[tuple[int, tuple[int, ...]], tuple[list[int], list[int]]] = {}
+    for m in closer_re.finditer(text):
+        idx = m.lastindex or 0
+        found = closers.setdefault(group(idx, m.group(idx)), ([], []))
+        found[0].append(m.start())
+        found[1].append(m.end())
+    cursors: dict[tuple[int, tuple[int, ...]], int] = {}
+    spans: list[tuple[int, int]] = []
+    gt = -1
+    no_gt = False
+    done = 0
+    for m in opener_re.finditer(text):
+        if m.start() < done:
+            continue
+        idx = m.lastindex or 0
+        if not no_gt and gt < m.end():
+            gt = text.find(">", m.end())
+            no_gt = gt < 0
+        if no_gt:
+            continue
+        key = group(idx, m.group(idx))
+        pair = closers.get(key)
+        if pair is None:
+            continue
+        starts, ends = pair
+        k = cursors.get(key, 0)
+        while k < len(starts) and starts[k] <= gt:
+            k += 1
+        cursors[key] = k
+        if k == len(starts):
+            continue
+        spans.append((m.start(), ends[k]))
+        done = ends[k]
+    return spans
+
+
+def _cut_blocks(
+    text: str,
+    opener_re: re.Pattern[str],
+    closer_re: re.Pattern[str],
+    indexed: tuple[re.Pattern[str], re.Pattern[str], bool],
+) -> str:
+    """A lazy block pattern's `sub("", text)`, computed in one forward scan.
+
+    The pattern, `SYSTEM_REMINDER_RE` or `HARNESS_BLOCK_RE`, rescans the
+    rest of the record for every opener that never closes: quadratic on a
+    flood of unclosed openers at line starts (#1955). `_block_spans` finds
+    the same spans linearly for ASCII tag names, and `_exact_block_spans`
+    for any others, from the `indexed` opener, closer and backref setting.
+    The output is the text outside the spans.
+    """
+    found = _block_spans(text, opener_re, closer_re)
+    if found is None:
+        spans = _exact_block_spans(
+            text, indexed[0], indexed[1], backref=indexed[2],
+        )
+    else:
+        spans = list(zip(found[0], found[1]))
+    out: list[str] = []
+    pos = 0
+    for s, e in spans:
+        out.append(text[pos:s])
+        pos = e
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _cut_unclosed_harness(text: str) -> str:
+    """`UNCLOSED_HARNESS_RE.sub("", text)` in linear time.
+
+    The pattern cuts from the first harness opener at a line start that
+    has a `>` somewhere after it to the end of the text. A later opener
+    has a `>` after it only if the first one does, so only the first
+    opener is checked.
+    """
+    m = _HARNESS_OPENER_RE.search(text)
+    if m is None or text.find(">", m.end()) < 0:
+        return text
+    return text[:m.start()]
+
+
 def speech_before_pastes(cut: str) -> str | None:
     """A relay-cut user record with all but speech and pastes cut, or None.
 
@@ -468,13 +640,24 @@ def speech_before_pastes(cut: str) -> str | None:
     harness blocks, closed or not. `cut` is `cut_relay`'s output; each
     caller makes that call itself. None when nothing is left or the record
     is a slash command's wrapper, which ingest drops whole.
+
+    The output equals `SYSTEM_REMINDER_RE`, `HARNESS_BLOCK_RE` and
+    `UNCLOSED_HARNESS_RE` applied with `sub`, but each cut is one forward
+    scan, so the time is linear in the record's length, whatever the tag
+    names are spelled with.
     """
     rest = HOST_MARKER_LINE_RE.sub("", cut)
-    rest = SYSTEM_REMINDER_RE.sub("", rest).strip()
+    rest = _cut_blocks(
+        rest, _REMINDER_TAG_RE, _REMINDER_CLOSER_RE,
+        (_REMINDER_OPENER_IDX_RE, _REMINDER_CLOSER_IDX_RE, False),
+    ).strip()
     if not rest or COMMAND_WRAPPER_RE.match(rest):
         return None
-    rest = HARNESS_BLOCK_RE.sub("", rest)
-    return UNCLOSED_HARNESS_RE.sub("", rest)
+    rest = _cut_blocks(
+        rest, _HARNESS_OPENER_RE, _HARNESS_CLOSER_RE,
+        (_HARNESS_OPENER_IDX_RE, _HARNESS_CLOSER_IDX_RE, True),
+    )
+    return _cut_unclosed_harness(rest)
 
 
 def paste_fields(text: str) -> tuple[int, int]:
@@ -483,7 +666,7 @@ def paste_fields(text: str) -> tuple[int, int]:
     Counted on `speech_before_pastes(cut_relay(text))` with
     `paste_segments`, the text and the rule `ingest._user_speech` uses. The
     bytes leave tags out and keep line breaks. A record with no pastes left,
-    or none at all, gives (0, 0).
+    or none at all, gives (0, 0). The work is linear in the record's length.
     """
     rest = speech_before_pastes(cut_relay(text))
     if rest is None:
