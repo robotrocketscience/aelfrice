@@ -4311,17 +4311,20 @@ def _user_store_belief(
 ) -> Belief | None:
     """`belief_id` as the user store holds it, for a `--user` hint.
 
-    Never creates the user store. None when the store is absent, when
-    it is the repository store, when it cannot be read, or when it has
-    no such belief. The hint is advice, so a broken user store never
-    turns a repository command into a failure.
+    Opens the store read-only, so it never creates the store and never
+    writes it: a writable open sweeps expired locks (#1946). None when
+    the store is absent, when it is the repository store, when it cannot
+    be read, or when it has no such belief. The hint is advice, so a
+    broken user store never turns a repository command into a failure.
     """
     import sqlite3
+
+    from aelfrice.user_locks import open_user_store_for_read
 
     if _user_store_is_repo_store():
         return None
     try:
-        store = open_user_store_if_present()
+        store = open_user_store_for_read()
         if store is None:
             return None
         try:
@@ -4333,9 +4336,17 @@ def _user_store_belief(
 
 
 def _user_lock_hint(belief_id: str) -> str | None:
-    """A pointer to `--user` when `belief_id` is locked in the user store."""
+    """A pointer to `--user` when `belief_id` is locked in the user store.
+
+    The read-only open sweeps nothing, so a lock past its expiry still
+    reads as a lock; the comparison the sweep makes is repeated here.
+    """
     b = _user_store_belief(belief_id)
     if b is None or b.lock_level != LOCK_USER:
+        return None
+    if b.lock_expires_at is not None and (
+        b.lock_expires_at <= datetime.now(timezone.utc).isoformat()
+    ):
         return None
     return (
         f"  {belief_id} is a user lock; run `aelf unlock --user {belief_id}`."
