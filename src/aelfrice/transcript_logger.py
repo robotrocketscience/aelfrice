@@ -4,6 +4,8 @@ Wires four hook events into a project-scoped append-only JSONL log
 under `<git-common-dir>/aelfrice/transcripts/turns.jsonl`:
 
 - `UserPromptSubmit` -> append `{"role": "user", "text": <prompt>, ...}`.
+  The line also carries `paste_blocks` and `paste_bytes`, the count of
+  `<pasted_content>` pastes and their UTF-8 bytes, by ingest's rule (#1955).
   Harness-wrapper prompts (rejected by `noise_filter.is_transcript_noise`)
   are dropped before append per #747. A prompt the host transcript marks
   as scheduled or meta is dropped per #1780.
@@ -104,6 +106,16 @@ DUP_WINDOW_SECONDS: Final[float] = 2.0
 # Bounds the dedup read at O(1) in file size, holding the per-append cost
 # inside the sub-10ms budget even when rotation has not run recently.
 _TAIL_READ_BYTES: Final[int] = 65536
+
+PASTE_COUNT_MAX_CHARS: Final[int] = 2_000_000
+"""Longest prompt the logger counts pastes in (#1955).
+
+The count is linear in the prompt's length and runs before the line is
+appended, on a hook with no timeout. At this bound it measured 0.07 s on
+plain text and 0.15 to 0.28 s on floods of unclosed openers, on laptops.
+The bound caps that work whatever the prompt holds; a longer prompt's
+line goes out without the paste fields.
+"""
 
 # #1780: bytes read from the tail of the host transcript to find the record
 # for the prompt being submitted. The host writes that record before it
@@ -688,7 +700,21 @@ def _scan_host_tail(transcript_path: object, prompt: str) -> bool:
     return False
 
 
-def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
+def _note(stderr: IO[str] | None, message: str) -> None:
+    """One `aelf-logger:` line on `stderr`; a failing write is dropped.
+
+    The note must never cost the line it is about, so any error from the
+    stream, such as a closed pipe, is swallowed.
+    """
+    try:
+        print(f"aelf-logger: {message}", file=sys.stderr if stderr is None else stderr)
+    except Exception:  # noqa: BLE001 - a note never stops the append
+        pass
+
+
+def _handle_user_prompt_submit(
+    payload: dict[str, object], stderr: IO[str] | None = None,
+) -> None:
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         return
@@ -761,6 +787,29 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
     line = _build_turn_line(
         role="user", text=prompt, session_id=sid, ctx=_turn_context(),
     )
+    # #1955: integer counts only, so the line says how much of its text
+    # was pasted without keeping anything new, by ingest's own reading of
+    # the text. Losing the counts is better than losing the line: a prompt
+    # over the size bound, or any error from the import or the count, sends
+    # the line out without the two fields, which readers treat as unknown,
+    # never with false zeros. Unlike the noise gate above, which would write
+    # to stderr on ordinary prompts, this writes one stderr note, and only
+    # on those rare paths, so a lost count is never silent; the note goes
+    # through `_note`, which can't raise.
+    if len(prompt) > PASTE_COUNT_MAX_CHARS:
+        _note(
+            stderr,
+            f"paste counts skipped (prompt over {PASTE_COUNT_MAX_CHARS} characters)",
+        )
+    else:
+        try:
+            from aelfrice.noise_filter import paste_fields  # noqa: PLC0415
+
+            counts = paste_fields(prompt)
+        except Exception as exc:  # noqa: BLE001 - the line must be written
+            _note(stderr, f"paste counts skipped ({type(exc).__name__})")
+        else:
+            line["paste_blocks"], line["paste_bytes"] = counts
     _append_turn(line)
 
 
@@ -1030,6 +1079,10 @@ def main(
             return 0
         event = payload.get("hook_event_name")
         if not isinstance(event, str):
+            return 0
+        if event == EVENT_USER_PROMPT_SUBMIT:
+            # The one handler that writes notes; it gets main's stream.
+            _handle_user_prompt_submit(payload, serr)
             return 0
         handler = _DISPATCH.get(event)
         if handler is None:
