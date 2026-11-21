@@ -274,6 +274,55 @@ def test_both_writers_stay_independent_without_prompt_id(
     assert injected != line["turn_id"]
 
 
+# --- the duplicate guard and prompt ids -----------------------------------
+#
+# The #968 guard drops a line that repeats the previous one's session, role
+# and text inside its window. Two prompt ids that differ name two prompts,
+# so the second line must land, or its injection rows join nothing.
+
+_PROMPT_ID_B = "9a1c4e7b-2f3d-4b8a-8c6e-5d0f1a2b3c4d"
+
+
+def test_same_text_under_two_prompt_ids_logs_both_user_lines(
+    roots: tuple[Path, Path],
+) -> None:
+    db, tdir = roots
+    for pid in (_PROMPT_ID, _PROMPT_ID_B):
+        payload = _payload(prompt_id=pid)
+        _fire_hook(payload)
+        _fire_logger(payload)
+    lines = _logged_lines(tdir)
+    assert [(ln["role"], ln["turn_id"]) for ln in lines] == [
+        ("user", _PROMPT_ID), ("user", _PROMPT_ID_B),
+    ]
+    assert _injection_turn_ids(db) == {_PROMPT_ID, _PROMPT_ID_B}
+
+
+def test_same_text_under_one_prompt_id_still_collapses(
+    roots: tuple[Path, Path],
+) -> None:
+    """A duplicated registration re-fires one payload, so one prompt id."""
+    _, tdir = roots
+    for _ in range(3):
+        _fire_logger(_payload(prompt_id=_PROMPT_ID))
+    assert [ln["turn_id"] for ln in _logged_lines(tdir)] == [_PROMPT_ID]
+
+
+def test_minted_line_then_prompt_id_same_text_collapses(
+    roots: tuple[Path, Path],
+) -> None:
+    """A minted id is not a prompt id, so the text rule still applies.
+
+    Two registrations of different logger versions write one re-fire as a
+    minted line and a prompt-id line; the guard keeps the first.
+    """
+    _, tdir = roots
+    _fire_logger(_payload())
+    _fire_logger(_payload(prompt_id=_PROMPT_ID))
+    (line,) = _logged_lines(tdir)
+    assert _MINTED.match(str(line["turn_id"]))
+
+
 # --- Stop -----------------------------------------------------------------
 
 def _stop_payload(**extra: object) -> dict[str, object]:
