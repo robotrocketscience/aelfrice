@@ -31,6 +31,7 @@ from aelfrice.models import (
     BELIEF_FACTUAL,
     BELIEF_TYPES,
     CORROBORATION_SOURCE_CLI_REMEMBER,
+    CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     CORROBORATION_SOURCE_TYPES,
     CORROBORATION_SPEAKERS,
@@ -596,12 +597,18 @@ def test_a_dry_run_counts_the_corroboration_rows_it_would_copy(
     assert not dst.exists()
 
 
-def test_a_dry_run_counts_duplicate_source_rows_once(tmp_path: Path) -> None:
-    """A store from before v3.8.0 can hold duplicate rows for one source.
+_RawRow = tuple[str, str, str | None, str | None, str | None]
 
-    The apply keeps one row per (belief_id, session_id or '',
-    source_path_hash or '', source_type), so the dry run counts that key
-    too. NULL and '' are one key, as in `uq_belief_corroborations_source`.
+
+def _migrate_raw_rows(
+    tmp_path: Path, rows: list[_RawRow],
+) -> tuple[int, int, list[tuple[Any, ...]]]:
+    """Seed b1 and b2 with raw corroboration rows and no unique index, as
+    a store from before v3.8.0 can hold them, then dry-run and apply.
+
+    Each row is (belief_id, source_type, session_id, source_path_hash,
+    speaker). Returns the dry-run count, the apply count, and the target
+    rows as (belief_id, source_type, speaker) in id order.
     """
     src, dst = tmp_path / "src.db", tmp_path / "dst.db"
     s = MemoryStore(str(src))
@@ -610,24 +617,13 @@ def test_a_dry_run_counts_duplicate_source_rows_once(tmp_path: Path) -> None:
         s.insert_belief(_belief("b2"))
     finally:
         s.close()
-    remember = CORROBORATION_SOURCE_CLI_REMEMBER
-    rows = [
-        ("b1", remember, "s1", None),
-        ("b1", remember, "s1", None),
-        ("b1", CORROBORATION_SOURCE_TRANSCRIPT_INGEST, "s1", None),
-        ("b2", remember, "s1", None),
-        ("b2", remember, None, None),
-        ("b2", remember, "", None),
-        ("b2", remember, None, "h1"),
-        ("b2", remember, None, "h1"),
-    ]
     conn = sqlite3.connect(src)
     try:
         conn.execute("DROP INDEX uq_belief_corroborations_source")
         conn.executemany(
             "INSERT INTO belief_corroborations (belief_id, ingested_at, "
             "source_type, session_id, source_path_hash, speaker) "
-            "VALUES (?, '2026-01-02T00:00:00+00:00', ?, ?, ?, NULL)",
+            "VALUES (?, '2026-01-02T00:00:00+00:00', ?, ?, ?, ?)",
             rows,
         )
         conn.commit()
@@ -640,13 +636,51 @@ def test_a_dry_run_counts_duplicate_source_rows_once(tmp_path: Path) -> None:
     conn = sqlite3.connect(dst)
     try:
         target_rows = conn.execute(
-            "SELECT COUNT(*) FROM belief_corroborations",
-        ).fetchone()[0]
+            "SELECT belief_id, source_type, speaker "
+            "FROM belief_corroborations ORDER BY id",
+        ).fetchall()
     finally:
         conn.close()
-    assert target_rows == 5
-    assert dry.counts.copied_corroborations == 5
-    assert applied.counts.copied_corroborations == 5
+    return (dry.counts.copied_corroborations,
+            applied.counts.copied_corroborations, target_rows)
+
+
+def test_a_dry_run_counts_duplicate_source_rows_once(tmp_path: Path) -> None:
+    """A store from before v3.8.0 can hold duplicate rows for one source.
+
+    The apply keeps one row per (belief_id, session_id or '',
+    source_path_hash or '', source_type), so the dry run counts that key
+    too. NULL and '' are one key, as in `uq_belief_corroborations_source`.
+    """
+    remember = CORROBORATION_SOURCE_CLI_REMEMBER
+    dry, applied, target_rows = _migrate_raw_rows(tmp_path, [
+        ("b1", remember, "s1", None, None),
+        ("b1", remember, "s1", None, None),
+        ("b1", CORROBORATION_SOURCE_TRANSCRIPT_INGEST, "s1", None, None),
+        ("b2", remember, "s1", None, None),
+        ("b2", remember, None, None, None),
+        ("b2", remember, "", None, None),
+        ("b2", remember, None, "h1", None),
+        ("b2", remember, None, "h1", None),
+    ])
+    assert len(target_rows) == 5
+    assert dry == 5
+    assert applied == 5
+
+
+def test_every_consolidation_migration_row_copies(tmp_path: Path) -> None:
+    """#219 writes one consolidation_migration row per merged duplicate,
+    with no session or path hash. The unique index exempts them, so each
+    row copies and each one counts."""
+    consolidation = CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION
+    dry, applied, target_rows = _migrate_raw_rows(tmp_path, [
+        ("b1", consolidation, None, None, None),
+        ("b1", consolidation, None, None, None),
+        ("b1", consolidation, None, None, None),
+    ])
+    assert len(target_rows) == 3
+    assert dry == 3
+    assert applied == 3
 
 
 # --- Belief values this version does not know are normalized ----------------
