@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -84,13 +85,91 @@ def _workflow() -> str:
     return (_REPO / ".github/workflows/mutation.yml").read_text(encoding="utf-8")
 
 
+#: Shell control operators that end one command and start the next.
+_SHELL_OPERATORS = frozenset({"&&", "||", ";", "|", "&"})
+
+
+def _contract_step(workflow: str) -> list[str]:
+    """The contract step's lines, from its `- name:` line to the next step."""
+    step = workflow[workflow.index("- name: Check the mutmut contract the plan relies on"):]
+    return step[:step.index("- name: Plan the shards")].splitlines()
+
+
+def _step_env(lines: list[str]) -> set[str]:
+    """Each `KEY: value` line of the step, with YAML comments removed."""
+    return {
+        line.split(" #", 1)[0].strip()
+        for line in lines
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+
+def _pytest_args(lines: list[str]) -> list[str]:
+    """The arguments of every `pytest` command in the step's `run:` script.
+
+    The script is tokenised as the shell reads it: a backslash-newline
+    joins two lines, `#` starts a comment, and a control operator ends
+    the command. So a test named only in a comment, or by another
+    command such as `echo`, is not an argument.
+    """
+    start = next(i for i, line in enumerate(lines) if line.strip() == "run: |")
+    script = "\n".join(lines[start + 1:]).replace("\\\n", " ")
+    args: list[str] = []
+    for line in script.splitlines():
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        in_pytest = False
+        for token in lexer:
+            if token in _SHELL_OPERATORS:
+                in_pytest = False
+            elif in_pytest:
+                args.append(token)
+            elif token == "pytest":
+                in_pytest = True
+    return args
+
+
 def test_the_contract_step_runs_this_test() -> None:
     """It only guards the weekly run if the plan job runs it with mutmut."""
+    lines = _contract_step(_workflow())
+    assert 'AELF_REQUIRE_MUTMUT: "1"' in _step_env(lines)
+    assert f"tests/{Path(__file__).name}" in _pytest_args(lines)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "\n          # tests/test_mutation_harness_1938.py runs later.\n",
+        "  # tests/test_mutation_harness_1938.py\n",
+        "\n          echo tests/test_mutation_harness_1938.py\n",
+        " && echo tests/test_mutation_harness_1938.py\n",
+    ],
+    ids=["comment-line", "trailing-comment", "other-command", "after-operator"],
+)
+def test_a_mention_outside_the_pytest_command_does_not_count(
+    replacement: str,
+) -> None:
+    """The step reader must not find this test where pytest won't run it."""
     workflow = _workflow()
-    step = workflow[workflow.index("- name: Check the mutmut contract the plan relies on"):]
-    step = step[:step.index("- name: Plan the shards")]
-    assert "AELF_REQUIRE_MUTMUT: \"1\"" in step
-    assert f"tests/{Path(__file__).name}" in step
+    command = (
+        "tests/test_mutation_function_scope_1632.py \\\n"
+        "              tests/test_mutation_harness_1938.py\n"
+    )
+    assert workflow.count(command) == 1
+    edited = workflow.replace(
+        command, "tests/test_mutation_function_scope_1632.py" + replacement,
+    )
+    args = _pytest_args(_contract_step(edited))
+    assert "tests/test_mutation_function_scope_1632.py" in args
+    assert f"tests/{Path(__file__).name}" not in args
+
+
+def test_a_commented_out_env_line_does_not_count() -> None:
+    lines = _contract_step(_workflow().replace(
+        '          AELF_REQUIRE_MUTMUT: "1"\n',
+        '          # AELF_REQUIRE_MUTMUT: "1"\n',
+    ))
+    assert 'AELF_REQUIRE_MUTMUT: "1"' not in _step_env(lines)
 
 
 def test_every_job_pins_the_mutmut_the_contract_step_checks() -> None:
