@@ -27,8 +27,8 @@ import pytest
 
 from aelfrice.cli import (
     _CODEX_APPLICABLE_DESTS,
-    _codex_option_rejection,
     _explicitly_supplied_dests,
+    _host_option_rejection,
     _option_dests,
     _subcommand_parser,
     build_parser,
@@ -350,7 +350,7 @@ def test_claude_host_is_not_gated() -> None:
     args = parser.parse_args(
         ["setup", "--scope", "user", "--rebuilder", "--no-statusline"]
     )
-    verdict = _codex_option_rejection(
+    verdict = _host_option_rejection(
         parser,
         "setup",
         args,
@@ -372,7 +372,7 @@ def test_other_subcommands_are_not_gated(cmd: str, extra: list[str]) -> None:
     parser = build_parser()
     argv = [cmd, "--host", "codex", *extra]
     args = parser.parse_args(argv)
-    assert _codex_option_rejection(parser, cmd, args, argv) is None
+    assert _host_option_rejection(parser, cmd, args, argv) is None
     # The boundary is the applicability map, not the caller's guard: an
     # uncovered subcommand has no inapplicable options at all.
     assert codex_inapplicable_options(parser, cmd) == {}

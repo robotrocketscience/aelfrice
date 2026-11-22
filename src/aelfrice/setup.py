@@ -946,6 +946,22 @@ def resolve_claude_memory_mirror_command(scope: SettingsScope) -> str:
     return _resolve_script(CLAUDE_MEMORY_MIRROR_SCRIPT_NAME, scope)
 
 
+# --- Gemini CLI host (#1812) -------------------------------------------
+
+
+GEMINI_HOOK_SCRIPT_NAME: Final[str] = "aelf-gemini-hook"
+
+
+def resolve_gemini_hook_command(scope: SettingsScope) -> str:
+    """Pick the absolute aelf-gemini-hook path for `scope`.
+
+    Same routing primitive as `resolve_hook_command`. `aelf setup --host
+    gemini` resolves it on the user's machine and writes it into Gemini's
+    user settings, so no machine path lands in a project file.
+    """
+    return _resolve_script(GEMINI_HOOK_SCRIPT_NAME, scope)
+
+
 def install_claude_memory_mirror_hook(
     settings_path: Path, *, command: str, timeout: int | None = None,
 ) -> InstallResult:

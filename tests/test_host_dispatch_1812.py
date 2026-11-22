@@ -27,12 +27,17 @@ def test_the_tables_hold_the_existing_executors() -> None:
     assert cli._SETUP_BY_HOST == {
         "claude": cli._cmd_setup_claude,
         "codex": cli._cmd_setup_codex,
+        "gemini": cli._cmd_setup_gemini,
     }
     assert cli._UNSETUP_BY_HOST == {
         "claude": cli._cmd_unsetup_claude,
         "codex": cli._cmd_unsetup_codex,
+        "gemini": cli._cmd_unsetup_gemini,
     }
-    assert cli._DOCTOR_BY_HOST == {"codex": cli._cmd_doctor_codex}
+    assert cli._DOCTOR_BY_HOST == {
+        "codex": cli._cmd_doctor_codex,
+        "gemini": cli._cmd_doctor_gemini,
+    }
 
 
 def _recorders(
@@ -90,7 +95,8 @@ def test_a_host_with_no_executor_fails_rather_than_falling_through(
 
 @pytest.mark.timeout(30)
 @pytest.mark.parametrize(
-    ("host", "expected"), [("claude", "full doctor"), ("codex", "codex")],
+    ("host", "expected"),
+    [("claude", "full doctor"), ("codex", "codex"), ("gemini", "gemini")],
 )
 def test_doctor_runs_the_host_scan_or_the_full_doctor(
     monkeypatch: pytest.MonkeyPatch, host: str, expected: str,

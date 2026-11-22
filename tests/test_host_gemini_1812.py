@@ -1,0 +1,976 @@
+"""Gemini settings hooks, custom commands, and the doctor scan (#1812).
+
+Every file is under `tmp_path`, and every settings document is synthetic.
+The hook command is a file created in the test, so nothing resolves a real
+install.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shlex
+import tempfile
+import tomllib
+from pathlib import Path
+
+import pytest
+
+import aelfrice.host_gemini as hgm
+from aelfrice import launcher
+from aelfrice.file_lock import HAVE_ADVISORY_LOCKS, try_lock_exclusive
+from aelfrice.setup import bundled_slash_files
+
+pytestmark = pytest.mark.timeout(60)
+
+EVENTS = ["AfterAgent", "BeforeAgent", "PreCompress", "SessionStart"]
+
+
+@pytest.fixture(autouse=True)
+def _scratch_tempdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The settings lock goes to the temporary directory; keep it here."""
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+
+
+@pytest.fixture
+def cmd(tmp_path: Path) -> str:
+    exe = tmp_path / "bin" / "aelf-gemini-hook"
+    exe.parent.mkdir()
+    exe.write_text("", encoding="utf-8")
+    return str(exe)
+
+
+@pytest.fixture
+def gdir(tmp_path: Path) -> Path:
+    path = tmp_path / "home" / ".gemini"
+    path.mkdir(parents=True)
+    return path
+
+
+def _install(path: Path, cmd: str, *, force: bool = False) -> hgm.GeminiSettingsResult:
+    return hgm.install_gemini_hooks(path, force=force, command=cmd)
+
+
+def _read(path: Path) -> dict[str, object]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write(path: Path, doc: object) -> None:
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+def _ours(cmd: str, event: str) -> dict[str, object]:
+    return hgm.desired_gemini_hooks(cmd)[event][0]
+
+
+_FOREIGN_HANDLER = {"type": "command", "command": "/opt/tools/other-hook", "name": "other"}
+_FOREIGN_GROUP = {"matcher": "write_file", "hooks": [_FOREIGN_HANDLER]}
+
+
+# --- the hook set -------------------------------------------------------------
+
+
+def test_the_hook_set_covers_four_lifecycle_events_in_milliseconds(cmd: str) -> None:
+    desired = hgm.desired_gemini_hooks(cmd)
+    assert sorted(desired) == EVENTS
+    specs = {
+        event: (
+            groups[0]["matcher"],
+            groups[0]["hooks"][0]["name"],  # type: ignore[index]
+            groups[0]["hooks"][0]["timeout"],  # type: ignore[index]
+        )
+        for event, groups in desired.items()
+    }
+    assert specs == {
+        "SessionStart": ("*", "aelfrice-session-start", 15000),
+        "BeforeAgent": ("*", "aelfrice-prompt", 45000),
+        "AfterAgent": ("*", "aelfrice-turn-end", 60000),
+        "PreCompress": ("*", "aelfrice-pre-compress", 30000),
+    }
+    for groups in desired.values():
+        assert groups[0]["hooks"] == [{
+            "type": "command", "command": cmd,
+            "name": groups[0]["hooks"][0]["name"],  # type: ignore[index]
+            "timeout": groups[0]["hooks"][0]["timeout"],  # type: ignore[index]
+        }]
+
+
+def _commands(path: Path) -> set[str]:
+    hooks = _read(path)["hooks"]
+    assert isinstance(hooks, dict)
+    return {
+        handler["command"]
+        for groups in hooks.values()
+        for group in groups
+        for handler in group["hooks"]
+    }
+
+
+def test_setup_writes_the_path_it_resolves_at_install_time(
+    gdir: Path, cmd: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: writing the bare script name instead of resolving it."""
+    monkeypatch.setattr(
+        launcher, "which_on_path",
+        lambda name: Path(cmd) if name == "aelf-gemini-hook" else None,
+    )
+    path = gdir / "settings.json"
+    hgm.install_gemini_hooks(path)
+    assert _commands(path) == {cmd}
+
+
+def _spaced_hook(tmp_path: Path) -> Path:
+    name = "aelf-gemini-hook.exe" if os.name == "nt" else "aelf-gemini-hook"
+    exe = tmp_path / "my bin" / name
+    exe.parent.mkdir()
+    exe.write_text("", encoding="utf-8")
+    return exe
+
+
+def test_a_spaced_hook_path_is_one_word_to_gemini_shell(
+    gdir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: writing the resolved path unquoted.
+
+    Gemini runs the command under `bash -c`, which splits a bare path at
+    the space and runs `.../my`.
+    """
+    exe = _spaced_hook(tmp_path)
+    monkeypatch.setattr(
+        launcher, "which_on_path",
+        lambda name: exe if name == "aelf-gemini-hook" else None,
+    )
+    path = gdir / "settings.json"
+    hgm.install_gemini_hooks(path)
+    (command,) = _commands(path)
+    if os.name == "nt":
+        assert command == f"& '{exe}'"
+    else:
+        assert shlex.split(command) == [str(exe)]
+    report = hgm.doctor_gemini(gdir)
+    assert report.owned_handler_count == 4
+    assert report.faults() == []
+
+
+def test_a_spaced_windows_path_is_quoted_for_powershell() -> None:
+    exe = "C:\\Users\\First Last\\.local\\bin\\aelf-gemini-hook.exe"
+    command = hgm.gemini_hook_command(exe, windows=True)
+    assert command == f"& '{exe}'"
+    assert hgm.shell_program(command, windows=True) == exe
+    assert hgm._handler_is_owned({"command": command}, windows=True)  # noqa: SLF001
+    odd = "C:\\tools\\it's\\bin\\aelf-gemini-hook.exe"
+    quoted = hgm.gemini_hook_command(odd, windows=True)
+    # PowerShell reads two single quotes inside a single-quoted string as one.
+    assert quoted == "& 'C:\\tools\\it''s\\bin\\aelf-gemini-hook.exe'"
+    assert hgm.shell_program(quoted, windows=True) == odd
+
+
+@pytest.mark.parametrize(
+    ("program", "windows"),
+    [
+        ("/usr/local/bin/aelf-gemini-hook", False),
+        ("C:\\Users\\w\\.local\\bin\\aelf-gemini-hook.exe", True),
+    ],
+)
+def test_a_plain_hook_path_is_written_unchanged(program: str, windows: bool) -> None:
+    assert hgm.gemini_hook_command(program, windows=windows) == program
+
+
+# --- install -------------------------------------------------------------------
+
+
+def test_install_into_a_missing_file(gdir: Path, cmd: str) -> None:
+    path = gdir / "settings.json"
+    result = _install(path, cmd)
+    assert (result.changed, result.error, result.events) == (True, None, EVENTS)
+    assert _read(path) == {"hooks": hgm.desired_gemini_hooks(cmd)}
+
+
+def test_install_is_idempotent(gdir: Path, cmd: str) -> None:
+    path = gdir / "settings.json"
+    _install(path, cmd)
+    before = path.read_bytes()
+    result = _install(path, cmd)
+    assert (result.changed, result.error) == (False, None)
+    assert path.read_bytes() == before
+
+
+def test_install_keeps_foreign_settings_and_handlers(gdir: Path, cmd: str) -> None:
+    path = gdir / "settings.json"
+    original = {
+        "theme": "widget",
+        "hooksConfig": {"notifications": False},
+        "hooks": {
+            "BeforeAgent": [{"matcher": "*", "hooks": [_FOREIGN_HANDLER]}],
+            "BeforeTool": [_FOREIGN_GROUP],
+        },
+    }
+    _write(path, original)
+    _install(path, cmd)
+    doc = _read(path)
+    assert doc["theme"] == "widget"
+    assert doc["hooksConfig"] == {"notifications": False}
+    hooks = doc["hooks"]
+    assert isinstance(hooks, dict)
+    assert hooks["BeforeTool"] == [_FOREIGN_GROUP]
+    assert hooks["BeforeAgent"] == [
+        {"matcher": "*", "hooks": [_FOREIGN_HANDLER]},
+        _ours(cmd, "BeforeAgent"),
+    ]
+
+
+def test_a_reinstall_replaces_an_older_handler_in_a_mixed_group(
+    gdir: Path, cmd: str,
+) -> None:
+    """Killed by: deciding ownership per group instead of per handler."""
+    path = gdir / "settings.json"
+    old = {"type": "command", "command": "/old/venv/bin/aelf-gemini-hook"}
+    _write(path, {"hooks": {"AfterAgent": [
+        {"matcher": "*", "hooks": [_FOREIGN_HANDLER, old]},
+    ]}})
+    _install(path, cmd)
+    hooks = _read(path)["hooks"]
+    assert isinstance(hooks, dict)
+    assert hooks["AfterAgent"] == [
+        {"matcher": "*", "hooks": [_FOREIGN_HANDLER]},
+        _ours(cmd, "AfterAgent"),
+    ]
+
+
+def test_a_claude_host_handler_is_not_claimed(gdir: Path, cmd: str) -> None:
+    """Only `aelf-gemini-hook` is ours here, even among aelfrice scripts."""
+    path = gdir / "settings.json"
+    claude_style = {"type": "command", "command": "/x/bin/aelf-hook"}
+    _write(path, {"hooks": {"BeforeAgent": [{"hooks": [claude_style]}]}})
+    _install(path, cmd)
+    hgm.remove_gemini_hooks(path)
+    assert _read(path) == {"hooks": {"BeforeAgent": [{"hooks": [claude_style]}]}}
+
+
+def test_a_windows_launcher_is_owned() -> None:
+    handler = {
+        "type": "command",
+        "command": "C:\\Users\\w\\.local\\bin\\aelf-gemini-hook.EXE",
+    }
+    assert hgm._handler_is_owned(handler, windows=True)  # noqa: SLF001
+    assert not hgm._handler_is_owned(  # noqa: SLF001
+        {"command": "C:\\tools\\other.exe"}, windows=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("content", "needle"),
+    [
+        ('{\n  // a comment\n  "theme": "x"\n}\n', "not plain JSON"),
+        ("[1, 2]\n", "not a JSON object"),
+        ('{"hooks": null}\n', "non-object `hooks` value (null)"),
+        ('{"hooks": 42}\n', "non-object `hooks` value (number)"),
+        ('{"hooks": {"BeforeAgent": {"x": 1}}}\n', "`BeforeAgent` event (object)"),
+        ('{"hooks": {"PreCompress": null}}\n', "`PreCompress` event (null)"),
+    ],
+)
+def test_install_refuses_what_it_would_reshape(
+    gdir: Path, cmd: str, content: str, needle: str,
+) -> None:
+    path = gdir / "settings.json"
+    path.write_text(content, encoding="utf-8")
+    result = _install(path, cmd)
+    assert result.error is not None and needle in result.error
+    assert path.read_text(encoding="utf-8") == content
+    forced = _install(path, cmd, force=True)
+    assert forced.error is None
+    hooks = _read(path)["hooks"]
+    assert isinstance(hooks, dict)
+    assert set(EVENTS) <= set(hooks)
+
+
+# --- remove ---------------------------------------------------------------------
+
+
+def test_remove_undoes_install_exactly(gdir: Path, cmd: str) -> None:
+    """Install then remove gives back the document setup started from."""
+    path = gdir / "settings.json"
+    original = {
+        "theme": "widget",
+        "hooks": {
+            "BeforeAgent": [{"matcher": "*", "hooks": [_FOREIGN_HANDLER]}],
+            "BeforeTool": [_FOREIGN_GROUP],
+        },
+    }
+    _write(path, original)
+    _install(path, cmd)
+    result = hgm.remove_gemini_hooks(path)
+    assert (result.changed, result.events) == (True, EVENTS)
+    assert _read(path) == original
+
+
+_USER_DOC = {"theme": "Dracula", "hooks": {"AfterAgent": [
+    {"matcher": "*", "hooks": [{"type": "command", "command": "/opt/x/mine"}]},
+]}}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        json.dumps(_USER_DOC, indent=4),
+        json.dumps(_USER_DOC) + "\n",
+        json.dumps(_USER_DOC, indent="\t") + "\n",
+        json.dumps({"theme": "\u00e9t\u00e9"}, indent=2, ensure_ascii=False).replace(
+            "\n", "\r\n",
+        ) + "\r\n",
+        json.dumps({"theme": "\u00e9t\u00e9"}, indent=2) + "\n",
+    ],
+    ids=["four-spaces-no-final-newline", "one-line", "tabs", "crlf-literal", "escaped"],
+)
+def test_install_then_remove_gives_back_the_same_bytes(
+    gdir: Path, cmd: str, text: str,
+) -> None:
+    """Killed by: writing the user's file back in one fixed layout."""
+    path = gdir / "settings.json"
+    path.write_bytes(text.encode("utf-8"))
+    _install(path, cmd)
+    assert path.read_bytes() != text.encode("utf-8")
+    hgm.remove_gemini_hooks(path)
+    assert path.read_bytes() == text.encode("utf-8")
+
+
+def test_install_then_remove_spaces_a_compact_file_as_json_dumps_does(
+    gdir: Path, cmd: str,
+) -> None:
+    """Pins the documented limit: spacing after `:` and `,` isn't kept.
+
+    Killed by: adding a final newline the file lacked, or keeping the
+    compact separators without changing INSTALL.md to match.
+    """
+    path = gdir / "settings.json"
+    path.write_bytes(b'{"theme":"x","n":1}')
+    _install(path, cmd)
+    hgm.remove_gemini_hooks(path)
+    assert path.read_bytes() == b'{"theme": "x", "n": 1}'
+
+
+def test_remove_drops_a_hooks_object_it_empties(gdir: Path, cmd: str) -> None:
+    """Killed by: leaving `"hooks": {}` behind in a file that had none."""
+    path = gdir / "settings.json"
+    _write(path, {"theme": "widget"})
+    _install(path, cmd)
+    hgm.remove_gemini_hooks(path)
+    assert _read(path) == {"theme": "widget"}
+
+
+def test_no_lock_file_is_left_in_the_gemini_dir(gdir: Path, cmd: str) -> None:
+    """Killed by: locking a sibling `settings.json.lock` again."""
+    path = gdir / "settings.json"
+    _write(path, {"theme": "widget"})
+    _install(path, cmd)
+    hgm.remove_gemini_hooks(path)
+    assert sorted(p.name for p in gdir.iterdir()) == ["settings.json"]
+
+
+def test_the_lock_is_keyed_by_the_settings_path(tmp_path: Path) -> None:
+    one = hgm.settings_lock_anchor(tmp_path / "a" / ".gemini" / "settings.json")
+    two = hgm.settings_lock_anchor(tmp_path / "b" / ".gemini" / "settings.json")
+    assert one != two
+    assert one.parent == Path(tempfile.gettempdir())
+
+
+@pytest.mark.skipif(
+    not HAVE_ADVISORY_LOCKS, reason="no advisory locking on this filesystem",
+)
+def test_the_lock_is_held_across_the_read_modify_write(
+    gdir: Path, cmd: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second opener can't take the lock while the plan runs.
+
+    `flock` is held per open file description, so a re-open in this
+    process contends as another process would.
+    """
+    path = gdir / "settings.json"
+    _write(path, {"theme": "widget"})
+    anchor = hgm.settings_lock_anchor(path)
+    lock_path = anchor.with_name(anchor.name + ".lock")
+    observed: list[bool] = []
+    real = Path.read_bytes
+
+    def probing(self: Path) -> bytes:
+        if self == path:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                try_lock_exclusive(fd)
+                observed.append(False)
+            except OSError:
+                observed.append(True)
+            finally:
+                os.close(fd)
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", probing)
+    assert _install(path, cmd).error is None
+    assert observed and all(observed)
+
+
+@pytest.mark.parametrize(
+    "before",
+    [None, "{}\n", '{\n  "hooks": {}\n}\n',
+     '{\n  "hooks": {\n    "PreCompress": []\n  }\n}\n'],
+    ids=["no-file", "empty-object", "empty-hooks", "empty-event-list"],
+)
+def test_remove_never_deletes_the_settings_file(
+    gdir: Path, cmd: str, before: str | None,
+) -> None:
+    """Unsetup can't tell a file setup created from one the user already
+    had, so it keeps the file. Killed by: unlinking a file left as `{}`."""
+    path = gdir / "settings.json"
+    if before is not None:
+        path.write_text(before, encoding="utf-8")
+    _install(path, cmd)
+    result = hgm.remove_gemini_hooks(path)
+    assert (result.changed, result.error) == (True, None)
+    assert path.is_file()
+    assert _read(path) == {}
+
+
+_needs_symlinks = pytest.mark.skipif(
+    os.name == "nt", reason="creating a symlink needs privileges on Windows",
+)
+
+
+@_needs_symlinks
+def test_a_symlinked_settings_file_is_written_through(
+    gdir: Path, cmd: str, tmp_path: Path,
+) -> None:
+    """Killed by: replacing the link with a regular file."""
+    target = tmp_path / "dotfiles" / "gemini-settings.json"
+    target.parent.mkdir()
+    original = '{\n  "theme": "widget"\n}\n'
+    target.write_text(original, encoding="utf-8")
+    link = gdir / "settings.json"
+    link.symlink_to(target)
+    assert _install(link, cmd).error is None
+    assert link.is_symlink()
+    assert sorted(_read(target)["hooks"]) == EVENTS  # type: ignore[arg-type]
+    assert hgm.remove_gemini_hooks(link).error is None
+    assert link.is_symlink()
+    assert target.read_text(encoding="utf-8") == original
+
+
+@_needs_symlinks
+def test_a_dangling_settings_link_is_refused(
+    gdir: Path, cmd: str, tmp_path: Path,
+) -> None:
+    link = gdir / "settings.json"
+    link.symlink_to(tmp_path / "gone" / "settings.json")
+    result = _install(link, cmd)
+    assert result.error is not None and "could not read" in result.error
+    assert link.is_symlink()
+    assert not (tmp_path / "gone").exists()
+
+
+def _not_utf8(path: Path) -> bytes:
+    raw = b'{"theme": "\xff", "x": "aelf-gemini-hook"}\n'
+    path.write_bytes(raw)
+    return raw
+
+
+def test_install_reports_a_settings_file_that_is_not_utf8(
+    gdir: Path, cmd: str,
+) -> None:
+    """Killed by: decoding outside the error path, which raised."""
+    path = gdir / "settings.json"
+    raw = _not_utf8(path)
+    result = _install(path, cmd)
+    assert result.error is not None and "could not read" in result.error
+    assert path.read_bytes() == raw
+
+
+def test_remove_reports_a_settings_file_that_is_not_utf8(gdir: Path) -> None:
+    path = gdir / "settings.json"
+    raw = _not_utf8(path)
+    result = hgm.remove_gemini_hooks(path)
+    assert result.error is not None and "could not read" in result.error
+    assert path.read_bytes() == raw
+
+
+def test_install_reports_a_settings_path_that_is_a_directory(
+    gdir: Path, cmd: str,
+) -> None:
+    path = gdir / "settings.json"
+    path.mkdir()
+    result = _install(path, cmd)
+    assert result.error is not None and "could not read" in result.error
+    assert path.is_dir()
+
+
+def test_install_reports_a_gemini_dir_that_is_a_file(
+    tmp_path: Path, cmd: str,
+) -> None:
+    gfile = tmp_path / "home" / ".gemini"
+    gfile.parent.mkdir(parents=True)
+    gfile.write_text("x", encoding="utf-8")
+    result = _install(gfile / "settings.json", cmd)
+    assert result.error is not None and "could not read" in result.error
+    assert gfile.read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="mode 000 does not stop root or Windows from reading",
+)
+def test_install_reports_an_unreadable_settings_file(
+    gdir: Path, cmd: str,
+) -> None:
+    path = gdir / "settings.json"
+    path.write_text("{}\n", encoding="utf-8")
+    path.chmod(0)
+    try:
+        result = _install(path, cmd)
+    finally:
+        path.chmod(0o600)
+    assert result.error is not None and "could not read" in result.error
+    assert path.read_text(encoding="utf-8") == "{}\n"
+
+
+def test_doctor_reports_a_settings_file_that_is_not_utf8(
+    gdir: Path,
+) -> None:
+    """Doctor reports and never raises. Killed by: catching only OSError
+    and JSONDecodeError."""
+    _not_utf8(gdir / "settings.json")
+    report = hgm.doctor_gemini(gdir)
+    assert report.settings_present and not report.settings_valid
+    assert report.parse_error is not None
+    assert report.unparseable_names_hook
+    assert report.faults()
+
+
+def test_remove_without_a_file_creates_nothing(tmp_path: Path) -> None:
+    gdir = tmp_path / "absent" / ".gemini"
+    result = hgm.remove_gemini_hooks(gdir / "settings.json")
+    assert (result.changed, result.error) == (False, None)
+    assert not (tmp_path / "absent").exists()
+    # Not even a lock file in the temporary directory.
+    assert list(Path(tempfile.gettempdir()).iterdir()) == []
+
+
+def test_remove_leaves_an_unparseable_file_alone(gdir: Path) -> None:
+    path = gdir / "settings.json"
+    path.write_text("{ not json", encoding="utf-8")
+    result = hgm.remove_gemini_hooks(path)
+    assert result.error is not None
+    assert path.read_text(encoding="utf-8") == "{ not json"
+
+
+def test_remove_with_nothing_of_ours_changes_nothing(gdir: Path) -> None:
+    path = gdir / "settings.json"
+    _write(path, {"hooks": {"BeforeTool": [_FOREIGN_GROUP]}})
+    before = path.read_bytes()
+    result = hgm.remove_gemini_hooks(path)
+    assert (result.changed, result.error) == (False, None)
+    assert path.read_bytes() == before
+
+
+# --- a competing writer ------------------------------------------------------------
+
+
+def _arm_interleaved_write(
+    monkeypatch: pytest.MonkeyPatch, target: Path, newer: dict[str, object],
+    *, times: int = 1,
+) -> None:
+    """Rewrite `target` from inside its own read, `times` times.
+
+    A competing writer that lands after the snapshot and before the
+    commit, deterministic and in one process, as in the codex host test
+    (#1428). Each injected document differs from the one before.
+    """
+    real = Path.read_bytes
+    remaining = {"n": times}
+
+    def interleaved(self: Path) -> bytes:
+        data = real(self)
+        if self == target and remaining["n"] > 0:
+            remaining["n"] -= 1
+            _write(target, {**newer, "seq": remaining["n"]})
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", interleaved)
+
+
+def test_install_keeps_a_write_that_lands_before_its_commit(
+    gdir: Path, cmd: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: committing without re-checking the content hash."""
+    path = gdir / "settings.json"
+    _write(path, {"theme": "widget"})
+    _arm_interleaved_write(monkeypatch, path, {"theme": "widget", "ui": {"x": 1}})
+    result = _install(path, cmd)
+    assert result.error is None
+    doc = _read(path)
+    assert doc["ui"] == {"x": 1}
+    assert set(EVENTS) <= set(doc["hooks"])  # type: ignore[arg-type]
+
+
+def test_remove_keeps_a_write_that_lands_before_its_commit(
+    gdir: Path, cmd: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = gdir / "settings.json"
+    _write(path, {"theme": "widget"})
+    _install(path, cmd)
+    newer = _read(path)
+    newer["ui"] = {"x": 1}
+    _arm_interleaved_write(monkeypatch, path, newer)
+    result = hgm.remove_gemini_hooks(path)
+    assert result.error is None
+    doc = _read(path)
+    assert doc["ui"] == {"x": 1}
+    assert "hooks" not in doc
+
+
+def test_a_writer_that_never_stops_aborts_the_commit(
+    gdir: Path, cmd: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = gdir / "settings.json"
+    _write(path, {"theme": "widget"})
+    _arm_interleaved_write(monkeypatch, path, {"theme": "other"}, times=1000)
+    result = _install(path, cmd)
+    assert result.error is not None
+    assert "modified by another process" in result.error
+    assert result.changed is False
+    assert "hooks" not in _read(path)
+
+
+# --- custom commands ---------------------------------------------------------------
+
+
+def test_every_slash_command_becomes_one_toml_command() -> None:
+    bundle = hgm.bundled_gemini_commands()
+    assert sorted(bundle) == sorted(
+        name.removesuffix(".md") + ".toml" for name in bundled_slash_files()
+    )
+    for name, text in bundle.items():
+        assert text.startswith(f"# {hgm.COMMAND_MARKER}:"), name
+        parsed = tomllib.loads(text)
+        assert set(parsed) == {"description", "prompt"}, name
+        prompt = parsed["prompt"]
+        assert isinstance(prompt, str) and prompt.strip(), name
+        assert "$ARGUMENTS" not in prompt, name
+        assert "uv run aelf" not in prompt, name
+        # `!{...}` runs a shell command and `@{...}` inlines a file in a
+        # Gemini command prompt; `{{args}}` is the only template allowed.
+        assert "!{" not in prompt and "@{" not in prompt, name
+        assert re.sub(r"\{\{args\}\}", "", prompt).count("{{") == 0, name
+
+
+def _source_front_matter(text: str) -> list[str]:
+    """The lines between a source's two `---` fences, read without the module."""
+    lines = text.splitlines()
+    assert lines[0] == "---"
+    return lines[1:lines.index("---", 1)]
+
+
+def test_front_matter_is_the_description_and_not_the_prompt() -> None:
+    """Killed by: keeping the front matter, which empties every description
+    and sends the raw YAML to the model as the start of the prompt."""
+    bundle = hgm.bundled_gemini_commands()
+    for filename, text in bundled_slash_files().items():
+        stem = filename.removesuffix(".md")
+        front = _source_front_matter(text)
+        parsed = tomllib.loads(bundle[stem + ".toml"])
+        if stem != "setup":
+            (line,) = [ln for ln in front if ln.startswith("description:")]
+            assert parsed["description"] == line.removeprefix("description:").strip()
+            assert parsed["description"], filename
+        prompt_lines = set(parsed["prompt"].splitlines())
+        assert not prompt_lines & {ln for ln in front if ln.strip()}, filename
+
+
+def test_arguments_become_the_gemini_placeholder() -> None:
+    sources = bundled_slash_files()
+    bundle = hgm.bundled_gemini_commands()
+    for filename, text in sources.items():
+        prompt = tomllib.loads(bundle[filename.removesuffix(".md") + ".toml"])["prompt"]
+        assert ("$ARGUMENTS" in text) == ("{{args}}" in prompt), filename
+    search = tomllib.loads(bundle["search.toml"])["prompt"]
+    assert 'aelf search "{{args}}"' in search
+
+
+@pytest.mark.parametrize("name", ["setup", "doctor", "uninstall", "upgrade"])
+def test_host_commands_are_steered_to_the_gemini_host(name: str) -> None:
+    prompt = tomllib.loads(hgm.bundled_gemini_commands()[f"{name}.toml"])["prompt"]
+    assert "--host gemini" in prompt
+
+
+def test_fan_out_commands_point_at_gemini_sub_agents() -> None:
+    """A source that lists the `Task` tool gets the note; others don't."""
+    bundle = hgm.bundled_gemini_commands()
+    for filename, text in bundled_slash_files().items():
+        prompt = tomllib.loads(bundle[filename.removesuffix(".md") + ".toml"])["prompt"]
+        assert ("Gemini's sub-agents" in prompt) == ("Task" in text), filename
+    assert "Gemini's sub-agents" in tomllib.loads(bundle["onboard.toml"])["prompt"]
+
+
+def test_other_commands_carry_no_host_note() -> None:
+    prompt = tomllib.loads(hgm.bundled_gemini_commands()["search.toml"])["prompt"]
+    assert "--host gemini" not in prompt
+
+
+def test_the_setup_command_describes_the_gemini_install() -> None:
+    parsed = tomllib.loads(hgm.bundled_gemini_commands()["setup.toml"])
+    assert "Gemini's user settings.json" in parsed["description"]
+
+
+def test_the_shared_setup_source_holds_no_gemini_text() -> None:
+    """`setup.md` also builds the claude command and the codex skill.
+
+    The codex doctor faults an installed skill that differs from what the
+    build generates (#1430), and nothing refreshes codex skills on
+    upgrade, so Gemini text in the shared source fails `aelf doctor
+    --host codex` on every existing codex install.
+    """
+    assert "gemini" not in bundled_slash_files()["setup.md"].lower()
+
+
+def test_the_setup_command_states_the_gemini_option_rule() -> None:
+    prompt = tomllib.loads(hgm.bundled_gemini_commands()["setup.toml"])["prompt"]
+    assert "`aelf setup --host gemini` accepts only `--force`" in prompt
+    assert "`aelf unsetup --host gemini` accepts no option but `--host`" in prompt
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["one line", "two\nlines", "it's '''quoted'''\nhere", "tab\there\n", "cr\r\nline"],
+)
+def test_toml_strings_round_trip(value: str) -> None:
+    doc = tomllib.loads(f"v = {hgm._toml_string(value)}\n")  # noqa: SLF001
+    assert doc["v"] == value
+
+
+def test_the_generation_is_deterministic() -> None:
+    assert hgm.bundled_gemini_commands() == hgm.bundled_gemini_commands()
+
+
+def test_install_and_remove_commands(gdir: Path) -> None:
+    target = gdir / "commands" / "aelf"
+    first = hgm.install_gemini_commands(gdir)
+    assert first.dest_dir == target
+    assert sorted(first.written) == sorted(hgm.bundled_gemini_commands())
+    second = hgm.install_gemini_commands(gdir)
+    assert (second.written, len(second.already)) == ((), len(first.written))
+    removed = hgm.remove_gemini_commands(gdir)
+    assert sorted(removed.pruned) == sorted(first.written)
+    assert not (gdir / "commands").exists()
+
+
+def test_remove_keeps_a_commands_dir_that_holds_user_files(gdir: Path) -> None:
+    mine = gdir / "commands" / "mine.toml"
+    mine.parent.mkdir()
+    mine.write_text('prompt = "mine"\n', encoding="utf-8")
+    hgm.install_gemini_commands(gdir)
+    hgm.remove_gemini_commands(gdir)
+    assert sorted(p.name for p in (gdir / "commands").iterdir()) == ["mine.toml"]
+
+
+def test_a_user_command_is_never_overwritten_or_removed(gdir: Path) -> None:
+    """Killed by: dropping the marker check on replace or on remove."""
+    target = gdir / "commands" / "aelf"
+    target.mkdir(parents=True)
+    (target / "search.toml").write_text('prompt = "mine"\n', encoding="utf-8")
+    (target / "mine.toml").write_text('prompt = "also mine"\n', encoding="utf-8")
+    result = hgm.install_gemini_commands(gdir)
+    assert result.skipped == ("search.toml",)
+    assert (target / "search.toml").read_text(encoding="utf-8") == 'prompt = "mine"\n'
+    hgm.remove_gemini_commands(gdir)
+    assert sorted(p.name for p in target.iterdir()) == ["mine.toml", "search.toml"]
+
+
+@_needs_symlinks
+def test_a_symlinked_commands_dir_is_written_through_and_kept(
+    gdir: Path, tmp_path: Path,
+) -> None:
+    """Killed by: unlinking a symlinked `commands/aelf` on remove."""
+    real = tmp_path / "dotfiles" / "aelf-commands"
+    real.mkdir(parents=True)
+    link = gdir / "commands" / "aelf"
+    link.parent.mkdir()
+    link.symlink_to(real)
+    written = hgm.install_gemini_commands(gdir).written
+    assert sorted(p.name for p in real.iterdir()) == sorted(written)
+    assert sorted(written) == sorted(hgm.bundled_gemini_commands())
+    hgm.remove_gemini_commands(gdir)
+    assert link.is_symlink()
+    assert real.is_dir()
+    assert list(real.iterdir()) == []
+
+
+def test_orphans_and_edits_are_reported_and_pruned(gdir: Path) -> None:
+    target = gdir / "commands" / "aelf"
+    hgm.install_gemini_commands(gdir)
+    orphan = target / "retired-widget.toml"
+    orphan.write_text(f"# {hgm.COMMAND_MARKER}: old\nprompt = \"x\"\n", encoding="utf-8")
+    edited = target / "search.toml"
+    edited.write_text(edited.read_text(encoding="utf-8") + "# edit\n", encoding="utf-8")
+    assert hgm.orphaned_gemini_commands(gdir) == ["retired-widget.toml"]
+    assert hgm.modified_gemini_commands(gdir) == ["search.toml"]
+    result = hgm.install_gemini_commands(gdir)
+    assert result.pruned == ("retired-widget.toml",)
+    assert result.written == ("search.toml",)
+    assert hgm.orphaned_gemini_commands(gdir) == []
+    assert hgm.modified_gemini_commands(gdir) == []
+
+
+# --- doctor -------------------------------------------------------------------------
+
+
+def test_doctor_without_a_gemini_dir(tmp_path: Path) -> None:
+    report = hgm.doctor_gemini(tmp_path / "none" / ".gemini")
+    assert not report.gemini_dir_present
+    assert report.faults() == []
+    assert report.warnings
+
+
+def test_doctor_on_a_clean_install(gdir: Path, cmd: str) -> None:
+    _install(gdir / "settings.json", cmd)
+    report = hgm.doctor_gemini(gdir)
+    assert (report.settings_valid, report.owned_handler_count) == (True, 4)
+    assert report.missing_events == []
+    assert report.faults() == []
+
+
+def test_doctor_on_absent_wiring_is_not_a_fault(gdir: Path) -> None:
+    _write(gdir / "settings.json", {"theme": "widget"})
+    report = hgm.doctor_gemini(gdir)
+    assert report.owned_handler_count == 0
+    assert report.faults() == []
+    assert any("aelf setup --host gemini" in w for w in report.warnings)
+
+
+def test_doctor_faults_a_missing_event(gdir: Path, cmd: str) -> None:
+    path = gdir / "settings.json"
+    _install(path, cmd)
+    doc = _read(path)
+    del doc["hooks"]["AfterAgent"]  # type: ignore[attr-defined]
+    _write(path, doc)
+    report = hgm.doctor_gemini(gdir)
+    assert report.missing_events == ["AfterAgent"]
+    assert any("missing events: AfterAgent" in f for f in report.faults())
+
+
+def test_doctor_faults_a_command_not_on_disk(gdir: Path, tmp_path: Path) -> None:
+    gone = str(tmp_path / "gone" / "aelf-gemini-hook")
+    _install(gdir / "settings.json", gone)
+    report = hgm.doctor_gemini(gdir)
+    assert report.stale_commands == [gone]
+    assert any("not present on disk" in f for f in report.faults())
+
+
+def test_doctor_faults_a_bare_command_not_on_path(
+    gdir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup writes the bare name when it can't resolve a path (#928).
+    Killed by: skipping the PATH lookup for a bare program."""
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    _install(gdir / "settings.json", "aelf-gemini-hook")
+    report = hgm.doctor_gemini(gdir)
+    assert report.owned_handler_count == 4
+    assert report.unresolved_commands == ["aelf-gemini-hook"]
+    assert any("not on PATH" in f for f in report.faults())
+
+
+def test_doctor_accepts_a_bare_command_on_path(
+    gdir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bindir = tmp_path / "bin"
+    exe = bindir / "aelf-gemini-hook"
+    exe.parent.mkdir(exist_ok=True)
+    exe.write_text("", encoding="utf-8")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir))
+    _install(gdir / "settings.json", "aelf-gemini-hook")
+    report = hgm.doctor_gemini(gdir)
+    assert report.unresolved_commands == []
+    assert report.faults() == []
+
+
+def test_doctor_faults_an_unquoted_spaced_command(gdir: Path, tmp_path: Path) -> None:
+    """Killed by: accepting a command because some rejoined reading of it
+    exists, when the shell splits it at the space."""
+    exe = str(_spaced_hook(tmp_path))
+    _install(gdir / "settings.json", exe)
+    report = hgm.doctor_gemini(gdir)
+    assert report.owned_handler_count == 4
+    assert (report.unquoted_commands, report.stale_commands) == ([exe], [])
+    assert any("is not quoted" in f for f in report.faults())
+
+
+def test_doctor_faults_hooks_turned_off(gdir: Path, cmd: str) -> None:
+    path = gdir / "settings.json"
+    _install(path, cmd)
+    doc = _read(path)
+    doc["hooksConfig"] = {"enabled": False}
+    _write(path, doc)
+    report = hgm.doctor_gemini(gdir)
+    assert report.hooks_turned_off_by == ["hooksConfig.enabled"]
+    assert any("turned off" in f for f in report.faults())
+
+
+def test_doctor_ignores_tools_enable_hooks(gdir: Path, cmd: str) -> None:
+    """Gemini 0.68.0 documents only `hooksConfig.enabled` as the hooks
+    switch (docs/reference/configuration.md), so `tools.enableHooks` set
+    to false is not a reason to exit 1."""
+    path = gdir / "settings.json"
+    _install(path, cmd)
+    doc = _read(path)
+    doc["tools"] = {"enableHooks": False}
+    _write(path, doc)
+    report = hgm.doctor_gemini(gdir)
+    assert report.hooks_turned_off_by == []
+    assert report.faults() == []
+
+
+def test_doctor_reports_a_disabled_hook_name_without_failing(
+    gdir: Path, cmd: str,
+) -> None:
+    path = gdir / "settings.json"
+    _install(path, cmd)
+    doc = _read(path)
+    doc["hooksConfig"] = {"disabled": ["aelfrice-pre-compress", "other"]}
+    _write(path, doc)
+    report = hgm.doctor_gemini(gdir)
+    assert report.disabled_hook_names == ["aelfrice-pre-compress"]
+    assert report.faults() == []
+
+
+def test_doctor_reports_a_hook_disabled_by_its_command(
+    gdir: Path, cmd: str,
+) -> None:
+    """`hooksConfig.disabled` lists hook names or commands
+    (docs/reference/configuration.md). Killed by: matching names only."""
+    path = gdir / "settings.json"
+    _install(path, cmd)
+    doc = _read(path)
+    doc["hooksConfig"] = {"disabled": [cmd, "echo other"]}
+    _write(path, doc)
+    report = hgm.doctor_gemini(gdir)
+    assert report.disabled_hook_names == [cmd]
+    assert report.faults() == []
+
+
+def test_doctor_reports_an_unparseable_file(gdir: Path) -> None:
+    """Not a fault: nothing in the file says aelfrice was installed."""
+    (gdir / "settings.json").write_text("{ nope", encoding="utf-8")
+    report = hgm.doctor_gemini(gdir)
+    assert report.settings_present and not report.settings_valid
+    assert report.parse_error
+    assert report.faults() == []
+
+
+def test_doctor_faults_an_unparseable_file_that_names_the_hook(
+    gdir: Path, cmd: str,
+) -> None:
+    path = gdir / "settings.json"
+    _install(path, cmd)
+    path.write_text("// mine\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+    report = hgm.doctor_gemini(gdir)
+    assert report.owned_handler_count == 0
+    assert any("can't check the aelfrice hooks" in f for f in report.faults())
