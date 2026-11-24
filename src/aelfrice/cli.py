@@ -46,6 +46,7 @@ from aelfrice.health import (
     regime_description,
 )
 from aelfrice.hosts import (
+    ANTIGRAVITY_HOST,
     CLAUDE_HOST,
     CODEX_HOST,
     DEFAULT_HOST,
@@ -6318,6 +6319,158 @@ def _cmd_setup_codex(
     return 0
 
 
+# argparse dest of each `--no-X` setup flag -> `aelfrice.agy_hook` role.
+_AGY_FLAG_TO_ROLE: Final[dict[str, str]] = {
+    "transcript_ingest": "transcript_ingest",
+    "commit_ingest": "commit_ingest",
+    "session_start": "session_start",
+    "stop_hook": "stop",
+    "search_tool_bash": "search_tool_bash",
+    "pre_issue_guard": "pre_issue_guard",
+    "agent_context": "agent_context",
+}
+
+
+def _cmd_setup_antigravity(
+    args: argparse.Namespace,
+    out: object,
+    *,
+    hooks_path: Path | None = None,
+    skills_dest: Path | None = None,
+) -> int:
+    """`aelf setup --host antigravity`: agy hooks.json entry plus /aelf-* skills.
+
+    Writes the `host_antigravity` table into `~/.gemini/config/hooks.json`
+    and lists the hooks agy cannot run. `--no-X` flags become `--skip`
+    roles on the hook command. Like the Codex host (#1053), an
+    Antigravity-only user gets the Claude auto-install opt-out.
+    """
+    from aelfrice.auto_install import (
+        add_host_opt_out,
+        manifest_timeouts_by_installer,
+        read_host_opt_outs,
+    )
+    from aelfrice.host_antigravity import (
+        AGY_UNSUPPORTED,
+        agy_hooks_path,
+        install_agy_hooks,
+        install_agy_skills,
+        resolve_agy_hook_command,
+    )
+    from aelfrice.host_codex import claude_host_has_aelfrice_hooks
+    from aelfrice.setup import USER_SETTINGS_PATH
+
+    path = hooks_path if hooks_path is not None else agy_hooks_path()
+    command = (
+        str(args.command) if getattr(args, "command", None)
+        else resolve_agy_hook_command("user")
+    )
+    timeouts = {
+        k: v for k, v in manifest_timeouts_by_installer().items() if v is not None
+    }
+    if getattr(args, "timeout", None) is not None:
+        timeouts = dict.fromkeys(timeouts, cast(int, args.timeout))
+    skip = frozenset(
+        role for flag, role in _AGY_FLAG_TO_ROLE.items()
+        if not getattr(args, flag, True)
+    )
+    with settings_transaction(path):
+        result = install_agy_hooks(path, command, timeouts_s=timeouts, skip=skip)
+    verb = "installed" if result.changed else "already current:"
+    print(
+        f"{verb} Antigravity hooks in {result.path} "
+        f"(events: {', '.join(result.events)})",
+        file=out,  # type: ignore[arg-type]
+    )
+    for hook, reason in AGY_UNSUPPORTED.items():
+        print(f"  not on antigravity: {hook} — {reason}", file=out)  # type: ignore[arg-type]
+    sk = install_agy_skills(skills_dest)
+    if sk.written:
+        print(
+            f"installed {len(sk.written)} skill(s) in {sk.dest_dir}",
+            file=out,  # type: ignore[arg-type]
+        )
+    if sk.pruned:
+        print(
+            f"removed {len(sk.pruned)} stale skill(s) from {sk.dest_dir}: "
+            f"{', '.join(sk.pruned)}",
+            file=out,  # type: ignore[arg-type]
+        )
+    if sk.skipped:
+        print(
+            f"skipped {len(sk.skipped)} skill name(s) taken by non-aelfrice "
+            f"skills in {sk.dest_dir}: {', '.join(sk.skipped)}",
+            file=out,  # type: ignore[arg-type]
+        )
+    for msg in sk.failed:
+        print(f"[warn] antigravity skill: {msg}", file=out)  # type: ignore[arg-type]
+    if not (sk.written or sk.pruned or sk.skipped or sk.failed):
+        print(f"skills already up to date in {sk.dest_dir}", file=out)  # type: ignore[arg-type]
+    if claude_host_has_aelfrice_hooks(USER_SETTINGS_PATH):
+        print(
+            "  note: Claude-host aelfrice hooks detected; leaving Claude "
+            "auto-install enabled (dual-host).",
+            file=out,  # type: ignore[arg-type]
+        )
+    elif "claude" not in read_host_opt_outs():
+        add_host_opt_out("claude")
+        print(
+            "  note: opted the claude host out of auto-install (#1053); undo "
+            "with `aelf setup --host claude`.",
+            file=out,  # type: ignore[arg-type]
+        )
+    print(
+        "Start a new agy conversation to load the hooks; `/hooks` in agy "
+        "lists them.",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
+def _cmd_unsetup_antigravity(
+    args: argparse.Namespace,
+    out: object,
+    *,
+    hooks_path: Path | None = None,
+    skills_dest: Path | None = None,
+) -> int:
+    """`aelf unsetup --host antigravity`: remove the aelfrice entry and skills."""
+    _ = args
+    from aelfrice.host_antigravity import (
+        agy_hooks_path,
+        remove_agy_skills,
+        uninstall_agy_hooks,
+    )
+
+    path = hooks_path if hooks_path is not None else agy_hooks_path()
+    with settings_transaction(path):
+        result = uninstall_agy_hooks(path)
+    if result.changed:
+        print(f"removed the aelfrice entry from {result.path}", file=out)  # type: ignore[arg-type]
+    else:
+        print(f"no aelfrice entry in {result.path}", file=out)  # type: ignore[arg-type]
+    sk = remove_agy_skills(skills_dest)
+    if sk.pruned:
+        print(
+            f"removed {len(sk.pruned)} skill(s) from {sk.dest_dir}",
+            file=out,  # type: ignore[arg-type]
+        )
+    for msg in sk.failed:
+        print(f"[warn] antigravity skill: {msg}", file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_doctor_antigravity(args: argparse.Namespace, out: object) -> int:
+    """`aelf doctor --host antigravity`: 1 when the hook entry is broken."""
+    _ = args
+    from aelfrice.host_antigravity import doctor_agy
+
+    result = doctor_agy()
+    for line in result.lines:
+        print(line, file=out)  # type: ignore[arg-type]
+    return 1 if result.broken else 0
+
+
 def _cmd_unsetup_codex(
     args: argparse.Namespace,
     out: object,
@@ -6767,16 +6920,19 @@ _HostCommand = Callable[[argparse.Namespace, object], int]
 _SETUP_BY_HOST: Final[Mapping[str, _HostCommand]] = {
     CLAUDE_HOST: _cmd_setup_claude,
     CODEX_HOST: _cmd_setup_codex,
+    ANTIGRAVITY_HOST: _cmd_setup_antigravity,
 }
 _UNSETUP_BY_HOST: Final[Mapping[str, _HostCommand]] = {
     CLAUDE_HOST: _cmd_unsetup_claude,
     CODEX_HOST: _cmd_unsetup_codex,
+    ANTIGRAVITY_HOST: _cmd_unsetup_antigravity,
 }
 # Doctor differs: the claude host runs the full `_cmd_doctor`, whose
 # brain-graph checks are host-independent. A host listed here replaces
 # that run with a scan of its own wiring.
 _DOCTOR_BY_HOST: Final[Mapping[str, _HostCommand]] = {
     CODEX_HOST: _cmd_doctor_codex,
+    ANTIGRAVITY_HOST: _cmd_doctor_antigravity,
 }
 
 

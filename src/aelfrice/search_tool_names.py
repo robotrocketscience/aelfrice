@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Final, Mapping
 
-from aelfrice.hosts import CLAUDE_HOST, CODEX_HOST
+from aelfrice.hosts import ANTIGRAVITY_HOST, CLAUDE_HOST, CODEX_HOST
 
 # #1626: every tool that performs a search, not just the local ones.
 #
@@ -51,12 +51,15 @@ SHELL_TOOL_NAME: Final[str] = "Bash"
 # process reads the host from its caller, and the console script passes
 # the default, so a Codex payload is read with the claude names. That is
 # also correct for Codex, which reports shell commands as `Bash` (#1055)
-# and installs no search-tool matcher.
+# and installs no search-tool matcher. Antigravity translates tool
+# names to Claude's aliases before calling the hook.
 SEARCH_TOOL_NAMES_BY_HOST: Final[Mapping[str, tuple[str, ...]]] = {
     CLAUDE_HOST: SEARCH_TOOL_NAMES,
     CODEX_HOST: SEARCH_TOOL_NAMES,
+    ANTIGRAVITY_HOST: SEARCH_TOOL_NAMES,
 }
 SHELL_TOOL_NAME_BY_HOST: Final[Mapping[str, str]] = {
     CLAUDE_HOST: SHELL_TOOL_NAME,
     CODEX_HOST: SHELL_TOOL_NAME,
+    ANTIGRAVITY_HOST: SHELL_TOOL_NAME,
 }
