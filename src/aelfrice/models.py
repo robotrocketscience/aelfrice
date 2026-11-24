@@ -754,6 +754,25 @@ was first said.
 """
 
 
+CORE_MIN_POSTERIOR_FEEDBACK_EVENTS: Final[int] = 2
+"""Posterior-moving feedback events the core posterior arm needs.
+
+A belief's alpha and beta start at its type prior, not at Beta(1, 1).
+`derive()` stamps the undeflated `TYPE_PRIORS` on user-sourced rows, so
+a `factual` row lands at Beta(3, 1) and a `correction` at Beta(9, 0.5),
+both above the posterior arm's mean and mass thresholds on insert. The
+arm therefore counts evidence, not mass: it admits a belief only after
+this many `feedback_history` rows that moved its posterior. A row
+counts when its source is outside `EXPOSURE_ONLY_FEEDBACK_SOURCES` and
+its valence is non-zero (`apply_feedback` rejects zero valence, so a
+zero-valence row is an audit record such as a lock expiry).
+
+Counting events instead of subtracting the ingest prior's mass keeps the
+rule correct when a belief's type changes after ingest, since the prior
+it was born with is not stored.
+"""
+
+
 def episode_qualified_corroborations(corroboration_count: int, episodes: int) -> int:
     """A belief's corroboration count as the corroboration arm counts it.
 

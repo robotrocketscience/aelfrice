@@ -2964,7 +2964,7 @@ class _DryRunRollback(Exception):
 def _core_members(
     store: "MemoryStore",
     belief_ids: list[str],
-    qualifies: Callable[["Belief", int], bool],
+    qualifies: Callable[["Belief", int, int], bool],
 ) -> set[str]:
     """The subset of `belief_ids` in core: admitted by `qualifies` and
     then by the #1638 admission gate (`MemoryStore.gate_core_candidates`),
@@ -2976,12 +2976,13 @@ def _core_members(
     from aelfrice.models import LOCK_NONE  # noqa: PLC0415
 
     episodes = store.corroboration_episodes()
+    feedback_counts = store.posterior_feedback_counts()
     qualifying: list["Belief"] = []
     for bid in belief_ids:
         b = store.get_belief(bid)
         if b is None or b.lock_level != LOCK_NONE:
             continue
-        if qualifies(b, episodes.get(bid, 0)):
+        if qualifies(b, episodes.get(bid, 0), feedback_counts.get(bid, 0)):
             qualifying.append(b)
     admitted, _ = store.gate_core_candidates(qualifying, episodes)
     return {b.id for b in admitted}
@@ -2990,7 +2991,7 @@ def _core_members(
 def gc_filesystem_corroboration(
     store: "MemoryStore",
     *,
-    qualifies: Callable[["Belief", int], bool],
+    qualifies: Callable[["Belief", int, int], bool],
     dry_run: bool = True,
 ) -> FilesystemCorroborationReport:
     """Count and (with `dry_run=False`) delete corroboration rows from
@@ -3003,8 +3004,8 @@ def gc_filesystem_corroboration(
     #1615 stopped the writes; this pass removes the rows already
     stored. Rows of every other source are untouched.
 
-    `qualifies(belief, episodes)` is the unlocked `aelf core` rule. The
-    caller passes it, because the rule lives in `cli`, which imports
+    `qualifies(belief, episodes, feedback_events)` is the unlocked
+    `aelf core` rule. The caller passes it, because the rule lives in `cli`, which imports
     this module.
 
     The dry run deletes inside a transaction, reads core membership
@@ -3091,7 +3092,7 @@ def format_filesystem_corroboration_report(
 
 def core_gate_candidates(
     store: "MemoryStore",
-    qualifies: Callable[["Belief", int], bool],
+    qualifies: Callable[["Belief", int, int], bool],
 ) -> tuple[list["Belief"], dict[str, str]]:
     """The beliefs the core admission gate judges, with their labels.
 
@@ -3105,12 +3106,13 @@ def core_gate_candidates(
     from aelfrice.models import LOCK_NONE  # noqa: PLC0415
 
     episodes = store.corroboration_episodes()
+    feedback_counts = store.posterior_feedback_counts()
     candidates: list["Belief"] = []
     for bid in store.list_belief_ids():
         b = store.get_belief(bid)
         if b is None or b.lock_level != LOCK_NONE:
             continue
-        if qualifies(b, episodes.get(bid, 0)):
+        if qualifies(b, episodes.get(bid, 0), feedback_counts.get(bid, 0)):
             candidates.append(b)
     labels = store.core_gate_labels_for(
         (b.content_hash for b in candidates), CLASSIFIER_VERSION,
@@ -3147,7 +3149,7 @@ class CoreGateCoverage:
 
 def core_gate_coverage(
     store: "MemoryStore",
-    qualifies: Callable[["Belief", int], bool],
+    qualifies: Callable[["Belief", int, int], bool],
 ) -> CoreGateCoverage:
     """Count labeled and unlabeled core candidates (#1638). Read-only."""
     from aelfrice.core_gate import CLASSIFIER_VERSION  # noqa: PLC0415
@@ -3248,7 +3250,7 @@ def balanced_chunks(items: list[_T], max_size: int) -> list[list[_T]]:
 
 def emit_core_gate_batches(
     store: "MemoryStore",
-    qualifies: Callable[["Belief", int], bool],
+    qualifies: Callable[["Belief", int, int], bool],
     *,
     limit: int | None,
     created_at: str,
@@ -3291,7 +3293,7 @@ def emit_core_gate_batches(
 
 def _emit_core_gate_batches_locked(
     store: "MemoryStore",
-    qualifies: Callable[["Belief", int], bool],
+    qualifies: Callable[["Belief", int, int], bool],
     *,
     limit: int | None,
     created_at: str,
@@ -3401,7 +3403,7 @@ class CoreGateRerunReport:
 
 def rerun_core_gate_batch(
     store: "MemoryStore",
-    qualifies: Callable[["Belief", int], bool],
+    qualifies: Callable[["Belief", int, int], bool],
     batch_id: str,
     *,
     created_at: str | None = None,
@@ -3490,6 +3492,7 @@ def rerun_core_gate_batch(
                 "or later batches relabeled all of its beliefs"
             )
         episodes = store.corroboration_episodes()
+        feedback_counts = store.posterior_feedback_counts()
         items = sorted(batch.items, key=lambda i: i.index)
         kept: list[tuple["CoreGateBatchItem", "Belief"]] = []
         for item in items:
@@ -3500,7 +3503,9 @@ def rerun_core_gate_batch(
                 b is None
                 or b.lock_level != LOCK_NONE
                 or b.content_hash != item.content_hash
-                or not qualifies(b, episodes.get(b.id, 0))
+                or not qualifies(
+                    b, episodes.get(b.id, 0), feedback_counts.get(b.id, 0),
+                )
             ):
                 continue
             kept.append((item, b))
