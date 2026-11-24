@@ -213,6 +213,81 @@ def test_piped_probe_command_injects_end_to_end() -> None:
     assert 'query="searchterm"' in ctx
 
 
+# --- `&&` / `;` chains and `git grep` -------------------------------------
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize(
+    ("command", "expected_cmd"),
+    [
+        ("git diff --name-only HEAD && grep -n -i foo state.jsonl", "grep"),
+        ("cd src && rg foo", "rg"),
+        ("cd src; grep -rn foo .", "grep"),
+        ("cd src;grep -rn foo .", "grep"),
+        ("grep -n foo a.txt && echo ok", "grep"),
+        ("echo '=== a; b ===' && grep foo f && rg bar g", "grep"),
+        ('echo "a && b" && rg foo', "rg"),
+        ("git status && grep foo f | head -3", "grep"),
+        ("git grep -n foo", "git-grep"),
+        ("git grep foo HEAD -- src", "git-grep"),
+        ("git -C repo --no-pager grep -i foo", "git-grep"),
+        ("/usr/bin/git grep foo", "git-grep"),
+        ("git log -1 && git grep -n foo | wc -l", "git-grep"),
+    ],
+)
+def test_chain_lifts_query_from_first_search_command(
+    command: str, expected_cmd: str,
+) -> None:
+    """A host that joins commands with `&&` gets the first search command's query.
+
+    Each case has exactly one query, `foo`, in the first command that
+    parses as a search. A non-search command before it is skipped.
+    """
+    parsed = _parse_bash_command(command)
+    assert parsed == ("foo", expected_cmd)
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status && git log --oneline",
+        "python3 -I -c 'import re; grep foo'",
+        'python3 -c "x = 1; grep foo bar"',
+        "git diff x || grep foo .",
+        "grep foo . &",
+        "echo hi > out.txt && grep foo .",
+        "cd $(git rev-parse --show-toplevel) && grep foo .",
+        "for f in a b; do grep foo $f; done",
+        "grep 'unterminated && rg foo",
+        "git show HEAD:f.py | grep -n foo",
+        "git commit -m grep && echo foo",
+        "git -C",
+        "cd src && grep foo . | xargs rm",
+        "&& ;",
+    ],
+)
+def test_chain_without_a_clean_search_command_skips(command: str) -> None:
+    """Chains keep every old abort rule; `python -c` code is never lifted."""
+    assert _parse_bash_command(command) is None
+
+
+@pytest.mark.timeout(10)
+def test_and_chain_injects_end_to_end() -> None:
+    """An `&&` chain reaches retrieval and emits a block."""
+    out = _run_hook(_payload_bash(
+        "git diff --name-only HEAD && grep -n -i searchterm state.jsonl"
+        " && echo ok",
+        session_id="chain-e2e",
+    ))
+    assert out
+    envelope = cast(dict[str, object], json.loads(out))
+    hso = cast(dict[str, object], envelope["hookSpecificOutput"])
+    ctx = cast(str, hso["additionalContext"])
+    assert 'query="searchterm"' in ctx
+    assert 'source="bash:grep"' in ctx
+
+
 def test_grep_command_substitution_aborts() -> None:
     assert _parse_bash_command("grep $(cat keys.txt) src/") is None
 
