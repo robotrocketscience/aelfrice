@@ -245,6 +245,7 @@ user_prompt_submit = _hook.user_prompt_submit
 from aelfrice.models import (  # noqa: E402
     BELIEF_FACTUAL,
     BELIEF_SPECULATIVE,
+    CORE_MIN_POSTERIOR_FEEDBACK_EVENTS,
     LOCK_NONE,
     LOCK_TIER_FROZEN,
     LOCK_TIER_REFERENCE,
@@ -255,6 +256,9 @@ from aelfrice.models import (  # noqa: E402
 )
 from aelfrice.rebuild_log import (  # noqa: E402
     DEFAULT_REBUILDER_TOKEN_BUDGET,
+)
+from aelfrice.sentiment_feedback import (  # noqa: E402
+    SENTIMENT_INFERRED_SOURCE,
 )
 from aelfrice.store import MemoryStore  # noqa: E402
 
@@ -350,6 +354,20 @@ def _lock(index: int, chars: int) -> Belief:
     )
 
 
+def _insert(store: MemoryStore, b: Belief) -> None:
+    """Insert `b`. An unlocked belief seeded above the flat prior also gets
+    the feedback rows the core posterior arm counts
+    (`CORE_MIN_POSTERIOR_FEEDBACK_EVENTS`), so it renders in `<core>` as
+    its alpha says it should; alpha and beta are left as seeded."""
+    store.insert_belief(b)
+    if b.lock_level != LOCK_NONE or b.alpha <= 1.0:
+        return
+    for _ in range(CORE_MIN_POSTERIOR_FEEDBACK_EVENTS):
+        store.insert_feedback_event(
+            b.id, 1.0, SENTIMENT_INFERRED_SOURCE, b.created_at,
+        )
+
+
 def fire(n_locks: int, chars: int) -> tuple[int, str]:
     """Run one hook fire against a store of `n_locks` locks of `chars`."""
     with _scratch("aelf-ceiling-") as work:
@@ -357,7 +375,7 @@ def fire(n_locks: int, chars: int) -> tuple[int, str]:
         store = MemoryStore(str(db))
         try:
             for i in range(n_locks):
-                store.insert_belief(_lock(i, chars))
+                _insert(store, _lock(i, chars))
         finally:
             store.close()
         os.environ["AELFRICE_DB"] = str(db)
@@ -397,7 +415,7 @@ def gate_skip_tokens(n_locks: int, chars: int) -> int:
         store = MemoryStore(str(db))
         try:
             for i in range(n_locks):
-                store.insert_belief(_lock(i, chars))
+                _insert(store, _lock(i, chars))
         finally:
             store.close()
         os.environ["AELFRICE_DB"] = str(db)
@@ -450,10 +468,10 @@ def fire_lanes(ceiling: int | None) -> dict[str, object]:
         store = MemoryStore(str(db))
         try:
             for i in range(n_locks):
-                store.insert_belief(_lock(i, 150))
+                _insert(store, _lock(i, 150))
             for i in range(n_core):
                 bid = f"C{i:031d}"
-                store.insert_belief(
+                _insert(store, 
                     _belief(
                         bid, "coreword unrelated material " + "w" * 200, alpha=4.0,
                     )
@@ -461,7 +479,7 @@ def fire_lanes(ceiling: int | None) -> dict[str, object]:
                 core_ids.append(bid)
             for i in range(n_hits):
                 bid = f"H{i:031d}"
-                store.insert_belief(_belief(bid, f"{LANE_WORD} fact " + "z" * 400))
+                _insert(store, _belief(bid, f"{LANE_WORD} fact " + "z" * 400))
                 hit_ids.append(bid)
         finally:
             store.close()
@@ -516,7 +534,7 @@ def _reference_lock_store(tier: str) -> Iterator[tuple[Path, Path]]:
         db = work / "memory.db"
         store = MemoryStore(str(db))
         try:
-            store.insert_belief(
+            _insert(store, 
                 Belief(
                     id=REF_LOCK_ID,
                     content=REF_LOCK_CONTENT,
@@ -705,9 +723,9 @@ def exploration_slot() -> dict[str, object]:
             store = MemoryStore(str(db))
             try:
                 for i in range(n_locks):
-                    store.insert_belief(_lock(i, 150))
+                    _insert(store, _lock(i, 150))
                 for i in range(n_core):
-                    store.insert_belief(
+                    _insert(store, 
                         _belief(
                             f"C{i:031d}",
                             "coreword unrelated material " + "w" * 200,
@@ -715,7 +733,7 @@ def exploration_slot() -> dict[str, object]:
                         )
                     )
                 for i in range(n_hits):
-                    store.insert_belief(
+                    _insert(store, 
                         _belief(f"H{i:031d}", f"{LANE_WORD} fact " + "z" * 400)
                     )
             finally:
@@ -847,9 +865,9 @@ def _cadence_store(work: Path) -> Path:
     store = MemoryStore(str(db))
     try:
         for i in range(CADENCE_LOCKS):
-            store.insert_belief(_lock(i, 150))
+            _insert(store, _lock(i, 150))
         for i in range(CADENCE_CORE):
-            store.insert_belief(
+            _insert(store, 
                 _belief(
                     f"C{i:031d}",
                     "coreword unrelated material " + "w" * 200,
@@ -857,10 +875,10 @@ def _cadence_store(work: Path) -> Path:
                 )
             )
         for i in range(CADENCE_HITS):
-            store.insert_belief(
+            _insert(store, 
                 _belief(f"H{i:031d}", f"{LANE_WORD} fact " + "z" * 400)
             )
-        store.insert_belief(
+        _insert(store, 
             Belief(
                 id=CADENCE_PHANTOM_ID,
                 content=f"a speculative claim about the {LANE_WORD} cellar",
@@ -1080,7 +1098,7 @@ def _locks_fire(n_locks: int, chars: int) -> str:
         store = MemoryStore(str(db))
         try:
             for i in range(n_locks):
-                store.insert_belief(_lock(i, chars))
+                _insert(store, _lock(i, chars))
         finally:
             store.close()
         os.environ["AELFRICE_DB"] = str(db)
@@ -1168,9 +1186,9 @@ def _resume_store(work: Path) -> Path:
     store = MemoryStore(str(db))
     try:
         for i in range(RESUME_LOCKS):
-            store.insert_belief(_lock(i, 150))
+            _insert(store, _lock(i, 150))
         for i in range(RESUME_CORE):
-            store.insert_belief(
+            _insert(store, 
                 _belief(
                     f"C{i:031d}",
                     "coreword unrelated material " + "w" * 200,
@@ -1178,7 +1196,7 @@ def _resume_store(work: Path) -> Path:
                 )
             )
         for i in range(RESUME_HITS):
-            store.insert_belief(
+            _insert(store, 
                 _belief(f"H{i:031d}", f"{LANE_WORD} fact " + "z" * 400)
             )
     finally:
