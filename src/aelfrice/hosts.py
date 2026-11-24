@@ -16,12 +16,13 @@ from typing import Final, cast
 
 CLAUDE_HOST: Final[str] = "claude"
 CODEX_HOST: Final[str] = "codex"
+ANTIGRAVITY_HOST: Final[str] = "antigravity"
 
 DEFAULT_HOST: Final[str] = CLAUDE_HOST
 """The host every `--host` option defaults to. Changing it changes what a
 bare `aelf setup` installs, so it stays `claude`."""
 
-SUPPORTED_HOSTS: Final[tuple[str, ...]] = (CLAUDE_HOST, CODEX_HOST)
+SUPPORTED_HOSTS: Final[tuple[str, ...]] = (CLAUDE_HOST, CODEX_HOST, ANTIGRAVITY_HOST)
 """Every value `--host` accepts, in the order help text lists them."""
 
 
