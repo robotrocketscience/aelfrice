@@ -156,9 +156,61 @@ def test_grep_with_a_context_flag_value() -> None:
     assert query == "needle"
 
 
-def test_grep_pipeline_aborts() -> None:
-    """Pipelines must skip; the parser would not know which stage's query."""
-    assert _parse_bash_command("grep foo file.txt | head -5") is None
+@pytest.mark.parametrize(
+    "command",
+    [
+        "grep foo file.txt | head -5",
+        "grep -rl foo src/lib | head -3",
+        "rg foo src/ | tail -n 20",
+        "grep -c foo src/ | wc -l",
+        "rg -l foo | sort -u",
+        "grep -rh foo src/ | sort | uniq -c | head",
+        "grep -rn foo src/ | cut -d: -f1",
+        "grep foo file.txt | /usr/bin/head -5",
+    ],
+)
+def test_pipe_to_output_filters_lifts_first_stage_query(command: str) -> None:
+    """A search piped only through output filters keeps its query (#1812).
+
+    The filters trim, count, or order the search's output, so the query
+    sits in the first stage. Models send this shape often,
+    and the hook silent-skipped it on every host.
+    """
+    parsed = _parse_bash_command(command)
+    assert parsed is not None
+    query, _ = parsed
+    assert query == "foo"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "grep foo file.txt | xargs rm",
+        "grep foo file.txt | sed s/a/b/",
+        "rg foo src/ | head -5 | grep bar",
+        "grep foo file.txt | head -5 > out.txt",
+        "grep foo file.txt | head -n $(cat n)",
+        "grep foo file.txt |",
+        "grep foo file.txt | | head",
+        "| head -5",
+        "cat file.txt | head -5",
+    ],
+)
+def test_pipe_to_non_filter_or_malformed_aborts(command: str) -> None:
+    """Any stage after the first that is not an output filter must skip."""
+    assert _parse_bash_command(command) is None
+
+
+def test_piped_probe_command_injects_end_to_end() -> None:
+    """The exact probe command now reaches retrieval and emits a block."""
+    out = _run_hook(_payload_bash(
+        "rg searchterm src/ | head -3", session_id="pipe-e2e",
+    ))
+    assert out
+    envelope = cast(dict[str, object], json.loads(out))
+    hso = cast(dict[str, object], envelope["hookSpecificOutput"])
+    ctx = cast(str, hso["additionalContext"])
+    assert 'query="searchterm"' in ctx
 
 
 def test_grep_command_substitution_aborts() -> None:

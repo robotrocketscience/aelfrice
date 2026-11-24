@@ -193,6 +193,15 @@ _BASH_ALLOWLIST: Final[dict[str, frozenset[str]]] = {
     "fdfind":   _FD_FLAGS_WITH_ARG,
 }
 
+# Commands that may follow a search in a pipeline. Each one only trims,
+# counts, or orders the search's output, so the query still sits in the
+# first stage and lifting it from there cannot pick a wrong query.
+# `grep foo src/ | head -3` is the commonest shape a model sends; before
+# this set the whole command silent-skipped, on every host.
+_BASH_PIPE_FILTERS: Final[frozenset[str]] = frozenset({
+    "head", "tail", "wc", "sort", "uniq", "cut",
+})
+
 
 def _is_abort_token(token: str) -> bool:
     """Return True if `token` matches an abort-list entry exactly OR
@@ -315,12 +324,35 @@ def _parse_fd(tokens: list[str]) -> str | None:
     return _parse_grep_like(tokens, _FD_FLAGS_WITH_ARG)
 
 
+def _first_stage_of_filter_pipeline(tokens: list[str]) -> list[str] | None:
+    """Return the tokens of a command's first pipeline stage, or `None`.
+
+    A command with no `|` token is its own first stage. A pipeline is
+    accepted only when every later stage is non-empty and starts with a
+    command in `_BASH_PIPE_FILTERS`; anything else returns `None`, so
+    `grep foo src/ | xargs rm` still silent-skips. The caller has already
+    rejected every other abort token, in all stages.
+    """
+    stages: list[list[str]] = [[]]
+    for t in tokens:
+        if t == "|":
+            stages.append([])
+        else:
+            stages[-1].append(t)
+    for stage in stages[1:]:
+        if not stage or stage[0].rsplit("/", 1)[-1] not in _BASH_PIPE_FILTERS:
+            return None
+    return stages[0]
+
+
 def _parse_bash_command(command: str) -> tuple[str, str] | None:
     """Lift `(query, command_name)` from a raw Bash `tool_input.command`.
 
     Returns `None` when the command is not allowlisted, the parser
-    cannot find a query, or the command contains pipeline /
-    command-substitution / shell-control tokens.
+    cannot find a query, or the command contains command-substitution /
+    shell-control / redirection tokens. A pipeline is accepted only when
+    every stage after the first is an output filter (`head`, `tail`,
+    `wc`, `sort`, `uniq`, `cut`); the query comes from the first stage.
 
     Tokenisation is a naive whitespace split. We deliberately do
     NOT shell-evaluate the command. Quoted arguments with embedded
@@ -330,13 +362,17 @@ def _parse_bash_command(command: str) -> tuple[str, str] | None:
     if not command or not command.strip():
         return None
     tokens = command.split()
-    # Reject the entire command if any abort token (pipeline, shell
-    # control, command substitution, redirection) appears anywhere.
+    # Reject the entire command if any abort token (shell control,
+    # command substitution, redirection) appears anywhere, in any stage.
     # The narrow parser cannot reliably lift a query out of a multi-
-    # stage shell expression; silent-skip beats wrong-query.
-    if any(_is_abort_token(t) for t in tokens):
+    # stage shell expression; silent-skip beats wrong-query. A bare `|`
+    # is the one exception, judged stage by stage below.
+    if any(t != "|" and _is_abort_token(t) for t in tokens):
         return None
-    suffix = _strip_command_prefix(tokens)
+    first_stage = _first_stage_of_filter_pipeline(tokens)
+    if first_stage is None:
+        return None
+    suffix = _strip_command_prefix(first_stage)
     if not suffix:
         return None
     cmd = suffix[0]
