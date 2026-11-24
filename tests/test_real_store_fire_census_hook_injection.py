@@ -305,8 +305,9 @@ def test_untraceable_probes_report_untraceable(ps: PlantedStore, item: str) -> N
 def test_a077_core_section(ps: PlantedStore) -> None:
     ps.lock(LOCK)
     for i in range(3):
-        ps.belief(f"Core rule {i}: the orchard scheduler flushes kumquat batches nightly.",
-                  alpha=4.0, beta=1.0)
+        ps.core_evidence(ps.belief(
+            f"Core rule {i}: the orchard scheduler flushes kumquat batches nightly.",
+            alpha=4.0, beta=1.0))
     ups(ps, "what does the orchard scheduler do with kumquat batches")
     r = run(ps, "A077")
     assert_fired(r, 1)
@@ -326,7 +327,8 @@ def test_a078_core_budget_near_cap(ps: PlantedStore) -> None:
     ps.lock(LOCK)
     pad = "lorem ipsum dolor sit amet " * 14
     for i in range(40):
-        ps.belief(f"Qualifying core belief {i} about granary ledgers. {pad}", alpha=4.0, beta=1.0)
+        ps.core_evidence(ps.belief(
+            f"Qualifying core belief {i} about granary ledgers. {pad}", alpha=4.0, beta=1.0))
     ups(ps, "census probes report integer counts")
     r = run(ps, "A078")
     assert_fired(r, 1)
@@ -891,10 +893,10 @@ def test_a123_stop_without_batch_is_untraceable(ps: PlantedStore) -> None:
 def test_a123_session_end_batch_proves_listing(ps: PlantedStore,
                                                monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AELFRICE_CORE_GATE_SESSION_END", "1")
-    ps.belief("Planted agent memory about the granary schedule.", session_id="s1",
-              alpha=4.0, beta=1.0)
-    ps.belief("Use uv run for every python command instead of pip.", type="correction",
-              session_id="s1", alpha=4.0, beta=1.0)
+    ps.core_evidence(ps.belief("Planted agent memory about the granary schedule.",
+                               session_id="s1", alpha=4.0, beta=1.0))
+    ps.core_evidence(ps.belief("Use uv run for every python command instead of pip.",
+                               type="correction", session_id="s1", alpha=4.0, beta=1.0))
     time.sleep(1.1)
     stop(ps, "s1")
     r = run(ps, "A123")
@@ -937,7 +939,8 @@ def test_a125_turn_differential(ps: PlantedStore, monkeypatch: pytest.MonkeyPatc
 
 def test_a125_first_prompt_seen_pointers_are_not_counted(ps: PlantedStore) -> None:
     ps.lock(LOCK)
-    seed_topic(ps, alpha=4.0, beta=1.0)
+    for bid in seed_topic(ps, alpha=4.0, beta=1.0):
+        ps.core_evidence(bid)
     ups(ps, "how does the kumquat parser flush batches")
     rows = audit(ps)
     assert len(rows) == 1 and ph.SEEN_LINE_RE.search(rows[0]["rendered_block"])
