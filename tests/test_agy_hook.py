@@ -253,3 +253,24 @@ def test_hook_runs_in_the_payload_project(calls: Calls, tmp_path: Path) -> None:
     proj.mkdir()
     _run(_base("SessionStart", proj))
     assert Path(os.getcwd()) == proj
+
+
+def test_and_chain_reaches_the_model_through_the_real_search_hook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """An `&&` chain is searched and queued for the next model call.
+
+    Only the dispatcher's state dir is redirected; the search hook is the
+    real one. The sandboxed HOME has no store, so the hook emits its
+    empty-store block, which still names the lifted query.
+    """
+    monkeypatch.setenv(agy_state.STATE_DIR_ENV, str(tmp_path / "state"))
+    monkeypatch.chdir(tmp_path)
+    chain = "git diff --name-only HEAD && grep -n -i searchterm state.jsonl && echo ok"
+    out, _ = _run(_base("PreToolUse", tmp_path, toolCall=_shell(chain)))
+    assert out == ""
+    out, _ = _run(_base("PreInvocation", tmp_path, invocationNum=1))
+    injected = _injected(out)
+    assert len(injected) == 1
+    assert 'query="searchterm"' in injected[0]
+    assert 'source="bash:grep"' in injected[0]
