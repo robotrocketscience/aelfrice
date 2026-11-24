@@ -451,8 +451,14 @@ matches. Per-subcommand rules:
   path segment. Bare `git show <rev>` or `git show <rev> <path>`
   silent-skips — too ambiguous for a deterministic parser.
 
-Pipelines, command substitutions, redirections, here-docs, and
-shell control flow (`for`, `while`, `if`) abort the parser:
+A chain joined by `&&` or `;` (split outside quotes) yields the
+query of its first command that parses: `git diff x && grep -n foo f`
+lifts `foo`. Within that command, a pipeline whose later stages are
+all output filters (`head`, `tail`, `wc`, `sort`, `uniq`, `cut`)
+parses, with the query taken from the first stage: `grep foo src/ |
+head -3` lifts `foo` (#1812). Any other pipeline, `||`, `&`, command
+substitutions, redirections, here-docs, and shell control flow
+(`for`, `while`, `if`) anywhere in the command abort the parser:
 returning `None` on any unrecognised structural token. The
 parser is intentionally narrow; failure to parse must
 silent-skip, never fire on a wrong query.
