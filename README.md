@@ -40,7 +40,7 @@ aelfrice supports the `claude` CLI fully. Codex support works but isn't yet on p
 - Codex shows no status line when aelfrice runs.
 - Codex doesn't get the git hook that reads commit messages.
 
-[#1812](https://github.com/robotrocketscience/aelfrice/issues/1812) tracks these gaps. Gemini CLI and Antigravity aren't supported yet.
+[#1812](https://github.com/robotrocketscience/aelfrice/issues/1812) tracks these gaps. Antigravity CLI is supported with `aelf setup --host antigravity`. Gemini CLI isn't supported yet.
 
 You install aelfrice once on each machine, then onboard each project.
 
@@ -64,6 +64,8 @@ Run these commands in a terminal, from any folder:
    ```
 
    This adds the hooks and `/aelf:` commands for every project on the machine. On Codex, run `aelf setup --host codex` instead, then trust the hooks with `/hooks`. Codex uses `$aelf-*` in place of `/aelf:`.
+
+   On Antigravity CLI, run `aelf setup --host antigravity` and start a new `agy` conversation. Antigravity uses `/aelf-*` in place of `/aelf:`.
 
 To have your agent run these steps, paste this prompt into it, then exit and start a new session:
 

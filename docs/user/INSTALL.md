@@ -126,6 +126,39 @@ aelfrice can merge only into the documented `{"hooks": {"<Event>": [...]}}` shap
 
 One window stays open. A process that takes no lock can still replace the file in the instant between the final check of aelfrice and the rename. Closing that window needs a mutation protocol from Codex, and Codex doesn't offer one today.
 
+### Antigravity CLI host
+
+If you run Antigravity CLI (`agy`), add `--host antigravity` to the same lifecycle verbs:
+
+```bash
+aelf setup --host antigravity     # hook entry in ~/.gemini/config/hooks.json + /aelf-* skills
+aelf doctor --host antigravity    # verify the entry, the hook program, and the skills
+aelf unsetup --host antigravity   # remove the hook entry and the skills
+```
+
+Start a new agy conversation after setup; `/hooks` in agy lists what loaded.
+
+Setup writes one key, `aelfrice`, into agy's global `hooks.json` and leaves every other key alone. Each event runs `aelf-agy-hook`, which turns agy's payload into the one the Claude Code hooks read, runs them, and turns their output back into agy's format. Run setup from the `uv tool` install of `aelf` so the hook command resolves to `~/.local/bin`. The `--no-X` opt-outs work as on Claude Code. The slash commands become skills under `~/.gemini/config/skills/aelf-*/` and run as `/aelf-search`, `/aelf-lock`, and so on.
+
+agy has different hook events from Claude Code, recorded in [the Antigravity hook surface notes](../design/antigravity_hook_surface.md):
+
+| aelfrice hook | agy event | Claude Code event |
+|---|---|---|
+| Retrieval and the user half of the transcript | `PreInvocation`, first model call of a turn | `UserPromptSubmit` |
+| Session baseline | `SessionStart`, or the first `PreInvocation` of a resumed conversation | `SessionStart` |
+| Pre-issue guard, Bash search | `PreToolUse` on `run_command` | `PreToolUse` on `Bash` |
+| Subagent context | `PreToolUse` on `invoke_subagent` | `PreToolUse` on `Agent` |
+| Commit ingest | `PostToolUse` on `run_command` | `PostToolUse` on `Bash` |
+| Assistant half of the transcript, stop hook | `Stop` | `Stop` |
+
+Differences from Claude Code:
+
+- Search results reach the model one step late. Nothing a tool hook prints reaches the agy model, so the context from a shell search waits for the next model call, which comes after the tool runs and before the model reads its output.
+- `agy -c` fires no `SessionStart`, so the first model call of a resumed conversation brings in the baseline once.
+- Not installed on agy: transcript rotation and the post-compaction rebuild (agy has no compaction event), the statusline notifier, and the claude-memory mirror and its audit command.
+
+All hosts read and write the same belief store for a repository.
+
 ## 3. Verify wiring
 
 ```bash

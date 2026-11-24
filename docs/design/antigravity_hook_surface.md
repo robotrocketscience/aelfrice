@@ -1,8 +1,8 @@
 # Antigravity CLI hook surface, as observed
 
 Observed behavior of Antigravity CLI (`agy`) hooks, recorded with
-`scripts/agy_hook_probe.py`. The Antigravity host table will be built from
-this document. Where this document and the Antigravity hooks reference
+`scripts/agy_hook_probe.py`. `host_antigravity.py` and `agy_hook.py` are
+built from this document. Where this document and the Antigravity hooks reference
 disagree, this document is right for the version it was recorded against.
 
 - Antigravity CLI version: 1.5.7 (`agy --version`), model
@@ -101,19 +101,21 @@ Each line is one step with snake_case keys: `step_index`, `source`
 The user prompt arrives wrapped in `<USER_REQUEST>` tags. Injected system
 messages are recorded as `SYSTEM_MESSAGE` steps.
 
-## Proposed mapping
+## Mapping
 
-For review at the gate. Nothing below is built yet.
+Every row runs through one command, `aelf-agy-hook`, which dispatches on
+`hookEventName`.
 
 | aelfrice hook (Claude event) | agy event | Notes |
 |---|---|---|
 | retrieval injection (`UserPromptSubmit`) | `PreInvocation`, only when `invocationNum == 0` | output as `injectSteps` `systemMessage` |
 | transcript logger, user half (`UserPromptSubmit`) | `PreInvocation`, `invocationNum == 0` | prompt from `lastUserInput` |
-| transcript logger, assistant half and stop hook (`Stop`) | `Stop` | assistant text from the last `PLANNER_RESPONSE` in `transcriptPath` |
-| session-start baseline (`SessionStart`) | `SessionStart` | not on resume |
-| search-tool hooks (`PreToolUse`) | see blocker | no direct channel |
-| commit ingest (`PostToolUse` on `Bash`) | `PostToolUse`, matcher `run_command` | output from `steps/<stepIdx>/output.txt` if needed |
-| pre-issue guard (`PreToolUse` on `Bash`) | `PreToolUse`, matcher `run_command` | blocks with exit 2 today, which agy honors; print `{"decision":"deny","reason":...}` so the reason reaches the user, and nothing on pass |
+| transcript logger, assistant half and stop hook (`Stop`) | `Stop` | assistant text from the last `PLANNER_RESPONSE` in `transcriptPath`; a continuation only when `executionNum == 0` |
+| session-start baseline (`SessionStart`) | `SessionStart`; on resume, the first `PreInvocation` of a conversation with no baseline marker | markers in `~/.aelfrice/antigravity/baseline/` |
+| search-tool hook on Bash (`PreToolUse`) | `PreToolUse` on `run_command`, injected at the next `PreInvocation` | queued per conversation in `~/.aelfrice/antigravity/pending/` |
+| commit ingest (`PostToolUse` on `Bash`) | `PostToolUse`, matcher `run_command` | output read from `steps/<stepIdx>/output.txt` |
+| pre-issue guard (`PreToolUse` on `Bash`) | `PreToolUse`, matcher `run_command` | prints `{"decision":"deny","reason":...}` on a block and nothing on a pass |
+| agent context (`PreToolUse` on `Agent`) | `PreToolUse`, matcher `invoke_subagent` | rewrites `args.Prompt` through `overwrite` |
 | `PreCompact`, `PostCompact`, statusline, claude-memory mirror | none | listed by `aelf doctor --host antigravity` |
 
 ## Reproducing
