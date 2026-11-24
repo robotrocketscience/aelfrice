@@ -31,6 +31,7 @@ from aelfrice.models import (
     CORE_MIN_POSTERIOR_FEEDBACK_EVENTS,
     FEEDBACK_SOURCE_LOCK_EXPIRE,
     LOCK_NONE,
+    LOCK_USER,
     ORIGIN_USER_TRANSCRIPT,
     Belief,
 )
@@ -134,6 +135,29 @@ def test_posterior_signal_label_needs_the_events(isolated_db: Path) -> None:
     text = io.StringIO()
     assert main(argv=["core", "--no-locked"], out=text) == 0
     assert f"{_FACTUAL} [α=5.0,β=1.0,μ=0.833]" in text.getvalue()
+
+
+def test_a_locked_belief_shows_no_posterior_signal_without_the_events(
+    isolated_db: Path,
+) -> None:
+    """A lock is in core by its own arm. Its Beta(9, 0.5) clears the mean and
+    mass thresholds, but with no feedback rows neither output may label it
+    with the posterior signal."""
+    locked = _belief(_CORRECTION, BELIEF_CORRECTION, 9.0, 0.5)
+    locked.lock_level = LOCK_USER
+    locked.locked_at = _TS
+    s = MemoryStore(str(isolated_db))
+    try:
+        s.insert_belief(locked)
+    finally:
+        s.close()
+    buf = io.StringIO()
+    assert main(argv=["core", "--json"], out=buf) == 0
+    rows: list[dict[str, object]] = json.loads(buf.getvalue())
+    assert [(r["id"], r["signals"]) for r in rows] == [(_CORRECTION, ["lock"])]
+    text = io.StringIO()
+    assert main(argv=["core"], out=text) == 0
+    assert f"{_CORRECTION} [LOCK]: " in text.getvalue()
 
 
 def test_hook_exposure_rows_do_not_count(isolated_db: Path) -> None:
