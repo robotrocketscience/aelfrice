@@ -72,6 +72,7 @@ from aelfrice.models import (
     Belief,
 )
 from aelfrice.store import MemoryStore
+from tests.core_evidence import record_core_evidence_for_store
 
 _REPO = Path(__file__).resolve().parents[1]
 _MBC_SCRIPT = _REPO / "scripts" / "measure_block_ceiling.py"
@@ -143,6 +144,7 @@ def _store(tmp_path: Path, *locks: Belief) -> Path:
     try:
         for b in locks:
             store.insert_belief(b)
+        record_core_evidence_for_store(store)
     finally:
         store.close()
     return db

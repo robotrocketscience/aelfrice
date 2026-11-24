@@ -31,6 +31,7 @@ from aelfrice.hook import (
 )
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
+from tests.core_evidence import record_core_evidence_for_store
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ def _seed_db(db_path: Path, beliefs: list[Belief]) -> None:
     try:
         for b in beliefs:
             store.insert_belief(b)
+        record_core_evidence_for_store(store)
     finally:
         store.close()
 

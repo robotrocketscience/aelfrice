@@ -28,7 +28,9 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice.store import MemoryStore
 from aelfrice.transcript_logger import DEFAULT_STOP_FLUSH_TURNS
+from tests.core_evidence import record_core_evidence
 
 pytestmark = pytest.mark.timeout(300)
 
@@ -86,6 +88,18 @@ def _batched_ids(db: Path) -> list[set[str]]:
     return [{i["belief_id"] for i in json.loads(r[0])} for r in rows]
 
 
+def _give_core_evidence(db: Path, ids: set[str]) -> None:
+    """Two feedback rows per belief, so a fresh Beta(3, 1) row is a core
+    candidate: the posterior arm counts feedback events, and ingest writes
+    none (CORE_MIN_POSTERIOR_FEEDBACK_EVENTS)."""
+    store = MemoryStore(str(db))
+    try:
+        for bid in sorted(ids):
+            record_core_evidence(store, bid)
+    finally:
+        store.close()
+
+
 def _wait_for_beliefs(db: Path, want: int) -> set[str]:
     """Wait for the background ingest the flush spawned to land."""
     deadline = time.monotonic() + 120
@@ -136,7 +150,9 @@ def test_batch_fires_after_each_ingest_flush(tmp_path: Path) -> None:
         _run("aelf-transcript-logger", stop_payload, env, work)
         if turn % flush_every == 0:
             # Ingested user turns so far; the assistant lines make no belief.
-            seen = _wait_for_beliefs(db, turn)
+            landed = _wait_for_beliefs(db, turn)
+            _give_core_evidence(db, landed - seen)
+            seen = landed
         out = _run("aelf-stop-hook", stop_payload, env, work)
         if out.strip():
             obj = json.loads(out)
