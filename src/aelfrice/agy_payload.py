@@ -28,6 +28,22 @@ EVENT_PRE_TOOL: Final[str] = "PreToolUse"
 EVENT_POST_TOOL: Final[str] = "PostToolUse"
 EVENT_STOP: Final[str] = "Stop"
 
+# Dispatcher roles, named after the auto-install manifest installers. They
+# live here, not in `agy_hook`, so `host_antigravity` (imported by `cli`)
+# never imports the dispatcher and through it `aelfrice.hook` (#1631).
+ROLE_SESSION_START: Final[str] = "session_start"
+ROLE_USER_PROMPT: Final[str] = "user_prompt_submit"
+ROLE_TRANSCRIPT: Final[str] = "transcript_ingest"
+ROLE_STOP: Final[str] = "stop"
+ROLE_SEARCH_BASH: Final[str] = "search_tool_bash"
+ROLE_PRE_ISSUE: Final[str] = "pre_issue_guard"
+ROLE_AGENT_CONTEXT: Final[str] = "agent_context"
+ROLE_COMMIT: Final[str] = "commit_ingest"
+ALL_ROLES: Final[frozenset[str]] = frozenset({
+    ROLE_SESSION_START, ROLE_USER_PROMPT, ROLE_TRANSCRIPT, ROLE_STOP,
+    ROLE_SEARCH_BASH, ROLE_PRE_ISSUE, ROLE_AGENT_CONTEXT, ROLE_COMMIT,
+})
+
 SHELL_TOOL: Final[str] = "run_command"
 SUBAGENT_TOOL: Final[str] = "invoke_subagent"
 

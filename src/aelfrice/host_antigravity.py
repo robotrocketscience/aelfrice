@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast
 
-from aelfrice import agy_hook
+from aelfrice import agy_payload as roles
 from aelfrice.launcher import command_tokens
 from aelfrice.setup import SettingsScope, _resolve_script, read_settings, write_settings  # pyright: ignore[reportPrivateUsage]
 
@@ -55,16 +55,16 @@ TOOL_EVENTS: Final[frozenset[str]] = frozenset({EVENT_PRE_TOOL, EVENT_POST_TOOL}
 
 # Roles each agy event runs (see `aelfrice.agy_hook`).
 EVENT_ROLES: Final[dict[str, tuple[str, ...]]] = {
-    EVENT_SESSION_START: (agy_hook.ROLE_SESSION_START,),
+    EVENT_SESSION_START: (roles.ROLE_SESSION_START,),
     EVENT_PRE_INVOCATION: (
-        agy_hook.ROLE_SESSION_START, agy_hook.ROLE_TRANSCRIPT,
-        agy_hook.ROLE_USER_PROMPT, agy_hook.ROLE_SEARCH_BASH,
+        roles.ROLE_SESSION_START, roles.ROLE_TRANSCRIPT,
+        roles.ROLE_USER_PROMPT, roles.ROLE_SEARCH_BASH,
     ),
     EVENT_PRE_TOOL: (
-        agy_hook.ROLE_PRE_ISSUE, agy_hook.ROLE_SEARCH_BASH, agy_hook.ROLE_AGENT_CONTEXT,
+        roles.ROLE_PRE_ISSUE, roles.ROLE_SEARCH_BASH, roles.ROLE_AGENT_CONTEXT,
     ),
-    EVENT_POST_TOOL: (agy_hook.ROLE_COMMIT,),
-    EVENT_STOP: (agy_hook.ROLE_TRANSCRIPT, agy_hook.ROLE_STOP),
+    EVENT_POST_TOOL: (roles.ROLE_COMMIT,),
+    EVENT_STOP: (roles.ROLE_TRANSCRIPT, roles.ROLE_STOP),
 }
 EVENT_ORDER: Final[tuple[str, ...]] = (
     EVENT_SESSION_START, EVENT_PRE_INVOCATION, EVENT_PRE_TOOL, EVENT_POST_TOOL, EVENT_STOP,
@@ -135,9 +135,9 @@ def _event_timeout(roles: tuple[str, ...], timeouts_s: dict[str, int]) -> int:
 
 def _pre_tool_matcher(active: tuple[str, ...]) -> str:
     tools: list[str] = []
-    if agy_hook.ROLE_PRE_ISSUE in active or agy_hook.ROLE_SEARCH_BASH in active:
+    if roles.ROLE_PRE_ISSUE in active or roles.ROLE_SEARCH_BASH in active:
         tools.append("run_command")
-    if agy_hook.ROLE_AGENT_CONTEXT in active:
+    if roles.ROLE_AGENT_CONTEXT in active:
         tools.append("invoke_subagent")
     return "|".join(tools)
 
@@ -155,7 +155,7 @@ def desired_agy_hooks(
     left out.
     """
     budgets = timeouts_s if timeouts_s is not None else {}
-    skipped = sorted(skip & agy_hook.ALL_ROLES)
+    skipped = sorted(skip & roles.ALL_ROLES)
     base = shlex.quote(command)
     full = f"{base} --skip {','.join(skipped)}" if skipped else base
     out: dict[str, object] = {}

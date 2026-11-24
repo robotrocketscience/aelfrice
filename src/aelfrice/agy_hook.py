@@ -39,20 +39,18 @@ from typing import IO, Final, cast
 
 from aelfrice import agy_payload as ap
 from aelfrice import agy_state
+from aelfrice.agy_payload import (
+    ALL_ROLES,
+    ROLE_AGENT_CONTEXT,
+    ROLE_COMMIT,
+    ROLE_PRE_ISSUE,
+    ROLE_SEARCH_BASH,
+    ROLE_SESSION_START,
+    ROLE_STOP,
+    ROLE_TRANSCRIPT,
+    ROLE_USER_PROMPT,
+)
 
-ROLE_SESSION_START: Final[str] = "session_start"
-ROLE_USER_PROMPT: Final[str] = "user_prompt_submit"
-ROLE_TRANSCRIPT: Final[str] = "transcript_ingest"
-ROLE_STOP: Final[str] = "stop"
-ROLE_SEARCH_BASH: Final[str] = "search_tool_bash"
-ROLE_PRE_ISSUE: Final[str] = "pre_issue_guard"
-ROLE_AGENT_CONTEXT: Final[str] = "agent_context"
-ROLE_COMMIT: Final[str] = "commit_ingest"
-
-ALL_ROLES: Final[frozenset[str]] = frozenset({
-    ROLE_SESSION_START, ROLE_USER_PROMPT, ROLE_TRANSCRIPT, ROLE_STOP,
-    ROLE_SEARCH_BASH, ROLE_PRE_ISSUE, ROLE_AGENT_CONTEXT, ROLE_COMMIT,
-})
 
 SKIP_FLAG: Final[str] = "--skip"
 MAX_PAYLOAD_CHARS: Final[int] = 4 * 1024 * 1024
