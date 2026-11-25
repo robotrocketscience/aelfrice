@@ -12,7 +12,7 @@
 
 **aelfrice gives an AI coding agent a local memory: before the model reads each prompt, a hook adds your locked beliefs and the best-ranked matches to it.** An agent forgets your corrections between sessions, so you repeat them. A belief is one statement that aelfrice has stored.
 
-- aelfrice stores sentences from your prompts as beliefs. After each commit, it also stores the words on each side of a phrase such as "X supersedes Y" in the commit message. A message with no such phrase adds nothing. `/aelf:onboard` adds your docs, docstrings, and recent commit subjects.
+- aelfrice stores sentences from your prompts as beliefs. `/aelf:onboard` adds your docs, docstrings, and recent commit subjects. The git hook that `aelf setup` installs runs after each commit and stores nothing.
 - By default, a belief becomes ground truth only when you lock it with `/aelf:lock`.
 - Retrieval uses an entity index and BM25 over local SQLite and needs no account, telemetry, embeddings, or LLM.
 
@@ -38,7 +38,7 @@ aelfrice supports the `claude` CLI fully. Codex support works but isn't yet on p
 - Codex keeps hook output over about 2,500 tokens in a file and gives the model only a preview, so a large memory block can reach the model cut short.
 - A forked Codex thread gets no baseline block of your locked rules.
 - Codex shows no status line when aelfrice runs.
-- Codex doesn't get the git hook that reads commit messages.
+- Codex doesn't get the git commit hook.
 
 [#1812](https://github.com/robotrocketscience/aelfrice/issues/1812) tracks these gaps. Gemini CLI and Antigravity aren't supported yet.
 
@@ -96,7 +96,7 @@ Install aelfrice from github.com/robotrocketscience/aelfrice for all my projects
 
 aelfrice then runs without further commands. To check the install, run `/aelf:doctor` (`aelf doctor --host codex` on Codex). The [installation guide](docs/user/INSTALL.md) covers every option.
 
-Each git repository keeps its own store, in its `.git` folder. Folders outside git share one store at `~/.aelfrice/memory.db`. On the `claude` CLI, `aelf setup` adds the git hook that reads commit messages only to the repository you run it in, so run `aelf setup` once in each project where you want that. Codex doesn't get this hook.
+Each git repository keeps its own store, in its `.git` folder. Folders outside git share one store at `~/.aelfrice/memory.db`. On the `claude` CLI, `aelf setup` adds a git commit hook only to the repository you run it in. The hook stores nothing yet. Codex doesn't get this hook.
 
 <p align="center"><img src="docs/assets/retrieval-lanes.png" width="88%" alt="An illustrative schematic of the retrieval lanes of aelfrice over a belief graph: locked beliefs pinned at the query, keyword seeds from full-text search spreading outward, an optional typed-edge graph walk, and a structural lane for marker queries."></p>
 
@@ -155,7 +155,7 @@ The [command reference](docs/user/COMMANDS.md) lists the terminal form of each c
   </picture>
 </p>
 
-Every belief has one type. A rule-based classifier types transcript text; `/aelf:onboard` uses your agent's model by default. Text from `/aelf:lock` or the commit hook is `factual`. Locking does not change a belief's type.
+Every belief has one type. A rule-based classifier types transcript text; `/aelf:onboard` uses your agent's model by default. Text from `/aelf:lock` is `factual`. Locking does not change a belief's type.
 
 | Type | Holds | Assigned when |
 |---|---|---|
@@ -165,19 +165,19 @@ Every belief has one type. A rule-based classifier types transcript text; `/aelf
 | `preference` | How you like things done. | Contains "I prefer", "always use", or similar. |
 | `speculative` | A phantom: a guess that isn't trusted yet. | `/aelf:wonder` writes it. |
 
-Edges link a source belief to a target belief. Today, only `TEMPORAL_NEXT` and `DERIVED_FROM` are written for every conversation. The commit hook reads the message of each new commit and matches a fixed list of phrasings: "is supported by" counts, and "supports" doesn't. A phrasing counts only in lowercase, so "supersedes" counts, and "SUPERSEDES" doesn't. It also needs a word on each side of it on the same line. A side made only of function words stores nothing for that match: determiners, pronouns, relative words, quantifiers, conjunctions, prepositions, auxiliaries and modals, negators, and adverbs such as "also" and "just". A word of two or more letters in all capitals, such as "IT" or "WHO", counts as a name, so it stores. A capitalized word that matches one of these, such as the code names "None" and "Any" or the name "Will", counts as a function word, so it doesn't store. A word with a hyphen or underscore inside it, such as "one-shot" or "all_of", counts as one word and stores. A side can't start after an apostrophe, so "it's" doesn't store "s". On a match, aelfrice stores up to six words from each side, from that line only, as a belief, with an edge between them. Those words might not form a complete phrase, such as "the old", and a phrase that wraps to the next line is cut at the line break. The edge also keeps about 80 characters of the message, which can include other lines. From a message with no match, aelfrice stores nothing.
+Edges link a source belief to a target belief. Today, only `TEMPORAL_NEXT` and `DERIVED_FROM` are written for every conversation. Earlier releases also stored edges from relation phrases in commit messages, such as "X supersedes Y". The commit hook no longer stores anything, but a store from an earlier release keeps the beliefs and edges it wrote, and retrieval still reads them.
 
 | Edge | Meaning | Written by | Default |
 |---|---|---|---|
-| `TEMPORAL_NEXT` | Stored right after the target in the same session. | Transcript ingest, for each new belief; commit hook ("comes after", "is after", "succeeds"). | Yes |
-| `DERIVED_FROM` | Follows from the target: the previous turn, or an earlier clause in the same turn. | Transcript ingest; commit hook ("is derived from", "is based on"). | Yes |
-| `RELATES_TO` | Same topic as the target. | `/aelf:wonder`; commit hook ("relates to", "is related to"). | When run, or on phrases |
-| `SUPPORTS` | Evidence for the target. | Commit hook ("is supported by"). | Phrase only |
-| `CITES` | Mentions the target. | Commit hook ("cites", "mentions"). | Phrases only |
-| `IMPLEMENTS` | Code implementing the target. | Commit hook ("implements", "is an implementation of", "realizes", "fulfills"). | Phrases only |
-| `TESTS` | Tests the target. | Commit hook ("is a test for", "is test of", "is tested by", "is covered by"). | Phrases only |
-| `CONTRADICTS` | Conflicts with the target. | Ingest relationship detector; commit hook ("contradicts", "disagrees with"). | Detector: off unless `[relationship_detector] auto_detect = true`. Commit hook: phrases only |
-| `SUPERSEDES` | Replaces the target. | `aelf resolve` (keeps each contradicting pair's winner); commit hook ("supersedes"). | When run, or on phrase |
+| `TEMPORAL_NEXT` | Stored right after the target in the same session. | Transcript ingest, for each new belief. | Yes |
+| `DERIVED_FROM` | Follows from the target: the previous turn, or an earlier clause in the same turn. | Transcript ingest. | Yes |
+| `RELATES_TO` | Same topic as the target. | `/aelf:wonder`. | When run |
+| `SUPPORTS` | Evidence for the target. | Nothing writes it now. | No writer |
+| `CITES` | Mentions the target. | Nothing writes it now. | No writer |
+| `IMPLEMENTS` | Code implementing the target. | Nothing writes it now. | No writer |
+| `TESTS` | Tests the target. | Nothing writes it now. | No writer |
+| `CONTRADICTS` | Conflicts with the target. | Ingest relationship detector. | Off unless `[relationship_detector] auto_detect = true` |
+| `SUPERSEDES` | Replaces the target. | `aelf resolve` (keeps each contradicting pair's winner). | When run |
 | `POTENTIALLY_STALE` | Flags an older target as possibly stale. | `/aelf:doctor --detect-stale`. | When run |
 | `RESOLVES` | A contradicting pair's winner resolves the loser. | `aelf resolve`, beside each `SUPERSEDES` edge ([issue #1658](https://github.com/robotrocketscience/aelfrice/issues/1658)). | When run |
 

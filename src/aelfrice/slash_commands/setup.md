@@ -14,7 +14,7 @@ the full default-on hook bundle, not just one entry:
 - `UserPromptSubmit` — the retrieval-injection hook (`aelf-hook`).
 - `UserPromptSubmit` / `Stop` / `PreCompact` / `PostCompact` —
   transcript-ingest (`aelf-transcript-logger`).
-- `PostToolUse:Bash` — commit-ingest (`aelf-commit-ingest`).
+- git `post-commit`, per repository: `aelf-commit-ingest`, which runs and stores nothing (#1698).
 - `SessionStart` — session-warm + `<recent-work>` block (#887).
 - `Stop` — stop-hook cadence dispatch (#749 / #871 / #876).
 - `PreToolUse:Grep|Glob|WebSearch|WebFetch` — `aelf-search-tool-hook`

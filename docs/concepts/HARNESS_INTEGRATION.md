@@ -6,7 +6,7 @@ system in Claude Code.
 If you read only one rule: **after `aelf setup`, both stores coexist
 productively, and you don't need to do anything else.** The default-on hook
 bundle in v2.1+ connects aelfrice to normal session activity through the
-transcript-ingest hook, the commit-ingest hook, and the session-start hook. You
+transcript-ingest hook and the session-start hook. You
 don't have to edit `CLAUDE.md`. The rest of this page is for readers who want a
 more opinionated arrangement.
 
@@ -19,7 +19,7 @@ stores live in different places, and different mechanisms write them.
 |---|---|---|
 | Storage | The `~/.claude/projects/<slug>/memory/*.md` files, plus the `MEMORY.md` index | One `<git-common-dir>/aelfrice/memory.db` (SQLite) per project. It falls back to `~/.aelfrice/memory.db` only outside a git working tree |
 | Format | Markdown files with YAML frontmatter | Beliefs indexed with full-text search version 5 (FTS5), carrying α/β posteriors and typed edges |
-| Write path | A harness directive in `~/.claude/CLAUDE.md` ("If the user explicitly asks you to remember something, save it…") | An explicit `aelf lock`, `aelf:lock`, or `aelf onboard` call. The default-on capture hooks in v2.1+ also write (transcript-ingest and commit-ingest) |
+| Write path | A harness directive in `~/.claude/CLAUDE.md` ("If the user explicitly asks you to remember something, save it…") | An explicit `aelf lock`, `aelf:lock`, or `aelf onboard` call. The default-on transcript-ingest hook in v2.1+ also writes |
 | Read path | Claude Code loads the files into every prompt automatically | The `UserPromptSubmit` hook injects retrieval results above each prompt |
 | Determinism | None. The large language model (LLM) decides what to write and when | Reproducible at bit level. Replaying the write log reconstructs every *belief* state. **The edges are an exception.** The shipped code writes them outside the log ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)) |
 | Apply feedback | No | Yes. An explicit `used` or `harmful` signal moves the posteriors. Retrieval *exposure* is audit-only by default (#1086), recorded as recurrence rather than as evidence. A contradiction resolves through a tie-breaker |
@@ -52,10 +52,9 @@ close the original limitation, so you don't have to work against the harness:
   beliefs and edges in the brain graph.
 - **Commit ingest, a git `post-commit` hook** ([the commit-ingest hook design note](../design/commit_ingest_hook.md)).
   `aelf setup` installs it in the current repository. After each `git commit`,
-  `cherry-pick`, or `revert`, git runs it, and it runs the triple extractor on
-  the commit message in the background, then inserts the resulting beliefs and edges under a
-  deterministic session id built from the commit's parent and author date.
-  Commits replayed by `git rebase`, and `git revert` commits, are skipped.
+  `cherry-pick`, or `revert`, git runs it in the background, and it stores
+  nothing. Commits replayed by `git rebase` don't start it. Earlier releases
+  stored beliefs and edges from relation phrases in the commit message.
   Before #1698 this was a `PostToolUse:Bash` hook, which missed most
   commits.
 
@@ -235,8 +234,8 @@ virtual-environment mismatch or a missing `aelf-*` console script.
   from that file in v1.2.
 - [the transcript-ingest design note](../design/transcript_ingest.md) — the capture pipeline
   for each turn.
-- [the commit-ingest hook design note](../design/commit_ingest_hook.md) — the capture
-  pipeline for a git commit.
+- [the commit-ingest hook design note](../design/commit_ingest_hook.md) — the git
+  commit hook, and what it captured before it stopped storing anything.
 - [the promotion-path design note](../design/promotion_path.md) — the
   `agent_inferred → user_validated` mechanism. It lets you tier imported `.md`
   content explicitly.
