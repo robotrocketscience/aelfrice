@@ -1,0 +1,3 @@
+### Documentation
+
+- **The package metadata and docs no longer describe the removed MCP server as live ([#1422](https://github.com/robotrocketscience/aelfrice/issues/1422)).** 4.3.0 removed the MCP server, but `pyproject.toml` and `CITATION.cff` still listed `mcp` and "Model Context Protocol" as keywords, `scripts/sync-repo-settings.sh` listed the `mcp` and `mcp-server` repo topics, `docs/user/INSTALL.md` named MCP as an entry point that opens the store, `docs/concepts/PHILOSOPHY.md` counted its tools as current breadth, and several design notes and code comments named MCP tools as present. They now drop it, put it in the past tense, or say that it left in 4.3.0. PyPI shows the new keywords from the next upload.
