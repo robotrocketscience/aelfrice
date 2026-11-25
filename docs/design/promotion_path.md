@@ -232,10 +232,11 @@ at all. Recency does not flip this; the unmarked belief gets the
 later-recency tiebreak only within its own class.
 
 **(ii) `user_validated` vs `user_corrected`.** A belief the user
-acknowledged from onboard contradicts a `BELIEF_CORRECTION`. The
-correction wins. A correction is the user actively saying "the
-prior thing was wrong, here is the right one"; validation is the
-user passively saying "this looks right." Active beats passive.
+acknowledged from onboard contradicts a belief with origin
+`user_corrected`. The `user_corrected` belief wins. Its origin records
+the user actively saying "the prior thing was wrong, here is the right
+one"; validation is the user passively saying "this looks right."
+Active beats passive.
 
 **(iii) `user_validated` vs `user_stated`.** Lock wins. A lock is
 non-negotiable; validation is acknowledgement. The user can
@@ -267,7 +268,7 @@ PRECEDENCE_AGENT_INFERRED   = 1  (new)
 ```
 
 `CLASS_NAMES` gains the two new entries. `precedence_class` reads
-`belief.origin` as its primary axis once that field exists, with
+`belief.origin`, and not the belief type, once that field exists, with
 `lock_level == LOCK_USER` continuing to short-circuit to
 `user_stated` (preserves the lock-takes-priority test at
 [`tests/test_contradiction.py:86-92`](../../tests/test_contradiction.py)).
