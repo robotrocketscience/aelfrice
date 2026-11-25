@@ -4082,7 +4082,7 @@ def user_prompt_submit(
                 sidecar_outcome=_last_sidecar_outcome(),
                 stderr=serr,
             )
-        # #980 trigger-driven phantom generation: surface a
+        # #980 phantom-opportunity trigger (it generates nothing): surface a
         # phantom-opportunity note when a deterministic trigger fires and
         # the opt-in flag is on. Skipped on gate_skip turns — a prompt the
         # shape-gate refused to retrieve against is not a real "gap".

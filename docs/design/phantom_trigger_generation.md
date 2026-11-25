@@ -1,8 +1,9 @@
-# Trigger-driven phantom generation in normal turns
+# Trigger-driven phantom-opportunity notes in normal turns
 
-**Status:** RATIFIED 2026-06-23 (operator). Building. Decision points in
-[§7](#7-ratified-decisions-2026-06-23) are resolved; this document is the
-build contract.
+**Status:** RATIFIED 2026-06-23 (operator). Shipped in v3.7.0 as the
+detect-and-flag half only: aelfrice adds a note and generates no phantom. Decision
+points in [§7](#7-ratified-decisions-2026-06-23) are resolved; this document
+is the build contract.
 **Tracking issue:** [#980](https://github.com/robotrocketscience/aelfrice/issues/980)
 (recommended-work item 3 — "Spec + build trigger-driven phantom generation for
 normal turns").

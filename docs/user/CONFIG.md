@@ -1299,7 +1299,7 @@ The rebuilder rejects negative and non-numeric values, applies the default, and 
 
 ## `[phantom_generation]` (v3.6+)
 
-Opt-in, trigger-driven phantom generation (#980). On every `UserPromptSubmit` turn, aelfrice determines deterministically whether the turn is a *phantom-generation opportunity*, and on such a turn it appends a short `<aelfrice-phantom-opportunity>` note to the injected context suggesting `/aelf:wonder`. Under the #605 determinism boundary, aelfrice only **flags** the opportunity: the LLM synthesis stays an action of the host agent, on the existing `/aelf:wonder` path, and aelfrice never dispatches an LLM. The default is off, and the lane is inert until you enable it.
+Opt-in notes that flag a phantom-generation opportunity (#980). On every `UserPromptSubmit` turn, aelfrice determines deterministically whether the turn is a *phantom-generation opportunity*, and on such a turn it appends a short `<aelfrice-phantom-opportunity>` note to the injected context suggesting `/aelf:wonder`. Under the #605 determinism boundary, aelfrice only **flags** the opportunity: the LLM synthesis stays an action of the host agent, on the existing `/aelf:wonder` path, and aelfrice never dispatches an LLM. The default is off, and the lane is inert until you enable it.
 
 One flag and one per-session budget cover three signals, which aelfrice combines with OR. The note's `reason` field names the signal that fired.
 - **gap** — the prompt retrieved zero stored beliefs.
@@ -1318,7 +1318,7 @@ Integer ≥ 1, default `3`. This key caps the opportunity notes for each session
 
 Boolean, default `false`. With `false` (the default) the note is passive: it states the opportunity, and you or the agent then decide what to do. With `true` the note instructs the agent to run the `/aelf:wonder` dispatch on the listed topics. This key is TOML-only.
 
-aelfrice skips the trigger on a turn that the prompt-shape gate stopped (#674). The trigger is fail-soft end to end: any error produces no note, and no error breaks the hook. For the full specification, see [the phantom-generation trigger design note](../design/phantom_trigger_generation.md).
+aelfrice skips the trigger on a turn that the prompt-shape gate stopped (#674). The trigger is fail-soft end to end: any error produces no note, and no error breaks the hook. For the full specification, see [the phantom-opportunity trigger design note](../design/phantom_trigger_generation.md).
 
 ## `[phantom_promotion]` (v4.x+)
 
