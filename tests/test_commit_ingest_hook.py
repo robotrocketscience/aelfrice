@@ -85,7 +85,7 @@ def _payload(
 def _drive(payload: dict[str, object]) -> int:
     sin = io.StringIO(json.dumps(payload))
     serr = io.StringIO()
-    return hk.main(stdin=sin, stderr=serr)
+    return hk.main(stdin=sin, stderr=serr, argv=[])
 
 
 # --- Behaviour tests -----------------------------------------------------
@@ -128,6 +128,66 @@ def test_a_real_commit_payload_opens_no_store(
     assert _drive(payload) == 0
     assert _drive(payload) == 0
     assert not per_repo_db.exists()
+
+
+@pytest.fixture
+def no_store_env(
+    git_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """No `AELFRICE_DB`, so a store would resolve to the repository's own.
+
+    Returns the `AELFRICE_USER_DB` path, which doesn't exist yet.
+    """
+    from aelfrice import db_paths
+
+    home = tmp_path / "home"
+    home.mkdir()
+    user_db = home / ".aelfrice" / "user" / "memory.db"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AELFRICE_USER_DB", str(user_db))
+    monkeypatch.delenv("AELFRICE_DB", raising=False)
+    monkeypatch.chdir(git_repo)
+    db_paths.clear_git_common_dir_cache()
+    return user_db
+
+
+def _real_commit_payload(repo: Path) -> dict[str, object]:
+    message = "the new index is supported by faster queries"
+    branch, short = _make_commit(repo, message)
+    return _payload(
+        command=f"git commit -m '{message}'",
+        stdout=f"[{branch} {short}] {message}",
+        cwd=str(repo),
+    )
+
+
+@pytest.mark.timeout(30)
+def test_the_payload_path_creates_no_repo_store(
+    git_repo: Path, tmp_path: Path, no_store_env: Path,
+) -> None:
+    assert _drive(_real_commit_payload(git_repo)) == 0
+    assert not (git_repo / ".git" / "aelfrice" / "memory.db").exists()
+    assert sorted(tmp_path.rglob("*.db")) == []
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("entry", ["git_hook", "tool_hook"])
+def test_neither_entry_point_creates_the_user_store(
+    git_repo: Path, tmp_path: Path, no_store_env: Path, entry: str,
+) -> None:
+    if entry == "git_hook":
+        _make_commit(git_repo, "the spec is derived from the prior memo")
+        rev = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=git_repo, capture_output=True,
+            text=True, check=True, timeout=30,
+        ).stdout.strip()
+        rc = hk.main(stdin=io.StringIO(""), stderr=io.StringIO(),
+                     argv=[hk.GIT_HOOK_FLAG, rev])
+    else:
+        rc = _drive(_real_commit_payload(git_repo))
+    assert rc == 0
+    assert not no_store_env.exists()
+    assert sorted(tmp_path.rglob("*.db")) == []
 
 
 def test_malformed_json_returns_zero(per_repo_db: Path) -> None:
