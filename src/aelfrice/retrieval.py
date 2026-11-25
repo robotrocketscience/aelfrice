@@ -289,9 +289,11 @@ SUPERSESSION_DEMOTE_FLAG: Final[str] = "use_supersession_demote"
 # Treatment selector. `demote` reduces the superseded belief's rerank
 # score; `exclude` drops it from the candidate set outright. The
 # trade-off the bench has to settle: exclusion is the stronger reading of
-# "the user retired this claim", but a SUPERSEDES edge can be written by
-# the triple extractor from prose that merely looks like a supersession,
-# and a wrong exclusion hides a belief with no ranking signal to notice.
+# "the user retired this claim", but a stored SUPERSEDES edge may come
+# from the triple extractor's reading of prose that merely looks like a
+# supersession (the commit hook wrote such rows before it stopped
+# writing), and a wrong exclusion hides a belief with no ranking signal
+# to notice.
 SUPERSESSION_TREATMENT_FLAG: Final[str] = "supersession_treatment"
 SUPERSESSION_TREATMENT_DEMOTE: Final[str] = "demote"
 SUPERSESSION_TREATMENT_EXCLUDE: Final[str] = "exclude"

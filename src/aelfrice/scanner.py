@@ -159,9 +159,8 @@ def _derive_scan_session_id(root: Path, timestamp: str) -> str:
 
     Stable across two scans of the same tree at the same timestamp; the
     timestamp differs per invocation so each scan run gets its own id.
-    Mirrors `hook_commit_ingest._derive_session_id` in shape (16-hex
-    sha256 prefix) so downstream consumers can treat all session_id
-    values uniformly.
+    A 16-hex sha256 prefix, the shape of the other derived session ids,
+    so downstream consumers can treat all session_id values uniformly.
     """
     raw = f"scan:{root}:{timestamp}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]

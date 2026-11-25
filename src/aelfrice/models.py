@@ -334,10 +334,11 @@ CORROBORATION_SOURCES_USER_EXPLICIT: Final[frozenset[str]] = frozenset({
 # either. Content from these sources is still inserted when new; a hit on
 # an existing belief records no corroboration row. Ruled 2026-09-30.
 #
-# Commit ingest is deliberately NOT here: each new commit is its own
-# event, and a phrase that recurs across distinct commits still
-# corroborates. A rebase or amend re-ingesting an unchanged message under
-# a new hash is the remaining re-read on that path (see #1669).
+# Commit ingest is deliberately NOT here: each new commit was its own
+# event, and a phrase that recurred across distinct commits corroborated.
+# A rebase or amend re-ingesting an unchanged message under a new hash was
+# the remaining re-read on that path (see #1669). The commit hook stores
+# nothing now, so no new row arrives under this source.
 CORROBORATION_SOURCES_NON_ASSERTING: Final[frozenset[str]] = frozenset({
     CORROBORATION_SOURCE_FILESYSTEM_INGEST,
 })

@@ -13,8 +13,8 @@ The two surfaces that consult this helper today are:
   * ``aelfrice.ingest.ingest_turn`` — library-direct ingest path.
   * ``aelfrice.cli._cmd_lock`` — the ``aelf lock`` CLI subcommand.
 
-Surfaces with their own per-call session context (commit-ingest hook,
-JSONL replay, onboard scanner/classification) do **not** call this
+Surfaces with their own per-call session context (JSONL replay,
+onboard scanner/classification) do **not** call this
 helper: they have a structurally-correct session_id source already.
 
 Per the R0 ratification (Q5.a) the warn channel is

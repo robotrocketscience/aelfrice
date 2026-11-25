@@ -84,9 +84,10 @@ BFS_EDGE_WEIGHTS: dict[str, float] = {
 # Edge types the walk follows AGAINST their stored direction (#1170).
 #
 # Producers write SUPERSEDES as src=winner(new) -> dst=loser(old):
-# `contradiction.resolve_contradiction` (src=winner.id, dst=loser.id) and
-# `triple_extractor` parsing "X supersedes Y" as src=X. That direction is
-# the one the edge type's name means, and it is kept.
+# `contradiction.resolve_contradiction` (src=winner.id, dst=loser.id), and
+# rows the commit hook stored before it stopped writing, which parsed
+# "X supersedes Y" as src=X. That direction is the one the edge type's
+# name means, and it is kept.
 #
 # But the spec's justification for the 0.90 weight is "'B replaces A' — the
 # most actionable adjacency. If the query hit A, the user almost certainly

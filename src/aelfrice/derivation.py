@@ -58,10 +58,10 @@ def is_typed_by_user(source: str, role: object) -> bool:
 
 _BELIEF_ID_HEX_LEN: Final[int] = 16
 
-# Source label used by triple-derived beliefs; matches
-# `triple_extractor.TRIPLE_BELIEF_SOURCE`. Defined here to avoid a
-# circular import (triple_extractor imports from models, not from
-# derivation). Both constants must stay in sync.
+# Source label in the id of a belief derived from a `git` ingest row.
+# The commit hook wrote those rows and no longer does, so this namespace
+# exists for replay of rows already stored: re-deriving one must yield the
+# id it got when it was written.
 _TRIPLE_BELIEF_SOURCE: Final[str] = "triple"
 
 # #1354 — the reserved `raw_meta` block carrying the one input `derive()`
@@ -297,13 +297,11 @@ def _lock_id(text: str) -> str:
 
 
 def _triple_belief_id(phrase: str) -> str:
-    """Deterministic id for triple-extracted noun-phrase beliefs.
+    """Deterministic id for a noun-phrase belief from a `git` ingest row.
 
-    Invoked via `triple_extractor.ingest_triples`, which drives this
-    function through the derivation worker (`triple_extractor.py` has
-    no local id helper of its own). Keyed on
+    The commit hook wrote those rows until it stopped writing. Keyed on
     `_TRIPLE_BELIEF_SOURCE` so the same normalised phrase resolves to
-    the same id across all extraction call sites.
+    the same id, and replay of a stored row matches the stored belief.
     """
     normalized = " ".join(phrase.split()).lower()
     h = hashlib.sha256(
@@ -317,11 +315,8 @@ def _content_hash(text: str) -> str:
 
 
 def _triple_content_hash(phrase: str) -> str:
-    """Content hash for triple-derived beliefs (normalised + lower).
-
-    Produced via the same derivation-worker path as
-    `_triple_belief_id`; no local hash helper exists in
-    `triple_extractor.py`.
+    """Content hash for a belief from a `git` ingest row (normalised +
+    lower). Pairs with `_triple_belief_id`.
     """
     normalized = " ".join(phrase.split()).lower()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -340,9 +335,9 @@ def derive(inp: DerivationInput) -> DerivationOutput:
     1. Lock / remember paths (`source_kind` in {mcp_remember,
        cli_remember}): always persist with a USER lock, no classifier.
     2. Triple-extraction path (`source_kind == git`): always persist as
-       factual with alpha=1.0 / beta=1.0; the id is assigned here,
-       invoked from `triple_extractor.ingest_triples` via the
-       derivation worker.
+       factual with alpha=1.0 / beta=1.0; the id is assigned here. No
+       writer adds `git` rows now that the commit hook stores nothing;
+       the branch keeps replay of stored rows exact.
     3. Override paths: when `override_belief_type` is set, skip
        `classify_sentence` and look up the source-adjusted prior
        directly (origin=agent_inferred). When `route_overrides` is
@@ -383,7 +378,7 @@ def derive(inp: DerivationInput) -> DerivationOutput:
         )
         return DerivationOutput(belief=belief, edges=[])
 
-    # 2. Triple-extraction path (git commit-ingest) -----------------------
+    # 2. Triple-extraction path (stored git commit-ingest rows) -----------
     if inp.source_kind == INGEST_SOURCE_GIT:
         normalized = " ".join(raw.split())
         bid = _triple_belief_id(raw)

@@ -76,12 +76,13 @@ tie-breaker behaviour for un-tagged content.
 
 The function `resolve_contradiction(store, a, b)` runs on demand;
 the integration is a CLI command (`aelf resolve`) and direct library
-use. Two paths write CONTRADICTS edges automatically: the ingest-time
+use. One path writes CONTRADICTS edges automatically: the ingest-time
 relationship detector (`relationship_detector.write_semantic_edges`,
-behind `[relationship_detector] auto_detect`, default off) and the
-commit hook's triple extractor ("contradicts", "disagrees with").
-Neither triggers a resolution; `aelf resolve` reads whatever
-CONTRADICTS edges exist.
+behind `[relationship_detector] auto_detect`, default off). The commit
+hook's triple extractor ("contradicts", "disagrees with") wrote them too
+until the hook stopped writing, and those rows stay in stores. Neither
+triggers a resolution; `aelf resolve` reads whatever CONTRADICTS edges
+exist.
 
 ## Audit
 
@@ -341,9 +342,9 @@ def resolve_contradiction(
         # SUPERSEDES still writes RESOLVES. `aelf resolve` never makes that
         # call: `find_unresolved_contradictions` skips any pair with a
         # SUPERSEDES edge in either direction, so a pair whose SUPERSEDES
-        # edge came from another writer (the commit hook's triple
-        # extractor) gets no RESOLVES edge and no audit row from
-        # `aelf resolve`.
+        # edge came from another writer (such as a row the commit hook's
+        # triple extractor stored before the hook stopped writing) gets no
+        # RESOLVES edge and no audit row from `aelf resolve`.
         resolves_created = store.get_edge(
             winner.id, loser.id, EDGE_RESOLVES,
         ) is None and store.insert_edge(Edge(

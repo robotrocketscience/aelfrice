@@ -570,8 +570,9 @@ def _a307(ctx: cc.Ctx) -> cc.Result:
 
 
 # --- A308 sessions table writer --------------------------------------------
-# Only hook_commit_ingest._record_triples writes sessions (model
-# 'commit-ingest'); MemoryStore.create_session has no caller.
+# Only hook_commit_ingest._record_triples wrote sessions (model
+# 'commit-ingest'), and it is gone: nothing writes sessions now, and
+# MemoryStore.create_session has no caller. The probe reads stored rows.
 
 def _a308(ctx: cc.Ctx) -> cc.Result:
     if not ctx.table_exists("sessions"):

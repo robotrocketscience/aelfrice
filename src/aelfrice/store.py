@@ -7741,8 +7741,8 @@ class MemoryStore:
         Narrower sibling of ``delete_edges_by_type``: the predicate adds
         ``anchor_text IS NULL AND weight = ?``, which is the shape the
         temporal-spine writer emits and which no prose-derived edge has
-        (the triple extractor always stamps an ``anchor_text`` and writes
-        weight 1.0).
+        (the triple extractor stamped an ``anchor_text`` and weight 1.0 on
+        every edge the commit hook stored before it stopped writing).
 
         This exists because ``aelf spine clear`` is only reversible for
         rows its own backfill can rebuild. Deleting a prose-derived
@@ -8130,9 +8130,10 @@ class MemoryStore:
         Used by `aelfrice.bm25.BM25Index.build` to construct each
         belief's BM25F augmented document — the belief's own content
         plus the concatenation of its incoming edges' anchor text
-        (replicated by a fixed weight). v1.2 stores already populate
-        `Edge.anchor_text` via the commit-ingest hook and triple
-        extractor; pre-v1.2 rows have NULL and contribute nothing.
+        (replicated by a fixed weight). Edges the commit-ingest hook
+        stored from v1.2 until it stopped writing carry
+        `Edge.anchor_text`; pre-v1.2 rows have NULL and contribute
+        nothing.
 
         One row per edge (not per belief); callers group by `dst`.
         """

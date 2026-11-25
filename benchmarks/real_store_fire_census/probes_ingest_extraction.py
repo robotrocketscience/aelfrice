@@ -21,6 +21,9 @@ Code facts the probes rely on (src/aelfrice on `main` at ad14ef545):
 - hook_commit_ingest._record_triples writes a sessions row with
   model='commit-ingest' for both the git post-commit hook (5.1.0) and the
   older PostToolUse path, so the two are told apart by date only.
+- Later, the commit hook stopped writing, and `ingest_triples` and
+  `_record_triples` were removed. Nothing adds `git` rows or `commit-ingest`
+  sessions now; the commit probes read the rows earlier releases stored.
 """
 from __future__ import annotations
 
