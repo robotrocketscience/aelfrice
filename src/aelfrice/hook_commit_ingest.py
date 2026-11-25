@@ -4,7 +4,7 @@
 hook (#1698). The block that setup writes resolves the commit, skips a
 commit that a rebase replays, and starts `aelf-commit-ingest --git-hook
 <hash>` in the background. An older setup ran the same command as a
-Claude Code `PostToolUse:Bash` hook, which reads a JSON payload on stdin.
+an agent-host `PostToolUse:Bash` hook, which reads a JSON payload on stdin.
 
 The command used to store the relation phrases in each commit message as
 beliefs and edges. It no longer opens a store or writes a file, on either

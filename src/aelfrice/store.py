@@ -3522,8 +3522,8 @@ class MemoryStore:
         """Look up a belief by its content_hash. Returns None if not found.
 
         Used by ingest paths to detect re-ingest of identical content
-        across different (source, text) pairs — e.g. the same sentence
-        ingested once via transcript-ingest and once via commit-ingest.
+        across different (source, text) pairs, for example the same
+        sentence ingested once via transcript-ingest and once via onboarding.
         When found, the caller records a belief_corroborations row
         instead of silently dropping the duplicate.
 
@@ -5303,9 +5303,11 @@ class MemoryStore:
         New content is still inserted.
 
         **A commit re-reading itself (#1698).** A commit-ingest hit on a
-        belief that the same commit session created records no row. An
+        belief that the same commit session created records no row. The
+        commit hook no longer writes, so a hit with this source comes only
+        from replaying `git` rows an earlier release stored. Then, an
         amend, a retry after a crash, or a second hook fire on the same
-        commit re-reads that commit's own text, which is not independent
+        commit re-read that commit's own text, which is not independent
         evidence. A different commit's session still corroborates.
 
         **Re-assertion of retired content (#1215).** The content-hash
