@@ -235,6 +235,16 @@ def test_wonder_picks_deterministic_seed(_isolated_db: Path) -> None:
     assert b in out
 
 
+def test_wonder_no_arg_header_lists_related_beliefs(_isolated_db: Path) -> None:
+    """The no-topic pass lists related beliefs and merges nothing, so its
+    header must not call the rows consolidation candidates."""
+    _seed_chain(_isolated_db)
+    code, out = _run("wonder", "--top", "1")
+    assert code == 0, out
+    assert "top 1 related belief(s):" in out
+    assert "consolidation" not in out
+
+
 def test_wonder_emit_phantoms_yields_phantom_json(_isolated_db: Path) -> None:
     a, b, _ = _seed_chain(_isolated_db)
     code, out = _run("wonder", "--emit-phantoms")

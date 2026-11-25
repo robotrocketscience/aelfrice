@@ -2039,7 +2039,7 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
     if not candidates:
         print("(no candidates — seed has no outbound edges)", file=out)  # type: ignore[arg-type]
         return 0
-    print(f"top {len(candidates)} consolidation candidate(s):", file=out)  # type: ignore[arg-type]
+    print(f"top {len(candidates)} related belief(s):", file=out)  # type: ignore[arg-type]
     for combined, h, action, relatedness in candidates:
         print(
             f"  [{combined:.3f}] ({action}) {h.belief.id}: {h.belief.content}",
