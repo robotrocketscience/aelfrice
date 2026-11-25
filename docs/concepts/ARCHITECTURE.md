@@ -10,7 +10,7 @@ This document describes how aelfrice fits together, and it maps directly to the 
     - `[archive]` — cryptography, used by `aelf uninstall --archive`.
     - `[benchmarks]` — the adapters on the development side.
 3. **Confidence is Bayesian.** Confidence is `α / (α + β)`, and every update has a closed-form rule. At v1.3.0+ the code combines the posterior log-additively with BM25 on the L1 tier. For what the partial ranking covers and does not cover, see [the limitations list](../user/LIMITATIONS.md).
-4. **`apply_feedback` is the central endpoint.** It's the one writer of `(α, β)`, and each successful update writes one audit row.
+4. **`apply_feedback` is the central endpoint.** It's the one path that moves `(α, β)` on evidence, and each successful update writes one audit row. Two maintenance paths also write `(α, β)`: `aelf clamp-ghosts --apply` and the content-hash dedup migration (see [the list of posterior writers in PHILOSOPHY.md](PHILOSOPHY.md#small-surface-on-purpose)).
 5. **Locks are user-asserted ground truth.** Nothing weakens a lock over time, because nothing ages a stored `(α, β)` at all; see the `scoring.py` row in the module table below. To correct a lock, overwrite it with `aelf lock`. That correction is an explicit user act (PHILOSOPHY [#605](https://github.com/robotrocketscience/aelfrice/issues/605)). Issue [#814](https://github.com/robotrocketscience/aelfrice/issues/814) removed the automatic demotion that a contradiction drove.
 
 ### Enrichment-step boundary

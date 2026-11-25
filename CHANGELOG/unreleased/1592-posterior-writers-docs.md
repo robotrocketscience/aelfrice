@@ -1,0 +1,3 @@
+### Documentation
+
+- **The architecture and philosophy pages name every posterior writer ([#1592](https://github.com/robotrocketscience/aelfrice/issues/1592)).** `docs/concepts/ARCHITECTURE.md` called `apply_feedback` the one writer of `(α, β)`, and `docs/concepts/PHILOSOPHY.md` counted a user correction and a contradiction as evidence that moves the posterior. `aelf clamp-ghosts --apply` and the content-hash dedup migration also write `(α, β)`, and the correction and contradiction code writes no posterior. Prompt sentiment does move it: praise counts by default, and a correction counts when `[feedback] sentiment_negative` is on. Both pages now say so.
