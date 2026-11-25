@@ -29,7 +29,7 @@ DESIRED_DISCUSSIONS="true"    # Q&A forum for users
 # Topics shown on the repo landing page. Order matters for display.
 DESIRED_TOPICS=(
   agent-memory ai-agents anthropic bayesian bayesian-inference
-  claude-code fts5 llm mcp mcp-server memory python retrieval
+  claude-code fts5 llm memory python retrieval
   semantic-memory sqlite
 )
 # ----------------------------------------------------------------------------

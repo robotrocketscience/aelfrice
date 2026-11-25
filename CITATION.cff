@@ -21,7 +21,6 @@ keywords:
   - Bayesian inference
   - Beta-Bernoulli
   - retrieval-augmented generation
-  - Model Context Protocol
   - SQLite
   - FTS5
 preferred-citation:
