@@ -62,8 +62,8 @@ def test_format_update_banner_explicit_command_kwarg() -> None:
     """Caller-supplied `command` overrides the slash-command default
     with the literal install-aware shell line.
 
-    Used by hosts that don't render slash commands (CLI stderr,
-    non-Claude MCP hosts, scripted call sites).
+    Used by hosts that don't render slash commands (CLI stderr and
+    scripted call sites).
     """
     banner = lifecycle.format_update_banner(
         "2.0.0", command="pipx upgrade aelfrice"

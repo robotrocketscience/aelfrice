@@ -3,8 +3,8 @@
 `MemoryStore.count_phantom_lifecycle` partitions every `type='speculative'`
 belief into three mutually-exclusive lifecycle states (active / promoted /
 retired) plus the latest live-phantom timestamp. These tests pin the
-transitions — ingest -> promote -> GC — and the two surfaces that render
-them (CLI `aelf status`, MCP `aelf:stats`).
+transitions (ingest -> promote -> GC) and the surface that renders
+them (CLI `aelf status`; MCP `aelf:stats` left in #1422).
 """
 from __future__ import annotations
 
@@ -152,7 +152,7 @@ def test_retired_phantom_does_not_count_as_latest(store: MemoryStore) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Surfaces: CLI `aelf status` + MCP `aelf:stats`
+# Surface: CLI `aelf status`
 # ---------------------------------------------------------------------------
 
 

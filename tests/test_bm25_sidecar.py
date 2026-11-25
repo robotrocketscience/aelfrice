@@ -210,8 +210,9 @@ def test_resident_cache_sees_sibling_process_writes(tmp_path: Path) -> None:
 
     The in-process invalidation callback only covers the cache's own
     store handle; a write arriving through a second handle (stand-in
-    for a sibling process, e.g. an ingest hook firing while an MCP
-    server is resident) must still invalidate the cached index.
+    for a sibling process, e.g. an ingest hook firing while another
+    `aelf` process holds the store open) must still invalidate the
+    cached index.
     """
     db = tmp_path / "m.db"
     resident = MemoryStore(str(db))

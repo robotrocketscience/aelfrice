@@ -120,8 +120,8 @@ def parse_for(spec: str, *, now: datetime) -> str | None:
     # documented contract, and `cli._cmd_lock` deliberately catches
     # `LockExpiryError` and nothing else so that a malformed window
     # fails without writing a lock the user then has to undo. Every
-    # caller resolving a window through here (`cli.py:1950-1962`,
-    # `mcp_server.py:367-373`) is written to that one exception.
+    # caller resolving a window through here (`cli._cmd_lock`) is
+    # written to that one exception.
     try:
         if unit == "d":
             expires = base + timedelta(days=count)

@@ -1,4 +1,4 @@
-"""#391 acceptance tests — unlock/promote/demote parity (CLI + MCP).
+"""#391 acceptance tests: unlock/promote/demote parity (CLI; the MCP half left in #1422).
 
 Covers:
 - unlock() idempotency, error paths, audit row, field clearing

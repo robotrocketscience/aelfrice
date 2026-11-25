@@ -147,7 +147,7 @@ def test_the_transaction_slot_is_per_thread(settings: Path) -> None:
 
     Caught during development: with a plain global, an unrelated thread
     saw the holder's transaction and tripped the nesting guard. A process
-    can legitimately run two of these (a threaded host, the MCP server).
+    can legitimately run two of these (a threaded host).
     """
     holding = threading.Event()
     release = threading.Event()

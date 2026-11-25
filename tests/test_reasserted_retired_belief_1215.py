@@ -8,7 +8,7 @@ locked` stayed empty — the user's most explicit assertion of ground truth
 was a no-op on every retrieval surface.
 
 The ratified policy is tiered by who is asserting. A person (`aelf lock`,
-`aelf remember`, and the MCP twins) revives the belief; background
+`aelf remember`) revives the belief; background
 capture (transcript, commit, filesystem, wonder, migration) leaves the
 tombstone retired and records nothing.
 

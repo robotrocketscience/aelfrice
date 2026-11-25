@@ -124,7 +124,7 @@ def test_repeated_exposure_still_leaves_the_phantom_collectable(
 def test_endorsement_feedback_still_protects_the_phantom(
     store: MemoryStore,
 ) -> None:
-    """A real feedback event -- CLI, MCP, sentiment -- must still exempt it."""
+    """A real feedback event -- CLI, sentiment -- must still exempt it."""
     store.insert_belief(_belief("phantom1", "conjecture about deployment"))
     apply_feedback(store, "phantom1", 1.0, "cli")
     assert store.query_wonder_gc_candidates(cutoff_ts=_old_ts(1)) == []

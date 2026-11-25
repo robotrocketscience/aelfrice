@@ -5,7 +5,8 @@ canonical state matches inline-derive output, idempotency, crash
 recovery, and skip-handling for non-persistent classifications.
 
 Worker integration with each entry point lives in subsequent commits
-(scanner, classification, triple_extractor, mcp, cli). This file
+(scanner, classification, cli, the commit hook's triple writer that
+#2010 removed, and the MCP server that #1422 removed). This file
 exercises `run_worker(store)` directly against synthesized log rows.
 """
 from __future__ import annotations

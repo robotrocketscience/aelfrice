@@ -458,7 +458,7 @@ def test_cli_unlock_clears_the_window(
 # must clear it: setting `lock_level='user'` while a past expiry is still
 # on the row hands the next open-time sweep a due row, and the lock is
 # flipped straight back off — after the surface has already reported it
-# locked. `aelf lock` and the MCP tool both clear it; these two paths
+# locked. `aelf lock` clears it; these two paths
 # construct the same field update by hand and did not.
 
 
