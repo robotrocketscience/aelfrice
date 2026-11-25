@@ -461,8 +461,8 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
             "from it stopped writing. Edges it wrote earlier stay in "
             "stores, including TEMPORAL_NEXT from four patterns "
             "(`follows`, `comes after`, `is after`, `succeeds`), so the "
-            "spine is NOT the only source of that type's stored rows — "
-            "see EXCLUDED_WRITERS."
+            "spine is NOT the only source of that type's stored rows. See "
+            "EXCLUDED_WRITERS."
         ),
     ),
     PinnedThreshold(
@@ -827,7 +827,7 @@ DIGEST_HISTORY: Final[dict[int, str]] = {
     # `_INGEST_FUNCTION_WORDS` went with the write path, and their entries
     # with them. `_PATTERNS` kept its value. Its note and
     # `ANCHOR_CONTEXT_TARGET`'s now say that no edge is written from them.
-    9: "43ce8793595cd47774002d5239bab5452c72dd9eb13e35ecf93fbbc2108a9577",
+    9: "2576d99d5c2d60d23463142f6d2ff3df7f0df87fcc111ceed7abd292d3a1429a",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.
