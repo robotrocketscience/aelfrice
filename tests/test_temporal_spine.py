@@ -697,21 +697,29 @@ def test_clear_then_backfill_preserves_prose_edge_direction(
 ) -> None:
     """A prose-derived TEMPORAL_NEXT survives clear+backfill unreversed.
 
-    The triple extractor writes src = the belief the sentence says came
-    later; the backfill writes src = the belief that ingested later. For
-    "X succeeds Y" those are opposite, so an unscoped clear followed by a
-    backfill re-mints the row *inverted* — at an identical row count, which
-    is why a count assertion cannot see it (#1379). Assert direction.
+    The commit hook's triple extractor wrote src = the belief the sentence
+    says came later; the backfill writes src = the belief that ingested
+    later. For "X succeeds Y" those are opposite, so an unscoped clear
+    followed by a backfill re-mints the row *inverted* — at an identical row
+    count, which is why a count assertion cannot see it (#1379). Assert
+    direction. The hook no longer writes, so the row is built here the way
+    it stored one: subject ingested first, weight 1.0, the anchor text.
     """
-    from aelfrice.triple_extractor import extract_triples, ingest_triples
+    from aelfrice.models import Edge
 
-    result = ingest_triples(
-        store,
-        extract_triples("deployment phase two succeeds deployment phase one"),
-        session_id="sess1",
+    src, dst = "phase-two", "phase-one"
+    _make_belief(
+        store, belief_id=src, content="deployment phase two",
+        session_id="sess1", created_at="2026-01-01T00:00:00Z",
     )
-    assert len(result.new_edges) == 1
-    src, dst, _rel = result.new_edges[0]
+    _make_belief(
+        store, belief_id=dst, content="deployment phase one",
+        session_id="sess1", created_at="2026-01-01T00:00:01Z",
+    )
+    store.insert_edge(Edge(
+        src=src, dst=dst, type=EDGE_TEMPORAL_NEXT, weight=1.0,
+        anchor_text="deployment phase two succeeds deployment phase one",
+    ))
     before = _all_temporal_next(store)
     assert before == {
         (src, dst, 1.0,

@@ -403,24 +403,6 @@ def test_ingest_turn_dedup_writes_log_row_per_raw_input(
     assert beliefs_after_second == beliefs_after_first
 
 
-def test_ingest_triples_writes_log_row_per_new_belief(
-    store: MemoryStore,
-) -> None:
-    """Hypothesis: every belief inserted by ingest_triples (commit-ingest
-    path) has a matching log row with source_kind=git. Falsifiable by
-    any orphan belief OR by the wrong source_kind."""
-    from aelfrice.triple_extractor import extract_triples, ingest_triples
-    triples = extract_triples("the new index supports faster queries")
-    ingest_triples(store, triples, session_id="commit-abcdef")
-    ids = store.list_belief_ids()
-    assert ids
-    for belief_id in ids:
-        rows = store.iter_ingest_log_for_belief(belief_id)
-        assert rows, f"belief {belief_id} has no log row"
-        assert all(r["source_kind"] == "git" for r in rows)
-        assert all(r["session_id"] == "commit-abcdef" for r in rows)
-
-
 def test_relock_appends_a_log_row_and_corroborates(tmp_path: Path) -> None:
     """Post-#264 contract: a re-lock appends a log row and does NOT duplicate.
 

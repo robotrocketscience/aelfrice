@@ -45,12 +45,12 @@ mechanism, so a reader can tell the two apart rather than over-trusting the
 record.
 
 **What this cannot pin.** Entries are resolved by ``(module, name)``, so a
-value with no name is out of reach. Three writers stamp an edge weight as a
+value with no name is out of reach. Two modules stamp an edge weight as a
 literal inside the ``Edge(...)`` constructor — ``relationship_detector``
-(both writers), ``triple_extractor`` and ``wonder.lifecycle`` all pass
-``weight=1.0`` inline. ``contradiction`` is the one that names its weights
+(both writers) and ``wonder.lifecycle`` pass ``weight=1.0`` inline.
+``contradiction`` is the one that names its weights
 (``SUPERSEDES_WEIGHT`` and ``RESOLVES_WEIGHT``), which is why it appears
-below and the others do not. Naming those three would be a behaviour-preserving refactor and would
+below and the others do not. Naming those would be a behaviour-preserving refactor and would
 close the gap; it is deliberately not bundled into this change. Constants
 reached only transitively are a different case and *are* covered:
 ``_QUANTIFIER_TOKENS`` is derived from ``QUANT_AXIS``, and the noun-phrase
@@ -100,7 +100,7 @@ from typing import Any, Final, cast
 # Bump when any pinned value below changes, and append the new content
 # digest to DIGEST_HISTORY at the bottom of this module. The guard in
 # tests/test_detector_thresholds_manifest_1355.py fails until you do.
-DETECTOR_THRESHOLDS_VERSION: Final[int] = 8
+DETECTOR_THRESHOLDS_VERSION: Final[int] = 9
 
 # --- Kinds -------------------------------------------------------------
 
@@ -456,63 +456,13 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         ),
         overridable=OVERRIDE_NONE,
         gates=(
-            "The phrase-to-edge-type table. This is the only writer that "
-            "chooses among most edge types, so it decides both whether "
-            "an edge exists and which type it is. Note it includes four "
-            "TEMPORAL_NEXT patterns (`follows`, `comes after`, `is "
-            "after`, `succeeds`), so the spine is NOT the only producer "
-            "of that type — see EXCLUDED_WRITERS."
-        ),
-    ),
-    PinnedThreshold(
-        module="aelfrice.triple_extractor",
-        name="_INGEST_PATTERNS",
-        kind=KIND_PATTERN_TABLE,
-        value="sha256:d3982eb2c0aee6fb09f2b43600ff5a71a413d2202dae0c38d9c8f5425bc60891",
-        size=21,
-        edge_types=(
-            "SUPPORTS", "CITES", "CONTRADICTS", "SUPERSEDES",
-            "RELATES_TO", "DERIVED_FROM", "IMPLEMENTS", "TESTS",
-            "TEMPORAL_NEXT",
-        ),
-        overridable=OVERRIDE_NONE,
-        gates=(
-            "The bank the WRITE path uses (#1376). `_PATTERNS` above is "
-            "what `rebuild_log` queries with; this is what "
-            "`hook_commit_ingest` mints beliefs and edges from, so it is "
-            "the one whose false positives are irreversible. It is "
-            "`_PATTERNS` minus the six single-token templates that are "
-            "also plural nouns (`tests`, `covers`, `follows`, `extends`, "
-            "`supports`, `replaces`) plus TESTS' two passive forms "
-            "(`is tested by`, `is covered by`). Its verbs match in their "
-            "exact case, and a phrase can't start after an apostrophe "
-            "(#1874). `extract_triples` runs it one line at a time, which "
-            "this digest doesn't cover. Same nine edge types, "
-            "so no relation was made unreachable. Pinned separately because "
-            "the two banks can now drift apart, and a change to either "
-            "alone changes what one path writes or reads."
-        ),
-    ),
-    PinnedThreshold(
-        module="aelfrice.triple_extractor",
-        name="_INGEST_FUNCTION_WORDS",
-        kind=KIND_TOKEN_SET,
-        value="sha256:f3150d1520462bfd13de35e58525a36414c2681abf69b6cc9a877a115623d573",
-        size=212,
-        edge_types=(
-            "SUPPORTS", "CITES", "CONTRADICTS", "SUPERSEDES",
-            "RELATES_TO", "DERIVED_FROM", "IMPLEMENTS", "TESTS",
-            "TEMPORAL_NEXT",
-        ),
-        overridable=OVERRIDE_NONE,
-        gates=(
-            "The write path stores nothing for a match with a phrase on "
-            "either side made only of these words (#1874), because that "
-            "phrase has one belief id across every commit and would collect "
-            "edges. Adding a word removes edges of all nine types. The read "
-            "path doesn't use this set. This digest covers the words only: "
-            "`_is_function_word` and `_has_function_word_endpoint` decide how "
-            "they apply, and no entry pins those functions."
+            "The phrase-to-edge-type table that `rebuild_log` queries "
+            "with. It writes no edge: the commit hook that stored edges "
+            "from it stopped writing. Edges it wrote earlier stay in "
+            "stores, including TEMPORAL_NEXT from four patterns "
+            "(`follows`, `comes after`, `is after`, `succeeds`), so the "
+            "spine is NOT the only source of that type's stored rows — "
+            "see EXCLUDED_WRITERS."
         ),
     ),
     PinnedThreshold(
@@ -524,9 +474,11 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         edge_types=("SUPPORTS", "CITES", "RELATES_TO", "TESTS"),
         overridable=OVERRIDE_NONE,
         gates=(
-            "Target width of the anchor text stored on the edge. Changes "
-            "the persisted `anchor_text` column, which a recompute "
-            "comparing whole edge rows will read as divergence."
+            "Target width of each triple's anchor text. No edge stores it "
+            "now that the commit hook writes nothing. Edges it wrote "
+            "earlier keep the `anchor_text` it gave them, which a "
+            "recompute comparing whole edge rows would read as divergence "
+            "if this moved."
         ),
     ),
     # --- value_compare: the typed-slot contradiction gate --------------
@@ -871,6 +823,11 @@ DIGEST_HISTORY: Final[dict[int, str]] = {
     # `_PATTERNS` kept its digest. The per-line logic and the function-word
     # logic live in `extract_triples` and its helpers, outside this digest.
     8: "bb47ad6ed93ce3f9fe358d9a1f421dfa2a527ed05cad426137ea4b957eeccce0",
+    # 9: the commit hook stopped writing. `_INGEST_PATTERNS` and
+    # `_INGEST_FUNCTION_WORDS` went with the write path, and their entries
+    # with them. `_PATTERNS` kept its value. Its note and
+    # `ANCHOR_CONTEXT_TARGET`'s now say that no edge is written from them.
+    9: "43ce8793595cd47774002d5239bab5452c72dd9eb13e35ecf93fbbc2108a9577",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.
@@ -903,7 +860,6 @@ def manifest_digest() -> str:
 COVERED_WRITER_MODULES: Final[frozenset[str]] = frozenset({
     "aelfrice.relationship_detector",
     "aelfrice.contradiction",
-    "aelfrice.triple_extractor",
     "aelfrice.wonder.lifecycle",
 })
 
@@ -915,9 +871,10 @@ EXCLUDED_WRITERS: Final[tuple[tuple[str, str], ...]] = (
         "aelfrice.temporal_spine",
         "writes TEMPORAL_NEXT only — the spine, recomputed by #1336. "
         "Read as a statement about THIS module, not about the type: "
-        "`triple_extractor` also mints TEMPORAL_NEXT from four prose "
-        "patterns, so the spine recompute does not account for the "
-        "whole TEMPORAL_NEXT population",
+        "`triple_extractor` minted TEMPORAL_NEXT from four prose "
+        "patterns until the commit hook stopped writing, and those rows "
+        "stay in stores, so the spine recompute does not account for "
+        "the whole stored TEMPORAL_NEXT population",
     ),
     (
         "aelfrice.ingest",

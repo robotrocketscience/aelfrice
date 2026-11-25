@@ -1,112 +1,98 @@
-"""Integration tests for the post-#264 triple_extractor.ingest_triples
-→ derivation_worker call shape.
+"""`git` ingest rows already in a store still derive and replay.
+
+The commit hook wrote one `ingest_log` row per phrase, with source kind
+`git` and `raw_meta.call_site = commit_ingest`, then ran the derivation
+worker. The hook no longer writes, but stores keep those rows, and the
+worker and full-equality replay still read them. These tests build the
+rows the way the hook wrote them and check what the read side does.
 
 Falsifiable hypotheses:
 
-    ingest_triples writes one ingest_log row per phrase (subject and
-    object) with raw_meta.call_site = commit_ingest, invokes run_worker
-    once, then reads the stamped belief ids back to insert the relation
-    edge.
+    the worker stamps every row; one phrase yields one belief across rows
+    and sessions; full-equality replay reports no drift, including after a
+    phrase repeats under a second session.
 """
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from aelfrice.classification_core import INGEST_CLASSIFIER_VERSION, rule_set_hash
+from aelfrice.derivation_worker import run_worker
+from aelfrice.models import CORROBORATION_SOURCE_COMMIT_INGEST, INGEST_SOURCE_GIT
 from aelfrice.replay import replay_full_equality
 from aelfrice.store import MemoryStore
-from aelfrice.triple_extractor import Triple, ingest_triples
 
 
 @pytest.fixture
 def store(tmp_path: Path) -> Iterator[MemoryStore]:
-    s = MemoryStore(str(tmp_path / "triple-via-worker.db"))
+    s = MemoryStore(str(tmp_path / "stored-git-rows.db"))
     yield s
     s.close()
 
 
-def _t(subject: str, relation: str, object_: str) -> Triple:
-    return Triple(
-        subject=subject, relation=relation, object=object_,
-        anchor_text=f"{subject} {relation} {object_}",
-    )
-
-
-def test_log_rows_carry_call_site(store: MemoryStore) -> None:
-    """Hypothesis: every triple produces two log rows (subject + object),
-    each with raw_meta.call_site = commit_ingest. Falsifiable by missing
-    rows or wrong call_site."""
-    triples = [
-        _t("the worker", "implements", "the spec"),
-        _t("aelfrice", "supports", "ingest_log"),
-    ]
-    ingest_triples(store, triples)
-    rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
-        "SELECT raw_meta, source_kind FROM ingest_log ORDER BY id"
-    ).fetchall()
-    assert len(rows) == 4  # 2 triples * 2 phrases
-    for row in rows:
-        assert row["source_kind"] == "git"
-        meta = json.loads(row["raw_meta"]) if row["raw_meta"] else None
-        assert isinstance(meta, dict)
-        assert meta.get("call_site") == "commit_ingest"
-
-
-def test_every_log_row_is_stamped(store: MemoryStore) -> None:
-    """Hypothesis: the worker ran end-of-call; no orphan log rows."""
-    ingest_triples(store, [_t("alpha", "supports", "beta")])
-    assert store.list_unstamped_ingest_log() == []
-
-
-def test_edge_inserted_between_worker_stamped_beliefs(
-    store: MemoryStore,
+def _store_git_rows(
+    store: MemoryStore, phrases: list[str], session_id: str = "commit-1",
 ) -> None:
-    """Hypothesis: ingest_triples inserts an edge whose endpoints are the
-    worker-stamped belief ids — same id-scheme as the pre-#264 path so
-    edge id stability holds."""
-    res = ingest_triples(store, [_t("alpha", "supports", "beta")])
-    assert len(res.new_edges) == 1
-    src, dst, relation = res.new_edges[0]
-    assert relation == "supports"
-    assert store.get_belief(src) is not None
-    assert store.get_belief(dst) is not None
-    assert store.get_edge(src, dst, relation) is not None
+    """Write `phrases` as the commit hook did, then run the worker."""
+    for phrase in phrases:
+        store.record_ingest(
+            source_kind=INGEST_SOURCE_GIT,
+            raw_text=phrase,
+            session_id=session_id,
+            ts="2026-01-01T00:00:00+00:00",
+            raw_meta={"call_site": CORROBORATION_SOURCE_COMMIT_INGEST},
+            classifier_version=INGEST_CLASSIFIER_VERSION,
+            rule_set_hash=rule_set_hash(),
+        )
+    run_worker(store)
 
 
-def test_idempotent_on_canonical_state(store: MemoryStore) -> None:
-    """Hypothesis: re-ingesting the same triple is idempotent on canonical
-    beliefs and edges even though it adds new log rows. Falsifiable by a
-    duplicate edge or new_beliefs/new_edges non-empty on the second
-    call."""
-    triples = [_t("alpha", "supports", "beta")]
-    res1 = ingest_triples(store, triples)
-    assert len(res1.new_beliefs) == 2
-    assert len(res1.new_edges) == 1
-    n_beliefs = store.count_beliefs()
+def _corroborations(store: MemoryStore) -> int:
+    row = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+        "SELECT COUNT(*) FROM belief_corroborations"
+    ).fetchone()
+    return int(row[0])
 
-    res2 = ingest_triples(store, triples)
-    assert res2.new_beliefs == []
-    assert res2.new_edges == []
-    assert res2.skipped_duplicate_edges == 1
-    assert store.count_beliefs() == n_beliefs
+
+def test_every_stored_row_is_stamped(store: MemoryStore) -> None:
+    _store_git_rows(store, ["the worker", "the spec"])
+    assert store.list_unstamped_ingest_log() == []
+    assert store.count_beliefs() == 2
+
+
+def test_beliefs_from_stored_rows_are_agent_inferred(store: MemoryStore) -> None:
+    """Regression for #224: not the model default origin."""
+    _store_git_rows(store, ["the worker", "the spec"])
+    rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+        "SELECT origin, session_id FROM beliefs"
+    ).fetchall()
+    assert [(r["origin"], r["session_id"]) for r in rows] == [
+        ("agent_inferred", "commit-1"), ("agent_inferred", "commit-1"),
+    ]
+
+
+def test_one_phrase_is_one_belief_across_sessions(store: MemoryStore) -> None:
+    """The id namespace makes a phrase resolve to one belief. A second
+    session corroborates it, and its own session doesn't."""
+    _store_git_rows(store, ["the cache layer", "the cache layer"], "commit-1")
+    assert store.count_beliefs() == 1
+    assert _corroborations(store) == 0
+    _store_git_rows(store, ["the cache layer"], "commit-2")
+    assert store.count_beliefs() == 1
+    assert _corroborations(store) == 1
 
 
 def test_replay_full_equality_passes(store: MemoryStore) -> None:
-    """Hypothesis (CI gate): full-equality replay reports zero drift after
-    a triple-ingest workload."""
-    triples = [
-        _t("the worker", "implements", "the spec"),
-        _t("aelfrice", "supports", "ingest_log"),
-        _t("the worker", "supports", "edges"),
-    ]
-    ingest_triples(store, triples)
-    # Re-ingest to exercise the corroboration path inside the worker.
-    ingest_triples(store, triples)
+    """Hypothesis (CI gate): full-equality replay reports zero drift over
+    stored `git` rows, including a phrase repeated under a second session."""
+    phrases = ["the worker", "the spec", "aelfrice", "ingest_log"]
+    _store_git_rows(store, phrases, "commit-1")
+    _store_git_rows(store, phrases, "commit-2")
     report = replay_full_equality(store)
-    assert report.total_log_rows > 0
+    assert report.total_log_rows == 8
     assert report.matched == report.total_log_rows, (
         f"replay drift: matched={report.matched}, "
         f"mismatched={report.mismatched}, "

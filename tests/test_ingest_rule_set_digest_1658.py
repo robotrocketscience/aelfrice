@@ -34,7 +34,6 @@ from aelfrice.ingest import ingest_turn
 from aelfrice.models import BELIEF_FACTUAL
 from aelfrice.scanner import scan_repo
 from aelfrice.store import MemoryStore
-from aelfrice.triple_extractor import Triple, ingest_triples
 
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
@@ -334,7 +333,8 @@ def test_cached_digest_is_computed_once(
 # --- Every production writer stamps both columns ----------------------------
 
 _SRC = Path(classification_core.__file__).resolve().parent
-_EXPECTED_WRITERS = 6
+# The commit hook's two `record_ingest` calls left with its write path.
+_EXPECTED_WRITERS = 4
 
 
 def _record_ingest_calls() -> list[tuple[str, int, set[str]]]:
@@ -423,16 +423,6 @@ def test_ingest_turn_stamps_rows(store: MemoryStore) -> None:
         source="transcript:test",
     )
     _assert_stamped(_stamps(store))
-
-
-@pytest.mark.parametrize("side", ["subject", "object"])
-def test_ingest_triples_stamps_both_rows(store: MemoryStore, side: str) -> None:
-    triple = Triple(
-        subject="the derivation worker", relation="supports",
-        object="the ingest log", anchor_text="the worker supports the log",
-    )
-    ingest_triples(store, [triple])
-    _assert_stamped(_stamps(store, "raw_text = ?", getattr(triple, side)))
 
 
 def test_cli_lock_stamps_row(
