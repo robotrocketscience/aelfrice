@@ -39,20 +39,25 @@ synthetic stores.
 
 ## Precedence (v3.x #888, six classes)
 
-1. **`user_stated`** — `lock_level == LOCK_USER` (short-circuit) or
+1. **`user_stated`**: `lock_level == LOCK_USER` (short-circuit) or
    `origin == 'user_stated'`. The user explicitly asserted this
    belief as ground truth via `aelf lock` or `aelf:lock`. Highest.
-2. **`user_corrected`** — `type == BELIEF_CORRECTION` (legacy path)
-   or `origin == 'user_corrected'`. Explicit correction signal.
-3. **`user_validated`** — `origin == 'user_validated'`. The user
+2. **`user_corrected`**: `origin == 'user_corrected'`. Explicit
+   correction signal.
+3. **`user_validated`**: `origin == 'user_validated'`. The user
    acknowledged an onboard belief without locking it.
-4. **`user_transcript`** — `origin == 'user_transcript'`. User-typed
-   chat content; outranks scanner-extracted document content but
+4. **`user_transcript`**: `origin in {'user_transcript',
+   'evidence_promoted'}`. User-typed chat content, or a phantom that
+   evidence promoted; outranks scanner-extracted document content but
    sits below explicit validation.
-5. **`document_recent`** — `origin in {'document_recent', 'unknown',
-   'agent_remembered'}`. Within-class breaks by recency.
-6. **`agent_inferred`** — `origin == 'agent_inferred'`. Onboard
+5. **`document_recent`**: any other origin, such as
+   `document_recent`, `unknown`, `agent_remembered`, or `speculative`.
+   Within-class breaks by recency.
+6. **`agent_inferred`**: `origin == 'agent_inferred'`. Onboard
    scanner output that has not been validated. Lowest.
+
+The class comes from the lock and the origin, never from the belief
+type: a `correction` whose origin is `unknown` is `document_recent`.
 
 When two beliefs have the same precedence class, **more recent
 `created_at` wins**. When created_at also matches (rare; collision
@@ -101,7 +106,6 @@ from typing import Final, Optional, Sequence
 
 from aelfrice.derivation import decision_text
 from aelfrice.models import (
-    BELIEF_CORRECTION,
     EDGE_CONTRADICTS,
     EDGE_RESOLVES,
     EDGE_SUPERSEDES,
@@ -203,12 +207,10 @@ def precedence_class(belief: Belief) -> int:
          always win the contradiction.
       2. Origin string maps directly to its class for the explicit
          origins set by v1.2+ producers.
-      3. Legacy fallback: type=correction maps to user_corrected
-         (covers correction beliefs whose origin is still 'unknown'
-         pre-backfill on a v1.0/v1.1 store).
-      4. Anything else (origin in {document_recent, unknown,
-         agent_remembered}) maps to document_recent. Honest 'don't
-         know' bucket; preserves v1.0.1 absorption.
+      3. Any other origin, such as document_recent, unknown,
+         agent_remembered, or speculative, maps to document_recent for
+         every belief type. Honest 'don't know' bucket; preserves
+         v1.0.1 absorption.
     """
     if belief.lock_level == LOCK_USER:
         return PRECEDENCE_USER_STATED
@@ -222,8 +224,6 @@ def precedence_class(belief: Belief) -> int:
         return PRECEDENCE_USER_TRANSCRIPT
     if belief.origin == ORIGIN_AGENT_INFERRED:
         return PRECEDENCE_AGENT_INFERRED
-    if belief.type == BELIEF_CORRECTION:
-        return PRECEDENCE_USER_CORRECTED
     return PRECEDENCE_DOCUMENT_RECENT
 
 

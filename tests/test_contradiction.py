@@ -30,6 +30,7 @@ from aelfrice.models import (
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
+    ORIGIN_USER_CORRECTED,
     ORIGIN_USER_TRANSCRIPT,
     ORIGIN_USER_VALIDATED,
     Belief,
@@ -78,8 +79,8 @@ def test_user_locked_belief_is_user_stated() -> None:
     assert precedence_class_name(b) == "user_stated"
 
 
-def test_correction_belief_is_user_corrected() -> None:
-    b = _mk("X", btype=BELIEF_CORRECTION)
+def test_user_corrected_origin_maps_to_user_corrected_class() -> None:
+    b = _mk("X", btype=BELIEF_CORRECTION, origin=ORIGIN_USER_CORRECTED)
     assert precedence_class(b) == PRECEDENCE_USER_CORRECTED
     assert precedence_class_name(b) == "user_corrected"
 
@@ -91,10 +92,11 @@ def test_factual_belief_is_document_recent() -> None:
 
 
 def test_locked_correction_is_user_stated_not_corrected() -> None:
-    """Lock takes priority over type — a locked correction is still
-    user-asserted ground truth."""
+    """Lock takes priority over the user_corrected origin: a locked
+    correction is still user-asserted ground truth."""
     b = _mk("X", btype=BELIEF_CORRECTION, lock=LOCK_USER,
-            locked_at="2026-04-26T01:00:00Z")
+            locked_at="2026-04-26T01:00:00Z",
+            origin=ORIGIN_USER_CORRECTED)
     assert precedence_class(b) == PRECEDENCE_USER_STATED
 
 
@@ -165,7 +167,7 @@ def test_lock_short_circuits_user_validated_origin() -> None:
 
 def test_user_stated_beats_user_corrected() -> None:
     a = _mk("A", lock=LOCK_USER, locked_at="2026-04-26T01:00:00Z")
-    b = _mk("B", btype=BELIEF_CORRECTION)
+    b = _mk("B", btype=BELIEF_CORRECTION, origin=ORIGIN_USER_CORRECTED)
     s = _seed(a, b)
     s.insert_edge(Edge(src="A", dst="B", type=EDGE_CONTRADICTS, weight=1.0))
     result = resolve_contradiction(s, "A", "B")
@@ -185,7 +187,7 @@ def test_user_stated_beats_document_recent() -> None:
 
 
 def test_user_corrected_beats_document_recent() -> None:
-    a = _mk("A", btype=BELIEF_CORRECTION)
+    a = _mk("A", btype=BELIEF_CORRECTION, origin=ORIGIN_USER_CORRECTED)
     b = _mk("B")
     s = _seed(a, b)
     s.insert_edge(Edge(src="A", dst="B", type=EDGE_CONTRADICTS, weight=1.0))
@@ -195,7 +197,7 @@ def test_user_corrected_beats_document_recent() -> None:
 
 
 def test_user_corrected_beats_user_validated() -> None:
-    a = _mk("A", btype=BELIEF_CORRECTION)
+    a = _mk("A", btype=BELIEF_CORRECTION, origin=ORIGIN_USER_CORRECTED)
     b = _mk("B", origin=ORIGIN_USER_VALIDATED)
     s = _seed(a, b)
     s.insert_edge(Edge(src="A", dst="B", type=EDGE_CONTRADICTS, weight=1.0))
