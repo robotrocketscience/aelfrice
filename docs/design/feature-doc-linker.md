@@ -121,7 +121,7 @@ A scalar column on `beliefs` collapses this to one anchor per belief. A sibling 
 Hook the linker into the existing ingest paths where `source_path` is materialised:
 
 - **Onboard** — `derivation.py:223` (`source = inp.source_path or inp.source_kind`). When `source_path` is set, the post-derive code calls `link_belief_to_document(belief_id, file_uri_from(source_path), anchor_type="ingest")`.
-- **Commit-ingest** — same hook; the commit-ingest path also flows through `derivation.py`.
+- **Commit-ingest**: same hook; the commit-ingest path also flowed through `derivation.py`. The commit hook no longer writes (#2010), so only stored `git` rows that are replayed reach it.
 - **Transcript-ingest** — `source_path` is typically `None` (transcripts have no canonical doc URI). Skip the linker call when `source_path is None`.
 - **`aelf remember`** — when invoked with the `--doc` flag (new at v2.0; one-line CLI addition), call `link_belief_to_document(..., anchor_type="manual")`.
 

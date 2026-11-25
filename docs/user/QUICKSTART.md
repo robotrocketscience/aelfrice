@@ -62,7 +62,7 @@ installed statusline in <project>/.claude/settings.json
 `aelf setup` with no options installs the full default hook set:
 
 - transcript capture
-- commit ingest
+- the git commit hook, which stores nothing
 - session-start injection
 - the other default hooks
 

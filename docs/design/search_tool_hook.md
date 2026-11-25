@@ -82,7 +82,7 @@ the search query is a precise, agent-formulated probe. Two payoffs:
    not happen, or was there no match?").
 
 This hook is the inverse of the v1.2.0 commit-ingest hook. That one
-*writes* the graph after the agent acts. This one *reads* the graph
+*wrote* the graph after the agent acted, until it stopped writing in #2010. This one *reads* the graph
 at the moment the agent acts. Together they close the loop: information
 generated during normal session activity becomes context for the
 next session's tool-decision points.

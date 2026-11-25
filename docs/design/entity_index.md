@@ -396,7 +396,8 @@ Compared against the existing `insert_belief` cost (FTS5 insert plus
 the `beliefs` row write — measured at ~500 µs–1 ms on commodity
 hardware with WAL), this is a 12–25 % overhead per insert. Acceptable
 on the producer side; the user-visible insert path (`aelf lock`,
-`aelf remember`, the commit-ingest hook, transcript-ingest) is not
+`aelf remember`, transcript-ingest, and the commit-ingest hook until it
+stopped writing in #2010) is not
 latency-bound at this granularity.
 
 The hot path (`retrieve()`) does **not** incur extraction cost on

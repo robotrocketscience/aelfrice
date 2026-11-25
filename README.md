@@ -165,7 +165,7 @@ Every belief has one type. A rule-based classifier types transcript text; `/aelf
 | `preference` | How you like things done. | Contains "I prefer", "always use", or similar. |
 | `speculative` | A phantom: a guess that isn't trusted yet. | `/aelf:wonder` writes it. |
 
-Edges link a source belief to a target belief. Today, only `TEMPORAL_NEXT` and `DERIVED_FROM` are written for every conversation. Earlier releases also stored edges from relation phrases in commit messages, such as "X supersedes Y". The commit hook no longer stores anything, but a store from an earlier release keeps the beliefs and edges it wrote, and retrieval still reads them.
+Edges link a source belief to a target belief. Today, only `TEMPORAL_NEXT` and `DERIVED_FROM` are written for every conversation. Earlier releases also stored edges from relation phrases in commit messages, such as "X supersedes Y". The commit hook no longer stores anything, but a store from an earlier release keeps the beliefs and edges that hook wrote, and retrieval still reads them.
 
 | Edge | Meaning | Written by | Default |
 |---|---|---|---|

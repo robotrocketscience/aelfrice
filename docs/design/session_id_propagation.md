@@ -1,5 +1,7 @@
 # session_id propagation contract
 
+**Status:** the `hook_commit_ingest` rows below are history. The commit hook no longer writes, so it stamps no session id; `git` rows that an earlier release stored keep the ids those formulas gave them ([#2010](https://github.com/robotrocketscience/aelfrice/issues/2010)).
+
 Implements [#192](https://github.com/robotrocketscience/aelfrice/issues/192)
 (phantom-prereqs T3). Every ingest entry point that produces a row
 in `beliefs` or `ingest_log` is responsible for stamping a

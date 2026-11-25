@@ -234,7 +234,7 @@ virtual-environment mismatch or a missing `aelf-*` console script.
   from that file in v1.2.
 - [the transcript-ingest design note](../design/transcript_ingest.md) — the capture pipeline
   for each turn.
-- [the commit-ingest hook design note](../design/commit_ingest_hook.md) — the git
+- [the commit-ingest hook design note](../design/commit_ingest_hook.md): the git
   commit hook, and what it captured before it stopped storing anything.
 - [the promotion-path design note](../design/promotion_path.md) — the
   `agent_inferred → user_validated` mechanism. It lets you tier imported `.md`

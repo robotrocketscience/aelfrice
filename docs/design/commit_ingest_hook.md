@@ -1,6 +1,6 @@
 # Commit-ingest hook
 
-**Status:** shipped (v1.2.0, #119); default-on as of v2.1.0 (#529) — installed by `aelf setup`, opt out with `--no-commit-ingest`. The hook now runs, exits 0, and stores nothing; it stays installed until a later design gives it a job. Historical design record below.
+**Status:** shipped (v1.2.0, #119); default-on as of v2.1.0 (#529), installed by `aelf setup`, opt out with `--no-commit-ingest`. The hook now runs, exits 0, and stores nothing; it stays installed until a later design gives it a job. Historical design record below.
 **Target milestone:** v1.2.0 (named on the public roadmap as
 "commit-ingest `PostToolUse` hook").
 **Dependencies:** stdlib only. Consumes the
@@ -71,7 +71,7 @@ call for the worktree's git directory and `HEAD`, checks for a rebase,
 then runs `aelf-commit-ingest --git-hook <hash>` in the background. A
 burst of quick commits records each one, and a commit never waits on
 the ingest itself. The block adds about 70 ms per commit on a
-development machine, measured as the median over 15 commits. Errors go to `commit-ingest.log` next to the store. `aelf setup`
+development machine, measured as the median over 15 commits. Errors went to `commit-ingest.log` next to the store; the hook writes no log now. `aelf setup`
 run outside a repository installs nothing.
 
 The installer edits an existing `post-commit` only when it can restore
