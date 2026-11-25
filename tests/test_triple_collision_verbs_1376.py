@@ -41,7 +41,7 @@ COLLISION_ROWS: tuple[str, ...] = (
     # `follows` — 1 of 82.
     "The lowercase stage that follows it is str.lower, not casefold.",
     # `supports` and `extends` never fired on the sample, so the corpus
-    # carries a constructed row for each — otherwise nothing here would go
+    # carries a constructed row for each. Otherwise nothing here would go
     # red if one were quietly removed from the read bank.
     "The three supports that hold the frame are bolted, not welded.",
     "Every belief that extends past the window is dropped.",

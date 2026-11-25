@@ -700,7 +700,7 @@ def test_clear_then_backfill_preserves_prose_edge_direction(
     The commit hook's triple extractor wrote src = the belief the sentence
     says came later; the backfill writes src = the belief that ingested
     later. For "X succeeds Y" those are opposite, so an unscoped clear
-    followed by a backfill re-mints the row *inverted* — at an identical row
+    followed by a backfill re-mints the row *inverted*, at an identical row
     count, which is why a count assertion cannot see it (#1379). Assert
     direction. The hook no longer writes, so the row is built here the way
     it stored one: subject ingested first, weight 1.0, the anchor text.
