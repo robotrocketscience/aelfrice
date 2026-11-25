@@ -36,8 +36,8 @@ whose every stage is gated behind a manual command nobody runs. (§6)
 
 Every phantom is a `type='speculative'` / `origin='speculative'` belief, and
 the only writer is `wonder_ingest()` (`wonder/lifecycle.py`), reachable through
-three "wonder" front doors (`aelf wonder --persist-docs`, `aelf wonder
---persist`, MCP `wonder_persist`). `phantom_trigger.py` (#980) is **not** a
+two "wonder" front doors (`aelf wonder --persist-docs`, `aelf wonder
+--persist`); the third, MCP `wonder_persist`, left with the MCP server in #1422. `phantom_trigger.py` (#980) is **not** a
 generator — by contract it only *detects that a generation opportunity exists*
 and emits an `<aelfrice-phantom-opportunity>` note; synthesis + persistence are
 deferred to an explicit wonder invocation.

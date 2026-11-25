@@ -249,7 +249,7 @@ names the header when `ANTHROPIC_BASE_URL` is set.
 - The `aelfrice` package never imports `anthropic` at top level. The
   import is local to the LLM-classify call site so a default install
   has no `anthropic` symbol resolvable. Mirrors the `[mcp]` extra
-  pattern (`fastmcp` is similarly local-imported).
+  pattern that `fastmcp` used until #1422 removed the extra.
 
 ### One-time confirmation prompt
 

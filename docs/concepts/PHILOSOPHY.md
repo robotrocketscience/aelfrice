@@ -203,7 +203,7 @@ The invariants that matter hold across all of these paths:
 
 The posterior write itself is a single atomic SQL increment. It runs inside one `BEGIN IMMEDIATE` transaction together with its audit row, so concurrent writers can't lose the evidence of another writer, and the log can't disagree with the projection.
 
-The earlier research line had a much bigger surface: twenty-nine Model Context Protocol (MCP) tools, `wonder`, `reason`, and snapshot/diff. It delivered value, and it also delivered ambiguity. The rebuild started narrow on purpose. Versions v1.x to v3.x have reintroduced breadth: 15 MCP tools at v3.3, plus the `/aelf:wonder`, `/aelf:reason`, and `/aelf:graph` slash surfaces. Each addition depends on evidence, whether a benchmark, an experiment, or a clear case where the existing operations don't suffice.
+The earlier research line had a much bigger surface: twenty-nine Model Context Protocol (MCP) tools, `wonder`, `reason`, and snapshot/diff. It delivered value, and it also delivered ambiguity. The rebuild started narrow on purpose. Versions v1.x to v3.x reintroduced breadth: 15 MCP tools at v3.3, which v4.3.0 removed ([#1422](https://github.com/robotrocketscience/aelfrice/issues/1422)), plus the `/aelf:wonder`, `/aelf:reason`, and `/aelf:graph` slash surfaces. Each addition depends on evidence, whether a benchmark, an experiment, or a clear case where the existing operations don't suffice.
 
 ## Lean dependencies, on purpose
 

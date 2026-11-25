@@ -23,7 +23,6 @@ code should treat the value as opaque.
 | `scanner.scan_repo` (filesystem onboard) | `sha256(scan:<root>:<ts>)[:16]` | 16-hex |
 | `classification.accept_classifications` (onboard accept) | active `OnboardSession.id` | UUID-ish |
 | `aelf lock` CLI | `--id` arg → `$AELF_SESSION_ID` → NULL+warn | caller-defined |
-| MCP `aelf_lock` tool | MCP `session_id` arg → `$AELF_SESSION_ID` → NULL+warn | caller-defined |
 
 A NULL `session_id` means "no session attribution available";
 session-coherent retrieval skips NULL rows so legacy data and
@@ -32,12 +31,14 @@ co-occurrence signals.
 
 ## Inference contract (#192 R0 ratification, 2026-05-03)
 
-Three surfaces share a single inference contract via
+Two surfaces share a single inference contract via
 `aelfrice.session_resolution.resolve_session_id(explicit, surface_name=...)`:
 
 1. `ingest.ingest_turn` (Q1.a)
 2. `cli._cmd_lock` — `aelf lock` (Q3.a)
-3. `mcp_server.tool_lock` — MCP `aelf_lock` (Q4.a)
+
+A third, the MCP `aelf_lock` tool (Q4.a), left with the MCP server in
+[#1422](https://github.com/robotrocketscience/aelfrice/issues/1422).
 
 Resolution order:
 
@@ -76,9 +77,6 @@ session source already:
   most a few lines, not thousands.
 * `aelf lock` accepts `--id <session-id>` as an explicit override;
   see `aelf lock --help`.
-* The MCP `aelf_lock` tool accepts a `session_id` field in its
-  request envelope; the MCP layer fills it from the active session
-  context.
 
 ## What is NOT in scope for #192
 

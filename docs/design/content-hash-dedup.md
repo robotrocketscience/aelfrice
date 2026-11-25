@@ -103,7 +103,6 @@ DDL; they skip the swap and only stamp the marker.
 | `classification.py` | `store.insert_belief(b)` | `store.insert_or_corroborate(..., source_type=CORROBORATION_SOURCE_FILESYSTEM_INGEST)` |
 | `cli.py` (`_cmd_lock`) | `store.insert_belief(b)` | `store.insert_or_corroborate(..., source_type=CORROBORATION_SOURCE_CLI_REMEMBER)` |
 | `triple_extractor.py` | `store.insert_belief(b)` | `store.insert_or_corroborate(..., source_type=CORROBORATION_SOURCE_COMMIT_INGEST)` |
-| `mcp_server.py` (`tool_lock`) | `store.insert_belief(b)` | `store.insert_or_corroborate(..., source_type=CORROBORATION_SOURCE_MCP_REMEMBER)` |
 
 ## Invariants
 

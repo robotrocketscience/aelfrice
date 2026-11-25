@@ -397,7 +397,7 @@ You can't make the host take the aelfrice lock, so this check is a detector and 
 
 Opening the store runs a set of one-shot schema migrations. Each migration is stamped as complete only after it finishes its work.
 
-Before [#1161](https://github.com/robotrocketscience/aelfrice/issues/1161) a migration that raised an error took the whole store with it. The completion marker was never written, so the next open re-ran the same pass and failed the same way. Every entry point opens the store: the CLI, the hooks, and MCP. The only way back was to edit the SQLite database by hand.
+Before [#1161](https://github.com/robotrocketscience/aelfrice/issues/1161) a migration that raised an error took the whole store with it. The completion marker was never written, so the next open re-ran the same pass and failed the same way. Every entry point opened the store: the CLI, the hooks, and MCP. The only way back was to edit the SQLite database by hand.
 
 A migration that can't finish no longer stops the store from opening. aelfrice records the failure and skips the pass. The store keeps its pre-migration shape, and reads and writes work. The completion marker stays unset, so aelfrice retries the migration on every later open. An upgrade to a build that fixes the migration thus repairs the store automatically.
 

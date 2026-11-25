@@ -501,7 +501,7 @@ separate retrieval entry point.** Reasoning:
   explicitly so the result is reproducible regardless of the user's
   `.aelfrice.toml`.
 - A separate retrieval entry point was considered and rejected: it
-  would force every consumer (MCP, hook, CLI, benchmark adapter) to
+  would force every consumer (hook, CLI, benchmark adapter) to
   pick the right one, and the wrong choice silently disables the
   index. A flag is a single switch.
 - Runtime opt-in via per-call kwarg is also rejected for the same

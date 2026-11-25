@@ -348,7 +348,7 @@ Per-resolve cost is ~110 ms p50, dominated by `git rev-parse`
 subprocess invocation. Cost is **flat** with respect to commit count
 (measured at 50, 200, 1000, 3000 synthetic commits: max delta 8 ms).
 
-For long-running processes (the MCP server, daemons), a process-local
+For long-running processes, such as daemons, a process-local
 memo is worthwhile:
 
 ```python

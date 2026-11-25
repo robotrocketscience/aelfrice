@@ -16,7 +16,7 @@ What changed is the alternative surface. At v2.0 the only way to get "this quest
 
 - `wonder.dispatch.analyze_gaps(query, …)` — pure function, fixed-store snapshot in, named gap set out. No LLM, no randomness. ([`src/aelfrice/wonder/dispatch.py`](../../src/aelfrice/wonder/dispatch.py))
 - `wonder.dispatch.generate_research_axes(gap_analysis, agent_count)` — 2–6 orthogonal axes per query, deterministic given the analysis.
-- MCP `wonder()` tool + `aelf wonder <query> --axes` CLI — both wrap the same two pure functions.
+- MCP `wonder()` tool + `aelf wonder <query> --axes` CLI: both wrap the same two pure functions. (v4.3.0 removed the MCP tool with the MCP server, [#1422](https://github.com/robotrocketscience/aelfrice/issues/1422).)
 - Skill-layer integration ([#552](https://github.com/robotrocketscience/aelfrice/issues/552) in flight) — the host harness fans out one research agent per axis, each agent runs its own model call with its own credentials, results pipe back through `wonder_ingest`.
 
 The polymorphic split delivers what multi-provider voting was *for* — surfacing the questions one model misses — without paying the multi-provider cost trio. Each axis is investigated by an agent in the host's own dispatch surface; the host can route different axes to different models if the user has those credentials configured, and aelfrice neither knows nor cares. The "multiple models surface different gaps" property holds at the dispatch layer instead of the consensus layer, and it composes with the determinism property because aelfrice's analysis half stays pure.

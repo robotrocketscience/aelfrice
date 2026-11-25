@@ -52,7 +52,7 @@ the way an external user would experience it?
   The `e2e` label no longer triggers anything; `labeled` was dropped from the
   trigger's event types along with the job's opt-in `if:`.
 - **No in-process imports of `aelfrice.*`.** Tests invoke the installed
-  `aelf` binary (e.g. `aelf mcp` for the MCP server) via `subprocess.run`
+  `aelf` binary via `subprocess.run`
   and assert on its observable output.
 - No mocks at all. Fixtures: `tmp_path` DB, the synthetic project built inline by the `tiny_project` fixture in `tests/e2e/conftest.py`, and the synthetic v1.4 snapshot at
   `tests/e2e/fixtures/v14-snapshot.db` (rebuildable via
