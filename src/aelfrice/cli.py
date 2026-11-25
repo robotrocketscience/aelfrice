@@ -1857,7 +1857,7 @@ def _cmd_wonder_persist_docs(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
-    """Surface consolidation candidates and (optionally) emit phantoms.
+    """List beliefs related to a seed and (optionally) emit phantoms.
 
     Default behavior (#389 amendment 9): produces phantom-belief
     *candidates* in-memory and prints the top-N as ranked rows. When
@@ -10610,11 +10610,11 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
 
     p_wonder = sub.add_parser(
         "wonder",
-        help="surface consolidation candidates / phantom beliefs (#389)",
+        help="list related beliefs / phantom beliefs (#389)",
         description=(
             "Modes (#645):\n"
-            "  no-arg — graph-walk consolidation candidates from a BFS "
-            "expansion around a seed.\n"
+            "  no-arg: beliefs related to a seed, from a BFS "
+            "expansion around it. Merges nothing.\n"
             "  QUERY (positional) — axes-spawn-ingest research flow "
             "(gap analysis + research axes JSON for skill-layer dispatch).\n"
             "  --gc — soft-delete stale speculative beliefs.\n"
@@ -10642,7 +10642,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_wonder.add_argument(
         "--top", type=int, default=10,
-        help="number of consolidation candidates to surface (default 10)",
+        help="number of related beliefs to list (default 10)",
     )
     p_wonder.add_argument(
         "--emit-phantoms", action="store_true", dest="emit_phantoms",

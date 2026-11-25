@@ -18,7 +18,7 @@ class WonderResult:
     Fields
     ------
     mode:
-        ``"graph_walk"`` for the default seed/BFS consolidation path or
+        ``"graph_walk"`` for the default seed/BFS related-belief path or
         ``"axes"`` when ``--axes QUERY`` is passed.
     coverage:
         Ingested-phantoms-per-research-axis, clamped to ``[0.0, 1.0]``.
@@ -53,7 +53,7 @@ class WonderResult:
         ``WonderResult`` to wire its ``inserted`` count into this
         field.
     candidates:
-        Graph-walk-mode consolidation candidates ranked by combined
+        Graph-walk-mode related beliefs ranked by combined
         BFS-path-score × token-relatedness.  Each row is
         ``{candidate_id, score, relatedness, suggested_action, path}``
         — preserves the v2.x ``--json`` structured shape so existing

@@ -344,7 +344,7 @@ def test_wonder_positional_query_routes_to_axes(_isolated_db: Path) -> None:
 
 
 def test_wonder_no_arg_still_graph_walks(_isolated_db: Path) -> None:
-    """No QUERY → graph-walk consolidation mode (aelfrice extension
+    """No QUERY -> graph-walk related-belief mode (aelfrice extension
     preserved; #645 acceptance)."""
     _seed_chain(_isolated_db)
     code, out = _run("wonder")

@@ -72,8 +72,8 @@ wider or tighter without rebuilding.
   excluded.
 - **Not duplicate of `aelf locked`** — `locked` is L0 only; `core` is L0 plus
   the corroboration / posterior subsets.
-- **Not the same as `aelf wonder`** — `wonder` surfaces *consolidation
-  candidates* (beliefs that look like they should merge); `core` surfaces
+- **Not the same as `aelf wonder`:** `wonder` lists *related beliefs*
+  around a seed and merges nothing; `core` surfaces
   *currently load-bearing beliefs* (beliefs that already anchor retrieval).
 
 ---
