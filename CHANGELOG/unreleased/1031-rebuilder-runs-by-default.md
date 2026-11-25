@@ -1,0 +1,3 @@
+### Documentation
+
+- **The context rebuilder runs by default after compaction ([#1031](https://github.com/robotrocketscience/aelfrice/issues/1031)).** `aelf setup --help`, the `/aelf:setup` slash command, `docs/user/INSTALL.md`, `docs/user/COMMANDS.md`, `docs/concepts/ARCHITECTURE.md`, and `docs/concepts/PHILOSOPHY.md` called the rebuilder opt-in. Since 3.8.0 the default `SessionStart` hook emits the rebuild block after each compaction, unless you set `[rebuilder] trigger_mode` to `"manual"` or `"dynamic"`. `aelf setup --rebuilder` adds only a `PreCompact` entry, which keeps the trigger-mode bookkeeping and injects nothing.
