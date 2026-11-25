@@ -21,14 +21,16 @@ the full default-on hook bundle, not just one entry:
   (#134, default-on since v3.0.1 #738; the web tools joined in #1626).
 - `PreToolUse:Bash` — the same `aelf-search-tool-hook` script with a Bash matcher (dispatches internally on tool_name; same wave).
 - `PreToolUse:Bash` — pre-issue duplicate guard (`aelf-pre-issue-hook`): blocks `gh issue create` on Jaccard ≥ 0.5 overlap with existing issues/commits.
-- `PreCompact` — the context rebuilder. Opt-in, not part of the default bundle.
+- `PreCompact`: bookkeeping for the context rebuilder's trigger mode. Opt-in,
+  not part of the default bundle. The rebuild block itself ships after
+  compaction on the default `SessionStart` hook.
 
 The install also writes the statusline snippet and the bundled slash
 bundle under `~/.claude/commands/aelf/`.
 
 On the `claude` host, each default-on lane is opt-out through its own
 `--no-<lane>` flag — `--no-pre-issue-guard`, `--no-statusline`, and the
-rest — and you opt the rebuilder in with `--rebuilder`. Run
+rest. `--rebuilder` adds the opt-in `PreCompact` bookkeeping entry. Run
 `aelf setup --help` for the full claude-host flag list.
 
 On the `codex` host, `aelf setup --host codex` accepts only `--force` and

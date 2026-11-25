@@ -276,7 +276,7 @@ Bare `aelf setup` installs the v1.2.0 auto-capture pipeline, together with the r
 | pre-issue-guard | `PreToolUse:Bash` | **on** (v3.4.0+) | blocks `gh issue create` when the title overlaps an existing issue or a shipped commit at 0.5 Jaccard or above (#941) |
 | claude-memory-mirror | `PostToolUse:Write` / `Edit` / `MultiEdit` | **on** (v3.7.0+) | mirrors the host claude-memory fact-file writes one-way into the belief graph (#985). Either `AELFRICE_MIRROR_CLAUDE_MEMORY` or `[memory] mirror_claude_memory` enables the hook, and since v4.0 (#1089) so does the per-project consent sentinel, which the one-shot reconcile writes at the first `aelf setup` if the project already has claude-memory files. A project that's set up after its first memory file therefore mirrors by default. If setup ran before any memory existed, or the store directory was removed, the hook stays installed but the mirror stays off; `aelf doctor` warns, and `aelf reconcile-claude-memory` records consent. Setup and reconcile both work from a linked worktree, which uses the main checkout's memory (#1657). An explicit env `0` or TOML `false` always wins over the sentinel; that's the opt-out |
 | agent-context | `PreToolUse:Agent` / `Task` | **on** | dispatched subagents inherit the L0 locked beliefs and the task-relevant ones through prompt injection. The hook is a fail-open passthrough. Set `AELFRICE_AGENT_CONTEXT=0` to disable the injection, or pass `--no-agent-context` to opt out (#1068) |
-| rebuilder | `PreCompact` (installed) — block ships on `SessionStart(source="compact")` | off | the retrieval-curated context rebuilder (augment-mode, v1.4 alpha). `--rebuilder` installs a `PreCompact` entry that does the trigger-mode bookkeeping only and injects nothing. The block itself ships *after* the compaction, on the default-on `SessionStart` hook that's already present ([#1031](https://github.com/robotrocketscience/aelfrice/issues/1031)) |
+| rebuilder | `PreCompact` (installed); block ships on `SessionStart(source="compact")` | **on** (block); `PreCompact` entry off | the retrieval-curated context rebuilder (augment-mode, v1.4 alpha). `--rebuilder` installs a `PreCompact` entry that does the trigger-mode bookkeeping only and injects nothing. The block itself ships *after* the compaction, on the default-on `SessionStart` hook that's already present ([#1031](https://github.com/robotrocketscience/aelfrice/issues/1031)) |
 
 To opt out of one hook, use the matching option. The opt-out persists across upgrades in `~/.aelfrice/opt-out-hooks.json`.
 
@@ -294,10 +294,10 @@ aelf setup --no-agent-context          # skip the PreToolUse:Agent worker-contex
 
 The SessionStart recap line ("N beliefs written since last session", v3.5+, #934) has no manifest entry of its own. The SessionStart hook prints the recap line. `aelf setup --no-sessionstart-recap` suppresses the recap line at install time, and `opt-out-hooks.json` doesn't persist that choice.
 
-To opt in to the hooks that are off by default, use this command:
+To add the `PreCompact` bookkeeping entry for the rebuilder's trigger mode, which is off by default, use this command:
 
 ```bash
-aelf setup --rebuilder                 # post-compaction context rebuilder (alpha)
+aelf setup --rebuilder                 # PreCompact bookkeeping entry for the rebuilder
 ```
 
 `aelf unsetup` mirrors `aelf setup`. A bare invocation removes every default-on hook. The `--no-*` flags suppress the removal of the matching hook.

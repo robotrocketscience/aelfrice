@@ -12400,8 +12400,10 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_setup.add_argument(
         "--rebuilder", action="store_true",
         help=(
-            "ALSO install the PreCompact hook for the context "
-            "rebuilder. Idempotent; coexists with all other hooks. "
+            "ALSO install the PreCompact bookkeeping entry for the "
+            "context rebuilder's trigger mode. The rebuild block ships "
+            "by default after compaction, on the SessionStart hook. "
+            "Idempotent; coexists with all other hooks. "
             "Augment-mode only at v1.4.0; suppress mode is parked "
             "for v2.x."
         ),

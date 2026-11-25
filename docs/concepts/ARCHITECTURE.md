@@ -244,7 +244,7 @@ prompt. Two qualifications apply. Both are deliberate, and both are reachable to
 | `aelf-claude-memory-mirror` | `PostToolUse:Write\|Edit\|MultiEdit` | A one-way mirror that copies writes to the host claude-memory fact files into the belief graph (#985). Consent has gated it since v4.0 (#1089): it runs once the reconcile at first setup records consent for the project, and it also runs when `AELFRICE_MIRROR_CLAUDE_MEMORY` or `[memory] mirror_claude_memory` enables it explicitly. An explicit falsy value is the opt-out. | v3.7.0 |
 | `aelf-agent-context-hook` | `PreToolUse:Agent\|Task` | Injects context for a worker. A dispatched worker inherits the L0 locked beliefs and the task-relevant ones through the harness `updatedInput` channel. The passthrough fails open, and the kill switch is `AELFRICE_AGENT_CONTEXT=0` (#1068). | v4.0.0 |
 | `aelf-pre-compact-hook` | `PreCompact` | Bookkeeping for the rebuilder's trigger mode, and nothing else; it never injects (#1031). Opt in with `--rebuilder`. The default trigger flipped from `manual` to `threshold` at v3.1 (#746). | opt-in |
-| `aelf-session-start-hook` | `SessionStart(source="compact")` | Emits the rebuild block after compaction. This is the channel the harness honors (#1031). | opt-in |
+| `aelf-session-start-hook` | `SessionStart(source="compact")` | Emits the rebuild block after compaction. This is the channel the harness honors (#1031). | v3.8.0 (#1031) |
 
 To opt out of any lane, run `aelf setup --no-<lane>`. All the lanes exit 0 on failure, with the two
 qualifications stated under the non-blocking contract above. `aelf-pre-issue-hook` exits `2` on a duplicate
@@ -285,7 +285,7 @@ emitted as additionalContext — the aelfrice block lands in the
 new context alongside the harness's own summary (augment mode)
 ```
 
-`aelf rebuild [--transcript PATH] [--n N] [--budget N]` runs the same codepath manually, and it prints the block to stdout. To install it, run `aelf setup --rebuilder`. The default `DEFAULT_TRIGGER_MODE` flipped from `"manual"` to `"threshold"` at v3.1 ([#746](https://github.com/robotrocketscience/aelfrice/issues/746)). The specification is [the context-rebuilder spec](../design/context_rebuilder.md), and the policy for the eval fixtures is [the eval-fixture policy](../design/eval_fixture_policy.md).
+`aelf rebuild [--transcript PATH] [--n N] [--budget N]` runs the same codepath manually, and it prints the block to stdout. The default `DEFAULT_TRIGGER_MODE` flipped from `"manual"` to `"threshold"` at v3.1 ([#746](https://github.com/robotrocketscience/aelfrice/issues/746)). The specification is [the context-rebuilder spec](../design/context_rebuilder.md), and the policy for the eval fixtures is [the eval-fixture policy](../design/eval_fixture_policy.md).
 
 ## Tests
 
