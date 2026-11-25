@@ -1,4 +1,4 @@
-"""commit-ingest hook: dispatch, idempotency, session derivation, failure modes."""
+"""commit-ingest hook: the PostToolUse path opens no store, and setup wiring."""
 from __future__ import annotations
 
 import io
@@ -9,8 +9,6 @@ from pathlib import Path
 import pytest
 
 from aelfrice import hook_commit_ingest as hk
-from aelfrice.models import EDGE_DERIVED_FROM, EDGE_SUPPORTS
-from aelfrice.store import MemoryStore
 
 
 # --- Fixtures ------------------------------------------------------------
@@ -91,169 +89,44 @@ def _drive(payload: dict[str, object]) -> int:
 
 
 # --- Behaviour tests -----------------------------------------------------
+#
+# The PostToolUse path stores nothing (test_commit_hook_writes_nothing pins
+# every table and file). These tests keep the payload shapes the older
+# version ingested or skipped, and check none of them opens a store.
 
 
-def test_no_op_on_non_bash_tool(git_repo: Path, per_repo_db: Path) -> None:
-    rc = _drive(_payload(
-        command="git commit -m 'x'", stdout="[main abc1234] x",
-        tool_name="Read", cwd=str(git_repo),
-    ))
-    assert rc == 0
-    assert not per_repo_db.exists()
-
-
-def test_no_op_on_non_commit_bash(git_repo: Path, per_repo_db: Path) -> None:
-    rc = _drive(_payload(
-        command="git status", stdout="On branch main", cwd=str(git_repo),
-    ))
-    assert rc == 0
-    assert not per_repo_db.exists()
-
-
-def test_no_op_on_failed_commit(git_repo: Path, per_repo_db: Path) -> None:
-    rc = _drive(_payload(
-        command="git commit -m 'x'", stdout="error", is_error=True,
-        cwd=str(git_repo),
-    ))
-    assert rc == 0
+@pytest.mark.parametrize("payload", [
+    _payload(command="git commit -m 'x'", stdout="[main abc1234] x", tool_name="Read"),
+    _payload(command="git status", stdout="On branch main"),
+    _payload(command="git commit -m 'x'", stdout="error", is_error=True),
+    _payload(command="git commit -m 'x'", stdout="weird output no brackets"),
+], ids=["non_bash_tool", "non_commit_bash", "failed_commit", "unparseable_stdout"])
+def test_a_payload_the_old_hook_skipped_still_opens_no_store(
+    git_repo: Path, per_repo_db: Path, payload: dict[str, object],
+) -> None:
+    payload = {**payload, "cwd": str(git_repo)}
+    assert _drive(payload) == 0
     assert not per_repo_db.exists()
 
 
 @pytest.mark.timeout(30)
-def test_extracts_triple_from_commit_message(
-    git_repo: Path, per_repo_db: Path,
+@pytest.mark.parametrize("message", [
+    "the new index is supported by faster queries",
+    "the spec is derived from the prior memo",
+    "a single short subject",
+])
+def test_a_real_commit_payload_opens_no_store(
+    git_repo: Path, per_repo_db: Path, message: str,
 ) -> None:
-    branch, short = _make_commit(
-        git_repo, "the new index is supported by faster queries"
-    )
-    rc = _drive(_payload(
-        command="git commit -m 'the new index is supported by faster queries'",
-        stdout=f"[{branch} {short}] the new index is supported by faster queries",
-        cwd=str(git_repo),
-    ))
-    assert rc == 0
-    store = MemoryStore(str(per_repo_db))
-    try:
-        edges = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
-            "SELECT * FROM edges WHERE type = ?", (EDGE_SUPPORTS,)
-        ).fetchall()
-        assert len(edges) == 1
-        assert edges[0]["anchor_text"]
-        beliefs = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
-            "SELECT id, content, session_id FROM beliefs"
-        ).fetchall()
-        assert len(beliefs) == 2
-        sids = {b["session_id"] for b in beliefs}
-        assert len(sids) == 1
-        assert next(iter(sids)) is not None
-    finally:
-        store.close()
-
-
-@pytest.mark.timeout(30)
-def test_session_id_is_derived_and_stable(
-    git_repo: Path, per_repo_db: Path,
-) -> None:
-    branch, short = _make_commit(
-        git_repo, "the new index is supported by faster queries"
-    )
-    expected_session = hk._derive_session_id(branch, short)  # pyright: ignore[reportPrivateUsage]
-    _drive(_payload(
-        command="git commit -m 'msg'",
-        stdout=f"[{branch} {short}] msg",
-        cwd=str(git_repo),
-    ))
-    store = MemoryStore(str(per_repo_db))
-    try:
-        sess = store.get_session(expected_session)
-        assert sess is not None
-        assert sess.model == "commit-ingest"
-        rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
-            "SELECT session_id FROM beliefs"
-        ).fetchall()
-        for row in rows:
-            assert row["session_id"] == expected_session
-    finally:
-        store.close()
-
-
-@pytest.mark.timeout(30)
-def test_idempotent_on_repeated_fire(
-    git_repo: Path, per_repo_db: Path,
-) -> None:
-    branch, short = _make_commit(
-        git_repo, "the spec is derived from the prior memo"
-    )
+    """The older version stored the triple, a session, and log rows here."""
+    branch, short = _make_commit(git_repo, message)
     payload = _payload(
-        command="git commit -m 'msg'",
-        stdout=f"[{branch} {short}] msg",
+        command=f"git commit -m '{message}'",
+        stdout=f"[{branch} {short}] {message}",
         cwd=str(git_repo),
     )
-    _drive(payload)
-    _drive(payload)
-    store = MemoryStore(str(per_repo_db))
-    try:
-        n_edges = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
-            "SELECT COUNT(*) AS c FROM edges WHERE type = ?",
-            (EDGE_DERIVED_FROM,),
-        ).fetchone()["c"]
-        assert n_edges == 1
-    finally:
-        store.close()
-
-
-@pytest.mark.timeout(30)
-def test_no_triples_does_not_create_session(
-    git_repo: Path, per_repo_db: Path,
-) -> None:
-    """Commit messages that produce zero triples should not create a
-    session row — keeps the sessions table from accumulating empties."""
-    branch, short = _make_commit(git_repo, "a single short subject")
-    rc = _drive(_payload(
-        command="git commit -m 'a single short subject'",
-        stdout=f"[{branch} {short}] a single short subject",
-        cwd=str(git_repo),
-    ))
-    assert rc == 0
-    if not per_repo_db.exists():
-        return  # expected: hook bailed before opening the store
-    store = MemoryStore(str(per_repo_db))
-    try:
-        rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
-            "SELECT COUNT(*) AS c FROM sessions"
-        ).fetchone()
-        assert rows["c"] == 0
-    finally:
-        store.close()
-
-
-def test_branch_and_hash_are_parsed_from_stdout() -> None:
-    parsed = hk._branch_and_hash_from_stdout(  # pyright: ignore[reportPrivateUsage]
-        "[main 7a4b430] feat: ...\n 1 file changed"
-    )
-    assert parsed == ("main", "7a4b430")
-
-
-def test_branch_with_slash_parsed() -> None:
-    parsed = hk._branch_and_hash_from_stdout(  # pyright: ignore[reportPrivateUsage]
-        "[feat/commit-ingest 1234567] message"
-    )
-    assert parsed == ("feat/commit-ingest", "1234567")
-
-
-def test_root_commit_prefix_parsed() -> None:
-    parsed = hk._branch_and_hash_from_stdout(  # pyright: ignore[reportPrivateUsage]
-        "[main (root-commit) abcdef0] initial"
-    )
-    assert parsed == ("main", "abcdef0")
-
-
-def test_unparseable_stdout_no_op(git_repo: Path, per_repo_db: Path) -> None:
-    rc = _drive(_payload(
-        command="git commit -m 'x'", stdout="weird output no brackets",
-        cwd=str(git_repo),
-    ))
-    assert rc == 0
+    assert _drive(payload) == 0
+    assert _drive(payload) == 0
     assert not per_repo_db.exists()
 
 
@@ -263,13 +136,6 @@ def test_malformed_json_returns_zero(per_repo_db: Path) -> None:
     rc = hk.main(stdin=sin, stderr=serr)
     assert rc == 0
     assert not per_repo_db.exists()
-
-
-def test_message_truncation_does_not_explode() -> None:
-    """A pathologically long message must not blow the message cap."""
-    long = "the index supports queries. " * 1000
-    truncated = hk._truncate_for_extraction(long)  # pyright: ignore[reportPrivateUsage]
-    assert len(truncated.encode("utf-8")) <= hk.MESSAGE_BYTE_CAP
 
 
 # --- Setup wiring tests --------------------------------------------------

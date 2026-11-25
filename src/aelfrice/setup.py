@@ -697,7 +697,8 @@ def uninstall_commit_ingest_hook(
 # `post-commit` keeps its content byte for byte; the block goes first so an
 # `exit` later in that script can't skip it. The block resolves `HEAD` and
 # checks for a rebase synchronously, then hands the hash to a background
-# process, so a commit never waits on the ingest.
+# process, so a commit never waits on it. That process stores nothing:
+# the hook stays installed until a later design gives it a job.
 #
 # The installer only edits what it can restore exactly: an executable,
 # LF-only, UTF-8 file that starts with a plain `sh` or `bash` shebang line.
@@ -801,7 +802,7 @@ def git_hook_command_line(command: str) -> str:
     One `git rev-parse` yields this worktree's git directory, where a
     rebase keeps its state, and the commit just made. The rebase check
     and the hash are settled here, synchronously, so the background
-    process ingests exactly this commit.
+    process gets exactly this commit.
     """
     quoted = "'" + command.replace("'", "'\\''") + "'"
     return (
@@ -816,10 +817,10 @@ def _git_hook_block(command: str, *, created: bool) -> str:
     return (
         f"{GIT_HOOK_BEGIN}\n"
         + (f"{GIT_HOOK_CREATED}\n" if created else "")
-        + "# Reads this commit's message in the background, so the commit\n"
-        "# doesn't wait. On a phrase such as \"X supersedes Y\", stores the\n"
-        "# words on each side in aelfrice memory. Skips commits that a\n"
-        "# rebase replays. Delete this block to stop it.\n"
+        + "# Starts aelf-commit-ingest in the background after each commit,\n"
+        "# so the commit doesn't wait. The command stores nothing in\n"
+        "# aelfrice memory. Skips commits that a rebase replays. Delete\n"
+        "# this block to stop it.\n"
         + git_hook_command_line(command)
         + f"{GIT_HOOK_END}\n"
     )

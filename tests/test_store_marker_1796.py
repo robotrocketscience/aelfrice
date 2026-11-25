@@ -822,21 +822,7 @@ def test_project_warm_opens_the_marker_store(
     assert opened == []
 
 
-# --- commit ingest -----------------------------------------------------------
-
-_TRIPLE_MSG = "the spec is derived from the prior memo"
-
-
-def _commit_staged(repo: Path, message: str) -> str:
-    _git(
-        "-c", "user.email=test@example.invalid", "-c", "user.name=test",
-        "-c", "commit.gpgsign=false", "commit", "-q", "-m", message,
-        cwd=repo,
-    )
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
-        capture_output=True, text=True, timeout=30,
-    ).stdout.strip()
+# --- marked repository -------------------------------------------------------
 
 
 def _stage(repo: Path, rel: str) -> None:
@@ -844,19 +830,6 @@ def _stage(repo: Path, rel: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"{rel}\n", encoding="utf-8")
     _git("add", rel, cwd=repo)
-
-
-def _commit_sessions(path: Path) -> int:
-    if not path.exists():
-        return 0
-    store = MemoryStore(str(path))
-    try:
-        row = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
-            "SELECT COUNT(*) FROM sessions WHERE model = 'commit-ingest'",
-        ).fetchone()
-    finally:
-        store.close()
-    return int(row[0])
 
 
 @pytest.fixture()
@@ -868,72 +841,8 @@ def marked_repo(env: Path) -> Path:
     return repo
 
 
-def _named_store(repo: Path, name: str) -> Path:
-    return _common_dir(repo) / "aelfrice" / "stores" / name / "memory.db"
-
-
 def _repo_store(repo: Path) -> Path:
     return _common_dir(repo) / "aelfrice" / "memory.db"
-
-
-def test_a_commit_in_a_marker_folder_lands_in_that_store(
-    marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from aelfrice import hook_commit_ingest as hk
-
-    monkeypatch.chdir(marked_repo)
-    _stage(marked_repo, "project-a/notes.txt")
-    rev = _commit_staged(marked_repo, _TRIPLE_MSG)
-    hk.git_hook_ingest(rev, str(marked_repo))
-    assert _commit_sessions(_named_store(marked_repo, "project-a")) == 1
-    assert _commit_sessions(_named_store(marked_repo, "project-b")) == 0
-    assert not _repo_store(marked_repo).exists()
-
-
-def test_a_commit_spanning_stores_lands_in_each(
-    marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from aelfrice import hook_commit_ingest as hk
-
-    monkeypatch.chdir(marked_repo)
-    _stage(marked_repo, "project-b/b.txt")
-    _stage(marked_repo, "top.txt")
-    rev = _commit_staged(marked_repo, _TRIPLE_MSG)
-    hk.git_hook_ingest(rev, str(marked_repo))
-    assert _commit_sessions(_named_store(marked_repo, "project-b")) == 1
-    assert _commit_sessions(_repo_store(marked_repo)) == 1
-    assert _commit_sessions(_named_store(marked_repo, "project-a")) == 0
-
-
-def test_a_broken_marker_skips_the_commit(
-    marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from aelfrice import hook_commit_ingest as hk
-
-    monkeypatch.chdir(marked_repo)
-    (marked_repo / "project-a" / CONFIG_FILENAME).write_text(
-        "[store]\npath = 3\n", encoding="utf-8",
-    )
-    _stage(marked_repo, "project-a/notes.txt")
-    rev = _commit_staged(marked_repo, _TRIPLE_MSG)
-    hk.git_hook_ingest(rev, str(marked_repo))
-    assert not _repo_store(marked_repo).exists()
-    assert _commit_sessions(_named_store(marked_repo, "project-a")) == 0
-
-
-def test_a_deleted_folder_resolves_from_its_nearest_existing_parent(
-    marked_repo: Path, env: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from aelfrice import hook_commit_ingest as hk
-
-    monkeypatch.chdir(marked_repo)
-    _stage(marked_repo, "project-a/gone/x.txt")
-    _commit_staged(marked_repo, "seed")
-    _git("rm", "-q", "-r", "project-a/gone", cwd=marked_repo)
-    rev = _commit_staged(marked_repo, _TRIPLE_MSG)
-    hk.git_hook_ingest(rev, str(marked_repo))
-    assert _commit_sessions(_named_store(marked_repo, "project-a")) == 1
-    assert not (env / "home" / ".aelfrice" / "memory.db").exists()
 
 
 # --- hook entry points with a broken marker -----------------------------------
@@ -983,7 +892,7 @@ def test_a_hook_with_a_broken_marker_exits_0_and_writes_no_store(
     assert not (env / "home" / ".aelfrice" / "memory.db").exists()
 
 
-# --- second review: commit routing edges -------------------------------------
+# --- second review: owning folder edges --------------------------------------
 
 
 def test_the_owning_folder_stops_at_symlinks_missing_folders_and_nested_repos(
@@ -1004,25 +913,6 @@ def test_the_owning_folder_stops_at_symlinks_missing_folders_and_nested_repos(
     assert own(root, "top.py") == root
 
 
-def test_a_folder_replaced_by_a_symlink_keeps_the_commit_in_this_repository(
-    marked_repo: Path, env: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from aelfrice import hook_commit_ingest as hk
-
-    monkeypatch.chdir(marked_repo)
-    _stage(marked_repo, "shared/x.py")
-    _commit_staged(marked_repo, "seed")
-    _git("rm", "-q", "-r", "shared", cwd=marked_repo)
-    outside = env / "outside"
-    outside.mkdir()
-    (marked_repo / "shared").symlink_to(outside, target_is_directory=True)
-    _git("add", "shared", cwd=marked_repo)
-    rev = _commit_staged(marked_repo, _TRIPLE_MSG)
-    assert hk._commit_stores(rev, str(marked_repo)) == [  # pyright: ignore[reportPrivateUsage]
-        _repo_store(marked_repo),
-    ]
-
-
 @pytest.mark.skipif(
     os.name == "nt" or os.geteuid() == 0,
     reason="needs POSIX permissions that the user can't bypass",
@@ -1030,109 +920,20 @@ def test_a_folder_replaced_by_a_symlink_keeps_the_commit_in_this_repository(
 @pytest.mark.parametrize(
     "mode", [0, 0o111, 0o444], ids=["sealed", "search-only", "list-only"],
 )
-def test_a_commit_under_a_folder_you_cannot_list_or_search_is_skipped(
-    marked_repo: Path, monkeypatch: pytest.MonkeyPatch, mode: int,
+def test_the_owning_folder_raises_for_a_folder_you_cannot_list_or_search(
+    marked_repo: Path, mode: int,
 ) -> None:
-    """The folder may hold a marker or a `.git` entry the hook can't
-    check, so the commit goes to no store, as for a broken marker."""
-    from aelfrice import hook_commit_ingest as hk
-
-    monkeypatch.chdir(marked_repo)
+    """The folder may hold a marker or a `.git` entry that can't be
+    checked, so `owning_folder` names it instead of guessing."""
     _stage(marked_repo, "project-a/sealed/x.txt")
-    _stage(marked_repo, "top.txt")
-    rev = _commit_staged(marked_repo, _TRIPLE_MSG)
     sealed = marked_repo / "project-a" / "sealed"
     sealed.chmod(mode)
     try:
-        stores = hk._commit_stores(rev, str(marked_repo))  # pyright: ignore[reportPrivateUsage]
         with pytest.raises(db_paths.FolderAccessError) as raised:
             db_paths.owning_folder(marked_repo, "project-a/sealed/x.txt")
     finally:
         sealed.chmod(0o755)
-    assert stores is None
     assert raised.value.folder == sealed
-
-
-@pytest.mark.skipif(
-    os.name == "nt" or os.geteuid() == 0,
-    reason="needs POSIX permissions that the user can't bypass",
-)
-@pytest.mark.parametrize(
-    "mode", [0, 0o111, 0o444], ids=["sealed", "search-only", "list-only"],
-)
-def test_a_commit_under_a_folder_you_cannot_list_or_search_is_skipped_without_markers(
-    env: Path, monkeypatch: pytest.MonkeyPatch, mode: int,
-) -> None:
-    """A repository with no `[store]` table can't rule out a marker in
-    that folder either, so the commit goes to no store there too."""
-    from aelfrice import hook_commit_ingest as hk
-
-    repo = _init_repo(env / "plain")
-    monkeypatch.chdir(repo)
-    _stage(repo, "data/x.txt")
-    _stage(repo, "top.txt")
-    rev = _commit_staged(repo, _TRIPLE_MSG)
-    readable = hk._commit_stores(rev, str(repo))  # pyright: ignore[reportPrivateUsage]
-    data = repo / "data"
-    data.chmod(mode)
-    try:
-        stores = hk._commit_stores(rev, str(repo))  # pyright: ignore[reportPrivateUsage]
-    finally:
-        data.chmod(0o755)
-    assert readable == [_repo_store(repo)]
-    assert stores is None
-
-
-def test_a_merge_lands_in_the_stores_of_the_files_it_brought_in(
-    marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from aelfrice import hook_commit_ingest as hk
-
-    monkeypatch.chdir(marked_repo)
-    base = subprocess.run(
-        ["git", "branch", "--show-current"], cwd=marked_repo, check=True,
-        capture_output=True, text=True, timeout=30,
-    ).stdout.strip()
-    _git("checkout", "-q", "-b", "side", cwd=marked_repo)
-    _stage(marked_repo, "project-a/side.txt")
-    _commit_staged(marked_repo, "side work")
-    _git("checkout", "-q", base, cwd=marked_repo)
-    _stage(marked_repo, "top.txt")
-    _commit_staged(marked_repo, "mainline work")
-    _git(
-        "-c", "user.email=test@example.invalid", "-c", "user.name=test",
-        "-c", "commit.gpgsign=false", "merge", "-q", "--no-ff", "side",
-        "-m", _TRIPLE_MSG, cwd=marked_repo,
-    )
-    assert hk._commit_stores("HEAD", str(marked_repo)) == [  # pyright: ignore[reportPrivateUsage]
-        _named_store(marked_repo, "project-a"),
-    ]
-
-
-def test_routing_a_wide_commit_asks_git_a_fixed_number_of_times(
-    env: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Resolving every changed folder must not fork git once per folder."""
-    from aelfrice import hook_commit_ingest as hk
-
-    repo = _init_repo(env / "repo")
-    for i in range(40):
-        _stage(repo, f"dir{i}/f.txt")
-    rev = _commit_staged(repo, _TRIPLE_MSG)
-    monkeypatch.chdir(repo)
-    db_paths.clear_git_common_dir_cache()
-    calls: list[list[str]] = []
-    real_run = subprocess.run
-
-    def counting_run(args: list[str], *a: object, **k: object) -> object:
-        calls.append(list(args))
-        return real_run(args, *a, **k)  # type: ignore[call-overload]
-
-    monkeypatch.setattr(subprocess, "run", counting_run)
-    stores = hk._commit_stores(rev, str(repo))  # pyright: ignore[reportPrivateUsage]
-    assert stores == [_repo_store(repo)]
-    git_calls = [c for c in calls if c and c[0] == "git"]
-    assert len(git_calls) <= 4, git_calls
 
 
 # --- second review: resolver edges -------------------------------------------
@@ -1214,36 +1015,6 @@ def test_project_warm_debounces_each_marker_folder_on_its_own(
 
 
 # --- third review --------------------------------------------------------------
-
-
-def test_a_merge_routes_the_same_from_a_subfolder_with_diff_relative(
-    marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The merge fallback is plumbing, so `diff.relative` and a subfolder
-    cwd neither drop paths nor make them cwd-relative."""
-    from aelfrice import hook_commit_ingest as hk
-
-    monkeypatch.chdir(marked_repo)
-    _git("config", "diff.relative", "true", cwd=marked_repo)
-    base = subprocess.run(
-        ["git", "branch", "--show-current"], cwd=marked_repo, check=True,
-        capture_output=True, text=True, timeout=30,
-    ).stdout.strip()
-    _git("checkout", "-q", "-b", "side", cwd=marked_repo)
-    _stage(marked_repo, "docs/project-a/f.txt")
-    _commit_staged(marked_repo, "side work")
-    _git("checkout", "-q", base, cwd=marked_repo)
-    _stage(marked_repo, "top.txt")
-    _commit_staged(marked_repo, "mainline work")
-    _git(
-        "-c", "user.email=test@example.invalid", "-c", "user.name=test",
-        "-c", "commit.gpgsign=false", "merge", "-q", "--no-ff", "side",
-        "-m", _TRIPLE_MSG, cwd=marked_repo,
-    )
-    sub = marked_repo / "docs"
-    assert hk._commit_stores("HEAD", str(sub)) == [  # pyright: ignore[reportPrivateUsage]
-        _repo_store(marked_repo),
-    ]
 
 
 @pytest.mark.parametrize(

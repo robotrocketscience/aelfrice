@@ -9,7 +9,7 @@ which is a `ValueError` and therefore slips past the
 
 Two tests, deliberately different in kind:
 
-* `test_commit_message_round_trips_under_a_non_utf8_locale` reproduces the
+* `test_commit_subject_round_trips_under_a_non_utf8_locale` reproduces the
   defect end-to-end in a real subprocess. No Windows host is needed — a C
   locale with UTF-8 mode and PEP 538 coercion both disabled gives an ASCII
   locale encoding, which fails on exactly the same bytes.
@@ -28,8 +28,6 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice.store import MemoryStore
-
 SRC = Path(__file__).resolve().parents[1] / "src" / "aelfrice"
 
 # `text=True` builds a TextIOWrapper with the locale encoding and *strict*
@@ -45,18 +43,19 @@ _ASCII_LOCALE_ENV = {
     "LANG": "C",
 }
 
-# Extracts as a triple while carrying the multibyte run in its anchor text,
-# so the belief that lands in the store is the evidence that the decode
-# survived. The relation has to survive the WRITE-path pattern bank, not the
-# read-path one: #1376 dropped the six single-token templates that double as
-# plural nouns — `covers`, `extends`, `follows`, `replaces`, `supports`,
-# `tests` — from `_INGEST_PATTERNS`, and `hook_commit_ingest` is the only
-# caller that passes `constrain_collision_verbs=True`. An earlier phrasing
-# here used `supports`, so after #1376 it yielded no triple, the hook
-# returned before opening a store, and this test failed on `db.exists()`
-# with an empty stderr — a "nothing was ingested" failure that looks nothing
-# like the decode failure it exists to catch.
-_COMMIT_MESSAGE = "the 東京 index is supported by the vocabulary bridge"
+# The commit hook used to be the end-to-end case here, and it stores nothing
+# now. Onboarding reads recent commit subjects with `git log` in text mode, so
+# a subject carrying a multibyte run exercises the same decode.
+_COMMIT_SUBJECT = "the 東京 index is supported by the vocabulary bridge"
+
+# Prints each subject `extract_git_log` read, ASCII-escaped so the child's
+# own stdout encoding can't be the thing that fails.
+_CHILD = (
+    "import json, sys\n"
+    "from pathlib import Path\n"
+    "from aelfrice.scanner import extract_git_log\n"
+    "print(json.dumps([c.text for c in extract_git_log(Path(sys.argv[1]))]))\n"
+)
 
 # What an ASCII locale encoding is spelled as, across platforms and libc
 # builds: glibc reports the alias, macOS and the `locale` module's own
@@ -101,16 +100,14 @@ def _git(repo: Path, *args: str) -> str:
 
 
 @pytest.mark.timeout(120)  # #1307: git fixture + a real interpreter spawn
-def test_commit_message_round_trips_under_a_non_utf8_locale(
+def test_commit_subject_round_trips_under_a_non_utf8_locale(
     tmp_path: Path,
 ) -> None:
-    """A non-ascii commit body survives the hook under an ASCII locale.
+    """A non-ascii commit subject survives `git log` under an ASCII locale.
 
-    Fails on main two ways at once: `_read_full_commit_message` raises
-    `UnicodeDecodeError`, `main()`'s blanket handler prints the traceback and
-    returns 0, and nothing is ingested. The payload on stdin is pure ASCII on
-    purpose — the stdin boundary is #1426, a different mechanism, and mixing
-    them in would make a failure here ambiguous.
+    Without `encoding=` on the `git log` call, the child decodes through the
+    ASCII locale: `errors="replace"` turns the multibyte run into
+    replacement characters, and the subject no longer holds it.
     """
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -120,68 +117,40 @@ def test_commit_message_round_trips_under_a_non_utf8_locale(
     (repo / "README").write_text("seed\n", encoding="utf-8")
     _git(repo, "add", "README")
 
-    msg_file = repo / ".commit-msg"
-    msg_file.write_text(_COMMIT_MESSAGE + "\n", encoding="utf-8")
+    msg_file = tmp_path / "commit-msg"
+    msg_file.write_text(_COMMIT_SUBJECT + "\n", encoding="utf-8")
     _git(repo, "commit", "-q", "-F", str(msg_file))
-    msg_file.unlink()
-    short = _git(repo, "rev-parse", "--short", "HEAD").strip()
 
-    db = tmp_path / "memory.db"
-    payload = {
-        "tool_name": "Bash",
-        "tool_input": {"command": "git commit -F .commit-msg"},
-        "tool_response": {"stdout": f"[main {short}] a commit"},
-        "cwd": str(repo),
-    }
-
-    env = {**os.environ, **_ASCII_LOCALE_ENV, "AELFRICE_DB": str(db)}
+    env = {**os.environ, **_ASCII_LOCALE_ENV, "AELFRICE_DB": str(tmp_path / "memory.db")}
 
     # Without this the test's whole failure signal rests on
     # `_ASCII_LOCALE_ENV` biting, which is not observable from its
-    # assertions: with the `encoding=` kwarg reverted *and* PYTHONUTF8
-    # flipped 0 -> 1, the body below passes. A failure, not a skip — an
-    # environment where this cannot be arranged has not exercised #1441,
-    # and silently reporting that as green is the defect this guards.
+    # assertions. A failure, not a skip: an environment where this cannot be
+    # arranged has not exercised #1441, and silently reporting that as green
+    # is the defect this guards.
     preferred = _child_preferred_encoding(env)
     assert preferred.lower() in _ASCII_ALIASES, (
         "the child's preferred encoding is "
-        f"{preferred!r}, not ASCII — this test decodes nothing the fix "
+        f"{preferred!r}, not ASCII; this test decodes nothing the fix "
         "affects. Check PYTHONUTF8/PYTHONCOERCECLOCALE/LC_ALL in "
         "_ASCII_LOCALE_ENV are reaching the child."
     )
 
     proc = subprocess.run(
-        [sys.executable, "-m", "aelfrice.hook_commit_ingest"],
-        input=json.dumps(payload).encode("ascii"),
+        [sys.executable, "-c", _CHILD, str(repo)],
         capture_output=True,
         check=False,
         timeout=120,
         env=env,
     )
 
-    assert proc.returncode == 0
     stderr = proc.stderr.decode("utf-8", errors="replace")
-    assert "UnicodeDecodeError" not in stderr, (
-        "the hook decoded git output through the locale:\n" + stderr
+    assert proc.returncode == 0, stderr
+    assert "UnicodeDecodeError" not in stderr, stderr
+    subjects = json.loads(proc.stdout.decode("ascii"))
+    assert subjects == [_COMMIT_SUBJECT], (
+        f"multibyte run did not round-trip; got: {subjects!r}"
     )
-    assert db.exists(), "nothing was ingested: " + stderr
-
-    store = MemoryStore(str(db))
-    try:
-        beliefs = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
-            "SELECT content FROM beliefs"
-        ).fetchall()
-        anchors = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
-            "SELECT anchor_text FROM edges WHERE anchor_text IS NOT NULL"
-        ).fetchall()
-    finally:
-        store.close()
-    assert beliefs, "the commit produced no beliefs: " + stderr
-    # The subject and object are ascii ("index", "faster queries"); the
-    # multibyte run survives only in the edge's anchor text, which is the
-    # verbatim span the decode had to get right.
-    blob = "\n".join(str(r[0]) for r in anchors)
-    assert "東京" in blob, f"multibyte run did not round-trip; got: {blob!r}"
 
 
 # --- Guards --------------------------------------------------------------

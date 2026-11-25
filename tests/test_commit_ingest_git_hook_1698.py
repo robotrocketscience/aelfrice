@@ -1,10 +1,12 @@
-"""#1698: commit ingest runs from git's own `post-commit` hook.
+"""#1698: the commit hook runs from git's own `post-commit` hook.
 
 The PostToolUse hook guessed which commit a Bash call made from its
 command text; in this project's sessions it saw about 2 of 399 commits
 (#1683). Git runs `post-commit` inside the repository after every commit
 it makes. The installed block resolves `HEAD` and checks for a rebase
-synchronously, then hands the hash to a background process.
+synchronously, then hands the hash to a background process. That process
+stores nothing; `test_commit_hook_writes_nothing` pins that. These tests
+pin the block and its installer.
 """
 from __future__ import annotations
 
@@ -69,11 +71,23 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def hooked(repo: Path, db: Path) -> Path:
-    """A repository with the real hook installed (background ingest)."""
+def hooked(repo: Path, tmp_path: Path) -> Path:
+    """A repository with the real block installed around the real script.
+
+    The block discards the command's output, so the command is a wrapper
+    that runs `aelf-commit-ingest` and then appends its arguments to a
+    file. A line appears only once a run has finished.
+    """
     if not _SCRIPT.exists():
         pytest.skip("aelf-commit-ingest is not installed next to the interpreter")
-    assert install_commit_ingest_git_hook(repo, command=str(_SCRIPT)).status == "installed"
+    wrapper = tmp_path / "ingest-and-report"
+    wrapper.write_text(
+        f"#!/bin/sh\n'{_SCRIPT}' \"$@\"\n"
+        f"echo \"$?\" \"$@\" >> '{tmp_path / 'runs'}'\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    assert install_commit_ingest_git_hook(repo, command=str(wrapper)).status == "installed"
     return repo
 
 
@@ -83,124 +97,30 @@ def _commit(repo: Path, message: str, name: str = "x") -> None:
     _git(repo, "commit", "-q", "-m", message)
 
 
-def _q(db: Path, sql: str) -> list[tuple[object, ...]]:
-    if not db.exists():
+def _runs(hooked: Path) -> list[list[str]]:
+    """`[exit code, *arguments]` of each finished run of the block."""
+    log = hooked.parent / "runs"
+    if not log.exists():
         return []
-    store = MemoryStore(str(db))
-    try:
-        return [tuple(r) for r in store._conn.execute(sql).fetchall()]  # pyright: ignore[reportPrivateUsage]
-    finally:
-        store.close()
+    return [ln.split() for ln in log.read_text(encoding="utf-8").splitlines()]
 
 
-def _sessions(db: Path) -> list[str]:
-    return sorted(str(r[0]) for r in _q(db, "SELECT id FROM sessions WHERE model = 'commit-ingest'"))
-
-
-def _corroborations(db: Path) -> int:
-    rows = _q(db, "SELECT COUNT(*) FROM belief_corroborations")
-    return int(rows[0][0]) if rows else 0  # type: ignore[arg-type]
-
-
-def _wait_sessions(db: Path, n: int, timeout: float = 30.0) -> list[str]:
+def _wait_runs(hooked: Path, n: int, timeout: float = 30.0) -> list[list[str]]:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        got = _sessions(db)
+        got = _runs(hooked)
         if len(got) >= n:
             return got
         time.sleep(0.2)
-    return _sessions(db)
+    return _runs(hooked)
 
 
 def _settle() -> None:
-    """Long enough for a background ingest to have written, if it ran."""
+    """Long enough for a background run to have finished, if it started."""
     time.sleep(3)
 
 
-# --- the ingest itself ---------------------------------------------------------
-
-
-def test_the_session_key_uses_both_parent_and_author_date() -> None:
-    k = hk._commit_session_id  # pyright: ignore[reportPrivateUsage]
-    base = k("p1", "2026-01-01T00:00:00Z")
-    assert base == k("p1", "2026-01-01T00:00:00Z")
-    assert base != k("p2", "2026-01-01T00:00:00Z")
-    assert base != k("p1", "2026-01-01T00:00:01Z")
-
-
-@pytest.mark.timeout(60)
-def test_the_named_commit_is_ingested_not_head(repo: Path, db: Path) -> None:
-    """The hash comes from the hook; a later HEAD doesn't matter."""
-    _commit(repo, "base", "b")
-    _commit(repo, _MSG)
-    rev = _git(repo, "rev-parse", "HEAD").strip()
-    parent = _git(repo, "log", "-1", "--format=%P").split()[0]
-    author_date = _git(repo, "log", "-1", "--format=%aI").strip()
-    _commit(repo, _MSG2, "y")  # HEAD moves on before the ingest runs
-    hk.git_hook_ingest(rev, str(repo))
-    assert _sessions(db) == [hk._commit_session_id(parent, author_date)]  # pyright: ignore[reportPrivateUsage]
-
-
-@pytest.mark.timeout(60)
-def test_a_root_commit_is_ingested(repo: Path, db: Path) -> None:
-    _commit(repo, _MSG)
-    hk.git_hook_ingest("HEAD", str(repo))
-    assert len(_sessions(db)) == 1
-
-
-@pytest.mark.timeout(60)
-def test_a_merge_commit_is_keyed_on_its_first_parent(repo: Path, db: Path) -> None:
-    _commit(repo, "base", "b")
-    _git(repo, "switch", "-q", "-c", "side")
-    _commit(repo, "a side note", "s")
-    _git(repo, "switch", "-q", "main")
-    _commit(repo, "a main note", "m")
-    main_tip = _git(repo, "rev-parse", "HEAD").strip()
-    _git(repo, "merge", "-q", "--no-ff", "side", "-m", _MSG)
-    author_date = _git(repo, "log", "-1", "--format=%aI").strip()
-    hk.git_hook_ingest("HEAD", str(repo))
-    assert _sessions(db) == [hk._commit_session_id(main_tip, author_date)]  # pyright: ignore[reportPrivateUsage]
-
-
-@pytest.mark.timeout(60)
-@pytest.mark.parametrize("edit", [False, True])
-def test_an_amend_adds_no_corroboration(repo: Path, db: Path, edit: bool) -> None:
-    _commit(repo, "base", "b")
-    _commit(repo, _MSG)
-    hk.git_hook_ingest("HEAD", str(repo))
-    (repo / "x").write_text("amended", encoding="utf-8")
-    _git(repo, "add", "x")
-    if edit:
-        _git(repo, "commit", "-q", "--amend", "-m", f"{_MSG}\n\n{_MSG2}")
-    else:
-        _git(repo, "commit", "-q", "--amend", "--no-edit")
-    hk.git_hook_ingest("HEAD", str(repo))
-    assert len(_sessions(db)) == 1
-    assert _corroborations(db) == 0
-    contents = " ".join(str(r[0]) for r in _q(db, "SELECT content FROM beliefs"))
-    assert ("the new index" in contents) == edit
-
-
-@pytest.mark.timeout(60)
-def test_a_new_commit_with_the_same_message_corroborates(repo: Path, db: Path) -> None:
-    _commit(repo, _MSG, "a")
-    hk.git_hook_ingest("HEAD", str(repo))
-    _commit(repo, _MSG, "b")
-    hk.git_hook_ingest("HEAD", str(repo))
-    assert len(_sessions(db)) == 2
-    assert _corroborations(db) > 0
-
-
-@pytest.mark.timeout(60)
-def test_a_revert_is_not_ingested(repo: Path, db: Path) -> None:
-    """Its message quotes the reverted subject; ingesting it would
-    corroborate the claim being undone."""
-    _commit(repo, _MSG)
-    hk.git_hook_ingest("HEAD", str(repo))
-    _git(repo, "revert", "--no-edit", "HEAD")
-    hk.git_hook_ingest("HEAD", str(repo))
-    assert len(_sessions(db)) == 1
-    assert _corroborations(db) == 0
+# --- the command ---------------------------------------------------------------
 
 
 def _belief(session_id: str, content_hash: str = "h1") -> Belief:
@@ -216,6 +136,8 @@ def _belief(session_id: str, content_hash: str = "h1") -> Belief:
 def test_a_commit_session_never_corroborates_its_own_belief(
     tmp_path: Path, content_hash: str,
 ) -> None:
+    """The store rule stays for `git` rows already in a store, which the
+    derivation worker can still read."""
     store = MemoryStore(str(tmp_path / "s.db"))
     try:
         store.insert_belief(_belief("S1"))
@@ -231,32 +153,8 @@ def test_a_commit_session_never_corroborates_its_own_belief(
         store.close()
 
 
-@pytest.mark.timeout(60)
-def test_main_takes_the_hash_after_the_flag(
-    repo: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _commit(repo, _MSG)
-    rev = _git(repo, "rev-parse", "HEAD").strip()
-    _commit(repo, "a single short subject", "y")
-    monkeypatch.chdir(repo)
-    assert hk.main(argv=[hk.GIT_HOOK_FLAG, rev]) == 0
-    assert len(_sessions(db)) == 1
-
-
-def test_a_failure_is_logged_next_to_the_store_and_never_raised(
-    db: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def boom(rev: str, cwd: str | None = None) -> None:
-        raise RuntimeError("simulated failure")
-
-    monkeypatch.setattr(hk, "git_hook_ingest", boom)
-    assert hk.main(argv=[hk.GIT_HOOK_FLAG, "abc"]) == 0
-    log = db.parent / hk.GIT_HOOK_LOG_NAME
-    assert "simulated failure" in log.read_text(encoding="utf-8")
-
-
 def test_without_the_flag_main_reads_a_payload(db: Path) -> None:
-    """The PostToolUse path is untouched for settings not yet upgraded."""
+    """The PostToolUse path, for settings not yet upgraded and for Codex."""
     assert hk.main(stdin=io.StringIO("{}"), stderr=io.StringIO(), argv=[]) == 0
     assert not db.exists()
 
@@ -265,75 +163,99 @@ def test_without_the_flag_main_reads_a_payload(db: Path) -> None:
 
 
 @pytest.mark.timeout(120)
-def test_every_commit_of_a_quick_burst_is_recorded(hooked: Path, db: Path) -> None:
+def test_every_commit_of_a_quick_burst_gets_its_own_run(hooked: Path) -> None:
     """Five commits in one shell loop: each hook passes its own hash."""
     script = "; ".join(
         f"echo {i} > f{i} && git add f{i} && git commit -q -m 'module{i} is derived from the legacy{i} tokenizer'"
         for i in range(5)
     )
     subprocess.run(["sh", "-c", script], cwd=hooked, check=True, timeout=60)
-    assert len(_wait_sessions(db, 5)) == 5
+    runs = _wait_runs(hooked, 5)
+    revs = _git(hooked, "log", "--format=%H").split()
+    assert sorted(runs) == sorted(["0", hk.GIT_HOOK_FLAG, r] for r in revs)
 
 
 @pytest.mark.timeout(120)
-def test_a_real_rebase_records_no_replays(hooked: Path, db: Path) -> None:
+def test_a_commit_in_a_repo_with_no_store_leaves_no_store(
+    hooked: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no `AELFRICE_DB`, the store a commit would resolve to is the
+    repository's own. The hook must not create it, or any other store."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AELFRICE_USER_DB", str(home / ".aelfrice" / "user" / "memory.db"))
+    monkeypatch.delenv("AELFRICE_DB", raising=False)
+    _commit(hooked, _MSG)
+    runs = _wait_runs(hooked, 1)
+    assert runs == [["0", hk.GIT_HOOK_FLAG, _git(hooked, "rev-parse", "HEAD").strip()]]
+    assert sorted(tmp_path.rglob("*.db")) == []
+
+
+@pytest.mark.timeout(120)
+def test_a_real_rebase_starts_no_run(hooked: Path) -> None:
     _commit(hooked, "base", "b")
     _git(hooked, "switch", "-q", "-c", "side")
     _commit(hooked, _MSG, "s")
     _git(hooked, "switch", "-q", "main")
     _commit(hooked, _MSG2, "m")
-    _wait_sessions(db, 2)
+    _wait_runs(hooked, 3)
     _settle()
-    before = (_sessions(db), _corroborations(db))
+    before = _runs(hooked)
+    assert len(before) == 3
     _git(hooked, "switch", "-q", "side")
     _git(hooked, "rebase", "-q", "main")
     _settle()
-    assert (_sessions(db), _corroborations(db)) == before
+    assert _runs(hooked) == before
 
 
 @pytest.mark.timeout(120)
 @pytest.mark.parametrize("state_dir", ["rebase-merge", "rebase-apply"])
 def test_a_commit_during_a_paused_rebase_is_skipped(
-    hooked: Path, db: Path, state_dir: str,
+    hooked: Path, state_dir: str,
 ) -> None:
     """Documented: the rebase check can't tell a hand-made commit apart.
     `rebase-apply` is also what a paused `git am` leaves."""
     _commit(hooked, "base", "b")
+    assert len(_wait_runs(hooked, 1)) == 1
     (hooked / ".git" / state_dir).mkdir()
     _commit(hooked, _MSG)
     _settle()
-    assert _sessions(db) == []
+    assert len(_runs(hooked)) == 1
     (hooked / ".git" / state_dir).rmdir()
     _commit(hooked, _MSG2, "y")
-    assert len(_wait_sessions(db, 1)) == 1
+    assert len(_wait_runs(hooked, 2)) == 2
 
 
 @pytest.mark.timeout(120)
 def test_a_rebase_in_a_worktree_skips_only_that_worktree(
-    hooked: Path, db: Path, tmp_path: Path,
+    hooked: Path, tmp_path: Path,
 ) -> None:
     """A rebase keeps its state in the worktree's own git directory."""
     _commit(hooked, "base", "b")
+    assert len(_wait_runs(hooked, 1)) == 1
     wt = tmp_path / "wt"
     _git(hooked, "worktree", "add", "-q", str(wt))
     wt_git_dir = Path(_git(wt, "rev-parse", "--absolute-git-dir").strip())
     (wt_git_dir / "rebase-merge").mkdir()
     _commit(wt, _MSG)  # in the rebasing worktree: skipped
     _settle()
-    assert _sessions(db) == []
-    _commit(hooked, _MSG2, "y")  # main checkout: recorded
-    assert len(_wait_sessions(db, 1)) == 1
+    assert len(_runs(hooked)) == 1
+    _commit(hooked, _MSG2, "y")  # main checkout: runs
+    assert len(_wait_runs(hooked, 2)) == 2
 
 
 @pytest.mark.timeout(120)
-def test_a_worktree_commit_lands_in_the_shared_store(
-    hooked: Path, db: Path, tmp_path: Path,
+def test_a_worktree_commit_runs_the_shared_hook(
+    hooked: Path, tmp_path: Path,
 ) -> None:
     _commit(hooked, "base", "b")
+    assert len(_wait_runs(hooked, 1)) == 1
     wt = tmp_path / "wt"
     _git(hooked, "worktree", "add", "-q", str(wt))
     _commit(wt, _MSG)
-    assert len(_wait_sessions(db, 1)) >= 1
+    rev = _git(wt, "rev-parse", "HEAD").strip()
+    assert _wait_runs(hooked, 2)[1] == ["0", hk.GIT_HOOK_FLAG, rev]
 
 
 # --- the installer -------------------------------------------------------------

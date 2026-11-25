@@ -535,13 +535,14 @@ def test_a152_commit_date_created_at(ps: PlantedStore) -> None:
 # --- commit ingest -----------------------------------------------------------
 
 COMMIT_MSG = "The new parser supersedes the legacy tokenizer."
+COMMIT_TRIPLE = ("The new parser", "SUPERSEDES", "the legacy tokenizer", COMMIT_MSG)
 
 
 def test_commit_ingest_message(ps: PlantedStore) -> None:
-    """Shared body of the git hook and the legacy path, without git."""
-    from aelfrice.hook_commit_ingest import _ingest_message  # pyright: ignore[reportPrivateUsage]
-    ps.close()
-    _ingest_message(COMMIT_MSG, session_id="0123456789abcdef", project_context=str(ps.repo))
+    """Rows an earlier release's commit hook stored, which the probes read.
+    The hook writes nothing now (test_commit_hook_writes_nothing)."""
+    ps.commit_rows(*COMMIT_TRIPLE, session_id="0123456789abcdef",
+                   project_context=str(ps.repo))
     r = probe(ps, "A141")
     assert_fired(r, 1)
     assert r.detail["sessions_all"] == 1 and r.detail["sessions_pre_hook"] == 0, r
@@ -557,14 +558,11 @@ def test_commit_ingest_message(ps: PlantedStore) -> None:
     assert r.detail["named_store"] == 0, r
 
 
-def test_a158_legacy_era_commit_session(ps: PlantedStore,
-                                        monkeypatch: pytest.MonkeyPatch) -> None:
-    """A commit ingested while only the PostToolUse path existed (clock pinned)."""
-    from aelfrice import hook_commit_ingest as hci
-    monkeypatch.setattr(hci, "_iso_now", lambda: "2026-09-01T00:00:00+00:00")
-    ps.close()
-    hci._ingest_message(  # pyright: ignore[reportPrivateUsage]
-        COMMIT_MSG, session_id="fedcba9876543210", project_context=str(ps.repo))
+def test_a158_legacy_era_commit_session(ps: PlantedStore) -> None:
+    """A commit ingested while only the PostToolUse path existed."""
+    ps.commit_rows(*COMMIT_TRIPLE, session_id="fedcba9876543210",
+                   project_context=str(ps.repo),
+                   started_at="2026-09-01T00:00:00+00:00")
     r = probe(ps, "A158")
     assert_fired(r, 1)
     assert r.detail["pre_cutoff"] == 1 and r.detail["post_510"] == 0, r

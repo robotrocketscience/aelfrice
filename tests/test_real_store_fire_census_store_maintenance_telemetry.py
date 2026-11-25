@@ -506,10 +506,10 @@ def test_a307_session_delta(ps: PlantedStore) -> None:
 
 
 def test_a308_commit_ingest_session(ps: PlantedStore) -> None:
-    from aelfrice.hook_commit_ingest import _ingest_message  # pyright: ignore[reportPrivateUsage]
-    ps.close()
-    _ingest_message("feat: the new fetcher supersedes the old fetcher",
-                    session_id="c1", project_context="")
+    """A session row an earlier release's commit hook stored."""
+    ps.commit_rows("the new fetcher", "SUPERSEDES", "the old fetcher",
+                   "feat: the new fetcher supersedes the old fetcher",
+                   session_id="c1", project_context="")
     r = run("A308", store_ctx(ps))
     fired(r, 1)
     assert r.detail.get("commit-ingest") == 1

@@ -5609,8 +5609,8 @@ def _setup_commit_ingest_git_hook(
         "already_present": f"commit-ingest git hook already installed in {gh.path}",
         "not_a_repo": (
             "commit ingest not installed: this directory is not in a git "
-            "repository. Run `aelf setup` inside a repository to record "
-            "its commits."
+            "repository. Run `aelf setup` inside a repository to install "
+            "it."
         ),
         "foreign_hook": (
             f"commit ingest not installed: aelfrice edits {gh.path} only when "
@@ -12410,9 +12410,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--commit-ingest", dest="commit_ingest",
         action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "install this repository's git post-commit hook so each "
-            "commit's message runs through the triple extractor and its "
-            "beliefs and edges are recorded, in the background (#1698). "
+            "install this repository's git post-commit hook (#1698). It "
+            "runs in the background after each commit and stores nothing. "
             "Replaces the older PostToolUse:Bash entry. Default: ON. "
             "Pass --no-commit-ingest to skip."
         ),

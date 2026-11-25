@@ -184,6 +184,40 @@ class PlantedStore:
              anchor_text: str | None = None) -> Any:
         return self.open().insert_edge(Edge(src, dst, type, weight, anchor_text))
 
+    def commit_rows(self, subject: str, relation: str, obj: str, anchor_text: str, *,
+                    session_id: str, project_context: str,
+                    started_at: str | None = None) -> None:
+        """The rows an earlier release's commit hook stored for one triple.
+
+        The hook no longer writes, but stores keep these rows, and the probes
+        read them: a `commit-ingest` session row, one `git` log row per
+        phrase, the beliefs the worker derives from them, and the edge.
+        """
+        from aelfrice.classification_core import INGEST_CLASSIFIER_VERSION, rule_set_hash
+        from aelfrice.derivation_worker import run_worker
+        from aelfrice.models import CORROBORATION_SOURCE_COMMIT_INGEST, INGEST_SOURCE_GIT
+
+        s = self.open()
+        s._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "INSERT INTO sessions (id, started_at, completed_at, model, project_context) "
+            "VALUES (?, ?, NULL, 'commit-ingest', ?)",
+            (session_id, started_at or now_iso(), project_context),
+        )
+        s._conn.commit()  # pyright: ignore[reportPrivateUsage]
+        logs = [
+            s.record_ingest(
+                source_kind=INGEST_SOURCE_GIT, raw_text=phrase, session_id=session_id,
+                ts=now_iso(), raw_meta={"call_site": CORROBORATION_SOURCE_COMMIT_INGEST},
+                classifier_version=INGEST_CLASSIFIER_VERSION, rule_set_hash=rule_set_hash(),
+            )
+            for phrase in (subject, obj)
+        ]
+        run_worker(s)
+        src, dst = (s.get_ingest_log_entry(i)["derived_belief_ids"][0]  # type: ignore[index]
+                    for i in logs)
+        s.insert_edge(Edge(src, dst, relation, 1.0, anchor_text))
+        s.complete_session(session_id)
+
     def feedback(self, belief_id: str, valence: float, source: str = "planted") -> int:
         return self.open().insert_feedback_event(belief_id, valence, source, now_iso())
 

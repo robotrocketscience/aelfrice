@@ -20,12 +20,15 @@ imports of the aelfrice package, per the e2e boundary rule:
     transcript    ->  `aelf ingest-transcript <jsonl>` (#1089: a
                        first-class source kind, no longer masquerading
                        as filesystem)
-    git           ->  `aelf-commit-ingest` (PostToolUse hook entry
-                       point) fed a synthetic Bash-tool payload
+    (no git row)  ->  `aelf-commit-ingest` (PostToolUse hook entry
+                       point) fed a synthetic Bash-tool payload. The
+                       commit hook stores nothing now, so it must add
+                       no `git` row.
 
-If any of these console-script paths fails to write the expected
-`source_kind` to the store, this test fails — independent of whether
-the in-process unit tests for that module still pass.
+If either of the first two console-script paths fails to write the
+expected `source_kind` to the store, or the commit hook writes one,
+this test fails, whether or not the in-process unit tests for that
+module still pass.
 """
 from __future__ import annotations
 
@@ -104,19 +107,12 @@ def test_three_paths_record_distinct_source_types(
     )
     aelf_run("ingest-transcript", str(transcript))
 
-    # Path 3: commit_ingest via the PostToolUse hook entry point. The
-    # hook reads a the host harness Bash tool payload from stdin and runs
-    # `git log -1 --format=%B <hash>` against `cwd` to fetch the body.
-    # `tiny_project` is a real git repo, so we land a fresh commit on
-    # it and shape a payload mirroring what the host harness emits.
-    # The triple extractor needs at least one (subject, relation, object)
-    # match in the message body, otherwise the hook short-circuits before
-    # opening the store. Pattern: `<NP> <verb> <NP>` with a permitted
-    # relation verb. The passive `is supported by` rather than bare
-    # `supports`: #1376 dropped the six single-token verbs that double as
-    # plural nouns from the *ingest* bank, and this path is the ingest
-    # bank. Picking a verb the write path no longer honours would make
-    # this e2e assert nothing about source-type discrimination.
+    # Path 3: the commit hook's PostToolUse entry point. It used to read
+    # the commit body with git and store the relation phrases in it as
+    # `git` rows; it stores nothing now. `tiny_project` is a real git
+    # repo, so the test lands a fresh commit on it and shapes a payload
+    # mirroring what the host harness emits. The message holds a phrase
+    # the old hook stored, so a hook that still writes adds a `git` row.
     commit_msg = "feat: the yokozuna parser is supported by nested meridian keys"
     git_env = {
         **os.environ,
@@ -172,16 +168,19 @@ def test_three_paths_record_distinct_source_types(
 
     observed_kinds = _read_ingest_source_kinds(ephemeral_db)
 
-    # The three constants are declared in src/aelfrice/models.py:
+    # The constants are declared in src/aelfrice/models.py:
     # INGEST_SOURCE_CLI_REMEMBER, INGEST_SOURCE_TRANSCRIPT, INGEST_SOURCE_GIT.
     # Hard-code the literal values here so a rename-without-call-site-update
     # on either side fails this test loudly — that is the #190 R1 bug class.
     # #1089: transcript capture is now its own kind, not filesystem.
-    expected_kinds = {"cli_remember", "transcript", "git"}
+    expected_kinds = {"cli_remember", "transcript"}
     missing = expected_kinds - observed_kinds
     assert not missing, (
         f"missing source_kind rows in ingest_log: {sorted(missing)}; "
         f"observed: {sorted(observed_kinds)}"
+    )
+    assert "git" not in observed_kinds, (
+        f"the commit hook wrote a git row; observed: {sorted(observed_kinds)}"
     )
     # And the scanner masquerade is gone: transcript ingest must NOT
     # land as filesystem (#1089 — the whole point of the rename).
