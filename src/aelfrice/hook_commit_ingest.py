@@ -45,6 +45,9 @@ def main(
     try:
         read_payload_text(sin, serr)
     except (OSError, ValueError):
+        # An OSError from the read, or a ValueError from a stream that
+        # is already closed, is dropped: the payload's text is never
+        # used, and the hook returns 0 on every path.
         pass
     return 0
 
