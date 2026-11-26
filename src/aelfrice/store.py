@@ -1152,8 +1152,6 @@ _POST_MIGRATION_INDEXES: tuple[str, ...] = (
 _BACKFILL_STATEMENTS: tuple[str, ...] = (
     "UPDATE beliefs SET origin = 'user_stated' "
     "WHERE origin = 'unknown' AND lock_level = 'user'",
-    "UPDATE beliefs SET origin = 'user_corrected' "
-    "WHERE origin = 'unknown' AND type = 'correction'",
 )
 
 

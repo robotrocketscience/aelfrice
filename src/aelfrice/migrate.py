@@ -38,7 +38,6 @@ from typing import Final
 
 from aelfrice.db_paths import repo_identity_from_db_path
 from aelfrice.models import (
-    BELIEF_CORRECTION,
     BELIEF_SCOPE_PROJECT,
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_TYPES,
@@ -48,7 +47,6 @@ from aelfrice.models import (
     LOCK_TIERS,
     LOCK_USER,
     ORIGIN_UNKNOWN,
-    ORIGIN_USER_CORRECTED,
     ORIGIN_USER_STATED,
     RETENTION_CLASSES,
     RETENTION_UNKNOWN,
@@ -160,11 +158,8 @@ def _read_legacy_beliefs(
         # a still-'unknown' locked row was user-stated, a
         # still-'unknown' correction row was user-corrected.
         origin = row["origin"] if has_origin else ORIGIN_UNKNOWN
-        if origin == ORIGIN_UNKNOWN:
-            if lock_level == LOCK_USER:
-                origin = ORIGIN_USER_STATED
-            elif row["type"] == BELIEF_CORRECTION:
-                origin = ORIGIN_USER_CORRECTED
+        if origin == ORIGIN_UNKNOWN and lock_level == LOCK_USER:
+            origin = ORIGIN_USER_STATED
         # #1911: every Belief field the source row has comes across. A
         # column an older source schema lacks takes the dataclass default.
         fields = {name: row[name] for name in _BELIEF_FIELDS if name in keys}
