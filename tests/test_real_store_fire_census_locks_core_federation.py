@@ -69,7 +69,7 @@ def fired(r: cc.Result, n: int) -> None:
 
 
 def core_belief(ps: PlantedStore, text: str, session_id: str | None = None) -> str:
-    return ps.belief(text, alpha=4.0, beta=1.0, session_id=session_id)
+    return ps.core_evidence(ps.belief(text, alpha=4.0, beta=1.0, session_id=session_id))
 
 
 def cli_stdin(ps: PlantedStore, stdin: str, *args: str) -> int:

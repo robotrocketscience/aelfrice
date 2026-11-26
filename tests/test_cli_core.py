@@ -27,6 +27,7 @@ from aelfrice.models import (
     Belief,
 )
 from aelfrice.store import MemoryStore
+from tests.core_evidence import record_core_evidence_for_store
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +88,7 @@ def _seed_store(db: Path) -> dict[str, Belief]:
                 session_id=f"sess-{i}",
                 ts=f"2026-05-0{i + 1}T00:00:00+00:00",
             )
+        record_core_evidence_for_store(s)
     finally:
         s.close()
     return beliefs
@@ -311,6 +313,7 @@ def test_core_zero_alpha_beta_does_not_crash(isolated_db: Path) -> None:
                 beta=1.0,
             ),
         )
+        record_core_evidence_for_store(s)
     finally:
         s.close()
     code, out = _run("core")
@@ -334,5 +337,9 @@ def test_core_zero_alpha_beta_with_min_ab_zero_does_not_crash(
         )
     finally:
         s.close()
-    code, _ = _run("core", "--min-alpha-beta", "0")
+    # `--min-feedback-events 0` too: with no feedback rows the posterior
+    # arm would return before the guard this test is about.
+    code, _ = _run(
+        "core", "--min-alpha-beta", "0", "--min-feedback-events", "0",
+    )
     assert code == 0

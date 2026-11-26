@@ -32,6 +32,7 @@ from aelfrice.models import (
     Belief,
 )
 from aelfrice.store import MemoryStore
+from tests.core_evidence import record_core_evidence
 
 _BURST = "b0burst0000000000"
 _RECUR = "b0recur0000000000"
@@ -146,6 +147,7 @@ def test_a_burst_is_not_labeled_corroboration(tmp_path: Path) -> None:
     store = MemoryStore(str(tmp_path / "span.db"))
     try:
         store.insert_belief(_belief(_BURST, "2026-08-01T12:00:00+00:00", alpha=8.0))
+        record_core_evidence(store, _BURST)
         _corr(store, _BURST, _burst_times())
     finally:
         store.close()

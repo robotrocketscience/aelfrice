@@ -33,6 +33,7 @@ from aelfrice.models import (
     CoreGateBatchItem,
 )
 from aelfrice.store import MemoryStore
+from tests.core_evidence import record_core_evidence
 
 pytestmark = pytest.mark.timeout(60)
 
@@ -86,6 +87,8 @@ def _seed(db: Path, beliefs: list[Belief]) -> None:
     try:
         for b in beliefs:
             store.insert_belief(b)
+            if b.alpha > 1.0:
+                record_core_evidence(store, b.id)
     finally:
         store.close()
 

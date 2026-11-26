@@ -67,6 +67,7 @@ from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.rebuild_log import _rebuild_log_dir_for_db
 from aelfrice.session_ring import read_ring_state
 from aelfrice.store import MemoryStore
+from tests.core_evidence import record_core_evidence_for_store
 
 _CEILING_ENV = "AELFRICE_HOOK_BLOCK_CEILING"
 
@@ -197,6 +198,7 @@ def _seed(
                 _mk(bid, "lockword " + "p" * long_lock_chars, locked=True)
             )
             lock_ids.append(bid)
+        record_core_evidence_for_store(store)
     finally:
         store.close()
     return lock_ids, core_ids, hit_ids
@@ -1220,6 +1222,7 @@ def test_core_section_caps_an_oversized_belief(
         store.insert_belief(
             _mk("C" + "0" * 31, "coreword " + "w" * 35_000, alpha=4.0, beta=1.0)
         )
+        record_core_evidence_for_store(store)
     finally:
         store.close()
     out, err = _fire_ups(tmp_path, db, monkeypatch, prompt=_GATED_PROMPT)

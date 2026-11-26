@@ -40,6 +40,19 @@ Later changes to this definition:
   it passes. With label B, it passes only with fewer than two episode-qualified
   corroborations. With label C, it never passes. Locked beliefs aren't gated.
   For the design, see [the core admission gate](../feature-core-admission-gate.md).
+- The high-posterior arm also needs at least `MIN_FEEDBACK_EVENTS` (default
+  2, `models.CORE_MIN_POSTERIOR_FEEDBACK_EVENTS`) feedback events that moved
+  the posterior: a `feedback_history` row whose source is outside
+  `EXPOSURE_ONLY_FEEDBACK_SOURCES` and whose valence is non-zero. The
+  defaults below assume every belief starts at Beta(1,1). It doesn't: ingest
+  stamps the type prior, and user-sourced rows get it undeflated, so a
+  `factual` row starts at Beta(3,1) and a `correction` or `requirement` at
+  Beta(9,0.5). Both clear the mean and mass thresholds with no feedback,
+  so a store built from transcripts can hold thousands of such beliefs in core. The
+  rule counts events rather than subtracting the ingest prior's mass,
+  because the store doesn't keep the prior a belief was born with, and a
+  belief whose type changed after ingest would be measured against the
+  wrong one.
 
 ### Why these three signals
 
@@ -47,7 +60,7 @@ Later changes to this definition:
 |---|---|---|
 | Lock | User-asserted ground truth | Operator has explicitly declared this canonical (#178). |
 | Corroboration ≥ 2 | Same content-hash re-ingested from ≥2 distinct sources (`belief_corroborations`, #190) | Independent confirmation — not just self-reinforcement from one source. |
-| Posterior ≥ 2/3 with α+β ≥ 4 | Multi-event majority-positive Beta-Bernoulli posterior | Distinguishes "got used a lot, kept being right" from one-shot `confirm` events. |
+| Posterior ≥ 2/3 with α+β ≥ 4, after ≥ 2 feedback events | Multi-event majority-positive Beta-Bernoulli posterior | Distinguishes "got used a lot, kept being right" from one-shot `confirm` events. |
 
 ### Why these defaults
 
@@ -61,9 +74,13 @@ Later changes to this definition:
 - **`MIN_ALPHA_BETA = 4`** — the prior has α+β = 2; ≥4 means at least two net
   feedback events have landed. With the 2/3 posterior gate this requires at
   minimum Beta(3,1), i.e., two positive events and zero harmful, or any other
-  multi-event majority-positive shape.
+  multi-event majority-positive shape. This reasoning holds only from a
+  Beta(1,1) start, which is why `MIN_FEEDBACK_EVENTS` exists.
+- **`MIN_FEEDBACK_EVENTS = 2`** — the same two events the mass threshold
+  meant to require, counted directly, so a type prior can't stand in for
+  them.
 
-All three thresholds are tunable via flags so the operator can dial the lens
+All four thresholds are tunable via flags so the operator can dial the lens
 wider or tighter without rebuilding.
 
 ### What `core` is **not**
@@ -86,6 +103,7 @@ aelf core [--json]
           [--min-corroboration N]
           [--min-posterior FLOAT]
           [--min-alpha-beta N]
+          [--min-feedback-events N]
           [--locked-only]
           [--no-locked]
 ```
@@ -97,6 +115,7 @@ aelf core [--json]
 | `--min-corroboration N` | `2` | Threshold for the corroboration signal. `0` disables. |
 | `--min-posterior FLOAT` | `0.6666...` | Threshold for posterior-mean signal. `0.0` disables. |
 | `--min-alpha-beta N` | `4` | Co-gate on posterior signal — rules out single-event case. |
+| `--min-feedback-events N` | `2` | Posterior-moving feedback events the posterior signal needs; an ingest type prior alone doesn't qualify. |
 | `--locked-only` | off | Equivalent to setting both other signals to "disabled". |
 | `--no-locked` | off | Suppress the locked subset (debug — surface only the corroboration / posterior subsets). |
 

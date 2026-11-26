@@ -34,6 +34,7 @@ from aelfrice.models import (
     CoreGateBatchItem,
 )
 from aelfrice.store import MemoryStore
+from tests.core_evidence import record_core_evidence
 
 OLD_VERSION = "core-gate-0000000000000000"
 
@@ -68,6 +69,8 @@ def _add(store: MemoryStore, i: int, *, core: bool = True,
         created_at="2026-08-01T09:00:00+00:00", last_retrieved_at=None,
         origin=ORIGIN_AGENT_INFERRED,
     ))
+    if core:
+        record_core_evidence(store, _bid(i))
 
 
 def _store(db: Path, n: int) -> None:

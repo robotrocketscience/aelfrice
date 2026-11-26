@@ -41,6 +41,7 @@ from aelfrice.db_paths import clear_git_common_dir_cache
 from aelfrice.derivation import _belief_id, _content_hash  # pyright: ignore[reportPrivateUsage]
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    CORE_MIN_POSTERIOR_FEEDBACK_EVENTS,
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
@@ -186,6 +187,13 @@ class PlantedStore:
 
     def feedback(self, belief_id: str, valence: float, source: str = "planted") -> int:
         return self.open().insert_feedback_event(belief_id, valence, source, now_iso())
+
+    def core_evidence(self, belief_id: str) -> str:
+        """Plant the feedback rows the core posterior arm counts
+        (`CORE_MIN_POSTERIOR_FEEDBACK_EVENTS`); returns `belief_id`."""
+        for _ in range(CORE_MIN_POSTERIOR_FEEDBACK_EVENTS):
+            self.feedback(belief_id, 1.0)
+        return belief_id
 
     def injection(self, belief_id: str, session_id: str = "s1", turn_id: str = "t1",
                   source: str = "ups", consumers: list[str] | None = None) -> int:

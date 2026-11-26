@@ -5492,6 +5492,24 @@ class MemoryStore:
         cur = self._conn.execute(_CORROBORATION_EPISODES_SQL)
         return {str(r[0]): int(r[1] or 0) for r in cur.fetchall()}
 
+    def posterior_feedback_counts(self) -> dict[str, int]:
+        """Posterior-moving feedback events per belief, in one grouped read.
+
+        The core posterior arm's evidence count
+        (`CORE_MIN_POSTERIOR_FEEDBACK_EVENTS`). A row counts when its
+        source is outside `EXPOSURE_ONLY_FEEDBACK_SOURCES` and its valence
+        is non-zero. A belief with no such row is absent.
+        """
+        exposure_only_json = json.dumps(sorted(EXPOSURE_ONLY_FEEDBACK_SOURCES))
+        cur = self._conn.execute(
+            "SELECT belief_id, COUNT(*) FROM feedback_history "
+            "WHERE valence != 0 "
+            "AND source NOT IN (SELECT je.value FROM json_each(?) je) "
+            "GROUP BY belief_id",
+            (exposure_only_json,),
+        )
+        return {str(r[0]): int(r[1]) for r in cur.fetchall()}
+
     def count_corroborations(self, belief_id: str) -> int:
         """Return the count of belief_corroborations rows for one belief.
 

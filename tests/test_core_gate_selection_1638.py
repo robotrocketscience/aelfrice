@@ -40,6 +40,7 @@ from aelfrice.models import (
     episode_qualified_corroborations,
 )
 from aelfrice.store import MemoryStore
+from tests.core_evidence import record_core_evidence
 
 _TX = CORROBORATION_SOURCE_TRANSCRIPT_INGEST
 _FS = CORROBORATION_SOURCE_FILESYSTEM_INGEST
@@ -81,6 +82,8 @@ def _mk(store: MemoryStore, bid: str, *, alpha: float = 1.0,
         created_at=created_at, last_retrieved_at=None,
         origin=ORIGIN_AGENT_INFERRED,
     ))
+    if alpha > 1.0:
+        record_core_evidence(store, bid)
 
 
 def _rows(store: MemoryStore, bid: str, times: list[str],

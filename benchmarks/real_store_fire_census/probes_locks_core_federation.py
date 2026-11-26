@@ -46,6 +46,14 @@ EPISODE_GAP_S = 3600          # models.CORROBORATION_EPISODE_GAP_SECONDS
 MIN_EPISODES = 2              # models.CORROBORATION_MIN_EPISODES
 CORE_MIN_CORR = 2             # hook._CORE_MIN_CORROBORATION
 CORE_MIN_AB = 4               # hook._CORE_MIN_ALPHA_BETA
+CORE_MIN_FEEDBACK = 2         # models.CORE_MIN_POSTERIOR_FEEDBACK_EVENTS
+# The posterior arm also needs CORE_MIN_FEEDBACK feedback rows that moved the
+# posterior: valence non-zero and source outside
+# models.EXPOSURE_ONLY_FEEDBACK_SOURCES ({'hook'}). Mirrors
+# MemoryStore.posterior_feedback_counts; `b` is the beliefs alias.
+_POSTERIOR_EVIDENCE = (
+    "(SELECT COUNT(*) FROM feedback_history fh WHERE fh.belief_id = b.id "
+    f"AND fh.valence != 0 AND fh.source != 'hook') >= {CORE_MIN_FEEDBACK}")
 B_LIMIT = 2                   # core_gate.B_CORROBORATION_LIMIT
 SELF_CHECK_MIN = 4            # core_gate.SELF_CHECK_MIN_BATCHES
 BUDGET_NEAR_USD = 0.09        # RUNNER_BUDGET_USD is 0.10
@@ -157,7 +165,8 @@ def _gate_exclusions(ctx: Ctx) -> dict[str, int]:
     """Active unlocked beliefs meeting the non-lock core rule that the gate
     drops under the newest label version (C, or B with >= 2 qualified
     corroborations). Mirrors store.gate_core_candidates + core_gate.admit."""
-    if not _has_gate(ctx) or not ctx.table_exists("belief_corroborations"):
+    if not (_has_gate(ctx) and ctx.table_exists("belief_corroborations")
+            and ctx.table_exists("feedback_history")):
         return {}
     active = "b.valid_to IS NULL AND " if ctx.column_exists("beliefs", "valid_to") else ""
     sql = f"""
@@ -173,7 +182,8 @@ def _gate_exclusions(ctx: Ctx) -> dict[str, int]:
         WHERE {active} b.lock_level = 'none' AND (
             (COALESCE(corr.n, 0) >= {CORE_MIN_CORR} AND COALESCE(ep.episodes, 0) >= {MIN_EPISODES})
             OR (b.alpha + b.beta >= {CORE_MIN_AB}
-                AND b.alpha / (b.alpha + b.beta) >= 2.0 / 3.0)))
+                AND b.alpha / (b.alpha + b.beta) >= 2.0 / 3.0
+                AND {_POSTERIOR_EVIDENCE})))
     SELECT
         SUM(l.label = 'C'),
         SUM(l.label = 'B' AND (CASE WHEN cand.e >= {MIN_EPISODES} THEN cand.n ELSE 0 END) >= {B_LIMIT}),
@@ -439,7 +449,7 @@ def p_a205(ctx: Ctx) -> Result:
 
 _CORE_SESSION = (
     "b.valid_to IS NULL AND b.lock_level != 'user' AND b.session_id IS NOT NULL "
-    "AND ((b.alpha+b.beta>=4 AND b.alpha/(b.alpha+b.beta)>=2.0/3.0) "
+    f"AND ((b.alpha+b.beta>=4 AND b.alpha/(b.alpha+b.beta)>=2.0/3.0 AND {_POSTERIOR_EVIDENCE}) "
     "OR (SELECT COUNT(*) FROM belief_corroborations bc WHERE bc.belief_id=b.id)>=2)")
 _IN_BATCH = ("b.content_hash IN (SELECT json_extract(je.value,'$.content_hash') "
              "FROM core_gate_batches cb, json_each(cb.items_json) je)")
@@ -451,7 +461,8 @@ def _core_session_detail(ctx: Ctx) -> dict[str, int]:
     The corroboration arm is corr >= 2, an upper bound (episodes not checked)."""
     if not (ctx.column_exists("beliefs", "session_id") and ctx.column_exists("beliefs", "lock_level")
             and ctx.column_exists("beliefs", "valid_to")
-            and ctx.table_exists("belief_corroborations")):
+            and ctx.table_exists("belief_corroborations")
+            and ctx.table_exists("feedback_history")):
         return {}
     since = (f"SELECT COUNT(*) FROM beliefs b WHERE {_CORE_SESSION} "
              "AND julianday(b.created_at)>=julianday(?)")

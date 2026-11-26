@@ -101,6 +101,7 @@ from aelfrice.hook import (
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.rebuild_log import load_rebuilder_config
 from aelfrice.store import MemoryStore
+from tests.core_evidence import record_core_evidence_for_store
 
 _CEILING_ENV = "AELFRICE_HOOK_BLOCK_CEILING"
 _RESUME_OPEN = "<cadence-resume"
@@ -173,6 +174,7 @@ def _seed(db: Path, *, n_locks: int = _LOCKS) -> None:
             store.insert_belief(
                 _mk(f"H{i:031d}", f"{_WORD} fact " + "z" * 400)
             )
+        record_core_evidence_for_store(store)
     finally:
         store.close()
 

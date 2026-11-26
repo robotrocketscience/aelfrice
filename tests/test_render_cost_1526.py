@@ -66,6 +66,7 @@ from aelfrice.retrieval import (
     resolve_token_budget,
 )
 from aelfrice.store import MemoryStore
+from tests.core_evidence import record_core_evidence_for_store
 
 # A 16-character belief id: `derivation._belief_id` truncates the sha256 hex
 # to 16, and `BELIEF_LINE_WRAPPER_CHARS` is stated for that width.
@@ -365,6 +366,7 @@ def test_core_section_bytes_stay_inside_the_budget_end_to_end(
             store.insert_belief(
                 _mk(bid=f"{i:016d}", content=f"core belief {i} " + "k" * 40)
             )
+        record_core_evidence_for_store(store)
         block = _build_session_start_subblock(store, cwd=tmp_path)
     finally:
         store.close()

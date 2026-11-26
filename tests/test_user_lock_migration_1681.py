@@ -1049,7 +1049,7 @@ def test_core_shows_no_gate_label_on_a_user_lock() -> None:
     labels = {user_lock.content_hash: "A", repo_lock.content_hash: "B"}
     args = argparse.Namespace(
         json=True, limit=None, min_corroboration=2,
-        min_posterior=2.0 / 3.0, min_alpha_beta=4,
+        min_posterior=2.0 / 3.0, min_alpha_beta=4, min_feedback_events=2,
     )
     out = io.StringIO()
     cli._emit_core(  # pyright: ignore[reportPrivateUsage]

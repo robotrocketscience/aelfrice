@@ -6188,12 +6188,15 @@ _CORE_MIN_POSTERIOR: Final[float] = 2.0 / 3.0
 _CORE_MIN_ALPHA_BETA: Final[int] = 4
 
 
-def _belief_qualifies_core(b: "Belief", episodes: int = 0) -> bool:
+def _belief_qualifies_core(
+    b: "Belief", episodes: int, feedback_events: int,
+) -> bool:
     """Return True when b meets any non-lock core signal.
 
     Mirrors the logic in cli._qualifies_core using the module-level
     defaults (corroboration>=2 in at least two episodes, OR
-    posterior_mean>=2/3 with alpha+beta>=4).
+    posterior_mean>=2/3 with alpha+beta>=4 after at least
+    `CORE_MIN_POSTERIOR_FEEDBACK_EVENTS` posterior-moving feedback events).
     Does NOT include the lock signal — locked beliefs are already in the
     locked section.
 
@@ -6201,10 +6204,17 @@ def _belief_qualifies_core(b: "Belief", episodes: int = 0) -> bool:
     (`MemoryStore.corroboration_episodes`). The corroboration arm counts
     only at `CORROBORATION_MIN_EPISODES` or more (#1635): sightings within
     an hour of each other are one burst, however many sessions they name.
+
+    `feedback_events` is the belief's entry in
+    `MemoryStore.posterior_feedback_counts`: ingest type priors such as
+    Beta(3, 1) clear the mean and mass thresholds with no evidence.
     """
     # Local: every name in this module's guarded top-level import reads
     # as possibly unbound, and `models` is already loaded by then.
-    from aelfrice.models import CORROBORATION_MIN_EPISODES  # noqa: PLC0415
+    from aelfrice.models import (  # noqa: PLC0415
+        CORE_MIN_POSTERIOR_FEEDBACK_EVENTS,
+        CORROBORATION_MIN_EPISODES,
+    )
 
     corr: int = b.corroboration_count
     if (
@@ -6212,6 +6222,8 @@ def _belief_qualifies_core(b: "Belief", episodes: int = 0) -> bool:
         and episodes >= CORROBORATION_MIN_EPISODES
     ):
         return True
+    if feedback_events < CORE_MIN_POSTERIOR_FEEDBACK_EVENTS:
+        return False
     alpha: float = b.alpha
     beta: float = b.beta
     ab = alpha + beta
@@ -6338,6 +6350,7 @@ def _build_session_start_subblock(
 
     core_candidates: list[Belief] = []
     episodes = store.corroboration_episodes()
+    feedback_counts = store.posterior_feedback_counts()
     for bid in store.list_belief_ids():
         if bid in locked_ids:
             continue
@@ -6347,7 +6360,9 @@ def _build_session_start_subblock(
         if b.lock_level != LOCK_NONE and b.id not in locked_ids:
             # Locked but not surfaced via list_locked_beliefs — skip.
             continue
-        if _belief_qualifies_core(b, episodes.get(b.id, 0)):
+        if _belief_qualifies_core(
+            b, episodes.get(b.id, 0), feedback_counts.get(b.id, 0),
+        ):
             core_candidates.append(b)
     # #1638: the content gate on the two non-lock arms, the same rule
     # `aelf core` applies, with one label lookup for the selection. A
@@ -7801,6 +7816,8 @@ def _collect_core_gate_session_candidates(
 
     `corroboration_episodes()` reads every corroboration row, so it is read
     only when some belief could pass on the corroboration arm alone.
+    `posterior_feedback_counts()` is read once, and only when there is a
+    candidate row.
     """
     from aelfrice.core_gate import CLASSIFIER_VERSION  # noqa: PLC0415
 
@@ -7808,16 +7825,20 @@ def _collect_core_gate_session_candidates(
         # No classifier version, so no batch can be keyed (#1719).
         return []
     episodes: dict[str, int] | None = None
+    feedback_counts: dict[str, int] | None = None
     out: list[Belief] = []
     for b in store.list_core_gate_session_candidates(
         session_id, CLASSIFIER_VERSION,
     ):
-        if not _belief_qualifies_core(b, 0):
+        if feedback_counts is None:
+            feedback_counts = store.posterior_feedback_counts()
+        fb = feedback_counts.get(b.id, 0)
+        if not _belief_qualifies_core(b, 0, fb):
             if b.corroboration_count < _CORE_MIN_CORROBORATION:
                 continue
             if episodes is None:
                 episodes = store.corroboration_episodes()
-            if not _belief_qualifies_core(b, episodes.get(b.id, 0)):
+            if not _belief_qualifies_core(b, episodes.get(b.id, 0), fb):
                 continue
         out.append(b)
     return out

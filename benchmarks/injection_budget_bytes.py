@@ -504,6 +504,8 @@ def _synthetic_store(
         RETENTION_UNKNOWN,
         Belief,
     )
+    from aelfrice.models import CORE_MIN_POSTERIOR_FEEDBACK_EVENTS
+    from aelfrice.sentiment_feedback import SENTIMENT_INFERRED_SOURCE
     from aelfrice.store import MemoryStore
 
     # One shared stream across the whole store, which is what the pre-#1547
@@ -541,6 +543,15 @@ def _synthetic_store(
                 ),
             )
         )
+        # The core posterior arm counts feedback events, not alpha alone,
+        # so an unlocked Beta(5, 1) belief also needs the rows its alpha
+        # stands for to render in `<core>` (CORE_MIN_POSTERIOR_FEEDBACK_EVENTS).
+        if not locked:
+            for _ in range(CORE_MIN_POSTERIOR_FEEDBACK_EVENTS):
+                store.insert_feedback_event(
+                    bid, 1.0, SENTIMENT_INFERRED_SOURCE,
+                    "2026-01-01T00:00:00Z",
+                )
     return store
 
 

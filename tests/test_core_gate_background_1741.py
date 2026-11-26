@@ -35,6 +35,7 @@ from aelfrice.models import (
 )
 from aelfrice.print_mode import is_headless_hook_env
 from aelfrice.store import MemoryStore
+from tests.core_evidence import record_core_evidence
 
 pytestmark = pytest.mark.timeout(60)
 
@@ -87,6 +88,8 @@ def _seed(db: Path, beliefs: list[Belief]) -> None:
     try:
         for b in beliefs:
             store.insert_belief(b)
+            if b.alpha > 1.0:
+                record_core_evidence(store, b.id)
     finally:
         store.close()
 
@@ -779,6 +782,7 @@ def test_a_memory_store_never_takes_the_background_route(
     store = MemoryStore(":memory:" if kind == "memory" else str(tmp_path / "memory.db"))
     try:
         store.insert_belief(_belief("w1"))
+        record_core_evidence(store, "w1")
         hook._maybe_core_gate_session_end(  # pyright: ignore[reportPrivateUsage]
             store, {"session_id": SESSION, "cwd": str(tmp_path)}, SESSION,
             env={}, stdout=io.StringIO(), stderr=io.StringIO(),

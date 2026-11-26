@@ -36,6 +36,7 @@ import pytest
 import aelfrice.core_gate as real_core_gate
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, ORIGIN_AGENT_INFERRED, Belief
 from aelfrice.store import MemoryStore
+from tests.core_evidence import record_core_evidence
 
 LOCKED = "locked0000001719"
 # In core through the posterior arm on a normal install.
@@ -55,6 +56,8 @@ def _mk(store: MemoryStore, bid: str, *, locked: bool) -> None:
         created_at="2026-08-01T09:00:00+00:00", last_retrieved_at=None,
         origin=ORIGIN_AGENT_INFERRED,
     ))
+    if not locked:
+        record_core_evidence(store, bid)
 
 
 @pytest.fixture
@@ -276,6 +279,7 @@ def _mk_session_candidate(store: MemoryStore) -> None:
         created_at="2026-08-01T09:00:00+00:00", last_retrieved_at=None,
         session_id=SESSION, origin=ORIGIN_AGENT_INFERRED,
     ))
+    record_core_evidence(store, "sess000000001719")
 
 
 def test_session_end_batches_on_a_normal_install(

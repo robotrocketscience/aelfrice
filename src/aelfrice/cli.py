@@ -53,6 +53,7 @@ from aelfrice.hosts import (
     host_of,
 )
 from aelfrice.models import (
+    CORE_MIN_POSTERIOR_FEEDBACK_EVENTS,
     CORROBORATION_MIN_EPISODES,
     CORROBORATION_SOURCE_CLI_REMEMBER,
     EDGE_CONTRADICTS,
@@ -4878,6 +4879,7 @@ def _cmd_confirm(args: argparse.Namespace, out: object) -> int:
 _CORE_MIN_CORROBORATION: int = 2
 _CORE_MIN_POSTERIOR: float = 2.0 / 3.0
 _CORE_MIN_ALPHA_BETA: int = 4
+_CORE_MIN_FEEDBACK_EVENTS: int = CORE_MIN_POSTERIOR_FEEDBACK_EVENTS
 
 
 def _corroboration_signal(
@@ -4895,29 +4897,49 @@ def _corroboration_signal(
     return episodes >= CORROBORATION_MIN_EPISODES
 
 
-def _qualifies_core(
-    b: object, args: argparse.Namespace, episodes: int = 0,
+def _posterior_signal(
+    b: object, args: argparse.Namespace, feedback_events: int,
 ) -> bool:
-    """Return True if belief b meets any non-lock core signal."""
+    """The posterior arm, in one place for the gate and its labels.
+
+    `feedback_events` is the belief's entry in
+    `MemoryStore.posterior_feedback_counts` (0 when absent). The arm
+    needs `args.min_feedback_events` of them: ingest stamps type priors
+    such as Beta(3, 1) that already clear the mean and mass thresholds,
+    so mass alone is not evidence (`CORE_MIN_POSTERIOR_FEEDBACK_EVENTS`).
+    """
+    min_events: int = args.min_feedback_events
+    min_mass: int = args.min_alpha_beta
+    min_mean: float = args.min_posterior
+    if feedback_events < min_events:
+        return False
     alpha: float = b.alpha  # type: ignore[attr-defined]
     beta: float = b.beta  # type: ignore[attr-defined]
-    if _corroboration_signal(b, args, episodes):
-        return True
     ab = alpha + beta
-    if ab > 0 and ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
+    if ab > 0 and ab >= min_mass and (alpha / ab) >= min_mean:
         return True
     return False
 
 
-def default_core_rule(b: object, episodes: int) -> bool:
+def _qualifies_core(
+    b: object, args: argparse.Namespace, episodes: int, feedback_events: int,
+) -> bool:
+    """Return True if belief b meets any non-lock core signal."""
+    if _corroboration_signal(b, args, episodes):
+        return True
+    return _posterior_signal(b, args, feedback_events)
+
+
+def default_core_rule(b: object, episodes: int, feedback_events: int) -> bool:
     """The unlocked `aelf core` rule at its default thresholds."""
-    return _qualifies_core(b, _DEFAULT_CORE_ARGS, episodes)
+    return _qualifies_core(b, _DEFAULT_CORE_ARGS, episodes, feedback_events)
 
 
 _DEFAULT_CORE_ARGS: Final[argparse.Namespace] = argparse.Namespace(
     min_corroboration=_CORE_MIN_CORROBORATION,
     min_posterior=_CORE_MIN_POSTERIOR,
     min_alpha_beta=_CORE_MIN_ALPHA_BETA,
+    min_feedback_events=_CORE_MIN_FEEDBACK_EVENTS,
 )
 
 
@@ -4928,6 +4950,7 @@ def _emit_core(
     out: object,
     episodes: dict[str, int] | None = None,
     gate_labels: dict[str, str] | None = None,
+    feedback_counts: dict[str, int] | None = None,
 ) -> None:
     from aelfrice.user_locks import is_user_scope_lock
 
@@ -4939,6 +4962,7 @@ def _emit_core(
     # can match one). The JSON row carries `core_gate_label` only when the
     # belief has a label, so output on a store with no labels is unchanged.
     gl: dict[str, str] = gate_labels or {}
+    fc: dict[str, int] = feedback_counts or {}
     seen: set[str] = {b.id for b in locked}  # type: ignore[attr-defined]
     unlocked = [b for b in candidates if b.id not in seen]  # type: ignore[attr-defined]
 
@@ -4969,7 +4993,7 @@ def _emit_core(
             alpha: float = b.alpha  # type: ignore[attr-defined]
             beta: float = b.beta  # type: ignore[attr-defined]
             ab = alpha + beta
-            if ab > 0 and ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
+            if _posterior_signal(b, args, fc.get(b.id, 0)):  # type: ignore[attr-defined]
                 signals.append("posterior")
             row: dict[str, object] = {
                 "id": b.id,  # type: ignore[attr-defined]
@@ -5007,7 +5031,7 @@ def _emit_core(
             parts.append("LOCK")
         if _corroboration_signal(b, args, ep.get(b.id, 0)):  # type: ignore[attr-defined]
             parts.append(f"CORR={corr}")
-        if ab > 0 and ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
+        if _posterior_signal(b, args, fc.get(b.id, 0)):  # type: ignore[attr-defined]
             parts.append(f"α={alpha:.1f}")
             parts.append(f"β={beta:.1f}")
             parts.append(f"μ={alpha / ab:.3f}")
@@ -5043,6 +5067,7 @@ def _cmd_core(args: argparse.Namespace, out: object) -> int:
         # #1635: read once; the gate and the labels both use it, and the
         # labels cover the locked beliefs too.
         episodes = store.corroboration_episodes()
+        feedback_counts = store.posterior_feedback_counts()
         gate_labels: dict[str, str] = {}
         if not args.locked_only:
             qualifying: list[Belief] = []
@@ -5050,7 +5075,10 @@ def _cmd_core(args: argparse.Namespace, out: object) -> int:
                 b = store.get_belief(bid)
                 if b is None or b.lock_level != LOCK_NONE:
                     continue
-                if _qualifies_core(b, args, episodes.get(b.id, 0)):
+                if _qualifies_core(
+                    b, args, episodes.get(b.id, 0),
+                    feedback_counts.get(b.id, 0),
+                ):
                     qualifying.append(b)
             # #1638: the content gate on the two non-lock arms, one label
             # lookup for the whole selection. Unlabeled beliefs pass.
@@ -5060,7 +5088,9 @@ def _cmd_core(args: argparse.Namespace, out: object) -> int:
             candidates.extend(admitted)
     finally:
         store.close()
-    _emit_core(locked, candidates, args, out, episodes, gate_labels)
+    _emit_core(
+        locked, candidates, args, out, episodes, gate_labels, feedback_counts,
+    )
     return 0
 
 
@@ -11231,6 +11261,14 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--min-alpha-beta", type=int, default=_CORE_MIN_ALPHA_BETA,
         metavar="N",
         help="α+β co-gate for posterior signal (default 4)",
+    )
+    p_core.add_argument(
+        "--min-feedback-events", type=int, default=_CORE_MIN_FEEDBACK_EVENTS,
+        metavar="N",
+        help="posterior-moving feedback events the posterior signal needs "
+             "(default 2). Ingest priors such as Beta(3,1) clear the "
+             "posterior and α+β thresholds on their own, so a belief "
+             "with no feedback is not high-posterior",
     )
     _core_excl = p_core.add_mutually_exclusive_group()
     _core_excl.add_argument(
