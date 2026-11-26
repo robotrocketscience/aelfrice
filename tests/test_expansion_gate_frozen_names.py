@@ -121,7 +121,7 @@ def _regex_source_in_subprocess(hash_seed: str) -> str:
             sys.executable,
             "-c",
             "from aelfrice import expansion_gate as g; "
-            "print(g._EDGE_TYPE_RE.pattern)",
+            + "print(g._EDGE_TYPE_RE.pattern)",
         ],
         env=env,
         capture_output=True,
