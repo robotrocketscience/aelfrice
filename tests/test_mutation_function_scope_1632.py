@@ -226,7 +226,7 @@ class Box:
 
 
 def test_a_method_mutmut_skips_by_name_is_reported_not_mutated(ms: Any) -> None:
-    """mutmut 3.8.0 never mutates these three, so no mutant name exists."""
+    """mutmut 3.8.1 never mutates these three, so no mutant name exists."""
     after = (
         _DUNDER.replace("value + 1", "value + 2")
         .replace("return super().__new__(cls)", "return object.__new__(cls)")
@@ -247,6 +247,67 @@ def test_a_method_mutmut_skips_by_name_is_reported_not_mutated(ms: Any) -> None:
         )
         assert f"xǁBoxǁ{name}" not in text
     assert "`xǁBoxǁsize__mutmut_*`" in text
+
+
+_ENUM = '''\
+import enum
+from enum import Enum
+
+
+class Color(Enum):
+    def __init__(self, a: int) -> None:
+        self.a = a + 1
+
+    def _generate_next_value_(name, start, count, last_values):
+        return count + 1
+
+    def size(self) -> int:
+        return 2
+
+
+class Mode(enum.IntEnum):
+    def __init__(self, a: int) -> None:
+        self.b = a + 1
+
+
+class Plain:
+    def __init__(self, a: int) -> None:
+        self.c = a + 1
+'''
+#  7 Color.__init__ body   10 _generate_next_value_ body   13 size body
+# 18 Mode.__init__ body    23 Plain.__init__ body
+
+
+def test_an_enum_creation_hook_is_reported_not_mutated(ms: Any) -> None:
+    """mutmut 3.8.1 skips `__init__` and `_generate_next_value_` in an Enum.
+
+    The same `__init__` in a plain class is still mutated, so a mapper
+    that skips every `__init__` fails here too.
+    """
+    after = (
+        _ENUM.replace("self.a = a + 1", "self.a = a + 2")
+        .replace("return count + 1", "return count + 2")
+        .replace("return 2", "return 4")
+        .replace("self.b = a + 1", "self.b = a + 2")
+        .replace("self.c = a + 1", "self.c = a + 2")
+    )
+    result = ms.classify("src/aelfrice/m.py", _ENUM, after, {7, 10, 13, 18, 23})
+    assert result is not None
+    assert _names(result.in_scope) == [
+        "Color.__init__", "Color._generate_next_value_", "Color.size",
+        "Mode.__init__", "Plain.__init__",
+    ]
+    assert _names(result.mutated) == ["Color.size", "Plain.__init__"]
+    text = ms.render_summary(ms.Report(scopes=[result]))
+    for name in (
+        "Color.__init__", "Color._generate_next_value_", "Mode.__init__",
+    ):
+        assert (
+            f"`{name}`: changed, but not mutated: mutmut skips this "
+            "method." in text
+        )
+    assert "`xǁPlainǁ__init____mutmut_*`" in text
+    assert "xǁColorǁ__init__" not in text
 
 
 def test_a_module_level_edit_is_outside_every_unit(ms: Any) -> None:
@@ -564,6 +625,30 @@ def test_mutmut_generates_no_mutant_for_the_named_methods(
     configuration.reset_config()
 
 
+def test_mutmut_generates_no_mutant_for_the_enum_hooks(
+    ms: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The Enum names and bases match what the generator really skips."""
+    file_mutation = _mutmut("mutmut.mutation.file_mutation")
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.mutmut]\nsource_paths = ["src"]\n', encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    configuration = _mutmut("mutmut.configuration")
+    configuration.reset_config()
+    mutated = file_mutation.mutate_file_contents("src/m.py", _ENUM)
+    keys = {name.partition("__mutmut_")[0] for name in mutated.mutant_names}
+    assert keys == {"xǁColorǁsize", "xǁPlainǁ__init__"}
+    units = ms.mutation_units(ast.parse(_ENUM))
+    assert {u.key for u in units if not u.skipped_by_mutmut} == keys
+    assert (
+        ms.MUTMUT_ENUM_SKIPPED_NAMES
+        == file_mutation.NEVER_MUTATE_ENUM_FUNCTION_NAMES
+    )
+    assert ms.MUTMUT_ENUM_BASE_NAMES == file_mutation.ENUM_BASE_NAMES
+    configuration.reset_config()
+
+
 # --- end to end over a real git diff ----------------------------------------
 
 
@@ -817,7 +902,7 @@ def test_the_per_pr_job_pins_mutmut_exactly() -> None:
         if "pip install" in line and "mutmut" in line
         and not line.lstrip().startswith("#")
     ]
-    assert installs == ["run: uv pip install 'mutmut==3.8.0'"]
+    assert installs == ["run: uv pip install 'mutmut==3.8.1'"]
 
 
 def test_the_workflow_runs_the_writer_where_ci_is_set() -> None:

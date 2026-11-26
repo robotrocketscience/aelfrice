@@ -90,7 +90,7 @@ def test_a_real_session_leaves_no_root_under_mutmut(
 ) -> None:
     """Through the real `conftest.py`, in a child pytest with its own TMPDIR."""
     env = {**os.environ, "TMPDIR": str(tmp_path)}
-    # The name mutmut 3.8.0 sets, spelled out: the module's own constant
+    # The name mutmut 3.8.1 sets, spelled out: the module's own constant
     # can't stand in for it.
     env.pop("MUTANT_UNDER_TEST", None)
     if mutmut:

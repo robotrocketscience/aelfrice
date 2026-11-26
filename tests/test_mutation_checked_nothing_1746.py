@@ -111,6 +111,9 @@ def test_the_mutation_run_deselects_exactly_these_tests() -> None:
         "--deselect",
         "tests/test_user_lock_injection_1681.py::"
         + "test_a_user_store_in_the_env_does_not_move_a_published_figure",
+        "--deselect",
+        "tests/test_core_gate_background_windows_1761.py::"
+        + "test_the_reply_decodes_as_utf8_under_a_non_utf8_locale",
         *(
             arg
             for case in (

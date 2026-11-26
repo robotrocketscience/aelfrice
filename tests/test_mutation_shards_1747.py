@@ -362,7 +362,7 @@ def test_plan_refuses_function_name_patterns_it_cannot_model(
 # --- the time box ---------------------------------------------------------------
 
 # Stands in for mutmut: rewrites its `.meta` in place, non-atomically, the
-# way mutmut 3.8.0's `save()` does, until it is stopped.
+# way mutmut 3.8.1's `save()` does, until it is stopped.
 _WRITER = textwrap.dedent("""\
     import json, signal, sys, time
     meta, mode = sys.argv[1], sys.argv[2]
@@ -837,7 +837,7 @@ def test_the_shard_runs_with_the_project_environment_on_path() -> None:
 
 
 def test_a_mutmut_failure_partway_fails_the_shard() -> None:
-    """mutmut 3.8.0 exits 0 whether or not mutants survive, so any status
+    """mutmut 3.8.1 exits 0 whether or not mutants survive, so any status
     but 0 and the time box's 124 is mutmut failing; the guard alone would
     read the checked part as a partial run."""
     step = _step("mutmut", "Fail when mutmut stopped on an error")
@@ -851,7 +851,7 @@ def test_a_mutmut_failure_partway_fails_the_shard() -> None:
 
 def test_the_plan_installs_the_pinned_mutmut_for_counting() -> None:
     plan = _step("plan", "Plan the shards")
-    assert "uv run --no-project --with 'mutmut==3.8.0'" in plan
+    assert "uv run --no-project --with 'mutmut==3.8.1'" in plan
     contract = _step("plan", "Check the mutmut contract the plan relies on")
     assert "tests/test_mutation_function_scope_1632.py" in contract
 
@@ -898,7 +898,7 @@ def _run_guard(
 @pytest.mark.parametrize(
     ("run_status", "unchecked", "passes", "annotation"),
     [
-        # mutmut 3.8.0 can swallow a ChildProcessError and still exit 0.
+        # mutmut 3.8.1 can swallow a ChildProcessError and still exit 0.
         ("0", 2, False, "::error::2 of 4 mutants in shard 3 are 'not checked'"),
         ("124", 2, True, "::warning title=Partial mutation run::2 of 4"),
         ("0", 0, True, None),
@@ -924,7 +924,7 @@ def test_the_plan_job_checks_the_mutmut_contract_before_planning() -> None:
     plan = _job("plan")
     contract = _step("plan", "Check the mutmut contract the plan relies on")
     assert "AELF_REQUIRE_MUTMUT: \"1\"" in contract
-    assert "--with 'mutmut==3.8.0' pytest" in contract
+    assert "--with 'mutmut==3.8.1' pytest" in contract
     assert "tests/test_mutation_shards_1747.py" in contract
     assert plan.index("Check the mutmut contract") < plan.index("- name: Plan the shards")
 
@@ -976,7 +976,7 @@ def _require_mutmut() -> None:
 def test_count_mutants_matches_mutmuts_own_mutant_names(
     sh: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Per unit, the planner's count is what mutmut 3.8.0 generates."""
+    """Per unit, the planner's count is what mutmut 3.8.1 generates."""
     _require_mutmut()
     file_mutation: Any = importlib.import_module("mutmut.mutation.file_mutation")
 
