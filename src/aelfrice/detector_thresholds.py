@@ -239,7 +239,9 @@ class PinnedThreshold:
 
     ``gates``
         What observably changes about the written edge set when the value
-        moves. A constant that cannot answer this does not belong here.
+        moves. A read-side pin says which reads change instead, such as
+        which prompts skip BFS. A constant that can answer neither does
+        not belong here.
     """
 
     module: str

@@ -27,7 +27,7 @@ Heuristics (all deterministic, stdlib-only):
     (``src/...``, ``tests/...``, ``docs/...``, ``benchmarks/...``,
     ``scripts/...``),
     no snake_case / camelCase identifiers, no edge-type names
-    (``SUPPORTS``, ``CONTRADICTS``, ...) → broad signal. The edge-type
+    (``SUPPORTS``, ``CONTRADICTS``, ...) -> broad signal. The edge-type
     names are the fixed list in ``_EDGE_TYPE_NAMES``, not
     ``models.EDGE_TYPES``, so a new edge type isn't a marker until that
     list and its pin in ``detector_thresholds`` change (#2018).
