@@ -7,8 +7,9 @@ same transaction as the retirement. A dry run writes nothing.
 
 These tests don't name the new sources. They read the source each path
 writes from the rows it lands, and check that the three differ, that no
-source is an exposure-only one, and that wonder GC ignores each when it
-picks candidates.
+source is an exposure-only one, and that wonder GC still counts each as
+evidence. A phantom you bring back with `aelf restore` gets a
+`user_restored` row, so GC doesn't collect it again.
 
 Every store here is a temporary file. `AELFRICE_DB`, `AELFRICE_USER_DB`,
 `HOME`, and `AELFRICE_TRANSCRIPTS_DIR` point under `tmp_path` for every
@@ -550,7 +551,7 @@ def test_scheduled_failure_between_retirement_and_row_leaves_neither(
     _assert_nothing_landed(db, retire, before, fired)
 
 
-# --- GC ignores the retire rows when it picks candidates ---------------
+# --- A restored phantom stays out of GC, and the exemption stays put ---
 
 
 def _gc_collects(db: Path, bid: str) -> bool:
@@ -558,41 +559,41 @@ def _gc_collects(db: Path, bid: str) -> bool:
     return _retired(db, [bid]) == {bid}
 
 
-def test_a_gc_collected_then_restored_phantom_is_a_candidate_again(
+def test_a_phantom_restored_with_aelf_restore_is_not_collected_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db = _use_db(monkeypatch, tmp_path / "memory.db")
     with _open(db) as store:
         store.insert_belief(_phantom("p1", "The cache expires after ten minutes."))
-    before = _max_feedback_id(db)
     assert _gc_collects(db, "p1")
-    # Guard: GC wrote its row, so the second sweep below has to look past it.
-    assert [bid for bid, _, _ in _rows_after(db, before)] == ["p1"]
-    with _open(db) as store:
-        assert store.restore_belief("p1")
-    assert _gc_collects(db, "p1")
+    code, out = _cli("restore", "p1")
+    assert code == 0, out
+    # Guard: the phantom is active again, so the sweep below has one to take.
+    assert _retired(db, ["p1"]) == set()
+    assert _gc_collects(db, "p1") is False
 
 
-@pytest.mark.parametrize("path", ["prune_noise", "scheduled_prompts"])
-def test_a_restored_phantom_with_a_planted_retire_row_is_a_candidate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str,
+def test_gc_exemption_and_exposure_only_sources_match_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The row is planted because neither path can retire a phantom in a
-    # real run: prune-noise takes only agent_inferred beliefs, and the
-    # scheduled-prompt pass takes only user_transcript ones, while GC
-    # takes only origin speculative. The source comes from a real run of
-    # that path on another store, so the test doesn't name it.
-    if path == "prune_noise":
-        source = _prune_source(monkeypatch, tmp_path / "probe")
-    else:
-        source = _scheduled_source(monkeypatch, tmp_path / "probe")
-    db = _use_db(monkeypatch, tmp_path / "memory.db")
-    with _open(db) as store:
-        store.insert_belief(_phantom("p1", "The cache expires after ten minutes."))
-        store.soft_delete_belief("p1", ts=_ts(3))
-        store.insert_feedback_event("p1", 0.0, source, _ts(3))
-        assert store.restore_belief("p1")
-    assert _gc_collects(db, "p1")
+    assert EXPOSURE_ONLY_FEEDBACK_SOURCES == EXPOSURE_ONLY_ON_MAIN
+    sources = [
+        _gc_source(monkeypatch, tmp_path / "probe"),
+        _prune_source(monkeypatch, tmp_path / "probe"),
+        _scheduled_source(monkeypatch, tmp_path / "probe"),
+    ]
+    # On main GC ignores only the exposure-only sources when it picks
+    # candidates. A stale phantom with one of those rows is collected, and
+    # one with a row from any retire path is kept. Each row is planted on
+    # an active phantom, so no restore row is involved.
+    cases = [(source, True) for source in sorted(EXPOSURE_ONLY_ON_MAIN)]
+    cases += [(source, False) for source in sources]
+    for n, (source, collected) in enumerate(cases):
+        db = _use_db(monkeypatch, tmp_path / f"exempt{n}" / "memory.db")
+        with _open(db) as store:
+            store.insert_belief(_phantom("p1", "The cache expires after ten minutes."))
+            store.insert_feedback_event("p1", 0.0, source, _ts(3))
+        assert _gc_collects(db, "p1") is collected, source
 
 
 # --- aelf migrate ------------------------------------------------------
