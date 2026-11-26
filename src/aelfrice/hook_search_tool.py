@@ -151,6 +151,14 @@ _RG_FLAGS_WITH_ARG: Final[frozenset[str]] = frozenset(_GREP_FLAGS_WITH_ARG | {
     "-g", "--glob", "--iglob",
     "--max-depth", "--maxdepth",
 })
+_GIT_GREP_FLAGS_WITH_ARG: Final[frozenset[str]] = frozenset(_GREP_FLAGS_WITH_ARG | {
+    "--max-depth", "--threads",
+})
+# Git global options that sit between `git` and the subcommand and
+# take a separate value: `git -C repo grep foo`.
+_GIT_GLOBAL_FLAGS_WITH_ARG: Final[frozenset[str]] = frozenset({
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace",
+})
 _FIND_FLAGS_WITH_ARG: Final[frozenset[str]] = frozenset({
     "-name", "-iname", "-path", "-ipath",
     "-type", "-mindepth", "-maxdepth",
@@ -191,7 +199,27 @@ _BASH_ALLOWLIST: Final[dict[str, frozenset[str]]] = {
     "find":     _FIND_FLAGS_WITH_ARG,
     "fd":       _FD_FLAGS_WITH_ARG,
     "fdfind":   _FD_FLAGS_WITH_ARG,
+    # `git grep`; `_strip_command_prefix` folds `git [opts] grep` here.
+    "git-grep": _GIT_GREP_FLAGS_WITH_ARG,
 }
+
+# Separators that join the commands of a chain. `_split_chain` splits
+# on these outside quotes and `_parse_bash_command` lifts the query
+# from the first command that parses as a search. Some hosts send nearly
+# every command as an `&&` chain (`git diff ... && grep -n foo ...`),
+# so before this split they got no search injection at all. `||` and a
+# bare `&` still abort: the first runs only on failure and the second
+# backgrounds a job, and neither is a plain sequence.
+_BASH_CHAIN_SEPARATORS: Final[frozenset[str]] = frozenset({"&&", ";"})
+
+# Commands that may follow a search in a pipeline. Each one only trims,
+# counts, or orders the search's output, so the query still sits in the
+# first stage and lifting it from there cannot pick a wrong query.
+# `grep foo src/ | head -3` is the commonest shape a model sends; before
+# this set the whole command silent-skipped, on every host.
+_BASH_PIPE_FILTERS: Final[frozenset[str]] = frozenset({
+    "head", "tail", "wc", "sort", "uniq", "cut",
+})
 
 
 def _is_abort_token(token: str) -> bool:
@@ -221,8 +249,9 @@ def _strip_command_prefix(tokens: list[str]) -> list[str]:
     Handles:
       - env-assignment prefixes:  `RUST_LOG=trace rg ...`
       - `nohup` / `time` / `command` wrappers:  `nohup rg ...`
-      - leading `cd foo &&` is rejected by the abort-token list,
-        not by this function.
+      - `git [global opts] grep ...`, folded to `git-grep ...`
+      - a leading `cd foo &&` never reaches this function:
+        `_split_chain` has already cut the chain into commands.
 
     Returns the suffix starting at the allowlisted command, or
     `[]` if no allowlisted command is found.
@@ -242,10 +271,79 @@ def _strip_command_prefix(tokens: list[str]) -> list[str]:
             continue
         # Strip path prefix on a real command (`/usr/bin/grep` -> `grep`).
         basename = t.rsplit("/", 1)[-1]
+        if basename == "git":
+            return _git_grep_suffix(tokens[i + 1:])
         if basename in _BASH_ALLOWLIST:
             return [basename, *tokens[i + 1:]]
         return []
     return []
+
+
+def _git_grep_suffix(tokens: list[str]) -> list[str]:
+    """Return `["git-grep", *args]` when `tokens` (after `git`) run `grep`.
+
+    Skips git's global options (`-C repo`, `--no-pager`,
+    `--git-dir=x`) to reach the subcommand. Any other subcommand, or
+    options that run off the end, return `[]`.
+    """
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t == "grep":
+            return ["git-grep", *tokens[i + 1:]]
+        if t in _GIT_GLOBAL_FLAGS_WITH_ARG:
+            i += 2
+            continue
+        if t.startswith("-"):
+            i += 1
+            continue
+        return []
+    return []
+
+
+def _split_chain(command: str) -> list[str] | None:
+    """Split `command` into its commands at `&&` and `;` outside quotes.
+
+    Single quotes, double quotes and backslash escapes are honoured, so
+    `python3 -c 'a; grep x'` stays one command and is never lifted.
+    Returns `None` when a quote is left open: the parser cannot tell
+    where the command ends, so it silent-skips.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    quote = ""
+    escaped = False
+    n = len(command)
+    i = 0
+    while i < n:
+        ch = command[i]
+        if escaped:
+            current.append(ch)
+            escaped = False
+        elif ch == "\\" and quote != "'":
+            current.append(ch)
+            escaped = True
+        elif quote:
+            current.append(ch)
+            if ch == quote:
+                quote = ""
+        elif ch in ("'", '"'):
+            current.append(ch)
+            quote = ch
+        elif ch == ";":
+            segments.append("".join(current))
+            current = []
+        elif command.startswith("&&", i):
+            segments.append("".join(current))
+            current = []
+            i += 1
+        else:
+            current.append(ch)
+        i += 1
+    if quote:
+        return None
+    segments.append("".join(current))
+    return segments
 
 
 def _parse_grep_like(tokens: list[str], flags_with_arg: frozenset[str]) -> str | None:
@@ -315,12 +413,38 @@ def _parse_fd(tokens: list[str]) -> str | None:
     return _parse_grep_like(tokens, _FD_FLAGS_WITH_ARG)
 
 
+def _first_stage_of_filter_pipeline(tokens: list[str]) -> list[str] | None:
+    """Return the tokens of a command's first pipeline stage, or `None`.
+
+    A command with no `|` token is its own first stage. A pipeline is
+    accepted only when every later stage is non-empty and starts with a
+    command in `_BASH_PIPE_FILTERS`; anything else returns `None`, so
+    `grep foo src/ | xargs rm` still silent-skips. The caller has already
+    rejected every other abort token, in all stages.
+    """
+    stages: list[list[str]] = [[]]
+    for t in tokens:
+        if t == "|":
+            stages.append([])
+        else:
+            stages[-1].append(t)
+    for stage in stages[1:]:
+        if not stage or stage[0].rsplit("/", 1)[-1] not in _BASH_PIPE_FILTERS:
+            return None
+    return stages[0]
+
+
 def _parse_bash_command(command: str) -> tuple[str, str] | None:
     """Lift `(query, command_name)` from a raw Bash `tool_input.command`.
 
-    Returns `None` when the command is not allowlisted, the parser
-    cannot find a query, or the command contains pipeline /
-    command-substitution / shell-control tokens.
+    Returns `None` when no command in the chain is an allowlisted
+    search, the parser cannot find a query, or the command contains
+    command-substitution / shell-control / redirection tokens anywhere.
+    A chain joined by `&&` or `;` yields the query of its first command
+    that parses (`git diff x && grep -n foo f` lifts `foo`). Within that
+    command a pipeline is accepted only when every stage after the
+    first is an output filter (`head`, `tail`, `wc`, `sort`, `uniq`,
+    `cut`); the query comes from the first stage.
 
     Tokenisation is a naive whitespace split. We deliberately do
     NOT shell-evaluate the command. Quoted arguments with embedded
@@ -329,14 +453,43 @@ def _parse_bash_command(command: str) -> tuple[str, str] | None:
     """
     if not command or not command.strip():
         return None
-    tokens = command.split()
-    # Reject the entire command if any abort token (pipeline, shell
-    # control, command substitution, redirection) appears anywhere.
-    # The narrow parser cannot reliably lift a query out of a multi-
-    # stage shell expression; silent-skip beats wrong-query.
-    if any(_is_abort_token(t) for t in tokens):
+    # Reject the entire command if any abort token (shell control,
+    # command substitution, redirection) appears anywhere, in any
+    # command of the chain. The narrow parser cannot reliably lift a
+    # query out of a loop, subshell or heredoc; silent-skip beats
+    # wrong-query. A bare `|` is judged stage by stage below, and the
+    # chain separators are cut by `_split_chain`.
+    if any(
+        t != "|" and t not in _BASH_CHAIN_SEPARATORS and _is_abort_token(t)
+        for t in command.split()
+    ):
         return None
-    suffix = _strip_command_prefix(tokens)
+    segments = _split_chain(command)
+    if segments is None:
+        return None
+    for segment in segments:
+        parsed = _parse_single_command(segment)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_single_command(command: str) -> tuple[str, str] | None:
+    """Lift `(query, command_name)` from one command of a chain.
+
+    Same contract as `_parse_bash_command` for a command with no `&&`
+    or `;`. Any abort token, including a chain separator left inside
+    quotes by a naive split, returns `None`.
+    """
+    tokens = command.split()
+    if not tokens:
+        return None
+    if any(t != "|" and _is_abort_token(t) for t in tokens):
+        return None
+    first_stage = _first_stage_of_filter_pipeline(tokens)
+    if first_stage is None:
+        return None
+    suffix = _strip_command_prefix(first_stage)
     if not suffix:
         return None
     cmd = suffix[0]
