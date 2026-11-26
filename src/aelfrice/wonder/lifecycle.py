@@ -22,6 +22,7 @@ from aelfrice.models import (
     BELIEF_SPECULATIVE,
     CORROBORATION_SOURCE_WONDER_INGEST,
     EDGE_RELATES_TO,
+    FEEDBACK_SOURCE_WONDER_GC_RETIRE,
     LOCK_NONE,
     ORIGIN_SPECULATIVE,
     RETENTION_SNAPSHOT,
@@ -222,8 +223,10 @@ def wonder_gc(
     - ``valid_to IS NULL`` (still active)
     - ``created_at`` older than ``ttl_days`` days ago
     - α ≤ 0.3 + ε and β ≤ 1.0 + ε (priors unchanged from ingest defaults)
-    - no endorsement ``feedback_history`` rows (exposure-only rows from
-      the retrieval hook don't count, #1171)
+    - no ``feedback_history`` row other than the retrieval hook's
+      exposure-only rows (#1171). Any other row keeps the phantom, such
+      as the ``user_restored`` row ``aelf restore`` writes or a retire
+      row (#2019)
     - no ``RESOLVES`` edges (incoming or outgoing)
     - no user lock, at either lock tier (#1658): GC never collects a
       phantom you locked, whatever its evidence
@@ -243,7 +246,10 @@ def wonder_gc(
 
     If ``dry_run`` is True, reports candidates without mutating the store.
     The second run in non-dry-run mode finds zero new candidates
-    (idempotent because ``soft_delete_belief`` guards on ``valid_to IS NULL``).
+    (idempotent because ``retire_belief_with_feedback`` guards on
+    ``valid_to IS NULL``). Each phantom GC retires gets one
+    ``feedback_history`` row at valence 0.0 under
+    ``FEEDBACK_SOURCE_WONDER_GC_RETIRE`` (#2019); a dry run writes none.
 
     Returns ``WonderGCResult(scanned, deleted, surviving)``.
     """
@@ -265,9 +271,13 @@ def wonder_gc(
     if dry_run:
         return WonderGCResult(scanned=scanned, deleted=0, surviving=scanned)
 
+    # #2019: one transaction per phantom, holding the retirement and its
+    # feedback row, so a failure leaves neither.
     now = datetime.now(timezone.utc).isoformat()
     for belief_id in candidate_ids:
-        store.soft_delete_belief(belief_id, ts=now)
+        store.retire_belief_with_feedback(
+            belief_id, FEEDBACK_SOURCE_WONDER_GC_RETIRE, ts=now,
+        )
 
     return WonderGCResult(
         scanned=scanned,

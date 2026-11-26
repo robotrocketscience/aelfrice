@@ -355,6 +355,14 @@ FEEDBACK_SOURCE_REASSERT_REVIVE: Final[str] = "reassert:revive"
 # is the automatic sibling of: an expiry says nothing about whether the
 # belief is true, only that its injection privilege ran out.
 FEEDBACK_SOURCE_LOCK_EXPIRE: Final[str] = "lock:expire"
+# #2019: written once per belief that an automatic pass retires, in the
+# same transaction as the retirement, so the log records when and why the
+# belief left retrieval. Valence 0.0: a retirement says nothing about
+# whether the belief is true, and the posterior stays where it was.
+# `aelf retire` writes its own `user_retired` row at valence -1.0.
+FEEDBACK_SOURCE_WONDER_GC_RETIRE: Final[str] = "wonder_gc:retire"
+FEEDBACK_SOURCE_PRUNE_NOISE_RETIRE: Final[str] = "prune_noise:retire"
+FEEDBACK_SOURCE_SCHEDULED_PROMPT_RETIRE: Final[str] = "scheduled_prompt:retire"
 
 # v2.0 #205 ingest_log source_kind enum. Wire-format strings; do not
 # rename without a migration. Spec: docs/design/write-log-as-truth.md.

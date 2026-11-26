@@ -3849,6 +3849,41 @@ class MemoryStore:
         self._bump_belief_version(belief_id)
         self._commit_mutation()
 
+    def retire_belief_with_feedback(
+        self, belief_id: str, source: str, ts: str | None = None,
+    ) -> bool:
+        """Retire a belief and write its `feedback_history` row (#2019).
+
+        Sets `valid_to` as :meth:`soft_delete_belief` does and, in the same
+        transaction, appends one row at valence 0.0 under `source`, so the
+        log records when and why the belief left retrieval. The posterior
+        doesn't move. If either write fails, neither lands. Inside an outer
+        `transaction()` block, both writes join that block.
+
+        Returns True when the belief moved from active to retired. On a
+        belief that is already retired or unknown, it writes nothing and
+        returns False.
+        """
+        now = ts if ts is not None else datetime.now(timezone.utc).isoformat()
+        with self.transaction():
+            cur = self._conn.execute(
+                "UPDATE beliefs SET valid_to = ? WHERE id = ? AND valid_to IS NULL",
+                (now, belief_id),
+            )
+            if cur.rowcount == 0:
+                return False
+            self._conn.execute(
+                "DELETE FROM beliefs_fts WHERE id = ?", (belief_id,)
+            )
+            self._conn.execute(
+                "INSERT INTO feedback_history "
+                "(belief_id, valence, source, created_at) VALUES (?, 0.0, ?, ?)",
+                (belief_id, source, now),
+            )
+            self._bump_belief_version(belief_id)
+            self._commit_mutation()
+        return True
+
     def restore_belief(self, belief_id: str) -> bool:
         """Clear ``valid_to`` on a soft-deleted belief, returning it to active.
 
@@ -3957,7 +3992,8 @@ class MemoryStore:
         - alpha <= alpha_default + epsilon AND beta <= beta_default + epsilon
           (priors unchanged from wonder_ingest defaults)
         - no *endorsement* feedback_history rows — rows whose source is in
-          `EXPOSURE_ONLY_FEEDBACK_SOURCES` do not count (#1171)
+          `EXPOSURE_ONLY_FEEDBACK_SOURCES` do not count (#1171). Every
+          other row counts, including a valence-0 retire row (#2019)
         - no RESOLVES edges (incoming or outgoing)
         - lock_level != 'user' (#1658): GC never collects a phantom you
           locked, at either lock tier, whatever its evidence

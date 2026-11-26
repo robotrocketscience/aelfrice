@@ -581,6 +581,9 @@ _FEEDBACK_WRITERS: dict[tuple[str, str], tuple[str, ...]] = {
     ("store.py", "MemoryStore.insert_or_corroborate"): (
         "audit: reassert:revive, 0",
     ),
+    ("store.py", "MemoryStore.retire_belief_with_feedback"): (
+        "audit: wonder_gc, prune_noise, or scheduled_prompt:retire, 0",
+    ),
     ("store.py", "MemoryStore.sweep_expired_locks"): ("audit: lock:expire, 0",),
     ("store_split.py", "_write"): ("copy: the copied row's source",),
 }

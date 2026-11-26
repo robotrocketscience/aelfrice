@@ -1759,8 +1759,9 @@ def _cmd_wonder_gc(args: argparse.Namespace, out: object) -> int:
     Wraps :func:`aelfrice.wonder.lifecycle.wonder_gc`. Candidate beliefs
     must be ``type='speculative'``, still active (``valid_to IS NULL``),
     older than ``--gc-ttl-days`` days, and have unchanged Bayesian priors,
-    no endorsement feedback rows (exposure-only rows from the retrieval
-    hook don't count, #1171), no ``RESOLVES`` edges, and no user lock: a
+    no ``feedback_history`` row other than the retrieval hook's
+    exposure-only rows (#1171), so a phantom you brought back with
+    ``aelf restore`` is kept, no ``RESOLVES`` edges, and no user lock: a
     locked belief is never collected (#1658). A candidate that
     #1650 evidence promotion could promote and that has a support it
     counts is kept (#1658), and ``scanned`` doesn't count it.
@@ -9605,9 +9606,14 @@ def _cmd_doctor_prune_noise(
     Dry-run by default (count + sample). `--apply` performs the
     soft-delete; `--max N` caps the number removed per run. Bypasses the
     hooks/graph checks.
+
+    #2019: each retired belief gets one `feedback_history` row at valence
+    0.0 under `FEEDBACK_SOURCE_PRUNE_NOISE_RETIRE`, in the same
+    transaction as its retirement. The dry run writes nothing.
     """
     from aelfrice.classification_core import classify_sentence
     from aelfrice.derivation import decision_text
+    from aelfrice.models import FEEDBACK_SOURCE_PRUNE_NOISE_RETIRE
     from aelfrice.noise_filter import (
         is_stranded_capture_noise,
         is_transcript_noise,
@@ -9656,10 +9662,14 @@ def _cmd_doctor_prune_noise(
             )
             return 0
 
+        # #2019: one transaction per belief, holding the retirement and
+        # its feedback row, so a failure leaves neither.
         pruned = 0
         for b in selected:
-            store.soft_delete_belief(b.id)
-            pruned += 1
+            if store.retire_belief_with_feedback(
+                b.id, FEEDBACK_SOURCE_PRUNE_NOISE_RETIRE,
+            ):
+                pruned += 1
         print(
             f"soft-deleted {pruned} belief(s). Reversible via valid_to; "
             f"run `aelf doctor graph` to confirm store health.",

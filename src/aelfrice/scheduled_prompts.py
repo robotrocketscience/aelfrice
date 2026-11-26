@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, cast
 from aelfrice.ingest import user_turn_key
 from aelfrice.models import (
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+    FEEDBACK_SOURCE_SCHEDULED_PROMPT_RETIRE,
     LOCK_USER,
     ORIGIN_USER_TRANSCRIPT,
 )
@@ -246,8 +247,10 @@ def retire_scheduled_prompt_beliefs(
 ) -> ScheduledPromptReport:
     """List, and with `dry_run=False` retire, beliefs only scheduled turns made.
 
-    Retiring sets `valid_to` (`MemoryStore.soft_delete_belief`), so
-    `aelf restore <id>` undoes it. The dry run writes nothing.
+    Retiring sets `valid_to`, so `aelf restore <id>` undoes it. Each
+    retired belief gets one `feedback_history` row at valence 0.0 under
+    `FEEDBACK_SOURCE_SCHEDULED_PROMPT_RETIRE`, in the same transaction
+    (#2019). The dry run writes nothing.
     """
     scan = scan_host_sessions(paths)
     report = ScheduledPromptReport(dry_run=dry_run, scan=scan)
@@ -263,7 +266,9 @@ def retire_scheduled_prompt_beliefs(
             store, scan.flagged,
         )
         for bid, _ in report.candidates:
-            store.soft_delete_belief(bid)
+            store.retire_belief_with_feedback(
+                bid, FEEDBACK_SOURCE_SCHEDULED_PROMPT_RETIRE,
+            )
     report.retired = len(report.candidates)
     return report
 
