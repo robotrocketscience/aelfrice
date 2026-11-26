@@ -49,7 +49,6 @@ from aelfrice.config_discovery import (
     CONFIG_FILENAME as _SHARED_CONFIG_FILENAME,
     discover_config,
 )
-from aelfrice.models import EDGE_TYPES
 
 # --- Config keys ----------------------------------------------------------
 
@@ -95,9 +94,27 @@ _SNAKE_CASE_RE: Final[re.Pattern[str]] = re.compile(
 _CAMEL_CASE_RE: Final[re.Pattern[str]] = re.compile(
     r"\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]+\b",
 )
-# Edge-type names live in models.EDGE_TYPES. Compile once at import time.
+# Edge-type names that count as a structural marker (#2018). A literal
+# tuple, not `models.EDGE_TYPES`, so adding, renaming, or removing an edge
+# type doesn't change which prompts skip BFS. The order is fixed: longest
+# name first, and names of equal length in alphabetical order. A frozenset
+# has no fixed order, so building from one gave a pattern whose text
+# changed with `PYTHONHASHSEED`. `detector_thresholds` pins the compiled
+# pattern below.
+_EDGE_TYPE_NAMES: Final[tuple[str, ...]] = (
+    "TEMPORAL_NEXT",
+    "DERIVED_FROM",
+    "CONTRADICTS",
+    "IMPLEMENTS",
+    "RELATES_TO",
+    "SUPERSEDES",
+    "RESOLVES",
+    "SUPPORTS",
+    "CITES",
+    "TESTS",
+)
 _EDGE_TYPE_RE: Final[re.Pattern[str]] = re.compile(
-    r"\b(?:" + "|".join(sorted(EDGE_TYPES, key=len, reverse=True)) + r")\b",
+    r"\b(?:" + "|".join(_EDGE_TYPE_NAMES) + r")\b",
 )
 
 

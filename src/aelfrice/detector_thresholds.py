@@ -77,6 +77,12 @@ a bigger lever than several constants pinned below, but a signature default
 rather than a module constant, so it is out of reach of the ``(module,
 name)`` scheme for the same reason the inline weights are.
 
+**Read-side pins.** Most entries gate an edge write. One gates a read:
+``expansion_gate._EDGE_TYPE_RE`` decides which prompts skip BFS expansion
+(#2018), and it writes no edge. Its ``edge_types`` names the types the
+pattern matches without writing them, and its ``gates`` text says which
+prompts it moves.
+
 **Pinning these is necessary, not sufficient.** Two stores with identical
 belief sets and every value below at its manifest reading can still hold
 different ``CONTRADICTS`` edges, because ``DEFAULT_MAX_EDGES_PER_BELIEF`` is
@@ -100,7 +106,7 @@ from typing import Any, Final, cast
 # Bump when any pinned value below changes, and append the new content
 # digest to DIGEST_HISTORY at the bottom of this module. The guard in
 # tests/test_detector_thresholds_manifest_1355.py fails until you do.
-DETECTOR_THRESHOLDS_VERSION: Final[int] = 9
+DETECTOR_THRESHOLDS_VERSION: Final[int] = 10
 
 # --- Kinds -------------------------------------------------------------
 
@@ -226,8 +232,10 @@ class PinnedThreshold:
         ``sha256:`` digest for collections.
 
     ``edge_types``
-        Which edge types this constant can change. Informational; the
-        coverage test keys on the writer set, not on this field.
+        Which edge types this constant can change. A read-side pin names
+        the types it matches instead, and writes none of them.
+        Informational; the coverage test keys on the writer set, not on
+        this field.
 
     ``gates``
         What observably changes about the written edge set when the value
@@ -759,6 +767,41 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
             "does change what a row-level recompute comparison sees."
         ),
     ),
+    # --- read side: the BFS expansion gate (#2018) ---------------------
+    #
+    # This entry gates a read, not an edge write. `expansion_gate` writes
+    # no edge, and nothing in the coverage sweep reaches it. Its
+    # `edge_types` names the types the pattern matches, not types it
+    # writes.
+    PinnedThreshold(
+        module="aelfrice.expansion_gate",
+        name="_EDGE_TYPE_RE",
+        kind=KIND_PATTERN_TABLE,
+        value="sha256:5ffeb4759e244a4623586e3769f1af59f08e319b6a6b1c37dcf188661f86163f",
+        size=None,
+        edge_types=(
+            "TEMPORAL_NEXT",
+            "DERIVED_FROM",
+            "CONTRADICTS",
+            "IMPLEMENTS",
+            "RELATES_TO",
+            "SUPERSEDES",
+            "RESOLVES",
+            "SUPPORTS",
+            "CITES",
+            "TESTS",
+        ),
+        overridable=OVERRIDE_NONE,
+        gates=(
+            "Which prompts skip BFS expansion. A prompt that names one of "
+            "these edge types has a structural marker, so the gate keeps "
+            "BFS for it unless the prompt is long or starts with a "
+            "question word. A prompt with no marker of any kind skips "
+            "BFS. The pattern names these types and writes none of them, "
+            "so moving it changes no stored edge. It changes which "
+            "prompts reach BFS, and so what retrieval returns for them."
+        ),
+    ),
 )
 
 
@@ -828,6 +871,12 @@ DIGEST_HISTORY: Final[dict[int, str]] = {
     # with them. `_PATTERNS` kept its value. Its note and
     # `ANCHOR_CONTEXT_TARGET`'s now say that no edge is written from them.
     9: "2576d99d5c2d60d23463142f6d2ff3df7f0df87fcc111ceed7abd292d3a1429a",
+    # 10 (#2018): the expansion gate's edge-type pattern was pinned as a new
+    # entry, the first that gates a read. It is built from a literal tuple
+    # in a fixed order, so its text no longer follows `models.EDGE_TYPES` or
+    # `PYTHONHASHSEED`. It matches the same text as before, and it writes no
+    # edge, so no store's edges change.
+    10: "db6ae297607496f4a7f460a6e02bba98b131afb4b33fa1b2043b0cf33fab0e20",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.
