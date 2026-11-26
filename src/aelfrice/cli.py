@@ -10705,7 +10705,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "soft-delete stale speculative beliefs (wonder GC). "
             "Use --gc-dry-run to preview candidates; --gc-ttl-days to "
-            "override the 14-day age threshold."
+            "override the 14-day age threshold. Each retired phantom gets "
+            "one feedback_history row of valence 0 under wonder_gc:retire "
+            "(#2019)."
         ),
     )
     p_wonder.add_argument(
@@ -11849,7 +11851,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "on its own keeps nothing, even from aelf confirm --source: "
             "hook, retrieval_driven_feedback, sentiment_inferred, "
             "clamp_ghosts, or one that starts with propagation:. Bypasses the "
-            "hooks/graph checks. Combine with --apply to retire them; "
+            "hooks/graph checks. Combine with --apply to retire them, with "
+            "one feedback_history row of valence 0 under "
+            "scheduled_prompt:retire per belief (#2019); "
             "aelf restore <id> brings one back. Default is dry-run."
         ),
     )
@@ -11946,7 +11950,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "shell/ack scaffolding, conversational questions). Reversible "
             "(sets valid_to; row + evidence preserved). Dry-run by "
             "default; combine with --apply to soft-delete, and --max N to "
-            "cap. Never touches locked or user-sourced beliefs. #1029."
+            "cap. Never touches locked or user-sourced beliefs. #1029. "
+            "--apply writes one feedback_history row of valence 0 under "
+            "prune_noise:retire per retired belief (#2019)."
         ),
     )
     p_doctor.add_argument(
