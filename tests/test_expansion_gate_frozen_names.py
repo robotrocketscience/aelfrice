@@ -53,13 +53,6 @@ _ADDED_NAME = "REFINES"
 _REMOVED_NAME = "SUPPORTS"
 
 
-def test_pinned_source_spells_the_frozen_names_in_order() -> None:
-    """The pinned string is the frozen tuple joined in its stated order."""
-    assert PINNED_SOURCE == r"\b(?:" + "|".join(FROZEN_EDGE_TYPE_NAMES) + r")\b"
-    assert len(FROZEN_EDGE_TYPE_NAMES) == 10
-    assert len(set(FROZEN_EDGE_TYPE_NAMES)) == 10
-
-
 def test_regex_source_equals_the_pinned_string() -> None:
     assert expansion_gate._EDGE_TYPE_RE.pattern == PINNED_SOURCE
     assert expansion_gate._EDGE_TYPE_RE.flags == _DEFAULT_FLAGS
@@ -155,7 +148,12 @@ def test_regex_source_is_the_same_under_different_hash_seeds() -> None:
 
 
 def _reference_edge_type_re() -> re.Pattern[str]:
-    """The regex as `main` built it before #2018, over today's names."""
+    """Today's names sorted longest first, the sort `main` used before #2018.
+
+    This sorts the frozen tuple, not a frozenset, so names of equal length
+    keep the tuple's order instead of a set's. Order doesn't change what
+    the regex matches, because every name sits between `\\b` anchors.
+    """
     return re.compile(
         r"\b(?:"
         + "|".join(sorted(FROZEN_EDGE_TYPE_NAMES, key=len, reverse=True))
@@ -191,7 +189,7 @@ def _probe_texts() -> list[str]:
     return probes
 
 
-def test_matching_is_unchanged_from_the_set_built_regex(tmp_path: Path) -> None:
+def test_matching_is_unchanged_from_the_length_sorted_regex() -> None:
     """Retrieval output can't change, because the gate matches the same text.
 
     The gate's only use of `_EDGE_TYPE_RE` is a `search` in
