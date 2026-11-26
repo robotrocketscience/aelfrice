@@ -140,6 +140,7 @@ def _regex_source_in_subprocess(hash_seed: str) -> str:
     return proc.stdout.strip()
 
 
+@pytest.mark.timeout(120)
 def test_regex_source_is_the_same_under_different_hash_seeds() -> None:
     """Two processes with different `PYTHONHASHSEED` values agree.
 
