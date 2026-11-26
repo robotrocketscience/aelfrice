@@ -62,10 +62,13 @@ v1.1.0 adds the column with a default; v1.0.x rows read forward as
 `origin='unknown'` until backfilled.
 
 **Backfill on first v1.1.0 startup:** rows where `lock_level=LOCK_USER`
-become `origin='user_stated'`. Rows where `type=BELIEF_CORRECTION`
-become `origin='user_corrected'` (this is where that origin name
-comes from — the existing `BELIEF_CORRECTION` type). Everything else
-stays `unknown` rather than being misclassified. `agent_inferred`
+become `origin='user_stated'`. Everything else stays `unknown` rather
+than being misclassified. The backfill and `aelf migrate` once also
+gave rows where `type=BELIEF_CORRECTION` the origin `user_corrected`.
+[#2013](https://github.com/robotrocketscience/aelfrice/issues/2013)
+removed that rule, because a belief's type does not show that the user
+made the correction. A row that already has origin `user_corrected`
+keeps it. `agent_inferred`
 is **not** assigned by backfill; it is forward-only because the
 v1.0.x scanner did not commit to that label and we don't want to
 retroactively claim it. Beliefs that should be `agent_inferred`

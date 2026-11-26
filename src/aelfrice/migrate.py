@@ -154,9 +154,10 @@ def _read_legacy_beliefs(
         # to be re-applied by the target store on every open; it is a
         # marker-gated one-shot now, and the target's marker is already
         # stamped by the time legacy rows land. Apply the same mapping
-        # during conversion instead, so migrate output is unchanged:
-        # a still-'unknown' locked row was user-stated, a
-        # still-'unknown' correction row was user-corrected.
+        # during conversion instead, so migrate output matches the
+        # backfill: a still-'unknown' locked row was user-stated.
+        # #2013: a still-'unknown' correction row keeps 'unknown',
+        # because its type does not show that the user made it.
         origin = row["origin"] if has_origin else ORIGIN_UNKNOWN
         if origin == ORIGIN_UNKNOWN and lock_level == LOCK_USER:
             origin = ORIGIN_USER_STATED

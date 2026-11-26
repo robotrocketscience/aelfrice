@@ -476,7 +476,7 @@ class Belief:
     `origin` (v1.2+) is the provenance tier for the contradiction
     tie-breaker. Defaults to `unknown` for forward compatibility with
     v1.0/v1.1 stores; first-startup migration backfills locked beliefs
-    to `user_stated` and correction beliefs to `user_corrected`. New
+    to `user_stated`. A correction belief keeps `unknown` (#2013). New
     inserts should pass an explicit value (scanner: `agent_inferred`;
     lock: `user_stated`).
 

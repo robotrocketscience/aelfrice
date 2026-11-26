@@ -897,7 +897,7 @@ SCHEMA_META_STORE_GENERATION: Final[str] = "store_generation"
 # #1135: marker for the v1.2 origin backfill (_BACKFILL_STATEMENTS).
 # The two UPDATE statements ran unguarded on every open — two
 # full-table writes per open, compounding with the hook's multi-open
-# pattern.
+# pattern. #2013 removed the correction statement, so one remains.
 # Contemporary writers set origin explicitly (derive() routes,
 # cli lock upgrade), so the flip only ever matters once per legacy DB.
 # ISO timestamp on completion; absence triggers the pass on next open.
@@ -1145,10 +1145,11 @@ _POST_MIGRATION_INDEXES: tuple[str, ...] = (
 # One-shot backfill for v1.0/v1.1 stores opening on v1.2+. Each row
 # only flips if it is still at the default 'unknown'. Idempotent —
 # reruns find no candidates after the first pass. See promotion_path.md
-# § 1: locked beliefs become user_stated; correction beliefs become
-# user_corrected; everything else stays unknown to avoid retroactively
-# claiming agent_inferred for content the v1.0 scanner didn't commit
-# to that label.
+# § 1: locked beliefs become user_stated, and everything else stays
+# unknown to avoid retroactively claiming agent_inferred for content
+# the v1.0 scanner didn't commit to that label. #2013: a correction
+# belief no longer becomes user_corrected here. Its type does not show
+# that the user made the correction.
 _BACKFILL_STATEMENTS: tuple[str, ...] = (
     "UPDATE beliefs SET origin = 'user_stated' "
     "WHERE origin = 'unknown' AND lock_level = 'user'",

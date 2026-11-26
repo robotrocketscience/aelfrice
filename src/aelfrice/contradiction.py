@@ -67,10 +67,10 @@ deterministic tie-breaker.
 ## v1.0/v1.1 absorption
 
 v1.0 stores opening on v1.2 are migrated by store.py: locked rows
-become `user_stated`, correction rows become `user_corrected`,
-everything else stays `unknown`. The `unknown` origin is treated as
-the same precedence class as `document_recent`, preserving v1.0.1
-tie-breaker behaviour for un-tagged content.
+become `user_stated`, and everything else stays `unknown`. A
+correction row keeps `unknown` (#2013). The `unknown` origin is
+treated as the same precedence class as `document_recent`, preserving
+v1.0.1 tie-breaker behaviour for un-tagged content.
 
 ## When this fires
 
