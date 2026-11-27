@@ -287,9 +287,11 @@ use_intentional_clustering = true
 use_temporal_spine = true
 
 # v4.0.0+ (#1064). Node budget for the temporal-spine lane traversal
-# (default 32). A higher budget returns more chronological neighbours
-# per call. No measurement on a real store shows a gain from a higher
-# budget. AELFRICE_TEMPORAL_SPINE_BUDGET env var overrides.
+# (default 32). The budget caps how many chronological neighbors one
+# call returns. At the shipped depth of 1 from 5 seeds, the #1064 runs
+# found about 4 to 7 candidates per query, well under 32. No measurement
+# on a real store shows a gain from a higher budget.
+# AELFRICE_TEMPORAL_SPINE_BUDGET env var overrides.
 temporal_spine_budget = 32
 
 # Placeholder flags reserved by #154 — recognised so callers can
