@@ -756,9 +756,40 @@ _PRECREATED_SENTINELS: frozenset[str] = frozenset({
 })
 
 
+#: `AELFRICE_*` settings in the environment the suite was started from,
+#: read at import, before any fixture pins one. `AELFRICE_CORPUS_ROOT` is
+#: kept: a contributor sets it on purpose to run the corpus-gated tests.
+_AMBIENT_AELFRICE_VARS: tuple[str, ...] = tuple(sorted(
+    name for name in os.environ
+    if name.startswith("AELFRICE_") and name != CORPUS_ENV_VAR
+))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clear_ambient_aelfrice_env() -> Iterator[None]:
+    """Unset the contributor's `AELFRICE_*` settings for the whole suite.
+
+    A host that exports aelfrice knobs (for example `AELFRICE_AGENT_CONTEXT=0`,
+    or `AELFRICE_TURN_DIFFERENTIAL` with `AELFRICE_RETRIEVAL_TOKEN_BUDGET`)
+    otherwise reaches every hook a test calls and every subprocess it starts:
+    eight `test_agent_context_hook.py` tests and
+    `test_block_ceiling_hermetic_home_1716.py` failed on such a machine and
+    passed on CI. `_sandbox_real_home` depends on this fixture, so the pins it
+    sets (`AELFRICE_DB`, `AELFRICE_USER_DB`, ...) land after the clear.
+    """
+    mp = pytest.MonkeyPatch()
+    try:
+        for name in _AMBIENT_AELFRICE_VARS:
+            mp.delenv(name, raising=False)
+        yield
+    finally:
+        mp.undo()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _sandbox_real_home(
     tmp_path_factory: pytest.TempPathFactory,
+    _clear_ambient_aelfrice_env: None,
 ) -> Iterator[Path]:
     """Redirect every written home-derived path at a session sandbox (#1320).
 
