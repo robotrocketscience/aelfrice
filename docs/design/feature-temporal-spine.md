@@ -11,8 +11,7 @@ that passes the lane through resolver-driven, so a fresh install both
 writes the spine and reads it on the live `retrieve()` hook path.
 
 > **Correction ([#2003](https://github.com/robotrocketscience/aelfrice/issues/2003)).** The coverage figures in this document, including
-> +12.7pp on LongMemEval, +14.6pp on LoCoMo, and +19.45pp on LoCoMo at the
-> 1,500-token hook budget, are benchmark results. They aren't evidence that
+> +12.7pp on LongMemEval and +14.6pp on LoCoMo, are benchmark results. They aren't evidence that
 > the spine improves retrieval on a real store, and aelfrice claims no gain
 > for it. The writer and the lane stay on. The lane's latency cost on the
 > G3 benchmark below is inside that gate's limits.
@@ -119,9 +118,7 @@ which is what exposes it on the live `retrieve()` hook path:
   - **Bench-pool half: DONE.** `temporal_spine_ablation.py
     --budget 1500 --l1-limit 50 --rank-invariance` on LoCoMo10 (1,986
     questions): coverage **+19.45pp** (0.346 → 0.540; seeded shuffled
-    control +0.47pp). On this benchmark the gain held at the production
-    budget and was larger than the wide-budget dev figure. Top-rank
-    invariance: **1,986/1,986 questions
+    control +0.47pp). Top-rank invariance: **1,986/1,986 questions
     core-prefix invariant, 0 top-rank displacements, 0 core-length
     mismatches** — the lane never displaces or reorders a
     `[locked, l25, l1, hrr]` belief; it only appends its own hits below
