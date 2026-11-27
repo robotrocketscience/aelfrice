@@ -101,6 +101,9 @@ def test_migration_runs_before_hook_install(
         scope="user",
         project_root=None,
         settings=None,
+        # #1812: setup reads the settings file before the migration, so
+        # the namespace carries the field the parser gives it.
+        settings_path=None,
         command=None,
         timeout=5,
         status_message=None,

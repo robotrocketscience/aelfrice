@@ -22,6 +22,7 @@ flows here automatically.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -34,7 +35,7 @@ import time
 import tomllib
 import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime, timezone
 from pathlib import Path
@@ -6982,11 +6983,102 @@ def _spawn_sidecar_warm() -> bool:
         return False
 
 
+@dataclass
+class _SessionStartTally:
+    """What one SessionStart fire injected, for the summary line (#1812).
+
+    `injected` maps each belief id the fire wrote to stdout to whether it
+    is a user lock. It covers the baseline block (the beliefs the audit
+    row records) and, on a post-compaction fire, the rebuild block written
+    after it. A belief both blocks show counts once.
+
+    `failed` names the exception type that cut the fire short, so the
+    line can't tell the user an unreadable store is an empty one. None
+    when the fire ran to the end.
+    """
+
+    cwd: str | None = None
+    injected: dict[str, bool] = field(default_factory=dict[str, bool])
+    failed: str | None = None
+
+    def note(self, belief_id: str, locked: bool) -> None:
+        """Record one belief the fire showed the model."""
+        self.injected[belief_id] = self.injected.get(belief_id, False) or locked
+
+    def note_block(self, block: str) -> None:
+        """Record every whole `<belief>` element in a block written out."""
+        for m in _BELIEF_ELEMENT_RE.finditer(block):
+            self.note(m.group("id"), _element_is_locked(m.group("attrs")))
+
+    @property
+    def n_beliefs(self) -> int:
+        return len(self.injected)
+
+    @property
+    def n_locked(self) -> int:
+        return sum(self.injected.values())
+
+
+_SESSION_START_EVENT: Final[str] = "SessionStart"
+
+
 def session_start(
     *,
     stdin: IO[str] | None = None,
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
+    host: str | None = None,
+) -> int:
+    """Run the SessionStart hook for `host`. Always returns 0.
+
+    On every host but Codex this is `_session_start` writing straight to
+    stdout. On Codex the fire's stdout is collected first. With the
+    `[hook] summary_line` opt-in off (the default), the collected text is
+    written unchanged, byte for byte. With it on, the text goes out as JSON:
+    `hookSpecificOutput.additionalContext` carries it for the model and
+    `systemMessage` carries one line for the user, which Codex shows and
+    plain stdout never is (`aelfrice.hook_summary`).
+
+    `host` None is the default host. `aelfrice.hosts` is imported here,
+    not at module scope, because every process that imports this module
+    pays for each module it loads (#1527 pins the count).
+    """
+    from aelfrice.hosts import CODEX_HOST  # noqa: PLC0415
+
+    if host != CODEX_HOST:
+        return _session_start(stdin=stdin, stdout=stdout, stderr=stderr)
+    sout = stdout if stdout is not None else sys.stdout
+    serr = stderr if stderr is not None else sys.stderr
+    buf = io.StringIO()
+    tally = _SessionStartTally()
+    rc = _session_start(stdin=stdin, stdout=buf, stderr=stderr, tally=tally)
+    text = buf.getvalue()
+    try:
+        from aelfrice import hook_summary  # noqa: PLC0415
+
+        start = Path(tally.cwd) if tally.cwd else None
+        if hook_summary.is_summary_line_enabled(start=start, stderr=serr):
+            text = hook_summary.codex_hook_json(
+                _SESSION_START_EVENT, text,
+                n_beliefs=tally.n_beliefs, n_locked=tally.n_locked,
+                failed=tally.failed,
+            )
+    except Exception:  # non-blocking: fall back to the plain text
+        traceback.print_exc(file=serr)
+    try:
+        sout.write(text)
+        sout.flush()
+    except Exception:  # non-blocking: surface but do not fail
+        traceback.print_exc(file=serr)
+    return rc
+
+
+def _session_start(
+    *,
+    stdin: IO[str] | None = None,
+    stdout: IO[str] | None = None,
+    stderr: IO[str] | None = None,
+    tally: _SessionStartTally | None = None,
 ) -> int:
     """Run the SessionStart hook. Always returns 0.
 
@@ -7035,6 +7127,8 @@ def session_start(
             recap_line = None
     serr = stderr if stderr is not None else sys.stderr
     if not _IMPORTS_OK:
+        if tally is not None:
+            tally.failed = type(_IMPORT_ERR).__name__
         return _report_incomplete_install(_IMPORT_ERR, serr)
     # #1513: spawn the detached BM25 sidecar warm FIRST, so the child has
     # the whole of this hook's own work plus the user's first typing pause
@@ -7070,6 +7164,9 @@ def session_start(
         payload = _parse_pre_compact_payload(raw) or {}
         source_obj = payload.get(_SOURCE_KEY)
         source = source_obj if isinstance(source_obj, str) else ""
+        if tally is not None:
+            cwd_obj = payload.get(_CWD_KEY)
+            tally.cwd = cwd_obj if isinstance(cwd_obj, str) and cwd_obj else None
         # #1652: a `$HOME/.aelfrice.toml` that #1582 stopped reading. Not on
         # a post-compaction fire, which would only repeat it; resolved from
         # the agent's cwd, the project whose config applies. Printed last on
@@ -7131,6 +7228,9 @@ def session_start(
             # Now that the baseline is on stdout, record what it showed
             # verbatim. Only reachable once the bytes are written.
             _begin_injection_epoch(session_id, hits)
+            if tally is not None:
+                for h in hits:
+                    tally.note(h.id, h.lock_level == LOCK_USER)
             # #280 mitigation 3: per-turn audit of the rendered block.
             # #321 additive fields: beliefs[], latency_ms, tokens.
             _write_hook_audit_record(
@@ -7154,9 +7254,11 @@ def session_start(
         if source == _SESSION_SOURCE_COMPACT:
             try:
                 rebuild_block = _build_rebuild_block_from_payload(payload)
-            except Exception:  # non-blocking: surface but do not fail
+            except Exception as exc:  # non-blocking: surface but do not fail
                 rebuild_block = ""
                 traceback.print_exc(file=serr)
+                if tally is not None:
+                    tally.failed = type(exc).__name__
             if rebuild_block:
                 # #1639: the rebuild block shares the hook's output limit
                 # with the baseline written above, and gets what it left.
@@ -7169,6 +7271,8 @@ def session_start(
                     if sep:
                         sout.write(sep)
                     sout.write(rebuild_block)
+                    if tally is not None:
+                        tally.note_block(rebuild_block)
     except ImportError as exc:
         # #1527: the retrieval subtree resolves through `_lazy` and a few
         # function-scope imports, so a partial install no longer trips the
@@ -7182,8 +7286,12 @@ def session_start(
         # optional dependency reachable through a lazy retrieval call (numpy,
         # say) silently delete two unrelated features.
         _ = _report_incomplete_install(exc, serr)
-    except Exception:  # non-blocking: surface but do not fail
+        if tally is not None:
+            tally.failed = type(exc).__name__
+    except Exception as exc:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
+        if tally is not None:
+            tally.failed = type(exc).__name__
     if lock_gap_line:
         try:
             print(lock_gap_line, file=sout)
@@ -9413,10 +9521,32 @@ def main_pre_compact() -> int:
     return pre_compact()
 
 
+def _host_from_argv(argv: Sequence[str]) -> str:
+    """The host a hook command names with `--host NAME`, else the default.
+
+    `aelf setup --host codex` appends `--host codex` to the SessionStart
+    command it writes (#1812). Anything else on the command line, an
+    unknown host included, reads as the default host: a hook must never
+    fail on its own arguments.
+    """
+    from aelfrice.hosts import DEFAULT_HOST, SUPPORTED_HOSTS  # noqa: PLC0415
+
+    args = list(argv)
+    for i, arg in enumerate(args):
+        if arg == "--host" and i + 1 < len(args):
+            value = args[i + 1]
+        elif arg.startswith("--host="):
+            value = arg.split("=", 1)[1]
+        else:
+            continue
+        return value if value in SUPPORTED_HOSTS else DEFAULT_HOST
+    return DEFAULT_HOST
+
+
 def main_session_start() -> int:
     """Entry point for the SessionStart hook console script."""
     ensure_utf8_streams()
-    return session_start()
+    return session_start(host=_host_from_argv(sys.argv[1:]))
 
 
 def main_stop() -> int:

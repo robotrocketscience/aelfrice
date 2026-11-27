@@ -43,6 +43,7 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Final, cast
@@ -286,7 +287,8 @@ def read_opt_outs(opt_out_path: Path | None = None) -> frozenset[str]:
     """Return the set of hook *names* the user opted out of.
 
     Names match the manifest's `name` field (e.g. "transcript_ingest").
-    Missing or unreadable file returns the empty set — no opt-outs.
+    A missing or unreadable file, or one that isn't UTF-8 text, returns
+    the empty set: no opt-outs.
 
     `opt_out_path` resolves from the module-level `OPT_OUT_PATH` when
     omitted — late-bound so tests monkeypatching the constant are
@@ -294,17 +296,19 @@ def read_opt_outs(opt_out_path: Path | None = None) -> frozenset[str]:
     """
     if opt_out_path is None:
         opt_out_path = OPT_OUT_PATH
-    if not opt_out_path.exists():
-        return frozenset()
     try:
         raw = opt_out_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):
+        # Missing, unreadable, or not UTF-8 text, which raises
+        # UnicodeDecodeError, a ValueError (#1812).
         return frozenset()
     if not raw.strip():
         return frozenset()
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError:
+    except (RecursionError, ValueError):
+        # Not JSON, a JSONDecodeError, or JSON that Python's `json` can't
+        # read: nested too deeply or holding an integer too long (#1812).
         return frozenset()
     if not isinstance(parsed, dict):
         return frozenset()
@@ -319,26 +323,27 @@ def read_host_opt_outs(opt_out_path: Path | None = None) -> frozenset[str]:
 
     Stored under the sibling `opt_out_hosts` key of the same ledger the
     per-hook opt-outs use (#1053); older aelfrice versions ignore the
-    key. Missing / unreadable / malformed file returns the empty set —
-    a broken marker never blocks capture (fail-open; `aelf doctor
-    --host codex` surfaces the state).
+    key. A missing, unreadable, non-UTF-8 or malformed file returns the
+    empty set, so a broken marker never blocks capture (fail-open;
+    `aelf doctor --host codex` surfaces the state).
 
     `opt_out_path` resolves from the module-level `OPT_OUT_PATH` when
     omitted — late-bound (#1320; see `read_stamp`).
     """
     if opt_out_path is None:
         opt_out_path = OPT_OUT_PATH
-    if not opt_out_path.exists():
-        return frozenset()
     try:
         raw = opt_out_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):
+        # Missing, unreadable, or not UTF-8 text, which raises
+        # UnicodeDecodeError, a ValueError (#1812).
         return frozenset()
     if not raw.strip():
         return frozenset()
     try:
         parsed: object = json.loads(raw)  # pyright: ignore[reportAny]
-    except json.JSONDecodeError:
+    except (RecursionError, ValueError):
+        # As `read_opt_outs` reads it (#1812).
         return frozenset()
     if not isinstance(parsed, dict):
         return frozenset()
@@ -384,6 +389,56 @@ def remove_host_opt_out(host: str, opt_out_path: Path | None = None) -> bool:
     current.discard(host)
     _write_host_opt_outs(current, opt_out_path)
     return True
+
+
+def check_opt_out_ledger(
+    opt_out_path: Path | None = None, *,
+    adding: str | None = None, removing: str | None = None,
+    add_hooks: Iterable[str] = (), remove_hooks: Iterable[str] = (),
+) -> None:
+    """Raise `SetupInputError` unless `aelf setup` can use the opt-out
+    ledger (#1812).
+
+    The readers above treat a ledger they can't read as empty, so a write
+    after them would replace it and drop the opt-outs it holds. Setup
+    reads it first: it refuses a ledger it can't read, such as a folder or
+    one under a `.aelfrice` that is a file or that you can't search, and
+    one that isn't UTF-8 text. When setup will rewrite the ledger, to add
+    the host `adding` that it doesn't name yet, to remove the host
+    `removing` that it names, to add a hook of `add_hooks` that it doesn't
+    name, or to remove a hook of `remove_hooks` that it names, as
+    `add_opt_out` and `remove_opt_out` do, it also refuses a ledger folder it can't
+    create or write in, such as a missing `~/.aelfrice` in a home you
+    can't write in, or a `~/.aelfrice` that is a symbolic link to a path
+    that doesn't exist (`setup.check_can_write_in`). A ledger that isn't
+    JSON still reads as empty, as the readers read it. One that nests
+    arrays or objects more than `setup.SETUP_JSON_MAX_DEPTH` levels deep,
+    JSON with an integer Python's `json` can't read, and one that holds a
+    lone UTF-16 surrogate escape, which the ledger writer can't write back
+    as UTF-8, are refused (`setup.parse_setup_json`).
+    """
+    if opt_out_path is None:
+        opt_out_path = OPT_OUT_PATH
+    raw = _setup.read_setup_input(opt_out_path)
+    if raw is not None:
+        text = _setup.decode_setup_input(opt_out_path, raw)
+        if text.strip():
+            try:
+                _setup.parse_setup_json(opt_out_path, text)
+            except _setup.SetupJSONSyntaxError:
+                # A ledger that isn't JSON reads as empty, as the readers
+                # read it; only the other refusals stop setup here.
+                pass
+    hosts = read_host_opt_outs(opt_out_path)
+    hooks = read_opt_outs(opt_out_path)
+    if not (
+        (adding is not None and adding not in hosts)
+        or (removing is not None and removing in hosts)
+        or any(name not in hooks for name in add_hooks)
+        or any(name in hooks for name in remove_hooks)
+    ):
+        return
+    _setup.check_can_write_in(opt_out_path.parent)
 
 
 def _write_opt_outs(

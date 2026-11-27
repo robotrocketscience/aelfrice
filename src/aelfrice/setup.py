@@ -47,7 +47,9 @@ import hashlib
 import importlib.resources
 import json
 import os
+import re
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -231,6 +233,23 @@ def _resolve_script(script_name: str, scope: SettingsScope) -> str:
     # stray `aelf-hook.exe` in whatever directory `aelf setup` was run from
     # could be resolved and pinned into settings.json as an absolute path.
     path_hook = launcher.which_on_path(script_name)
+    command = _pick_script(script_name, scope, venv_hook, path_hook)
+    prediction = _active_programs_prediction()
+    if prediction is None:
+        return command
+    after = _pick_script(
+        script_name, scope, venv_hook,
+        launcher.which_on_path(script_name, installed_in=prediction.folder),
+    )
+    if after != command:
+        prediction.moved.setdefault(script_name, (command, after))
+    return after
+
+
+def _pick_script(
+    script_name: str, scope: SettingsScope,
+    venv_hook: Path | None, path_hook: Path | None,
+) -> str:
     if scope == "project":
         chosen = venv_hook or path_hook
     else:
@@ -238,6 +257,103 @@ def _resolve_script(script_name: str, scope: SettingsScope) -> str:
     if chosen is None:
         return script_name
     return str(chosen)
+
+
+# #1812: the programs folder `programs_installed_in` predicts, per thread,
+# as `_TXN_STATE` holds the open settings transaction.
+_PROGRAMS_STATE = threading.local()
+
+
+def _active_programs_prediction() -> _ProgramsInstalledIn | None:
+    return cast(
+        "_ProgramsInstalledIn | None",
+        getattr(_PROGRAMS_STATE, "prediction", None),
+    )
+
+
+class _ProgramsInstalledIn:
+    """The context manager `programs_installed_in` returns (#1812).
+
+    `moved` maps each program whose command the prediction changes to
+    its command now and its command after the install, in the order
+    setup resolved them.
+    """
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        self.moved: dict[str, tuple[str, str]] = {}
+
+    def __enter__(self) -> _ProgramsInstalledIn:
+        if _active_programs_prediction() is not None:
+            raise RuntimeError("programs_installed_in does not nest")
+        _PROGRAMS_STATE.prediction = self
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        _PROGRAMS_STATE.prediction = None
+
+
+def programs_installed_in(folder: Path) -> _ProgramsInstalledIn:
+    """Resolve setup's program commands, inside the block, as they will
+    resolve once `uv tool install` has written every aelfrice program in
+    `folder` (#1812).
+
+    A uv migration installs every program the package declares, and setup
+    resolves only those, so each one setup asks for counts as present in
+    `folder`. Inside the block, the checks that decide whether a settings
+    command is broken count a program the package declares as present in
+    `folder` too (`predicted_install_folder`, `predicted_program_at`), so
+    the prune of broken `aelf-*` hooks keeps a command that names one, as
+    it does after the install. The block changes nothing on disk.
+    """
+    return _ProgramsInstalledIn(folder)
+
+
+#: Every program the aelfrice package installs, its `[project.scripts]` in
+#: pyproject.toml, which `uv tool install aelfrice` writes in uv's
+#: programs folder. A test fails when the two differ (#1812).
+PACKAGE_PROGRAM_NAMES: Final[frozenset[str]] = frozenset({
+    "aelf",
+    "aelf-hook",
+    "aelf-transcript-logger",
+    "aelf-pre-compact-hook",
+    "aelf-commit-ingest",
+    "aelf-search-tool-hook",
+    "aelf-agent-context-hook",
+    "aelf-session-start-hook",
+    "aelf-stop-hook",
+    "aelf-pre-issue-hook",
+    "aelf-claude-memory-mirror",
+})
+
+
+def predicted_install_folder(name: str) -> Path | None:
+    """The folder `programs_installed_in` predicts holds the program
+    `name`, or None (#1812).
+
+    None outside a `programs_installed_in` block, and for a name that
+    isn't in `PACKAGE_PROGRAM_NAMES`: the install writes only those, so a
+    command that names another program in uv's folder still finds none
+    there after it.
+    """
+    prediction = _active_programs_prediction()
+    if prediction is None or name not in PACKAGE_PROGRAM_NAMES:
+        return None
+    return prediction.folder
+
+
+def predicted_program_at(path: Path) -> bool:
+    """Whether `programs_installed_in` predicts a program at `path`: its
+    name is in `PACKAGE_PROGRAM_NAMES` and its folder resolves to the
+    predicted one, through links, as the install's file will (#1812).
+    False outside a `programs_installed_in` block."""
+    folder = predicted_install_folder(path.name)
+    if folder is None:
+        return False
+    try:
+        return os.path.realpath(path.parent) == os.path.realpath(folder)
+    except (OSError, ValueError):  # a path the platform can't resolve
+        return False
 
 
 def detect_default_scope(cwd: Path | None = None) -> SettingsScope:
@@ -1972,6 +2088,455 @@ def _read_settings_file(path: Path) -> dict[str, object]:
     return cast(dict[str, object], parsed)
 
 
+class SetupInputError(Exception):
+    """A file `aelf setup` reads can't be used, so setup changes nothing
+    (#1812).
+
+    Setup reads every such file before its first write, so a refusal
+    leaves no part of an install behind. `cause` names the file and what
+    is wrong with it, and `remedy` says what to do.
+    """
+
+    def __init__(
+        self, cause: str, remedy: str = "Fix or move it, and run setup again",
+    ) -> None:
+        super().__init__(f"{cause}; nothing was written. {remedy}")
+        self.cause = cause
+        self.remedy = remedy
+
+
+#: The bytes of a UTF-8 byte order mark (BOM) at the start of a file.
+_UTF8_BOM: Final[bytes] = b"\xef\xbb\xbf"
+
+
+def unreadable_cause(path: Path, exc: OSError) -> str:
+    """Why `path` can't be read, for a `SetupInputError` (#1812)."""
+    if isinstance(exc, NotADirectoryError):
+        # A plain loop up the folders above `path`: the `.parents` idiom
+        # reads as a private config walk to the #1304 census test.
+        parent = path.parent
+        while parent != parent.parent:
+            if os.path.lexists(parent) and not os.path.isdir(parent):
+                return f"{path} can't be read, because {parent} isn't a folder"
+            parent = parent.parent
+    return f"{path} can't be read ({exc.strerror or exc})"
+
+
+def read_setup_input(path: Path) -> bytes | None:
+    """The bytes of a file `aelf setup` reads, or None when it doesn't
+    exist (#1812).
+
+    Raises `SetupInputError` naming `path` when it exists and can't be
+    read: a folder, something other than a regular file, such as a FIFO
+    that would block the read, a file or a folder above it that you have no
+    permission for, or a path under a file.
+    """
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise SetupInputError(unreadable_cause(path, exc)) from exc
+    if stat.S_ISDIR(st.st_mode):
+        raise SetupInputError(f"{path} is a folder, not a file")
+    if not stat.S_ISREG(st.st_mode):
+        raise SetupInputError(f"{path} isn't a regular file")
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise SetupInputError(unreadable_cause(path, exc)) from exc
+
+
+def decode_setup_input(path: Path, raw: bytes) -> str:
+    """`raw`, the bytes of `path`, as UTF-8 text, or `SetupInputError`
+    naming the first byte that isn't UTF-8, as setup names one in a
+    hooks.json (#1812)."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SetupInputError(
+            f"{path} isn't UTF-8 text: byte {exc.start} is "
+            f"{raw[exc.start]:#04x}"
+        ) from exc
+
+
+class SetupJSONSyntaxError(SetupInputError):
+    """The `SetupInputError` for a file that isn't JSON at all (#1812).
+
+    A caller that reads such a file as empty, as the opt-out ledger's
+    readers do, catches this one and lets the others through.
+    """
+
+
+#: The deepest nesting of arrays and objects, with the top-level value at
+#: level 1, that setup reads in a file it may write back (#1812). Python
+#: 3.12 writes `json.dumps(indent=2)` with one Python frame per level, so
+#: at the default recursion limit of 1000 it raises `RecursionError` past
+#: about 980 levels near the bottom of the stack, and past fewer as the
+#: stack grows; 3.13 writes, and `json.loads` reads on both, about 9990.
+#: A fixed bound far below these refuses the same files on both versions.
+SETUP_JSON_MAX_DEPTH: Final[int] = 256
+
+#: An array or object bracket, or a JSON string, which `load_setup_json`
+#: skips. A string runs to its closing quote or to the end of the text.
+_JSON_NESTING_TOKEN: Final[re.Pattern[str]] = re.compile(
+    r'"(?:[^"\\]|\\.)*"?|[\[\]{}]', re.DOTALL,
+)
+
+
+class JSONTooDeepError(ValueError):
+    """Text that nests arrays or objects more than `SETUP_JSON_MAX_DEPTH`
+    levels deep, which `load_setup_json` refuses before `json.loads`
+    reads it (#1812)."""
+
+
+def load_setup_json(text: str) -> object:
+    """`json.loads(text)`, or `JSONTooDeepError` when `text` nests arrays
+    or objects more than `SETUP_JSON_MAX_DEPTH` levels deep (#1812).
+
+    It counts the brackets outside strings before it parses, with a loop,
+    so the refusal doesn't depend on the Python version or the stack, and
+    text that isn't JSON past that depth is refused too.
+    """
+    depth = 0
+    for match in _JSON_NESTING_TOKEN.finditer(text):
+        token = match.group()
+        if token in ("[", "{"):
+            depth += 1
+            if depth > SETUP_JSON_MAX_DEPTH:
+                raise JSONTooDeepError(
+                    f"more than {SETUP_JSON_MAX_DEPTH} levels deep",
+                )
+        elif token in ("]", "}"):
+            depth -= 1
+    return json.loads(text)
+
+
+def json_unreadable_cause(exc: RecursionError | ValueError) -> str:
+    """Why setup doesn't read a document that may be JSON, from the error
+    `load_setup_json` raised for it other than `JSONDecodeError` (#1812).
+
+    That is `JSONTooDeepError` for arrays or objects nested more than
+    `SETUP_JSON_MAX_DEPTH` levels deep, `RecursionError`, which the depth
+    check keeps `json.loads` from raising, and `ValueError` for an integer
+    longer than `sys.get_int_max_str_digits()` digits.
+    """
+    if isinstance(exc, (JSONTooDeepError, RecursionError)):
+        return (
+            f"nests arrays or objects more than {SETUP_JSON_MAX_DEPTH} "
+            "levels deep, which setup can't read"
+        )
+    return (
+        f"holds an integer of more than {sys.get_int_max_str_digits()} "
+        "digits, which setup can't read"
+    )
+
+
+#: A UTF-16 surrogate code point. Python's `json` reads a `\ud800` escape
+#: that no low surrogate follows, or a lone `\udc00`, as one of these, and
+#: no UTF-8 text can hold it.
+_SURROGATE: Final[re.Pattern[str]] = re.compile("[\ud800-\udfff]")
+
+#: A key `_json_place` writes after a dot, unquoted.
+_PLAIN_KEY: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _json_place(parts: tuple[str | int, ...]) -> str:
+    """`parts`, the keys and indexes from the top of a JSON document, as a
+    path such as `hooks.Stop[0]`, each odd key as an ASCII JSON string."""
+    out = ""
+    for part in parts:
+        if isinstance(part, int):
+            out += f"[{part}]"
+        elif _PLAIN_KEY.fullmatch(part):
+            out += f".{part}" if out else part
+        else:
+            out += f"[{json.dumps(part)}]"
+    return out
+
+
+def _lone_surrogate_place(doc: object) -> str | None:
+    """Where the first key or string of `doc`, in document order, holds a
+    lone UTF-16 surrogate, or None. A loop with a stack, not recursion,
+    so a document `json.loads` could read can't stop it."""
+    stack: list[tuple[tuple[str | int, ...], object]] = [((), doc)]
+    while stack:
+        parts, value = stack.pop()
+        if isinstance(value, str):
+            if _SURROGATE.search(value):
+                return f"the string at `{_json_place(parts)}`" if parts else (
+                    "the string at the top level"
+                )
+        elif isinstance(value, dict):
+            items = list(cast(dict[str, object], value).items())
+            for key, _child in items:
+                if _SURROGATE.search(key):
+                    return f"a key in `{_json_place(parts)}`" if parts else (
+                        "a key at the top level"
+                    )
+            stack.extend(((*parts, key), child) for key, child in reversed(items))
+        elif isinstance(value, list):
+            children = cast(list[object], value)
+            stack.extend(
+                ((*parts, index), children[index])
+                for index in reversed(range(len(children)))
+            )
+    return None
+
+
+def parse_setup_json(path: Path, text: str) -> object:
+    """`text`, the contents of `path`, read as JSON, or `SetupInputError`
+    naming `path` and the cause (#1812).
+
+    It refuses text that isn't JSON (`SetupJSONSyntaxError`), JSON that
+    setup doesn't read (see `json_unreadable_cause`), and a key or string
+    that holds a lone UTF-16 surrogate escape, such as `"\\ud800"`, which
+    setup's writers can't write back as UTF-8 text.
+    """
+    try:
+        parsed: object = load_setup_json(text)
+    except json.JSONDecodeError as exc:
+        raise SetupJSONSyntaxError(f"{path} isn't valid JSON ({exc})") from exc
+    except (RecursionError, ValueError) as exc:
+        raise SetupInputError(f"{path} {json_unreadable_cause(exc)}") from exc
+    place = _lone_surrogate_place(parsed)
+    if place is not None:
+        raise SetupInputError(
+            f"{path} holds a lone UTF-16 surrogate escape in {place}, which "
+            "setup can't write back as UTF-8 text",
+        )
+    return parsed
+
+
+def json_type_name(value: object) -> str:
+    """Name `value`'s type as JSON names it, for a message about JSON.
+
+    `type(None).__name__` is `NoneType`, which is a Python detail leaking
+    into a refusal the user is meant to act on by editing a `.json` file.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def check_can_create(folder: Path) -> None:
+    """Raise `SetupInputError` unless `mkdir -p` can create `folder`,
+    which doesn't exist: the nearest folder above it that does must be a
+    folder you can write in (#1812)."""
+    probe = folder
+    while not os.path.lexists(probe) and probe.parent != probe:
+        probe = probe.parent
+    if not os.path.isdir(probe):
+        raise SetupInputError(
+            f"{probe} isn't a folder, so setup can't create {folder}",
+        )
+    if not os.access(probe, os.W_OK | os.X_OK):
+        raise SetupInputError(
+            f"{probe} can't be written to (Permission denied), so setup "
+            f"can't create {folder}",
+            "Fix its permissions, and run setup again",
+        )
+
+
+def check_can_write_in(folder: Path) -> None:
+    """Raise `SetupInputError` unless setup can write a file in `folder`,
+    creating the folder when it doesn't exist (#1812).
+
+    It refuses a folder that `mkdir -p` can't create, a path that isn't a
+    folder, such as a file or a symbolic link to a path that doesn't
+    exist, on which `mkdir -p` stops, and a folder you can't write in.
+    """
+    if not os.path.lexists(folder):
+        check_can_create(folder)
+        return
+    if not os.path.isdir(folder):
+        if os.path.islink(folder) and not os.path.exists(folder):
+            raise SetupInputError(
+                f"{folder} is a symbolic link to {os.readlink(folder)}, "
+                "which doesn't exist",
+            )
+        raise SetupInputError(f"{folder} isn't a folder")
+    if not os.access(folder, os.W_OK | os.X_OK):
+        raise SetupInputError(
+            f"{folder} can't be written to (Permission denied)",
+            "Fix its permissions, and run setup again",
+        )
+
+
+def check_slash_commands_dest(dest_dir: Path | None = None) -> None:
+    """Raise `SetupInputError` where `install_slash_commands(dest_dir)`
+    would stop partway (#1812).
+
+    Setup runs this before its first write, so a refusal leaves no part of
+    an install behind. It refuses a commands folder that `mkdir -p` can't
+    create or that isn't a folder, one you can't search, a bundled
+    command's `.md` that is a folder, isn't a regular file, can't be read
+    or isn't UTF-8 text, and a folder setup would write a command in but
+    can't. It compares each `.md` with the bundled text as
+    `install_slash_commands` does, newlines read as `read_text` reads them,
+    so it asks for no write access the install wouldn't use.
+    """
+    target = dest_dir if dest_dir is not None else SLASH_COMMANDS_DIR_DEFAULT
+    if not os.path.lexists(target) or not os.path.isdir(target):
+        check_can_write_in(target)
+        return
+    if not os.access(target, os.X_OK):
+        raise SetupInputError(
+            f"{target} can't be read (Permission denied)",
+            "Fix its permissions, and run setup again",
+        )
+    writes = False
+    for name, text in sorted(_bundled_slash_files().items()):
+        dest_file = target / name
+        raw = read_setup_input(dest_file)
+        if raw is None:
+            writes = True
+            continue
+        existing = decode_setup_input(dest_file, raw)
+        if existing.replace("\r\n", "\n").replace("\r", "\n") != text:
+            writes = True
+    if writes:
+        check_can_write_in(target)
+
+
+#: The events whose entries `aelf setup` reads or writes in the Claude
+#: settings (#1812).
+_SETUP_EVENTS: Final[tuple[str, ...]] = tuple(dict.fromkeys((
+    _EVENT_KEY,
+    _PRE_COMPACT_EVENT_KEY,
+    *TRANSCRIPT_INGEST_EVENTS,
+    SESSION_START_EVENT_KEY,
+    STOP_EVENT_KEY,
+    COMMIT_INGEST_EVENT,
+    CLAUDE_MEMORY_MIRROR_EVENT,
+    SEARCH_TOOL_EVENT,
+    AGENT_CONTEXT_EVENT,
+    PRE_ISSUE_GUARD_EVENT,
+)))
+
+
+def _settings_shape_refusal(path: Path, data: dict[str, object]) -> str | None:
+    """Why setup can't edit the settings document `data` read from `path`,
+    or None (#1812).
+
+    Setup edits only the documented `{"hooks": {"<Event>": [{...}]}}`
+    shape: a `hooks` value that is an object, and for each event it
+    edits, a list of objects. A missing or `null` value is one setup fills
+    in. As with `json.loads`, the last of two `hooks` keys is the one read.
+
+    The `hooks` list inside an entry, which `aelf setup --host codex` reads
+    under every event to find an aelfrice handler, must be a list or
+    `null` under every event, as both halves of setup read the file by one
+    rule.
+    """
+    hooks = data.get(_HOOKS_KEY)
+    if hooks is None:
+        return None
+    if not isinstance(hooks, dict):
+        return f"{path} has a non-object `hooks` value ({json_type_name(hooks)})"
+    events = cast(dict[str, object], hooks)
+    for event in _SETUP_EVENTS:
+        entries = events.get(event)
+        if entries is None:
+            continue
+        if not isinstance(entries, list):
+            return (
+                f"{path} has a non-list value for the `{event}` event "
+                f"({json_type_name(entries)})"
+            )
+        for index, entry in enumerate(cast(list[object], entries)):
+            if not isinstance(entry, dict):
+                return (
+                    f"{path} has a non-object entry at `hooks.{event}[{index}]` "
+                    f"({json_type_name(entry)})"
+                )
+    for event, entries in events.items():
+        if not isinstance(entries, list):
+            continue
+        for index, entry in enumerate(cast(list[object], entries)):
+            if not isinstance(entry, dict):
+                continue
+            inner = cast(dict[str, object], entry).get(_HOOKS_KEY)
+            if inner is not None and not isinstance(inner, list):
+                return (
+                    f"{path} has a non-list `hooks` value in "
+                    f"`hooks.{event}[{index}]` ({json_type_name(inner)})"
+                )
+    return None
+
+
+def _dangling_folder_link(path: Path) -> Path | None:
+    """The folder above `path` that is a symbolic link to a path that
+    doesn't exist, or None (#1812).
+
+    `path` itself isn't checked: a settings file that is such a link reads
+    as missing, as Claude reads it, and the settings commit replaces the
+    link with a file. A folder above it that is one leaves `mkdir -p`
+    unable to create the folder the file goes in.
+    """
+    folder = path.parent
+    while folder != folder.parent:
+        if os.path.islink(folder) and not os.path.exists(folder):
+            return folder
+        folder = folder.parent
+    return None
+
+
+def check_settings_for_setup(path: Path) -> dict[str, object] | None:
+    """Raise `SetupInputError` unless `aelf setup` can edit the settings
+    file at `path`, and return its document, or None for a missing or empty
+    file (#1812).
+
+    A missing or empty file is fine. Setup refuses a file it can't read,
+    one that isn't UTF-8 text, one that isn't JSON, one whose top level
+    isn't an object, and one whose shape it can't edit (see
+    `_settings_shape_refusal`). It also refuses a file that starts with a
+    UTF-8 byte order mark (BOM), and names the BOM, instead of removing it:
+    the rewrite would drop it without telling you. A missing file under a
+    folder that is a symbolic link to a path that doesn't exist, such as a
+    `~/.claude` link to a dotfiles folder that is gone, is refused and the
+    link named, as `check_can_write_in` names it, instead of read as no
+    file.
+    """
+    raw = read_setup_input(path)
+    if raw is None:
+        link = _dangling_folder_link(path)
+        if link is not None:
+            raise SetupInputError(
+                f"{link} is a symbolic link to {os.readlink(link)}, "
+                "which doesn't exist",
+            )
+        return None
+    if raw.startswith(_UTF8_BOM):
+        raise SetupInputError(
+            f"{path} starts with a UTF-8 byte order mark (BOM)",
+            "Save it as UTF-8 without a BOM, and run setup again",
+        )
+    text = decode_setup_input(path, raw)
+    if not text.strip():
+        return None
+    parsed = parse_setup_json(path, text)
+    if not isinstance(parsed, dict):
+        raise SetupInputError(
+            f"{path} doesn't hold a JSON object at the top level",
+        )
+    data = cast(dict[str, object], parsed)
+    refusal = _settings_shape_refusal(path, data)
+    if refusal is not None:
+        raise SetupInputError(refusal)
+    return data
+
+
 def _settings_fingerprint(path: Path) -> str:
     """Content hash of `path`, or `""` when it does not exist.
 
@@ -2102,6 +2667,39 @@ def settings_transaction(
                     "was writing it; no changes were made. Re-run the command."
                 )
             _write_settings_file(path, txn.data)
+
+
+class _SettingsDryRun:
+    """The context manager `settings_dry_run` returns (#1812)."""
+
+    def __init__(self, path: Path) -> None:
+        self.txn = _SettingsTransaction(path=path, fingerprint="")
+
+    def __enter__(self) -> _SettingsTransaction:
+        open_txn = _active_transaction()
+        if open_txn is not None:
+            raise RuntimeError(
+                "settings_dry_run does not nest: a transaction is already "
+                f"open for {open_txn.path}"
+            )
+        _TXN_STATE.txn = self.txn
+        return self.txn
+
+    def __exit__(self, *_exc: object) -> None:
+        _TXN_STATE.txn = None
+
+
+def settings_dry_run(path: Path) -> _SettingsDryRun:
+    """A `settings_transaction` for `path` that takes no lock and writes
+    nothing (#1812).
+
+    The installers edit the document in memory as they do in a
+    transaction, and the transaction this yields is `dirty` after the
+    block exactly when a `settings_transaction` would have written the
+    file. Setup runs its edits in one to learn whether it would write in
+    a settings folder you can't write in.
+    """
+    return _SettingsDryRun(path)
 
 
 def read_settings(path: Path) -> dict[str, object]:

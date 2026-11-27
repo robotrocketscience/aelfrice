@@ -151,11 +151,13 @@ from aelfrice.lifecycle import (
     format_update_banner as _format_update_banner,
     is_disabled as _update_check_disabled,
     detect_reachable_installs,
+    MigrationResult,
     maybe_check_for_update_async,
     maybe_migrate_to_uv,
     read_cache as _read_update_cache,
     uninstall as _lifecycle_uninstall,
     upgrade_advice,
+    UvToolBinDir,
 )
 from aelfrice.project_warm import (
     DEFAULT_DEBOUNCE_SECONDS as _PROJECT_WARM_DEBOUNCE,
@@ -5648,6 +5650,292 @@ def _unsetup_commit_ingest_git_hook(out: object) -> bool:
     return True
 
 
+def _claude_settings_would_change(
+    args: argparse.Namespace, path: Path,
+) -> bool:
+    """Whether `aelf setup` for the claude host would write the settings
+    file at `path` (#1812).
+
+    It runs every settings edit setup makes in a `settings_dry_run`, which
+    writes nothing. In place of the commit-ingest git hook it runs only
+    the removal of the old commit-ingest entry from `path`, the one part
+    of that step that edits this file. It resolves the hook programs as
+    they are on `PATH` now, or, inside `programs_installed_in`, as a uv
+    migration would leave them (`_claude_settings_change_after_install`).
+    """
+    import io
+
+    from aelfrice.setup import settings_dry_run
+
+    scope = _effective_scope(args)
+    command = (
+        args.command if args.command is not None
+        else resolve_hook_command(scope)
+    )
+    with settings_dry_run(path) as txn:
+        _reconcile_claude_settings(
+            args, path, scope, command, _setup_timeouts(args), io.StringIO(),
+            lambda: uninstall_commit_ingest_hook(
+                path, command_basename=COMMIT_INGEST_SCRIPT_NAME,
+            ),
+        )
+    return txn.dirty
+
+
+def _claude_settings_change_after_install(
+    args: argparse.Namespace, path: Path, programs_folder: Path,
+) -> tuple[bool, dict[str, tuple[str, str]]]:
+    """Whether `aelf setup` would write the settings file at `path` once
+    a uv migration has installed the hook programs in `programs_folder`,
+    and each hook command that install changes, as its command now and
+    after (#1812). It writes nothing."""
+    from aelfrice.setup import programs_installed_in
+
+    with programs_installed_in(programs_folder) as prediction:
+        dirty = _claude_settings_would_change(args, path)
+    return dirty, prediction.moved
+
+
+class _UvMigrationSkipped(Exception):
+    """`aelf setup` skips a pending uv migration and stops, writing
+    nothing, and exits 0 with `notice` (#1812): the selected scope's
+    settings folder can't be written, uv can't say where the migration
+    would put the hook programs, and the settings need no other change.
+    The migration runs on a later setup."""
+
+    def __init__(self, notice: str) -> None:
+        super().__init__(notice)
+        self.notice = notice
+
+
+def _uv_migration_programs_folder() -> UvToolBinDir | None:
+    """Where a uv migration that `aelf setup` would run now installs the
+    hook programs, or None when no migration is pending
+    (`lifecycle.pending_uv_migration`) (#1812).
+
+    The answer's `path` is None when setup can't tell, and its `reason`
+    says why: `uv tool dir --bin` failed, timed out, couldn't start, or
+    printed something other than one absolute path
+    (`lifecycle.uv_tool_bin_dir`), or the platform is Windows, where
+    setup doesn't predict a `PATH` search. Setup then skips the migration
+    (`_UvMigrationSkipped`). Raises `SetupInputError` when the migration
+    marker can't be checked.
+    """
+    from aelfrice import lifecycle
+    from aelfrice.setup import SetupInputError, unreadable_cause
+
+    try:
+        uv_bin = lifecycle.pending_uv_migration()
+    except OSError as exc:
+        marker = Path(
+            exc.filename if exc.filename is not None
+            else lifecycle.MIGRATED_TO_UV_SENTINEL,
+        )
+        raise SetupInputError(unreadable_cause(marker, exc)) from exc
+    if uv_bin is None:
+        return None
+    if not _setup_predicts_path_search():
+        return lifecycle.UvToolBinDir(
+            None, "setup doesn't predict a program search on Windows",
+        )
+    return lifecycle.uv_tool_bin_dir(uv_bin)
+
+
+def _setup_predicts_path_search() -> bool:
+    """Whether setup predicts the `PATH` search a uv migration changes:
+    not on Windows, where a program's file name takes a `PATHEXT` suffix
+    (#1812)."""
+    return sys.platform != "win32"
+
+
+def _check_claude_settings_folder(
+    args: argparse.Namespace, settings_path: Path,
+) -> str | None:
+    """Raise `SetupInputError` when `aelf setup` would write the settings
+    file at `settings_path` in a folder it can't write in (#1812).
+
+    The settings commit writes a temp file beside settings.json. A folder
+    you can't write in is refused only when setup would change the file,
+    so a read-only `~/.claude` whose settings are current passes. A lock
+    file setup can't create there is no write: the commit runs unlocked
+    (`exclusive_file_lock`). Setup runs a pending uv migration before it
+    writes the settings, so the edits are run with the hook programs
+    where the migration would put them. When uv can't say where that is,
+    setup skips the migration: this returns the notice it exits 0 with,
+    when the settings need no other change, and refuses otherwise.
+    Returns None when setup goes on.
+    """
+    from aelfrice.setup import SetupInputError, check_can_write_in
+
+    folder = settings_path.parent
+    if not os.path.isdir(folder) or os.access(folder, os.W_OK | os.X_OK):
+        check_can_write_in(folder)
+        return None
+    answer = _uv_migration_programs_folder()
+    if answer is None or answer.path is None:
+        if _claude_settings_would_change(args, settings_path):
+            check_can_write_in(folder)
+        if answer is None:
+            return None
+        return (
+            f"aelf setup: skipped the uv migration (`uv tool install --force "
+            f"aelfrice`), because {folder} can't be written to (Permission "
+            "denied) and setup can't tell where the migration would put the "
+            f"hook programs: {answer.reason}. The settings need no other "
+            "change, so nothing was written. Setup runs the migration on a "
+            "later run, once uv answers or the folder can be written to"
+        )
+    programs_folder = answer.path
+    dirty, moved = _claude_settings_change_after_install(
+        args, settings_path, programs_folder,
+    )
+    if not dirty:
+        return None
+    if not moved:
+        check_can_write_in(folder)
+        return None
+    old, new = next(iter(moved.values()))
+    others = len(moved) - 1
+    tail = (
+        "" if others == 0
+        else f", and {others} other hook command"
+        f"{'' if others == 1 else 's'} the same way"
+    )
+    raise SetupInputError(
+        f"{folder} can't be written to (Permission denied), and the uv "
+        "migration setup runs first (`uv tool install --force aelfrice`) "
+        f"would install the hook programs in {programs_folder}, so setup "
+        f"would change {settings_path}: {old} to {new}{tail}",
+        "Fix its permissions, and run setup again",
+    )
+
+
+def _settings_change_after_migration(
+    args: argparse.Namespace, migration: MigrationResult,
+) -> str | None:
+    """The refusal `aelf setup` prints when, after the uv migration it
+    just ran, it would change settings in a folder you can't write in, or
+    None (#1812).
+
+    The preflight predicts where the migration puts the hook programs,
+    and in a folder you can't write in it starts the migration only when
+    uv said where (`_check_claude_settings_folder`). The prediction
+    assumes the install succeeds and puts the programs there, so setup
+    runs its settings edits again after a migration it started, and
+    refuses there, before it writes the settings, when they would now
+    change them: the install failed, or uv wrote the programs somewhere
+    other than the folder `uv tool dir --bin` named. By then the
+    migration has run. Setup clears the Claude auto-install opt-out only
+    after this check passes, so a refusal here leaves it as it was.
+    """
+    if not migration.attempted:
+        return None
+    path = _resolve_settings_path(args)
+    folder = path.parent
+    if not os.path.isdir(folder) or os.access(folder, os.W_OK | os.X_OK):
+        return None
+    if not _claude_settings_would_change(args, path):
+        return None
+    return (
+        f"aelf setup: {folder} can't be written to (Permission denied), "
+        "and with the hook programs on PATH after the uv migration it "
+        f"just ran, setup would change {path}; the settings weren't "
+        "changed. Fix its permissions, and run setup again"
+    )
+
+
+def _setup_claude_preflight(args: argparse.Namespace) -> None:
+    """Read the files `aelf setup` for the claude host edits before it
+    writes anything, and raise `SetupInputError` for one it can't use
+    (#1812): the settings file and the folder it is written in, the
+    slash-commands folder, and the opt-out ledger it clears the claude
+    host from and records each `--no-X` flag in
+    (`_sync_setup_opt_outs_and_stamp`). Raises `_UvMigrationSkipped`,
+    after those checks pass, when setup skips a pending uv migration and
+    writes nothing (`_check_claude_settings_folder`)."""
+    from aelfrice.auto_install import check_opt_out_ledger
+    from aelfrice.setup import (
+        check_settings_for_setup,
+        check_slash_commands_dest,
+    )
+
+    settings_path = _resolve_settings_path(args)
+    check_settings_for_setup(settings_path)
+    skipped = _check_claude_settings_folder(args, settings_path)
+    slash_dest = getattr(args, "slash_commands_dir", None)
+    check_slash_commands_dest(Path(slash_dest) if slash_dest else None)
+    wants = {
+        hook_name: bool(getattr(args, flag, True))
+        for flag, hook_name in _SETUP_FLAG_TO_HOOK_NAME.items()
+    }
+    check_opt_out_ledger(
+        removing=CLAUDE_HOST,
+        add_hooks=[name for name, on in wants.items() if not on],
+        remove_hooks=[name for name, on in wants.items() if on],
+    )
+    # After every check, so a file setup can't use is still refused.
+    if skipped is not None:
+        raise _UvMigrationSkipped(skipped)
+
+
+def _setup_codex_preflight(
+    args: argparse.Namespace, skills_dest: Path | None,
+) -> bool:
+    """Read the files `aelf setup --host codex` reads besides hooks.json
+    before it writes anything, and raise `SetupInputError` for one it
+    can't use (#1812). Returns whether the Claude settings wire aelfrice
+    hooks, which decides whether setup writes the Claude opt-out.
+
+    `install_codex_hooks` reads hooks.json and refuses before it writes,
+    so the checks here cover the rest: the skills folder, unless
+    `--no-codex-skills`, the Claude settings, and the opt-out ledger when
+    setup would write it.
+    """
+    from aelfrice.auto_install import check_opt_out_ledger
+    from aelfrice.host_codex import (
+        check_codex_skills_dest,
+        claude_host_has_aelfrice_hooks,
+    )
+    from aelfrice.setup import USER_SETTINGS_PATH
+
+    if skills_dest is not None and getattr(args, "codex_skills", True):
+        check_codex_skills_dest(skills_dest)
+    claude_wired = claude_host_has_aelfrice_hooks(USER_SETTINGS_PATH)
+    if not claude_wired:
+        check_opt_out_ledger(adding=CLAUDE_HOST)
+    return claude_wired
+
+
+def _setup_input_refusal(args: argparse.Namespace) -> str | None:
+    """The refusal `aelf setup` prints for a file it reads and can't use,
+    or None (#1812). `main` calls this ahead of the update check, as it
+    calls `_setup_home_refusal`, and each host's executor reads the same
+    files again before its first write. A skipped uv migration
+    (`_UvMigrationSkipped`) passes through to the caller, which exits 0."""
+    from aelfrice.host_codex import CodexHomeError, resolve_agents_skills_dir
+    from aelfrice.setup import SetupInputError
+
+    try:
+        if host_of(args) == CODEX_HOST:
+            skills_dest: Path | None = None
+            if getattr(args, "codex_skills", True):
+                try:
+                    skills_dest = resolve_agents_skills_dir()
+                except CodexHomeError:
+                    # The executor refuses with its own message.
+                    return None
+            _setup_codex_preflight(args, skills_dest)
+        else:
+            _setup_claude_preflight(args)
+    except SetupInputError as exc:
+        prefix = (
+            "setup --host codex" if host_of(args) == CODEX_HOST
+            else "aelf setup"
+        )
+        return f"{prefix}: {exc}"
+    return None
+
+
 def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     """Install the hooks, reporting a contended or foreign-written
     settings.json instead of failing with a traceback (#1161)."""
@@ -5670,17 +5958,289 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
     return _host_command(_SETUP_BY_HOST, "setup", args)(args, out)
 
 
-def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
-    """`aelf setup` for the claude host: settings.json and slash commands."""
-    # #1053: an explicit claude-host setup is explicit re-consent —
-    # clear any persistent claude auto-install opt-out.
-    from aelfrice.auto_install import remove_host_opt_out
+def _setup_timeouts(args: argparse.Namespace) -> Callable[[str], int | None]:
+    """The timeout `aelf setup` gives each installer's entries (#1161): an
+    explicit `--timeout`, or the wall-clock bound its manifest row
+    declares, so `aelf setup` and the auto-install merge agree on the
+    budget."""
+    from aelfrice.auto_install import manifest_timeouts_by_installer
 
-    if remove_host_opt_out(CLAUDE_HOST):
+    manifest_timeouts = manifest_timeouts_by_installer()
+
+    def timeout_for(installer: str) -> int | None:
+        if args.timeout is not None:
+            return cast(int, args.timeout)
+        return manifest_timeouts.get(installer)
+
+    return timeout_for
+
+
+def _reconcile_claude_settings(
+    args: argparse.Namespace,
+    path: Path,
+    scope: SettingsScope,
+    command: str,
+    timeout_for: Callable[[str], int | None],
+    out: object,
+    commit_ingest_step: Callable[[], object],
+) -> None:
+    """Every settings edit `aelf setup` for the claude host makes, in the
+    open settings transaction for `path`, with a line on `out` for each.
+    `commit_ingest_step` runs where commit ingest is set up."""
+    prune = prune_broken_aelf_hooks(path)
+    if prune.total_removed:
+        events = ", ".join(
+            f"{event}={count}"
+            for event, count in sorted(prune.removed_per_event.items())
+        )
         print(
-            "cleared claude host auto-install opt-out (#1053)",
+            f"pruned {prune.total_removed} stale aelf-* hook entr"
+            f"{'y' if prune.total_removed == 1 else 'ies'} "
+            f"({events}) from {prune.settings_path}",
             file=out,  # type: ignore[arg-type]
         )
+    if prune.total_duplicates_removed:
+        # #1161: `aelf setup` repairs duplicates here, before reconciling
+        # installs, so the install pass sees a single entry per hook and
+        # its "already installed" report is truthful.
+        dupe_events = ", ".join(
+            f"{event}={count}"
+            for event, count in sorted(prune.duplicates_per_event.items())
+        )
+        print(
+            f"collapsed {prune.total_duplicates_removed} duplicate "
+            f"aelf-* hook entr"
+            f"{'y' if prune.total_duplicates_removed == 1 else 'ies'} "
+            f"({dupe_events}) from {prune.settings_path}",
+            file=out,  # type: ignore[arg-type]
+        )
+    result = install_user_prompt_submit_hook(
+        path,
+        command=command,
+        timeout=timeout_for("user_prompt_submit"),
+        status_message=args.status_message,
+    )
+    if result.already_present:
+        print(
+            f"hook already installed in {result.path} "
+            f"(command={command!r})",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(
+            f"installed UserPromptSubmit hook in {result.path} "
+            f"(command={command!r})",
+            file=out,  # type: ignore[arg-type]
+        )
+    if getattr(args, "transcript_ingest", True):
+        ti_command = resolve_transcript_logger_command(scope)
+        ti_result = install_transcript_ingest_hooks(
+            path, command=ti_command, timeout=timeout_for("transcript_ingest"),
+        )
+        if ti_result.installed:
+            print(
+                f"installed transcript-ingest hooks "
+                f"({', '.join(ti_result.installed)}) in {ti_result.path} "
+                f"(command={ti_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        if ti_result.already:
+            print(
+                f"transcript-ingest hooks already installed for "
+                f"({', '.join(ti_result.already)}) in {ti_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "session_start", True):
+        ss_command = resolve_session_start_hook_command(scope)
+        ss_result = install_session_start_hook(
+            path, command=ss_command, timeout=timeout_for("session_start"),
+            status_message=args.status_message,
+        )
+        if ss_result.already_present:
+            print(
+                f"SessionStart hook already installed in {ss_result.path} "
+                f"(command={ss_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed SessionStart hook in {ss_result.path} "
+                f"(command={ss_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "stop_hook", True):
+        st_command = resolve_stop_hook_command(scope)
+        st_result = install_stop_hook(
+            path, command=st_command, timeout=timeout_for("stop"),
+            status_message=args.status_message,
+        )
+        if st_result.already_present:
+            print(
+                f"Stop hook already installed in {st_result.path} "
+                f"(command={st_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed Stop hook in {st_result.path} "
+                f"(command={st_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+    if not args.no_statusline:
+        sl = install_statusline(path)
+        if sl.mode == "installed":
+            print(
+                f"installed statusline in {sl.path} "
+                f"(command='aelf statusline')",
+                file=out,  # type: ignore[arg-type]
+            )
+        elif sl.mode == "composed":
+            print(
+                f"composed statusline into existing command in {sl.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        elif sl.mode == "already":
+            pass  # silent: already wired
+        elif sl.mode == "skipped":
+            print(
+                f"statusline NOT installed in {sl.path}: existing "
+                f"statusLine looks complex (shell metacharacters). "
+                f"To enable update notifications append "
+                f"' ; aelf statusline 2>/dev/null' to your existing "
+                f"statusLine command manually.",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "rebuilder", False):
+        pc_command = resolve_pre_compact_hook_command(scope)
+        # No manifest budget for this one: `--rebuilder` is opt-in, and
+        # the bundled manifest ships default-on hooks plus commit_ingest,
+        # which is default-off since #1698. It therefore keeps
+        # the pre-#1161 behaviour: a bare `--timeout` or no timeout key at
+        # all. Adding a row here would silently widen the auto-install
+        # surface to a hook the operator opted into explicitly.
+        pc_result = install_pre_compact_hook(
+            path,
+            command=pc_command,
+            timeout=args.timeout,
+            status_message=args.status_message,
+        )
+        if pc_result.already_present:
+            print(
+                f"PreCompact hook already installed in {pc_result.path} "
+                f"(command={pc_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed PreCompact hook in {pc_result.path} "
+                f"(command={pc_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "commit_ingest", True):
+        commit_ingest_step()
+    if getattr(args, "search_tool", True):
+        st_command = resolve_search_tool_command(scope)
+        st_result = install_search_tool_hook(
+            path, command=st_command, timeout=timeout_for("search_tool"),
+        )
+        if st_result.already_present:
+            print(
+                f"search-tool hook already installed in {st_result.path} "
+                f"(command={st_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed search-tool PreToolUse hook in {st_result.path} "
+                f"(command={st_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "search_tool_bash", True):
+        stb_command = resolve_search_tool_bash_command(scope)
+        stb_result = install_search_tool_bash_hook(
+            path, command=stb_command, timeout=timeout_for("search_tool_bash"),
+        )
+        if stb_result.already_present:
+            print(
+                f"search-tool-bash hook already installed in {stb_result.path} "
+                f"(command={stb_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed search-tool-bash PreToolUse:Bash hook in "
+                f"{stb_result.path} (command={stb_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "pre_issue_guard", True):
+        pig_command = resolve_pre_issue_guard_command(scope)
+        pig_result = install_pre_issue_guard_hook(
+            path, command=pig_command, timeout=timeout_for("pre_issue_guard"),
+        )
+        if pig_result.already_present:
+            print(
+                f"pre-issue-guard hook already installed in {pig_result.path} "
+                f"(command={pig_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed pre-issue-guard PreToolUse:Bash hook in "
+                f"{pig_result.path} (command={pig_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "claude_memory_mirror", True):
+        cmm_command = resolve_claude_memory_mirror_command(scope)
+        cmm_result = install_claude_memory_mirror_hook(
+            path, command=cmm_command, timeout=timeout_for("claude_memory_mirror"),
+        )
+        if cmm_result.already_present:
+            print(
+                f"claude-memory-mirror hook already installed in "
+                f"{cmm_result.path} (command={cmm_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed claude-memory-mirror PostToolUse hook in "
+                f"{cmm_result.path} (command={cmm_command!r}); inert until "
+                f"AELFRICE_MIRROR_CLAUDE_MEMORY or [memory] "
+                f"mirror_claude_memory is set",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "agent_context", True):
+        ac_command = resolve_agent_context_command(scope)
+        ac_result = install_agent_context_hook(
+            path, command=ac_command, timeout=timeout_for("agent_context"),
+        )
+        if ac_result.already_present:
+            print(
+                f"agent-context hook already installed in {ac_result.path} "
+                f"(command={ac_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed agent-context PreToolUse:Agent hook in "
+                f"{ac_result.path} (command={ac_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+
+
+
+def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
+    """`aelf setup` for the claude host: settings.json and slash commands."""
+    from aelfrice.setup import SetupInputError
+
+    # #1812: every file this reads, before its first write.
+    try:
+        _setup_claude_preflight(args)
+    except SetupInputError as exc:
+        print(_doctor_text(f"aelf setup: {exc}"), file=sys.stderr)
+        return 1
+    except _UvMigrationSkipped as exc:
+        print(_doctor_text(exc.notice), file=sys.stderr)
+        return 0
     # #733: auto-migrate non-uv aelfrice installs to uv tool on first
     # post-upgrade setup. Gated on a one-shot sentinel inside
     # maybe_migrate_to_uv so re-running setup for unrelated reasons
@@ -5699,6 +6259,21 @@ def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
                 f"aelfrice: {verb} — {migration.reason}",
                 file=sys.stderr,
             )
+    # #1812: the preflight read the hook programs before the migration.
+    refusal = _settings_change_after_migration(args, migration)
+    if refusal is not None:
+        print(_doctor_text(refusal), file=sys.stderr)
+        return 1
+    # #1053: an explicit claude-host setup is explicit re-consent, so
+    # clear any persistent claude auto-install opt-out. #1812: after the
+    # check above, so a setup it refuses leaves the opt-out as it was.
+    from aelfrice.auto_install import remove_host_opt_out
+
+    if remove_host_opt_out(CLAUDE_HOST):
+        print(
+            "cleared claude host auto-install opt-out (#1053)",
+            file=out,  # type: ignore[arg-type]
+        )
     # #1422: one-shot report of what the removed MCP surface left behind —
     # a `[mcp]` extra in the uv environment, a host registration pointing at
     # the deleted `aelf mcp`. Report-only by design: aelfrice never wrote
@@ -5740,18 +6315,6 @@ def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
     scope = _effective_scope(args)
     path = _resolve_settings_path(args)
     command = args.command if args.command is not None else resolve_hook_command(scope)
-    # #1161: every entry gets the wall-clock bound its manifest row
-    # declares, so `aelf setup` and the auto-install merge agree on the
-    # budget. An explicit `--timeout` still overrides all of them.
-    from aelfrice.auto_install import manifest_timeouts_by_installer
-
-    _manifest_timeouts = manifest_timeouts_by_installer()
-
-    def _timeout_for(installer: str) -> int | None:
-        if args.timeout is not None:
-            return cast(int, args.timeout)
-        return _manifest_timeouts.get(installer)
-
     cleanup = clean_dangling_shims()
     for removed_path in cleanup.removed:
         print(
@@ -5770,244 +6333,10 @@ def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
     # prune joins the same transaction (via `setup.write_settings`),
     # so it no longer writes around the installs that follow it.
     with settings_transaction(path):
-        prune = prune_broken_aelf_hooks(path)
-        if prune.total_removed:
-            events = ", ".join(
-                f"{event}={count}"
-                for event, count in sorted(prune.removed_per_event.items())
-            )
-            print(
-                f"pruned {prune.total_removed} stale aelf-* hook entr"
-                f"{'y' if prune.total_removed == 1 else 'ies'} "
-                f"({events}) from {prune.settings_path}",
-                file=out,  # type: ignore[arg-type]
-            )
-        if prune.total_duplicates_removed:
-            # #1161: `aelf setup` repairs duplicates here, before reconciling
-            # installs, so the install pass sees a single entry per hook and
-            # its "already installed" report is truthful.
-            dupe_events = ", ".join(
-                f"{event}={count}"
-                for event, count in sorted(prune.duplicates_per_event.items())
-            )
-            print(
-                f"collapsed {prune.total_duplicates_removed} duplicate "
-                f"aelf-* hook entr"
-                f"{'y' if prune.total_duplicates_removed == 1 else 'ies'} "
-                f"({dupe_events}) from {prune.settings_path}",
-                file=out,  # type: ignore[arg-type]
-            )
-        result = install_user_prompt_submit_hook(
-            path,
-            command=command,
-            timeout=_timeout_for("user_prompt_submit"),
-            status_message=args.status_message,
+        _reconcile_claude_settings(
+            args, path, scope, command, _setup_timeouts(args), out,
+            lambda: _setup_commit_ingest_git_hook(scope, path, out),
         )
-        if result.already_present:
-            print(
-                f"hook already installed in {result.path} "
-                f"(command={command!r})",
-                file=out,  # type: ignore[arg-type]
-            )
-        else:
-            print(
-                f"installed UserPromptSubmit hook in {result.path} "
-                f"(command={command!r})",
-                file=out,  # type: ignore[arg-type]
-            )
-        if getattr(args, "transcript_ingest", True):
-            ti_command = resolve_transcript_logger_command(scope)
-            ti_result = install_transcript_ingest_hooks(
-                path, command=ti_command, timeout=_timeout_for("transcript_ingest"),
-            )
-            if ti_result.installed:
-                print(
-                    f"installed transcript-ingest hooks "
-                    f"({', '.join(ti_result.installed)}) in {ti_result.path} "
-                    f"(command={ti_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            if ti_result.already:
-                print(
-                    f"transcript-ingest hooks already installed for "
-                    f"({', '.join(ti_result.already)}) in {ti_result.path}",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "session_start", True):
-            ss_command = resolve_session_start_hook_command(scope)
-            ss_result = install_session_start_hook(
-                path, command=ss_command, timeout=_timeout_for("session_start"),
-                status_message=args.status_message,
-            )
-            if ss_result.already_present:
-                print(
-                    f"SessionStart hook already installed in {ss_result.path} "
-                    f"(command={ss_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed SessionStart hook in {ss_result.path} "
-                    f"(command={ss_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "stop_hook", True):
-            st_command = resolve_stop_hook_command(scope)
-            st_result = install_stop_hook(
-                path, command=st_command, timeout=_timeout_for("stop"),
-                status_message=args.status_message,
-            )
-            if st_result.already_present:
-                print(
-                    f"Stop hook already installed in {st_result.path} "
-                    f"(command={st_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed Stop hook in {st_result.path} "
-                    f"(command={st_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if not args.no_statusline:
-            sl = install_statusline(path)
-            if sl.mode == "installed":
-                print(
-                    f"installed statusline in {sl.path} "
-                    f"(command='aelf statusline')",
-                    file=out,  # type: ignore[arg-type]
-                )
-            elif sl.mode == "composed":
-                print(
-                    f"composed statusline into existing command in {sl.path}",
-                    file=out,  # type: ignore[arg-type]
-                )
-            elif sl.mode == "already":
-                pass  # silent: already wired
-            elif sl.mode == "skipped":
-                print(
-                    f"statusline NOT installed in {sl.path}: existing "
-                    f"statusLine looks complex (shell metacharacters). "
-                    f"To enable update notifications append "
-                    f"' ; aelf statusline 2>/dev/null' to your existing "
-                    f"statusLine command manually.",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "rebuilder", False):
-            pc_command = resolve_pre_compact_hook_command(scope)
-            # No manifest budget for this one: `--rebuilder` is opt-in, and
-            # the bundled manifest ships default-on hooks plus commit_ingest,
-            # which is default-off since #1698. It therefore keeps
-            # the pre-#1161 behaviour — a bare `--timeout` or no timeout key at
-            # all. Adding a row here would silently widen the auto-install
-            # surface to a hook the operator opted into explicitly.
-            pc_result = install_pre_compact_hook(
-                path,
-                command=pc_command,
-                timeout=args.timeout,
-                status_message=args.status_message,
-            )
-            if pc_result.already_present:
-                print(
-                    f"PreCompact hook already installed in {pc_result.path} "
-                    f"(command={pc_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed PreCompact hook in {pc_result.path} "
-                    f"(command={pc_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "commit_ingest", True):
-            _setup_commit_ingest_git_hook(scope, path, out)
-        if getattr(args, "search_tool", True):
-            st_command = resolve_search_tool_command(scope)
-            st_result = install_search_tool_hook(
-                path, command=st_command, timeout=_timeout_for("search_tool"),
-            )
-            if st_result.already_present:
-                print(
-                    f"search-tool hook already installed in {st_result.path} "
-                    f"(command={st_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed search-tool PreToolUse hook in {st_result.path} "
-                    f"(command={st_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "search_tool_bash", True):
-            stb_command = resolve_search_tool_bash_command(scope)
-            stb_result = install_search_tool_bash_hook(
-                path, command=stb_command, timeout=_timeout_for("search_tool_bash"),
-            )
-            if stb_result.already_present:
-                print(
-                    f"search-tool-bash hook already installed in {stb_result.path} "
-                    f"(command={stb_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed search-tool-bash PreToolUse:Bash hook in "
-                    f"{stb_result.path} (command={stb_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "pre_issue_guard", True):
-            pig_command = resolve_pre_issue_guard_command(scope)
-            pig_result = install_pre_issue_guard_hook(
-                path, command=pig_command, timeout=_timeout_for("pre_issue_guard"),
-            )
-            if pig_result.already_present:
-                print(
-                    f"pre-issue-guard hook already installed in {pig_result.path} "
-                    f"(command={pig_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed pre-issue-guard PreToolUse:Bash hook in "
-                    f"{pig_result.path} (command={pig_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "claude_memory_mirror", True):
-            cmm_command = resolve_claude_memory_mirror_command(scope)
-            cmm_result = install_claude_memory_mirror_hook(
-                path, command=cmm_command, timeout=_timeout_for("claude_memory_mirror"),
-            )
-            if cmm_result.already_present:
-                print(
-                    f"claude-memory-mirror hook already installed in "
-                    f"{cmm_result.path} (command={cmm_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed claude-memory-mirror PostToolUse hook in "
-                    f"{cmm_result.path} (command={cmm_command!r}); inert until "
-                    f"AELFRICE_MIRROR_CLAUDE_MEMORY or [memory] "
-                    f"mirror_claude_memory is set",
-                    file=out,  # type: ignore[arg-type]
-                )
-        if getattr(args, "agent_context", True):
-            ac_command = resolve_agent_context_command(scope)
-            ac_result = install_agent_context_hook(
-                path, command=ac_command, timeout=_timeout_for("agent_context"),
-            )
-            if ac_result.already_present:
-                print(
-                    f"agent-context hook already installed in {ac_result.path} "
-                    f"(command={ac_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed agent-context PreToolUse:Agent hook in "
-                    f"{ac_result.path} (command={ac_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
     slash_dest = getattr(args, "slash_commands_dir", None)
     slash_dest_path = Path(slash_dest) if slash_dest else None
     sc_result = install_slash_commands(slash_dest_path)
@@ -6220,29 +6549,58 @@ def _cmd_setup_codex(
         CodexHomeError,
         codex_hooks_path,
         install_codex_hooks,
+        resolve_agents_skills_dir,
     )
 
     try:
-        target = hooks_path if hooks_path is not None else codex_hooks_path()
+        target = (
+            hooks_path if hooks_path is not None
+            else codex_hooks_path(for_setup=True)
+        )
     except CodexHomeError as exc:
-        print(f"setup --host codex: {exc}", file=sys.stderr)
+        print(_doctor_text(f"setup --host codex: {exc}"), file=sys.stderr)
+        return 1
+    if skills_dest is None and getattr(args, "codex_skills", True):
+        # #1812: a home with no skills folder Codex reads is refused
+        # before anything is written.
+        try:
+            skills_dest = resolve_agents_skills_dir()
+        except CodexHomeError as exc:
+            print(
+                _doctor_text(
+                    f"setup --host codex: {exc}; nothing was written. Set "
+                    "HOME to an absolute path, or pass --no-codex-skills",
+                ),
+                file=sys.stderr,
+            )
+            return 1
+    from aelfrice.setup import SetupInputError
+
+    # #1812: every other file setup reads, before hooks.json is written.
+    try:
+        claude_wired = _setup_codex_preflight(args, skills_dest)
+    except SetupInputError as exc:
+        print(_doctor_text(f"setup --host codex: {exc}"), file=sys.stderr)
         return 1
     result = install_codex_hooks(
         target,
         scope="user",
         force=bool(getattr(args, "force", False)),
+        status_message=getattr(args, "status_message", None),
     )
     if result.error:
-        print(f"setup --host codex: {result.error}", file=sys.stderr)
+        print(_doctor_text(f"setup --host codex: {result.error}"), file=sys.stderr)
         return 1
     verb = "wrote" if result.changed else "already current:"
     print(
-        f"{verb} {result.path} "
-        f"(events: {', '.join(result.installed_events)})",
+        _doctor_text(
+            f"{verb} {result.path} "
+            f"(events: {', '.join(result.installed_events)})",
+        ),
         file=out,  # type: ignore[arg-type]
     )
     for line in result.guidance:
-        print(f"  next: {line}", file=out)  # type: ignore[arg-type]
+        print(_doctor_text(f"  next: {line}"), file=out)  # type: ignore[arg-type]
 
     # Codex skills: the `$aelf-*` port of the `/aelf:*` slash commands.
     if getattr(args, "codex_skills", True):
@@ -6250,39 +6608,49 @@ def _cmd_setup_codex(
 
         try:
             sk = install_codex_skills(skills_dest)
-        except OSError as exc:
+        except (OSError, SetupInputError) as exc:
             # hooks.json is already written; fail the skills half with a
             # clear message instead of a raw traceback (#1136).
             print(
-                f"setup --host codex: hooks written, but the skills "
-                f"install failed: {exc}",
+                _doctor_text(
+                    f"setup --host codex: hooks written, but the skills "
+                    f"install failed: {exc}",
+                ),
                 file=sys.stderr,
             )
             return 1
         if sk.written:
             print(
-                f"installed {len(sk.written)} Codex skill(s) in "
-                f"{sk.dest_dir}: invoke as ${', $'.join(sk.written)}",
+                _doctor_text(
+                    f"installed {len(sk.written)} Codex skill(s) in "
+                    f"{sk.dest_dir}: invoke as ${', $'.join(sk.written)}",
+                ),
                 file=out,  # type: ignore[arg-type]
             )
         if sk.pruned:
             print(
-                f"removed {len(sk.pruned)} stale Codex skill(s) from "
-                f"{sk.dest_dir}: {', '.join(sk.pruned)}",
+                _doctor_text(
+                    f"removed {len(sk.pruned)} stale Codex skill(s) from "
+                    f"{sk.dest_dir}: {', '.join(sk.pruned)}",
+                ),
                 file=out,  # type: ignore[arg-type]
             )
         if sk.skipped:
             print(
-                f"skipped {len(sk.skipped)} skill name(s) already taken "
-                f"by non-aelfrice skills in {sk.dest_dir} (not "
-                f"overwritten): {', '.join(sk.skipped)}",
+                _doctor_text(
+                    f"skipped {len(sk.skipped)} skill name(s) already taken "
+                    f"by non-aelfrice skills in {sk.dest_dir} (not "
+                    f"overwritten): {', '.join(sk.skipped)}",
+                ),
                 file=out,  # type: ignore[arg-type]
             )
         for msg in sk.failed:
-            print(f"[warn] codex skill: {msg}", file=out)  # type: ignore[arg-type]
+            print(_doctor_text(f"[warn] codex skill: {msg}"), file=out)  # type: ignore[arg-type]
         if not (sk.written or sk.pruned or sk.skipped or sk.failed):
             print(
-                f"Codex skills already up to date in {sk.dest_dir}",
+                _doctor_text(
+                    f"Codex skills already up to date in {sk.dest_dir}",
+                ),
                 file=out,  # type: ignore[arg-type]
             )
     # #1053: Codex-only user (no aelfrice hooks on the Claude host) ->
@@ -6290,17 +6658,28 @@ def _cmd_setup_codex(
     # Codex hooks stop rewriting ~/.claude/settings.json. Dual-host
     # users (Claude hooks present) keep auto-install untouched.
     from aelfrice.auto_install import add_host_opt_out, read_host_opt_outs
-    from aelfrice.host_codex import claude_host_has_aelfrice_hooks
-    from aelfrice.setup import USER_SETTINGS_PATH
 
-    if claude_host_has_aelfrice_hooks(USER_SETTINGS_PATH):
+    if claude_wired:
         print(
             "  note: Claude-host aelfrice hooks detected; leaving "
             "Claude auto-install enabled (dual-host).",
             file=out,  # type: ignore[arg-type]
         )
     elif CLAUDE_HOST not in read_host_opt_outs():
-        add_host_opt_out(CLAUDE_HOST)
+        try:
+            add_host_opt_out(CLAUDE_HOST)
+        except OSError as exc:
+            # #1812: the preflight checked that setup can create or write
+            # in this folder, so this reports a change after that check,
+            # or a failure no check foresees, such as a full disk.
+            print(
+                _doctor_text(
+                    "setup --host codex: hooks written, but the Claude "
+                    f"auto-install opt-out couldn't be written: {exc}",
+                ),
+                file=sys.stderr,
+            )
+            return 1
         print(
             "  note: opted the claude host out of auto-install "
             "(#1053) — aelf will no longer rewrite "
@@ -6341,21 +6720,25 @@ def _cmd_unsetup_codex(
     try:
         target = hooks_path if hooks_path is not None else codex_hooks_path()
     except CodexHomeError as exc:
-        print(f"unsetup --host codex: {exc}", file=sys.stderr)
+        print(_doctor_text(f"unsetup --host codex: {exc}"), file=sys.stderr)
         return 1
     result = remove_codex_hooks(target)
     if result.error:
-        print(f"unsetup --host codex: {result.error}", file=sys.stderr)
+        print(_doctor_text(f"unsetup --host codex: {result.error}"), file=sys.stderr)
         return 1
     if result.changed:
         print(
-            f"removed aelfrice entries from {result.path} "
-            f"(events: {', '.join(result.installed_events)})",
+            _doctor_text(
+                f"removed aelfrice entries from {result.path} "
+                f"(events: {', '.join(result.installed_events)})",
+            ),
             file=out,  # type: ignore[arg-type]
         )
     else:
         print(
-            f"no aelfrice entries in {result.path}",
+            _doctor_text(
+                f"no aelfrice entries in {result.path}",
+            ),
             file=out,  # type: ignore[arg-type]
         )
 
@@ -6363,26 +6746,47 @@ def _cmd_unsetup_codex(
 
     try:
         sk = remove_codex_skills(skills_dest)
+    except CodexHomeError as exc:
+        # #1812: Codex reads no user skills folder, so unsetup touches none.
+        print(
+            _doctor_text(f"no aelfrice Codex skills to remove: {exc}"),
+            file=out,  # type: ignore[arg-type]
+        )
+        return 0
     except OSError as exc:
         print(
-            f"unsetup --host codex: skills removal failed: {exc}",
+            _doctor_text(
+                f"unsetup --host codex: skills removal failed: {exc}",
+            ),
             file=sys.stderr,
         )
         return 1
     if sk.pruned:
         print(
-            f"removed {len(sk.pruned)} Codex skill(s) from {sk.dest_dir}: "
-            f"{', '.join(sk.pruned)}",
+            _doctor_text(
+                f"removed {len(sk.pruned)} Codex skill(s) from {sk.dest_dir}: "
+                f"{', '.join(sk.pruned)}",
+            ),
             file=out,  # type: ignore[arg-type]
         )
     else:
         print(
-            f"no aelfrice Codex skills in {sk.dest_dir}",
+            _doctor_text(
+                f"no aelfrice Codex skills in {sk.dest_dir}",
+            ),
             file=out,  # type: ignore[arg-type]
         )
     for msg in sk.failed:
-        print(f"[warn] codex skill: {msg}", file=out)  # type: ignore[arg-type]
+        print(_doctor_text(f"[warn] codex skill: {msg}"), file=out)  # type: ignore[arg-type]
     return 0
+
+
+def _doctor_text(text: str) -> str:
+    """`text` with each character a UTF-8 stream can't encode written as a
+    backslash escape. On Linux a path can hold a byte that isn't UTF-8,
+    which `os.fsdecode` reads as a lone surrogate, so doctor prints each line
+    through this to run on a strict UTF-8 stdout or stderr (#1812)."""
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 def _cmd_doctor_codex(
@@ -6394,12 +6798,20 @@ def _cmd_doctor_codex(
 ) -> int:
     """`aelf doctor --host codex`: scan the Codex host (#1052).
 
-    Exit contract, stable for CI (#1430). **Exit 1** on a `hooks.json` that
-    is present but unparseable, or on wiring that is installed and broken:
-    a hook command not present on disk, a partially installed hook set, the
-    Codex ``hooks`` feature disabled while our handlers are installed, an
-    installed ``$aelf-*`` skill that does not match what this build
-    generates, or an ``aelf`` that does not resolve on ``PATH`` (#1413).
+    Exit contract, stable for CI (#1430). **Exit 1** on a `$CODEX_HOME`
+    that doesn't exist, isn't a directory, or can't be read (#1427), on a
+    `hooks.json` that is present but unparseable or isn't UTF-8, on a
+    `hooks.json` that holds `NaN`, `Infinity`, or `-Infinity`, on a
+    `hooks.json` or a config.toml `[hooks]` table that Codex rejects
+    whole, or a config.toml that isn't UTF-8 or that Codex's TOML parser rejects for its nesting
+    or for a number out of range (#1812), or on wiring that is installed and broken: a hook command not
+    present on disk, a partially installed hook set, a SessionStart group
+    under the matcher an earlier release wrote, an event whose fire on a
+    plain `codex` launch starts a command setup writes more than once,
+    counting only handlers you have approved (#1812), the Codex ``hooks`` feature disabled while our handlers are
+    installed, an installed ``$aelf-*`` skill that does not match what this
+    build generates, or an ``aelf`` that does not resolve on ``PATH``
+    (#1413).
     **Exit 0** when the wiring is simply absent — a machine that
     never ran ``aelf setup --host codex`` is a normal machine — and when
     zero ``[hooks.state]`` approvals are recorded, since approval keying is
@@ -6415,15 +6827,20 @@ def _cmd_doctor_codex(
     try:
         report = doctor_codex(codex_dir)
     except CodexHomeError as exc:
-        print(f"doctor --host codex: {exc}", file=sys.stderr)
+        print(_doctor_text(f"doctor --host codex: {exc}"), file=sys.stderr)
         return 1
     ok = "ok" if report.hooks_file_valid else "-"
     print(
-        f"[i] codex home: {report.codex_dir}",
+        _doctor_text(f"[i] codex home: {report.codex_dir}"),
         file=out,  # type: ignore[arg-type]
     )
+    # #1812: doctor doesn't say a file it can't look up is there or not.
+    present = (
+        "unknown" if report.hooks_file_unknown is not None
+        else report.hooks_file_present
+    )
     print(
-        f"[{ok}] codex hooks.json: present={report.hooks_file_present} "
+        f"[{ok}] codex hooks.json: present={present} "
         f"valid={report.hooks_file_valid} "
         f"aelfrice_handlers={report.owned_handler_count}",
         file=out,  # type: ignore[arg-type]
@@ -6449,25 +6866,44 @@ def _cmd_doctor_codex(
         resolve_agents_skills_dir,
     )
 
-    skills_dir = (
-        skills_dest if skills_dest is not None
-        else resolve_agents_skills_dir()
+    try:
+        skills_dir: Path | None = (
+            skills_dest if skills_dest is not None
+            else resolve_agents_skills_dir()
+        )
+    except CodexHomeError as exc:
+        # #1812: Codex reads no user skills folder, so doctor reads none.
+        skills_dir = None
+        print(
+            _doctor_text(f"[i] codex skills ($aelf-*): none read: {exc}"),
+            file=out,  # type: ignore[arg-type]
+        )
+    n_skills = (
+        count_installed_codex_skills(skills_dir)
+        if skills_dir is not None else 0
     )
-    n_skills = count_installed_codex_skills(skills_dir)
     # #1486: the count globs `aelf-*`, so it includes skills for commands
     # this build no longer ships — which the bundle-driven integrity scan
     # cannot see. Reporting the orphan count on the same line is what makes
     # the two numbers reconcilable. Computed unconditionally because this
     # line describes the directory rather than judging it; the FAIL below
     # is the part gated on wiring.
-    orphaned = orphaned_codex_skills(skills_dir)
-    print(
-        f"[i] codex skills ($aelf-*): {n_skills} installed "
-        f"({len(orphaned)} orphaned) in {skills_dir}",
-        file=out,  # type: ignore[arg-type]
+    orphaned = (
+        orphaned_codex_skills(skills_dir) if skills_dir is not None else []
     )
+    if skills_dir is not None:
+        print(
+            _doctor_text(
+                f"[i] codex skills ($aelf-*): {n_skills} installed "
+                f"({len(orphaned)} orphaned) in {skills_dir}",
+            ),
+            file=out,  # type: ignore[arg-type]
+        )
     for warning in report.warnings:
-        print(f"[warn] {warning}", file=out)  # type: ignore[arg-type]
+        print(
+            _doctor_text(f"[warn] {warning}"),
+            file=out,  # type: ignore[arg-type]
+        )
 
     # #1430: a green exit on broken-but-parseable wiring is a false green.
     # Absent wiring stays exit 0 per the ruling on that issue — never having
@@ -6483,7 +6919,7 @@ def _cmd_doctor_codex(
     # message, which contradicts the "absent wiring stays 0" ruling.
     modified = (
         modified_codex_skills(skills_dir)
-        if report.owned_handler_count else []
+        if report.owned_handler_count and skills_dir is not None else []
     )
     if modified:
         faults.append(
@@ -6531,9 +6967,17 @@ def _cmd_doctor_codex(
             "directory on PATH with `uv tool update-shell`",
         )
     for fault in faults:
-        print(f"[FAIL] {fault}", file=out)  # type: ignore[arg-type]
+        print(_doctor_text(f"[FAIL] {fault}"), file=out)  # type: ignore[arg-type]
 
     if report.hooks_file_present and not report.hooks_file_valid:
+        return 1
+    # #1812: a `[hooks]` table Codex rejects whole loads no hook, the same
+    # state as a hooks.json that doesn't parse.
+    if report.config_hooks_rejected is not None:
+        return 1
+    # #1812: the same for a config.toml that isn't UTF-8 or that Codex's
+    # TOML parser rejects whole for its nesting or a number out of range.
+    if report.config_rejected is not None:
         return 1
     return 1 if faults else 0
 
@@ -12380,7 +12824,10 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_setup.add_argument(
         "--status-message", default=None,
-        help="status message the upstream auto-memory tool shows while the hook runs",
+        help=(
+            "status message the host shows while the hook runs; on the "
+            "codex host it is written as the handler's statusMessage field"
+        ),
     )
     p_setup.add_argument(
         "--no-statusline", action="store_true",
@@ -13098,8 +13545,9 @@ _UPDATE_CHECK_SKIP_CMDS: Final[frozenset[str]] = frozenset(
 )
 
 # #1429: the options the Codex host path actually reads. `aelf setup
-# --host codex` consults only `--host`, `--force`, and `--codex-skills`;
-# `aelf unsetup --host codex` consults only `--host`. Every other option
+# --host codex` consults only `--host`, `--force`, `--codex-skills`, and
+# `--status-message` (written as each handler's Codex `statusMessage`
+# field since #1812); `aelf unsetup --host codex` consults only `--host`. Every other option
 # the shared parser accepts is a Claude-host option that the Codex
 # executor drops on the floor, so an explicitly supplied one is refused
 # (exit 2) before anything on disk moves, rather than accepted and
@@ -13109,7 +13557,7 @@ _UPDATE_CHECK_SKIP_CMDS: Final[frozenset[str]] = frozenset(
 # with what the caller wanted. Making these options take effect on the
 # Codex host is separate work, and stays gated on a Codex host.
 _CODEX_APPLICABLE_DESTS: Final[dict[str, frozenset[str]]] = {
-    "setup": frozenset({"host", "force", "codex_skills"}),
+    "setup": frozenset({"host", "force", "codex_skills", "status_message"}),
     "unsetup": frozenset({"host"}),
 }
 
@@ -13257,6 +13705,36 @@ def _typed_spelling(
     return fallback
 
 
+def _setup_home_refusal() -> str | None:
+    """The refusal `aelf setup` prints for a `$HOME` it won't write under,
+    or None (#1812).
+
+    For every host, setup writes under your home folder: the Claude
+    settings and slash commands, files under `~/.aelfrice` such as the
+    Claude auto-install opt-out, and the Codex skills. Python reads that
+    folder from `$HOME`, so an empty value puts those files under `/`, and
+    a relative one, such as one that starts with `~`, puts them under the
+    folder you run setup in. Setup refuses both, whatever `$CODEX_HOME`
+    holds. An unset `$HOME` isn't refused here: Python then reads the
+    password database, as Codex does. On Windows, Python reads the home
+    folder from `USERPROFILE`, so nothing is refused there.
+    """
+    if os.name == "nt":  # pragma: no cover - Windows
+        return None
+    home = os.environ.get("HOME")
+    if home is None or home.startswith("/"):
+        return None
+    what = (
+        "$HOME is empty"
+        if home == ""
+        else f"$HOME is {home!r}, which isn't an absolute path"
+    )
+    return (
+        f"aelf setup: {what}. Setup writes under your home folder, so set "
+        "HOME to an absolute path and run setup again; nothing was written"
+    )
+
+
 def _codex_option_rejection(
     parser: argparse.ArgumentParser,
     cmd: str | None,
@@ -13381,6 +13859,23 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
     if codex_rejection is not None:
         print(codex_rejection, file=sys.stderr)
         return 2
+    if cmd == "setup":
+        # #1812: ahead of the update check and every host's executor, so
+        # setup writes nothing under a home folder it refuses.
+        home_refusal = _setup_home_refusal()
+        if home_refusal is not None:
+            print(_doctor_text(home_refusal), file=sys.stderr)
+            return 1
+        try:
+            input_refusal = _setup_input_refusal(args)
+        except _UvMigrationSkipped as exc:
+            # Ahead of the auto-installer and the update check too, so
+            # the skipped run writes nothing.
+            print(_doctor_text(exc.notice), file=sys.stderr)
+            return 0
+        if input_refusal is not None:
+            print(_doctor_text(input_refusal), file=sys.stderr)
+            return 1
     if cmd not in _AUTO_INSTALL_SKIP_CMDS:
         # Idempotent post-upgrade hook installer (#623). Gated on a
         # version stamp at ~/.aelfrice/installed-manifest-version, so

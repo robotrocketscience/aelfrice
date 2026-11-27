@@ -1,0 +1,5077 @@
+"""`aelf doctor --host codex` scores what a plain `codex` launch starts
+(#1812): the files it can read, the approvals it honors, and the profile
+settings it ignores.
+
+Each case writes the files setup writes plus one change, and checks the
+exit code and the lines doctor prints.
+"""
+from __future__ import annotations
+
+import argparse
+import io
+import json
+import os
+import shutil
+import sys
+import tempfile
+import tomllib
+from pathlib import Path
+from typing import Any, Final, cast
+
+import pytest
+
+from aelfrice.cli import (
+    _cmd_doctor_codex,
+    _cmd_setup_codex,
+    _cmd_unsetup_codex,
+    main,
+)
+from aelfrice.host_codex import (
+    _PROGRAM_NAMES,
+    _names_by_line,
+    _names_in,
+    _run_command,
+    _trust_hash,
+    install_codex_hooks,
+    install_codex_skills,
+)
+from tests.codex_approvals import approve_codex_hooks
+
+
+def _doctor(
+    codex_dir: Path, skills: Path, *, approve: bool = True,
+) -> tuple[int, str]:
+    """Doctor's exit code and output, after approving every handler as
+    `/hooks` does, unless `approve` is False."""
+    if approve:
+        approve_codex_hooks(codex_dir)
+    out = io.StringIO()
+    rc = _cmd_doctor_codex(
+        argparse.Namespace(host="codex"), out,
+        codex_dir=codex_dir, skills_dest=skills,
+    )
+    return rc, out.getvalue()
+
+
+def _installed(tmp_path: Path) -> tuple[Path, Path, str]:
+    """A Codex dir after setup, its hooks.json, and setup's SessionStart
+    command."""
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    hooks = codex_dir / "hooks.json"
+    install_codex_hooks(hooks)
+    install_codex_skills(tmp_path / "skills")
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    return codex_dir, hooks, str(doc["hooks"]["SessionStart"][0]["hooks"][0]["command"])
+
+
+# --- files Codex can't read --------------------------------------------------
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_a_utf16_hooks_json_as_codex_does(tmp_path: Path) -> None:
+    """Codex reads hooks.json with `fs::read_to_string`, which fails on
+    bytes that aren't UTF-8, and loads no hook from it. Doctor says so and
+    exits 1, as it does for a hooks.json that isn't JSON."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    hooks.write_bytes(hooks.read_text(encoding="utf-8").encode("utf-16"))
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert (
+        f"[warn] {hooks} is unreadable as hooks config (the file isn't "
+        "UTF-8 text: byte 0 is 0xff); Codex will ignore or reject it"
+    ) in out, out
+
+
+#: hooks.json contents that aren't UTF-8, and the first bad byte: setup's
+#: file as Windows PowerShell 5.1 saves it (UTF-16 with a byte order
+#: mark), and a JSON file with one Latin-1 byte in a string.
+_NOT_UTF8: Final[dict[str, tuple[bytes, int, int]]] = {
+    "utf-16": ('{"hooks": {}}'.encode("utf-16"), 0, 0xFF),
+    "latin-1": (b'{"hooks": {}, "description": "x\xe9"}', 31, 0xE9),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("case", sorted(_NOT_UTF8))
+def test_setup_and_unsetup_treat_a_hooks_json_that_is_not_utf8_as_invalid(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    """Setup and unsetup treat a hooks.json that isn't UTF-8 as one that
+    isn't JSON: setup and unsetup exit 1, name the file and the first bad
+    byte, and leave it as it is, and `setup --force` replaces it."""
+    data, offset, byte = _NOT_UTF8[case]
+    hooks = tmp_path / "codex" / "hooks.json"
+    hooks.parent.mkdir()
+    hooks.write_bytes(data)
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=False,
+    )
+    bad = f"{hooks} isn't UTF-8 text: byte {offset} is {byte:#04x}"
+    assert _cmd_setup_codex(args, io.StringIO(), hooks_path=hooks) == 1
+    assert _cmd_unsetup_codex(
+        args, io.StringIO(), hooks_path=hooks, skills_dest=tmp_path / "s",
+    ) == 1
+    assert capsys.readouterr().err == (
+        f"setup --host codex: existing {bad}; re-run with --force to "
+        "replace it\n"
+        f"unsetup --host codex: {bad}; not modified\n"
+    )
+    assert hooks.read_bytes() == data
+    args.force = True
+    assert _cmd_setup_codex(args, io.StringIO(), hooks_path=hooks) == 0
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    assert sorted(doc) == ["hooks"], doc
+    assert "SessionStart" in doc["hooks"], doc
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("name", ["hooks.json", "config.toml"])
+def test_doctor_reads_a_directory_in_place_of_a_file_as_unreadable(
+    tmp_path: Path, name: str,
+) -> None:
+    """A hooks.json that is a directory loads no hook, and codex-cli
+    0.167.1 refuses to start on a config.toml that is one. Doctor names
+    the file as one Codex can't read, doesn't say it doesn't exist, and
+    exits 1."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    if name == "hooks.json":
+        hooks.unlink()
+    (codex_dir / name).mkdir()
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "does not exist" not in out, out
+    why = "Codex can't read the file: it is a directory, not a file"
+    if name == "hooks.json":
+        assert "[-] codex hooks.json: present=True valid=False " in out, out
+        assert (
+            f"[warn] {hooks} is unreadable as hooks config ({why}); Codex "
+            "will ignore or reject it\n"
+        ) in out, out
+    else:
+        assert (
+            f"[warn] Codex refuses to start with {codex_dir / name}, because "
+            f"{why}\n"
+        ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_a_latin1_config_toml_as_codex_does(tmp_path: Path) -> None:
+    """Codex reads config.toml with `String::from_utf8` and fails on bytes
+    that aren't UTF-8. Doctor names the byte and exits 1, as it does for a
+    config.toml Codex's TOML parser rejects."""
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    config = codex_dir / "config.toml"
+    config.write_bytes(b'notify = ["abc\xe9"]\n')
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert (
+        f"{config}, because the file isn't UTF-8 text: byte 14 is 0xe9"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_a_latin1_profile_file_without_raising(
+    tmp_path: Path,
+) -> None:
+    """A profile file that isn't UTF-8 gets a warning that names it."""
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    profile = codex_dir / "work.config.toml"
+    profile.write_bytes(b'notify = ["abc\xe9"]\n')
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert f"the profile file {profile}" in out, out
+
+
+# --- the launch doctor scores ------------------------------------------------
+
+
+def _toml_copy(command: str, matcher: str = "startup") -> str:
+    return (
+        f'[[hooks.SessionStart]]\nmatcher = "{matcher}"\n'
+        "[[hooks.SessionStart.hooks]]\n"
+        f'type = "command"\ncommand = {json.dumps(command)}\n'
+    )
+
+
+# Profile settings that `codex --profile work` reads and a plain `codex`
+# launch doesn't: (config.toml text, profile files, the warning doctor
+# gives, where `{config}` and `{dir}` are filled in).
+_PROFILE_ONLY: dict[str, tuple[str, dict[str, str], str]] = {
+    "a profile table": (
+        "[profiles.work.features]\nhooks = false\n", {},
+        "[warn] [profiles.work.features] in {config} sets `hooks`, which no "
+        "launch reads: a plain `codex` launch reads the `hooks` feature from "
+        "[features] only, and `codex --profile work` refuses to start while "
+        "config.toml has [profiles.work]\n",
+    ),
+    "a profile file's [features]": (
+        "", {"work.config.toml": "[features]\nhooks = false\n"},
+        "[warn] `codex --profile work` also reads the profile file "
+        "{dir}/work.config.toml, and its [features] turns Codex's `hooks` "
+        "feature off. Doctor scores a plain `codex` launch, which doesn't "
+        "read that file, so this doesn't change what doctor counts\n",
+    ),
+    "a profile file's [hooks]": (
+        "", {"work.config.toml": (
+            '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\n'
+            'command = "/bin/true"\n'
+        )},
+        "[warn] `codex --profile work` also reads the profile file "
+        "{dir}/work.config.toml, and its [hooks] table adds handlers.",
+    ),
+    "a profile file's structured [features] table": (
+        "", {"work.config.toml": "[features.code_mode]\nenabled = true\n"},
+        "[warn] `codex --profile work` also reads the profile file "
+        "{dir}/work.config.toml, and doctor doesn't check the value of "
+        "`code_mode` in its [features], so it can't tell whether `codex "
+        "--profile work` starts.",
+    ),
+    "a profile file's `profile` key": (
+        "", {"work.config.toml": 'profile = "x"\n'},
+        "[warn] `codex --profile work` also reads the profile file "
+        "{dir}/work.config.toml, and its top-level `profile` key makes "
+        "`codex --profile work` refuse to start.",
+    ),
+    "an unreadable profile file": (
+        "", {"work.config.toml": "[features\n"},
+        "[warn] doctor can't read the profile file {dir}/work.config.toml, "
+        "which `codex --profile work` reads: could not parse",
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_PROFILE_ONLY))
+def test_doctor_scores_a_plain_launch_and_names_the_profile(
+    tmp_path: Path, shape: str,
+) -> None:
+    """A plain `codex` launch reads no profile file and ignores
+    `[profiles.NAME]`, so it starts both copies of setup's handler. Doctor
+    fails on that launch and warns about the profile."""
+    codex_dir, hooks, ours = _installed(tmp_path)
+    hooks.unlink()
+    settings, files, warning = _PROFILE_ONLY[shape]
+    config = codex_dir / "config.toml"
+    config.write_text(
+        settings + _toml_copy(ours) + _toml_copy(ours, "startup|resume"),
+        encoding="utf-8",
+    )
+    for name, text in files.items():
+        (codex_dir / name).write_text(text, encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert (
+        "[FAIL] SessionStart starts the aelf-session-start-hook command 2 "
+        "times"
+    ) in out, out
+    assert warning.format(config=config, dir=codex_dir) in out, out
+    assert "doctor counts no duplicate run" not in out, out
+
+
+def _two_in_hooks_json(hooks: Path) -> None:
+    """Put a second copy of setup's SessionStart handler in its group."""
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    group = doc["hooks"]["SessionStart"][0]
+    group["hooks"].append(dict(group["hooks"][0]))
+    hooks.write_text(json.dumps(doc), encoding="utf-8")
+
+
+# config.toml text that makes Codex refuse to start.
+_REFUSED = {
+    "nesting": "x = " + "[" * 81 + "]" * 81 + "\n",
+    "a [hooks] table Codex rejects": '[hooks.state."k"]\nenabled = "yes"\n',
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_REFUSED))
+def test_doctor_counts_no_run_in_hooks_json_when_codex_refuses_to_start(
+    tmp_path: Path, shape: str,
+) -> None:
+    """Codex starts no hook when it refuses to start with config.toml, so
+    two copies in hooks.json are no duplicate run."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    _two_in_hooks_json(hooks)
+    config = codex_dir / "config.toml"
+    config.write_text(_REFUSED[shape], encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "times" not in out, out
+    assert (
+        f"[warn] doctor counts no duplicate run, because Codex refuses to "
+        f"start with {config}\n"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_says_nothing_about_a_profile_that_changes_no_hook(
+    tmp_path: Path,
+) -> None:
+    """A profile file that leaves the feature as config.toml sets it, and
+    adds no hook setting, gets no line."""
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    (codex_dir / "config.toml").write_text(
+        "[features]\nhooks = true\n", encoding="utf-8",
+    )
+    (codex_dir / "work.config.toml").write_text(
+        'model = "x"\n[features]\ncodex_hooks = true\n', encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "work.config.toml" not in out, out
+
+
+# --- approvals ---------------------------------------------------------------
+
+_SS = "/opt/aelf/bin/aelf-session-start-hook --host codex"
+# Handlers whose hash Codex's own code computed, with `hook_hash` and
+# `version_for_toml` at openai/codex@69231e119bfca0b14453515e97d99688ce1c47c9
+# copied into a Rust build with serde 1.0.228, serde_json 1.0.149, toml
+# 0.9.11, and sha2 0.10.9: (event, group, handler, hash with `command`,
+# hash with `commandWindows`).
+_GOLDEN: dict[str, tuple[str, dict[str, object], dict[str, object], str, str]] = {
+    "setup's SessionStart handler": (
+        "SessionStart", {"matcher": "startup|resume|clear|compact|fork"},
+        {"type": "command", "command": _SS, "timeout": 30,
+         "statusMessage": "aelfrice", "additionalContextLimit": 9500},
+        "sha256:18fc543fef9367ab5a4b414a33b6e7cb06419326010da69c200c27c84be90ebd",
+        "sha256:18fc543fef9367ab5a4b414a33b6e7cb06419326010da69c200c27c84be90ebd",
+    ),
+    "the default timeout and context limit": (
+        "SessionStart", {"matcher": "startup"},
+        {"type": "command", "command": _SS, "additionalContextLimit": 2500},
+        "sha256:60f4f235542c39019826f694c2bf4ad0c38f3257cad08a87cecdb0243bb69326",
+        "sha256:60f4f235542c39019826f694c2bf4ad0c38f3257cad08a87cecdb0243bb69326",
+    ),
+    "an event whose matcher Codex ignores": (
+        "Stop", {"matcher": "ignored"},
+        {"type": "command", "command": "/opt/aelf/bin/aelf-stop-hook",
+         "timeout": 0},
+        "sha256:8d4ec4dca7fc2571332d652e5d36f21be315b87704028360827b38485367bb5b",
+        "sha256:8d4ec4dca7fc2571332d652e5d36f21be315b87704028360827b38485367bb5b",
+    ),
+    "a SessionEnd timeout past its cap": (
+        "SessionEnd", {},
+        {"type": "command", "command": "/opt/aelf/bin/aelf-stop-hook",
+         "timeout": 9},
+        "sha256:3e0c9cf5f84ec3a036358abc7620f11d570f3cff58e9dbdc98865b40b735efc8",
+        "sha256:3e0c9cf5f84ec3a036358abc7620f11d570f3cff58e9dbdc98865b40b735efc8",
+    ),
+    "a context limit the event drops": (
+        "PostCompact", {"matcher": "auto"},
+        {"type": "command", "command": "/opt/aelf/bin/aelf-transcript-logger",
+         "additionalContextLimit": 7, "async": True},
+        "sha256:f7b80ca55162d2df39635d72dd777568b95d04dc03c04acf4617aee250aa31b8",
+        "sha256:f7b80ca55162d2df39635d72dd777568b95d04dc03c04acf4617aee250aa31b8",
+    ),
+    "a Windows command and a non-ASCII status": (
+        "UserPromptSubmit", {},
+        {"type": "command", "command": "/opt/aelf/bin/aelf-hook",
+         "commandWindows": "C:\\aelf\\aelf-hook.exe", "statusMessage": "\u00e9\n"},
+        "sha256:814ef22baaeaeee943c7b58692077840e039ecdbd637726167b970dfe8bbb3ba",
+        "sha256:eb61f3843d384a445ea1e2bdc1338db8a23c46bb726a17cf55801082a00d11b8",
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("case", sorted(_GOLDEN))
+def test_doctor_hashes_a_handler_as_codex_does(case: str) -> None:
+    event, group, handler, posix, windows = _GOLDEN[case]
+    for win, want in ((False, posix), (True, windows)):
+        command = _run_command(handler, windows=win)
+        assert command is not None
+        assert _trust_hash(event, group, handler, command) == (want, ""), win
+
+
+def _state_entry(key: str, digest: str) -> str:
+    return f"[hooks.state.{json.dumps(key)}]\ntrusted_hash = {json.dumps(digest)}\n"
+
+
+def _hash_of(config: Path, g: int) -> str:
+    """The hash Codex approves group `g` of config.toml's SessionStart by."""
+    doc = tomllib.loads(config.read_text(encoding="utf-8"))
+    group = doc["hooks"]["SessionStart"][g]
+    handler = group["hooks"][0]
+    digest, _why = _trust_hash("SessionStart", group, handler, handler["command"])
+    assert digest is not None
+    return digest
+
+
+def _two_toml_copies(tmp_path: Path, extra: str = "") -> tuple[Path, Path, str]:
+    """Setup's files, with hooks.json removed and two copies of setup's
+    SessionStart handler in config.toml whose matchers share `startup`."""
+    codex_dir, hooks, ours = _installed(tmp_path)
+    hooks.unlink()
+    config = codex_dir / "config.toml"
+    config.write_text(
+        _toml_copy(ours) + _toml_copy(ours, "startup|resume") + extra,
+        encoding="utf-8",
+    )
+    return codex_dir, config, ours
+
+
+def _approve(config: Path, *groups: int, digest: str | None = None) -> None:
+    config.write_text(
+        config.read_text(encoding="utf-8") + "".join(
+            _state_entry(
+                f"{config}:session_start:{g}:0", digest or _hash_of(config, g),
+            )
+            for g in groups
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.timeout(60)
+def test_doctor_fails_two_approved_copies(tmp_path: Path) -> None:
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    _approve(config, 0, 1)
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 1, out
+    assert (
+        "[FAIL] SessionStart starts the aelf-session-start-hook command 2 "
+        "times"
+    ) in out, out
+
+
+# Approval states that leave a copy unapproved: (groups approved, the hash
+# they hold, why doctor counts no run for group 1).
+_UNAPPROVED: dict[str, tuple[tuple[int, ...], str | None, str]] = {
+    "no entry": (
+        (0,), None,
+        "no [hooks.state] entry in {config} approves it under the key Codex "
+        "reads, `{config}:session_start:1:0`",
+    ),
+    "neither has an entry": (
+        (), None,
+        "no [hooks.state] entry in {config} approves it under the key Codex "
+        "reads, `{config}:session_start:1:0`",
+    ),
+    "a stale hash": (
+        (0, 1), "sha256:" + "0" * 64,
+        "its [hooks.state] `trusted_hash` in {config} isn't the hash of the "
+        "handler as it is now, so Codex skips it as modified",
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("state", sorted(_UNAPPROVED))
+def test_doctor_counts_no_run_for_a_copy_codex_has_not_approved(
+    tmp_path: Path, state: str,
+) -> None:
+    """Codex skips a user handler whose [hooks.state] entry doesn't hold
+    the hash it computes for it now, so the copy is no second run. Doctor
+    says that approving both copies starts the command twice."""
+    codex_dir, config, ours = _two_toml_copies(tmp_path)
+    groups, digest, reason = _UNAPPROVED[state]
+    for g in groups:
+        _approve(config, g, digest=digest)
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 0, out
+    assert "times" not in out.replace("twice", ""), out
+    assert (
+        "[warn] SessionStart handler at `hooks.SessionStart[1].hooks[0]` in "
+        f"the [hooks] table of {config} is a copy of the "
+        "aelf-session-start-hook command `aelf setup --host codex` writes, "
+        f"and doctor counts no run for it, because {reason.format(config=config)}. "
+        "Codex skips a handler you haven't approved, but once both copies are "
+        "approved, Codex starts the command twice on one fire; keep one copy "
+        f"and delete the others: {ours}\n"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_counts_no_run_for_a_copy_it_can_not_hash(tmp_path: Path) -> None:
+    """Codex reads a TOML date `statusMessage` as its text, which doctor
+    doesn't render, so doctor can't compute the hash and counts no run."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    text = config.read_text(encoding="utf-8")
+    config.write_text(
+        text.rstrip("\n") + "\nstatusMessage = 1979-05-27\n", encoding="utf-8",
+    )
+    _approve(config, 0, digest=_hash_of(config, 0))
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + _state_entry(f"{config}:session_start:1:0", "sha256:" + "1" * 64),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 0, out
+    assert (
+        "and doctor counts no run for it, because doctor can't compute the "
+        "hash Codex approves it by, because its `statusMessage` isn't a string."
+    ) in out, out
+
+
+def _resolved_doctor(skills: Path) -> tuple[int, str]:
+    """Doctor's exit code and output for the Codex home it resolves."""
+    out = io.StringIO()
+    rc = _cmd_doctor_codex(
+        argparse.Namespace(host="codex"), out, skills_dest=skills,
+    )
+    return rc, out.getvalue()
+
+
+def _two_copies_in(codex_dir: Path, skills: Path) -> Path:
+    """Setup's skills, and two copies of setup's SessionStart handler in
+    the config.toml of `codex_dir`, whose matchers share `startup`."""
+    hooks = codex_dir / "hooks.json"
+    install_codex_hooks(hooks)
+    install_codex_skills(skills)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    ours = str(doc["hooks"]["SessionStart"][0]["hooks"][0]["command"])
+    hooks.unlink()
+    config = codex_dir / "config.toml"
+    config.write_text(
+        _toml_copy(ours) + _toml_copy(ours, "startup|resume"), encoding="utf-8",
+    )
+    return config
+
+
+def _approve_under(config: Path, home: Path) -> None:
+    """Approve both copies under keys that spell the Codex home `home`."""
+    config.write_text(
+        config.read_text(encoding="utf-8") + "".join(
+            _state_entry(
+                f"{home / 'config.toml'}:session_start:{g}:0",
+                _hash_of(config, g),
+            )
+            for g in (0, 1)
+        ),
+        encoding="utf-8",
+    )
+
+
+def _check_approvals(rc: int, out: str, counted: bool, home: Path) -> None:
+    """Both copies count when `counted`, and otherwise neither does, and
+    doctor names the key under `home` that Codex reads."""
+    if counted:
+        assert rc == 1, out
+        assert (
+            "[FAIL] SessionStart starts the aelf-session-start-hook command 2 "
+            "times"
+        ) in out, out
+        assert "haven't approved" not in out, out
+    else:
+        assert rc == 0, out
+        assert "times" not in out.replace("twice", ""), out
+        assert (
+            "approves it under the key Codex reads, "
+            f"`{home / 'config.toml'}:session_start:0:0`"
+        ) in out, out
+
+
+def _symlinked_dot_codex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path]:
+    """`~/.codex` as a symlink, as a dotfile manager writes it, with
+    `CODEX_HOME` unset: the home as written, and canonical."""
+    real = tmp_path / "dotfiles" / "codex"
+    real.mkdir(parents=True)
+    home = tmp_path / "home"
+    home.mkdir()
+    written = home / ".codex"
+    written.symlink_to(real, target_is_directory=True)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    return written, real
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("spelling", "counted"), [("as written", True), ("canonical", False)],
+)
+def test_doctor_reads_approvals_through_a_symlinked_home_as_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
+    counted: bool,
+) -> None:
+    """With `CODEX_HOME` unset, Codex keys approvals by `~/.codex` as
+    written, so through a symlinked `~/.codex` an entry under the
+    canonical path approves nothing."""
+    written, real = _symlinked_dot_codex(tmp_path, monkeypatch)
+    config = _two_copies_in(written, tmp_path / "skills")
+    _approve_under(config, written if spelling == "as written" else real)
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    _check_approvals(rc, out, counted, written)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("spelling", "counted"), [("as written", True), ("canonical", False)],
+)
+def test_doctor_reads_an_empty_codex_home_as_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
+    counted: bool,
+) -> None:
+    """Codex ignores an empty `CODEX_HOME`, so through a symlinked
+    `~/.codex` it keys approvals by `~/.codex` as written."""
+    written, real = _symlinked_dot_codex(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEX_HOME", "")
+    config = _two_copies_in(written, tmp_path / "skills")
+    _approve_under(config, written if spelling == "as written" else real)
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    _check_approvals(rc, out, counted, written)
+
+
+#: `CODEX_HOME` values that start with `~`. `Path.expanduser` raises on the
+#: second, which names no user.
+_TILDE_HOMES: Final[list[str]] = ["~/c", "~nosuchuser1812/c"]
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("raw", _TILDE_HOMES)
+def test_doctor_reads_a_codex_home_that_starts_with_a_tilde_as_codex_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str,
+) -> None:
+    """Codex doesn't expand `~` in `CODEX_HOME`: it reads the value as a
+    path under the folder you start it in. So doctor reads that folder,
+    and counts the two approved copies there, not the ones under `$HOME`."""
+    home = tmp_path / "home"
+    (home / "c").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    _two_copies_in(home / "c", tmp_path / "skills")
+    work = tmp_path / "work"
+    literal = work / raw
+    literal.mkdir(parents=True)
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("CODEX_HOME", raw)
+    config = _two_copies_in(literal, tmp_path / "skills")
+    _approve_under(config, Path(os.path.realpath(literal)))
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    assert f"[i] codex home: {literal}\n" in out, out
+    _check_approvals(rc, out, True, literal)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("raw", _TILDE_HOMES)
+def test_doctor_reports_a_missing_codex_home_that_starts_with_a_tilde(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], raw: str,
+) -> None:
+    """Where no folder by that name is under the folder you start Codex
+    in, Codex refuses to start, so doctor names that path and exits 1,
+    even when `$HOME` holds the folder `~` would expand to."""
+    home = tmp_path / "home"
+    (home / "c").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODEX_HOME", raw)
+    rc = _cmd_doctor_codex(
+        argparse.Namespace(host="codex"), io.StringIO(),
+        skills_dest=tmp_path / "skills",
+    )
+    assert rc == 1
+    assert (
+        f"doctor --host codex: $CODEX_HOME points to {tmp_path / raw}, but "
+        "that path does not exist"
+    ) in capsys.readouterr().err
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("raw", _TILDE_HOMES)
+@pytest.mark.parametrize("exists", [True, False], ids=["folder", "no folder"])
+def test_setup_refuses_a_codex_home_that_starts_with_a_tilde(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], raw: str, exists: bool,
+) -> None:
+    """Setup exits 1 and writes nothing for a `CODEX_HOME` that starts with
+    `~`, which Codex doesn't expand, and asks for the expanded path."""
+    home = tmp_path / "home"
+    (home / "c").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    if exists:
+        (tmp_path / raw).mkdir(parents=True)
+    monkeypatch.setenv("CODEX_HOME", raw)
+    before = sorted(p for p in tmp_path.rglob("*"))
+    rc = main(["setup", "--host", "codex", "--no-codex-skills"])
+    assert rc == 1
+    assert (
+        f"setup --host codex: $CODEX_HOME is {raw!r}, which starts with `~`. "
+        "Codex doesn't expand `~` in it: it reads the value as a path under "
+        "the folder you start Codex in. Set CODEX_HOME to the expanded path, "
+        "and run setup again\n"
+    ) in capsys.readouterr().err
+    assert sorted(p for p in tmp_path.rglob("*")) == before
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("raw", _TILDE_HOMES)
+def test_unsetup_reads_a_codex_home_that_starts_with_a_tilde_as_codex_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], raw: str,
+) -> None:
+    """Unsetup reads a `CODEX_HOME` that starts with `~` as Codex and
+    doctor do, as a path under the folder you run it in. It removes setup's
+    handlers there and leaves the folder that `~` expands to alone."""
+    home = tmp_path / "home"
+    expanded = home / "c"
+    expanded.mkdir(parents=True)
+    install_codex_hooks(expanded / "hooks.json")
+    untouched = (expanded / "hooks.json").read_bytes()
+    monkeypatch.setenv("HOME", str(home))
+    work = tmp_path / "work"
+    literal = work / raw
+    literal.mkdir(parents=True)
+    install_codex_hooks(literal / "hooks.json")
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("CODEX_HOME", raw)
+    rc = main(["unsetup", "--host", "codex"])
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert (
+        f"removed aelfrice entries from {literal / 'hooks.json'} "
+    ) in captured.out, captured.out
+    assert (expanded / "hooks.json").read_bytes() == untouched
+
+
+# --- the home folder Codex starts from ---------------------------------------
+
+
+class _Passwd:
+    """The one field of a password database entry that Codex reads."""
+
+    def __init__(self, pw_dir: str) -> None:
+        self.pw_dir = pw_dir
+
+
+def _pin_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, home: str | None,
+) -> Path:
+    """Set `HOME` to `home`, or unset it for None, with every way Python
+    finds a home folder pinned under `tmp_path`, so no case can reach the
+    real home: the password database entry for your user names
+    `tmp_path / "passwd"`, it knows no user by name, and `Path.home` and
+    `os.path.expanduser` read only those. Returns that folder."""
+    import pwd
+
+    passwd = tmp_path / "passwd"
+    passwd.mkdir(exist_ok=True)
+    monkeypatch.setattr(pwd, "getpwuid", lambda _uid: _Passwd(str(passwd)))
+
+    def no_user(name: str) -> object:
+        raise KeyError(name)
+
+    monkeypatch.setattr(pwd, "getpwnam", no_user)
+    expanduser = os.path.expanduser
+
+    def pinned_expanduser(path: str) -> str:
+        expanded = expanduser(path)
+        assert not os.path.isabs(expanded) or _inside(Path(expanded), tmp_path) or (
+            expanded == "/"
+        ), expanded
+        return expanded
+
+    def pinned_home(cls: type[Path]) -> Path:
+        # `Path.home` as Python 3.12 and 3.13 write it.
+        expanded = os.path.expanduser("~")
+        if expanded[:1] == "~":
+            raise RuntimeError("Could not determine home directory.")
+        return cls(expanded)
+
+    monkeypatch.setattr(os.path, "expanduser", pinned_expanduser)
+    monkeypatch.setattr(Path, "home", classmethod(pinned_home))
+    if home is None:
+        monkeypatch.delenv("HOME", raising=False)
+    else:
+        monkeypatch.setenv("HOME", home)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    return passwd
+
+
+def _inside(path: Path, root: Path) -> bool:
+    """Whether `path` is under `root`, with both made canonical."""
+    return Path(os.path.realpath(path)).is_relative_to(os.path.realpath(root))
+
+
+#: `HOME` values, None for unset, and where Codex reads its home for each,
+#: under the folder you start it in or the password database's home folder.
+#: `~/h` reads `~/h/h/.codex`: Codex expands the `~` of `~/h/.codex` to
+#: `$HOME` itself (`AbsolutePathBuf::maybe_expand_home_directory`).
+_HOME_CASES: Final[dict[str, tuple[str | None, str]]] = {
+    "unset": (None, "passwd/.codex"),
+    "empty": ("", "passwd/.codex"),
+    "tilde": ("~", "work/~/.codex"),
+    "tilde slash": ("~/h", "work/~/h/h/.codex"),
+    "tilde user": ("~nosuchuser1812", "work/~nosuchuser1812/.codex"),
+    "relative": ("rel", "work/rel/.codex"),
+    "dot dot": ("rel/../h", "work/h/.codex"),
+}
+
+
+def _home_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> tuple[Path, Path]:
+    """Pin `HOME` for `case`, run from `tmp_path / "work"`, and return the
+    Codex home Codex reads, and the password database's home folder."""
+    home, codex_rel = _HOME_CASES[case]
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    passwd = _pin_home(tmp_path, monkeypatch, home)
+    codex_dir = tmp_path / codex_rel
+    from aelfrice.host_codex import resolve_codex_home
+
+    resolved = resolve_codex_home()
+    assert resolved == codex_dir and _inside(resolved, tmp_path), resolved
+    return codex_dir, passwd
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="Codex reads HOME on POSIX")
+@pytest.mark.parametrize("case", sorted(_HOME_CASES))
+def test_doctor_reads_the_codex_home_codex_reads_for_any_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    """With `CODEX_HOME` unset, doctor reads the Codex home Codex reads for
+    any `HOME`: the password database's home folder for an empty or unset
+    `HOME`, and a folder under the one you run it in for a relative one or
+    one that starts with `~`. Once the CLI has loaded, doctor doesn't raise,
+    and reads no skills folder where Codex reads none. Under a `HOME` that
+    starts with `~`, the CLI itself raises as it loads, a known limit
+    tracked in #1930, so this test pins the Codex code only."""
+    codex_dir, passwd = _home_case(tmp_path, monkeypatch, case)
+    codex_dir.mkdir(parents=True)
+    install_codex_hooks(codex_dir / "hooks.json")
+    out = io.StringIO()
+    rc = _cmd_doctor_codex(argparse.Namespace(host="codex"), out)
+    text = out.getvalue()
+    assert rc in (0, 1), text
+    assert f"[i] codex home: {codex_dir}\n" in text, text
+    assert "present=True valid=True" in text, text
+    if case in ("unset", "empty"):
+        skills = passwd / ".agents" / "skills"
+        assert (
+            "[i] codex skills ($aelf-*): 0 installed (0 orphaned) in "
+            f"{skills}\n"
+        ) in text, text
+    else:
+        assert (
+            "[i] codex skills ($aelf-*): none read: $HOME is "
+            f"{_HOME_CASES[case][0]!r}, which isn't an absolute path, so "
+            "Codex reads no user skills folder under it\n"
+        ) in text, text
+
+
+def _setup_args(*, codex_skills: bool) -> argparse.Namespace:
+    """The namespace `aelf setup --host codex` parses, with or without
+    `--no-codex-skills`."""
+    return argparse.Namespace(
+        host="codex", force=False, status_message=None,
+        codex_skills=codex_skills,
+    )
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="Codex reads HOME on POSIX")
+@pytest.mark.parametrize(
+    "case", sorted(set(_HOME_CASES) - {"unset"}),
+)
+def test_setup_refuses_a_home_that_is_empty_or_not_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    """With `CODEX_HOME` unset, the Codex half of setup exits 1 for an
+    empty `HOME`, a relative one, or one that starts with `~`, asks for an
+    absolute `HOME` or a `CODEX_HOME`, and writes nothing. `aelf setup`
+    refuses these values before this half runs, as
+    `test_setup_refuses_a_home_that_is_empty_or_not_absolute_for_any_host`
+    shows."""
+    codex_dir, _passwd = _home_case(tmp_path, monkeypatch, case)
+    home = _HOME_CASES[case][0]
+    before = sorted(tmp_path.rglob("*"))
+    rc = _cmd_setup_codex(_setup_args(codex_skills=True), io.StringIO())
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    what = (
+        "$HOME is empty, which Codex reads as unset, so Codex reads its home "
+        f"under {tmp_path / 'passwd'}, the home folder the password database "
+        "names for your user"
+        if home == ""
+        else f"$HOME is {home!r}, which isn't an absolute path, so Codex "
+        "reads its home as a path under the folder you start Codex in"
+    )
+    assert err == (
+        f"setup --host codex: {what}, and $CODEX_HOME is unset. Set HOME to "
+        "an absolute path, or set CODEX_HOME to the folder Codex reads, and "
+        "run setup again\n"
+    ), err
+    assert sorted(tmp_path.rglob("*")) == before
+    assert not codex_dir.exists()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="Codex reads HOME on POSIX")
+def test_setup_installs_under_the_password_database_home_for_an_unset_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With `HOME` and `CODEX_HOME` unset, setup writes hooks.json and the
+    skills under the home folder the password database names, as Codex
+    reads them."""
+    codex_dir, passwd = _home_case(tmp_path, monkeypatch, "unset")
+    codex_dir.mkdir(parents=True)
+    rc = main(["setup", "--host", "codex"])
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert (codex_dir / "hooks.json").is_file()
+    assert (passwd / ".agents" / "skills" / "aelf-onboard" / "SKILL.md").is_file()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="Codex reads HOME on POSIX")
+@pytest.mark.parametrize("skills", [True, False], ids=["skills", "no skills"])
+def test_setup_refuses_skills_under_a_home_codex_reads_none_under(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], skills: bool,
+) -> None:
+    """With `CODEX_HOME` set and `HOME` relative, Codex reads no user
+    skills folder. The Codex half of setup exits 1 and writes nothing
+    unless it is told to skip the skills, and then writes hooks.json only.
+    `aelf setup` refuses such a `HOME` before this half runs."""
+    _codex_dir, _passwd = _home_case(tmp_path, monkeypatch, "tilde user")
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_dir))
+    before = sorted(tmp_path.rglob("*"))
+    rc = _cmd_setup_codex(_setup_args(codex_skills=skills), io.StringIO())
+    captured = capsys.readouterr()
+    if skills:
+        assert rc == 1, captured.err
+        assert captured.err == (
+            "setup --host codex: $HOME is '~nosuchuser1812', which isn't an "
+            "absolute path, so Codex reads no user skills folder under it; "
+            "nothing was written. Set HOME to an absolute path, or pass "
+            "--no-codex-skills\n"
+        ), captured.err
+        assert sorted(tmp_path.rglob("*")) == before
+    else:
+        assert rc == 0, captured.err
+        assert sorted(p.name for p in codex_dir.iterdir()) == [
+            "hooks.json", "hooks.json.lock",
+        ]
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    os.name == "nt", reason="Python reads USERPROFILE on Windows",
+)
+@pytest.mark.parametrize("codex_home", [False, True], ids=["unset", "set"])
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["setup"],
+        ["setup", "--host", "codex"],
+        ["setup", "--host", "codex", "--no-codex-skills"],
+    ],
+    ids=["claude", "codex", "codex no skills"],
+)
+@pytest.mark.parametrize("case", sorted(set(_HOME_CASES) - {"unset"}))
+def test_setup_refuses_a_home_that_is_empty_or_not_absolute_for_any_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], case: str, argv: list[str],
+    codex_home: bool,
+) -> None:
+    """`aelf setup` exits 1 for an empty `HOME`, a relative one, or one
+    that starts with `~`, for each host and whether or not `CODEX_HOME` is
+    set. It names the value, asks for an absolute `HOME`, starts no update
+    check and no host's setup, and writes nothing: no hooks.json, and no
+    Claude opt-out file under the `.aelfrice` folder that such a `HOME`
+    names under the folder you run setup in."""
+    import aelfrice.auto_install as auto_install
+    import aelfrice.cli as cli
+
+    _codex_dir, _passwd = _home_case(tmp_path, monkeypatch, case)
+    home = _HOME_CASES[case][0]
+    assert home is not None
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    if codex_home:
+        monkeypatch.setenv("CODEX_HOME", str(codex_dir))
+    # The `.aelfrice` folder Python binds from this `HOME` as the CLI loads:
+    # a relative path, so under the folder setup runs in. An empty `HOME`
+    # binds `/.aelfrice`, which `tmp_path / "root"` stands in for.
+    dotdir = (
+        tmp_path / "root" / ".aelfrice" if home == ""
+        else Path(home) / ".aelfrice"
+    )
+    assert _inside(dotdir, tmp_path), dotdir
+    monkeypatch.setattr(auto_install, "AELFRICE_DOTDIR", dotdir)
+    monkeypatch.setattr(
+        auto_install, "OPT_OUT_PATH", dotdir / "opt-out-hooks.json",
+    )
+    started: list[str] = []
+
+    def claude_setup(_args: argparse.Namespace, _out: object) -> int:
+        started.append("claude setup")
+        return 0
+
+    monkeypatch.setitem(cli._SETUP_BY_HOST, "claude", claude_setup)  # noqa: SLF001
+    monkeypatch.delenv("AELF_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        cli, "maybe_check_for_update_async",
+        lambda *_a, **_k: started.append("update check"),
+    )
+    before = sorted(tmp_path.rglob("*"))
+    rc = main(argv)
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    what = (
+        "$HOME is empty" if home == ""
+        else f"$HOME is {home!r}, which isn't an absolute path"
+    )
+    assert err == (
+        f"aelf setup: {what}. Setup writes under your home folder, so set "
+        "HOME to an absolute path and run setup again; nothing was written\n"
+    ), err
+    assert started == []
+    assert sorted(tmp_path.rglob("*")) == before
+    assert not dotdir.exists()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="Codex reads HOME on POSIX")
+@pytest.mark.parametrize("case", sorted(_HOME_CASES))
+def test_unsetup_reads_the_codex_home_doctor_reads_for_any_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    """Unsetup removes setup's handlers from the Codex home doctor reads,
+    removes skills only from a skills folder Codex reads, and changes no
+    other file under `tmp_path`."""
+    codex_dir, passwd = _home_case(tmp_path, monkeypatch, case)
+    codex_dir.mkdir(parents=True)
+    install_codex_hooks(codex_dir / "hooks.json")
+    skills = passwd / ".agents" / "skills"
+    install_codex_skills(skills)
+    # A copy where Python's `Path.home` reads `~` for a relative `HOME`.
+    decoy = tmp_path / "work" / "~" / ".agents" / "skills"
+    install_codex_skills(decoy)
+
+    def files() -> dict[str, bytes]:
+        return {
+            str(p): p.read_bytes() for p in sorted(tmp_path.rglob("*"))
+            if p.is_file() and not _inside(p, codex_dir)
+            and (case not in ("unset", "empty") or not _inside(p, skills))
+        }
+
+    before = files()
+    rc = main(["unsetup", "--host", "codex"])
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert (
+        f"removed aelfrice entries from {codex_dir / 'hooks.json'} "
+    ) in captured.out, captured.out
+    if case in ("unset", "empty"):
+        assert f"Codex skill(s) from {skills}: " in captured.out, captured.out
+        assert not (skills / "aelf-onboard").exists()
+    else:
+        assert captured.out.endswith(
+            "no aelfrice Codex skills to remove: $HOME is "
+            f"{_HOME_CASES[case][0]!r}, which isn't an absolute path, so "
+            "Codex reads no user skills folder under it\n",
+        ), captured.out
+    assert files() == before
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="Codex reads HOME on POSIX")
+def test_doctor_setup_and_unsetup_exit_1_with_no_home_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With `HOME` and `CODEX_HOME` unset and no password database entry
+    for your user, Codex can't find its home and refuses to start, so
+    doctor, setup and unsetup exit 1 and say so, and write nothing."""
+    import pwd
+
+    _codex_dir, _passwd = _home_case(tmp_path, monkeypatch, "unset")
+
+    def no_entry(uid: int) -> object:
+        raise KeyError(uid)
+
+    monkeypatch.setattr(pwd, "getpwuid", no_entry)
+    before = sorted(tmp_path.rglob("*"))
+    for verb in ("doctor", "setup", "unsetup"):
+        assert main([verb, "--host", "codex"]) == 1, verb
+        assert capsys.readouterr().err.startswith(
+            f"{verb} --host codex: $HOME is unset or empty, and the password "
+            "database names no home folder for your user, so Codex can't "
+            "find its home and refuses to start.",
+        ), verb
+    assert sorted(tmp_path.rglob("*")) == before
+
+
+def _strict_utf8() -> io.TextIOWrapper:
+    """A text stream that raises on any character UTF-8 can't encode, as
+    a Linux stdout under a UTF-8 locale does."""
+    return io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+
+
+def _written(stream: io.TextIOWrapper) -> str:
+    stream.flush()
+    return cast(io.BytesIO, stream.buffer).getvalue().decode("utf-8")
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows paths are text, not bytes",
+)
+@pytest.mark.parametrize("given", ["argument", "missing", "existing"])
+def test_doctor_prints_a_codex_home_that_is_not_utf8_on_a_strict_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, given: str,
+) -> None:
+    """A path can hold a byte that isn't UTF-8, which Python reads as a
+    lone surrogate (`os.fsdecode`), and a strict UTF-8 stream can't encode
+    that. Doctor writes the byte as an escape instead of raising."""
+    raw = os.fsdecode(os.fsencode(str(tmp_path)) + b"/c\xff")
+    shown = f"{tmp_path}/c\\udcff"
+    out, err = _strict_utf8(), _strict_utf8()
+    monkeypatch.setattr(sys, "stderr", err)
+    codex_dir: Path | None = Path(raw)
+    if given != "argument":
+        if given == "existing":
+            try:
+                os.mkdir(os.fsencode(raw))
+            except OSError:
+                pytest.skip("this file system stores only UTF-8 names")
+        monkeypatch.setenv("CODEX_HOME", raw)
+        codex_dir = None
+    rc = _cmd_doctor_codex(
+        argparse.Namespace(host="codex"), out,
+        codex_dir=codex_dir, skills_dest=tmp_path / "skills",
+    )
+    if given == "missing":
+        assert rc == 1
+        assert (
+            f"doctor --host codex: $CODEX_HOME points to {shown}, but that "
+            "path does not exist"
+        ) in _written(err), _written(err)
+    else:
+        assert f"[i] codex home: {shown}\n" in _written(out), _written(out)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows paths are text, not bytes",
+)
+def test_setup_and_unsetup_print_paths_that_are_not_utf8_on_strict_streams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup prints its refusal on stderr, and unsetup its lines on
+    stdout, with each path through the escape doctor uses. The skills
+    folder sits under a regular file, so no file system can create it:
+    setup refuses before it writes, and unsetup finds no skills, whether
+    or not the file system stores a name that isn't UTF-8."""
+    raw = os.fsencode(str(tmp_path))
+    (tmp_path / "f").write_text("", encoding="utf-8")
+    skills = Path(os.fsdecode(raw + b"/f/s\xff"))
+    missing = Path(os.fsdecode(raw + b"/c\xff/hooks.json"))
+    hooks = tmp_path / "codex" / "hooks.json"
+    hooks.parent.mkdir()
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=True,
+    )
+    streams: dict[str, tuple[int, io.TextIOWrapper, io.TextIOWrapper]] = {}
+    for verb, call, path in (
+        ("setup", _cmd_setup_codex, hooks),
+        ("unsetup", _cmd_unsetup_codex, missing),
+    ):
+        out, err = _strict_utf8(), _strict_utf8()
+        monkeypatch.setattr(sys, "stderr", err)
+        rc = call(args, out, hooks_path=path, skills_dest=skills)
+        streams[verb] = (rc, out, err)
+    rc, out, err = streams["setup"]
+    assert (rc, _written(out), _written(err)) == (
+        1, "",
+        f"setup --host codex: {tmp_path}/f isn't a folder, so setup can't "
+        f"create {tmp_path}/f/s\\udcff; nothing was written. Fix or move "
+        "it, and run setup again\n",
+    )
+    assert not hooks.exists()
+    rc, out, err = streams["unsetup"]
+    assert (rc, _written(out), _written(err)) == (
+        0,
+        f"no aelfrice entries in {tmp_path}/c\\udcff/hooks.json\n"
+        f"no aelfrice Codex skills in {tmp_path}/f/s\\udcff\n",
+        "",
+    )
+
+
+@pytest.mark.timeout(60)
+def test_setup_and_unsetup_print_errors_that_are_not_utf8_on_a_strict_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An error message that names a path with a byte that isn't UTF-8
+    prints as an escape on stderr. The error is stubbed, so the case runs
+    on every system."""
+    import aelfrice.host_codex as host_codex
+    from aelfrice.host_codex import CodexInstallResult
+
+    bad = Path(f"{tmp_path}/c\udcff/hooks.json")
+    failed = CodexInstallResult(path=bad, changed=False, error=f"x {bad}")
+    monkeypatch.setattr(host_codex, "install_codex_hooks", lambda *a, **k: failed)
+    monkeypatch.setattr(host_codex, "remove_codex_hooks", lambda *a, **k: failed)
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=True,
+    )
+    shown = f"x {tmp_path}/c\\udcff/hooks.json\n"
+    for verb, call in (
+        ("setup", _cmd_setup_codex), ("unsetup", _cmd_unsetup_codex),
+    ):
+        err = _strict_utf8()
+        monkeypatch.setattr(sys, "stderr", err)
+        rc = call(args, io.StringIO(), hooks_path=bad, skills_dest=tmp_path)
+        assert rc == 1
+        assert _written(err) == f"{verb} --host codex: {shown}", _written(err)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows paths are text, not bytes",
+)
+def test_setup_and_unsetup_print_a_codex_home_that_is_not_utf8_on_a_strict_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `CODEX_HOME` that names a missing folder with a byte that isn't
+    UTF-8 prints as an escape in setup's and unsetup's refusal. The folder
+    need not exist, so this runs on every POSIX file system."""
+    raw = os.fsdecode(os.fsencode(str(tmp_path)) + b"/c\xff")
+    monkeypatch.setenv("CODEX_HOME", raw)
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=False,
+    )
+    for verb, call in (
+        ("setup", _cmd_setup_codex), ("unsetup", _cmd_unsetup_codex),
+    ):
+        err = _strict_utf8()
+        monkeypatch.setattr(sys, "stderr", err)
+        rc = call(args, io.StringIO(), skills_dest=tmp_path / "s")
+        assert rc == 1
+        assert _written(err).startswith(
+            f"{verb} --host codex: $CODEX_HOME points to {tmp_path}/c\\udcff, "
+            "but that path does not exist",
+        ), _written(err)
+
+
+@pytest.mark.timeout(60)
+def test_setup_and_unsetup_print_skills_lines_that_are_not_utf8_on_strict_streams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup's up-to-date line and unsetup's failed-removal line name a
+    skills folder that can hold a byte that isn't UTF-8, as on Linux ext4.
+    The skills calls are stubbed to report such a folder, so the case runs
+    on every system."""
+    import aelfrice.host_codex as host_codex
+    from aelfrice.host_codex import CodexSkillsResult
+
+    bad = Path(f"{tmp_path}/s\udcff")
+    monkeypatch.setattr(
+        host_codex, "install_codex_skills",
+        lambda *_a, **_k: CodexSkillsResult(dest_dir=bad),
+    )
+
+    def fail(*_a: object, **_k: object) -> CodexSkillsResult:
+        raise OSError(f"can't remove {bad}")
+
+    monkeypatch.setattr(host_codex, "remove_codex_skills", fail)
+    hooks = tmp_path / "codex" / "hooks.json"
+    hooks.parent.mkdir()
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=True,
+    )
+    out, err = _strict_utf8(), _strict_utf8()
+    monkeypatch.setattr(sys, "stderr", err)
+    assert _cmd_setup_codex(args, out, hooks_path=hooks, skills_dest=bad) == 0
+    assert (
+        f"Codex skills already up to date in {tmp_path}/s\\udcff\n"
+    ) in _written(out), _written(out)
+    err = _strict_utf8()
+    monkeypatch.setattr(sys, "stderr", err)
+    rc = _cmd_unsetup_codex(
+        args, io.StringIO(), hooks_path=hooks, skills_dest=bad,
+    )
+    assert rc == 1
+    assert _written(err) == (
+        "unsetup --host codex: skills removal failed: can't remove "
+        f"{tmp_path}/s\\udcff\n"
+    ), _written(err)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows paths are text, not bytes",
+)
+def test_doctor_prints_a_skills_folder_that_is_not_utf8_on_a_strict_stream(
+    tmp_path: Path,
+) -> None:
+    """The skills line names the skills folder, which can hold a byte that
+    isn't UTF-8. The folder need not exist, so this runs on a file system
+    that stores only UTF-8 names, such as macOS APFS."""
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    skills = Path(os.fsdecode(os.fsencode(str(tmp_path)) + b"/s\xff"))
+    out = _strict_utf8()
+    rc = _cmd_doctor_codex(
+        argparse.Namespace(host="codex"), out,
+        codex_dir=codex_dir, skills_dest=skills,
+    )
+    assert rc in (0, 1), _written(out)
+    assert (
+        "[i] codex skills ($aelf-*): 0 installed (0 orphaned) in "
+        f"{tmp_path}/s\\udcff\n"
+    ) in _written(out), _written(out)
+
+
+@pytest.mark.timeout(60)
+def test_doctor_prints_a_fail_line_that_is_not_utf8_on_a_strict_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `[FAIL]` line can name a skill folder that holds a byte that isn't
+    UTF-8, as on Linux ext4. The scan is stubbed to report such a name, so
+    the case runs on every system."""
+    import aelfrice.host_codex as host_codex
+
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    approve_codex_hooks(codex_dir)
+    monkeypatch.setattr(
+        host_codex, "modified_codex_skills", lambda _dir: ["aelf-x\udcff"],
+    )
+    out = _strict_utf8()
+    rc = _cmd_doctor_codex(
+        argparse.Namespace(host="codex"), out,
+        codex_dir=codex_dir, skills_dest=tmp_path / "skills",
+    )
+    assert rc == 1, _written(out)
+    assert (
+        "[FAIL] installed $aelf-* skill(s) do not match what this build "
+        "generates (edited, or left stale by an upgrade): aelf-x\\udcff "
+    ) in _written(out), _written(out)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("spelling", "counted"), [("made absolute", True), ("as written", False)],
+)
+def test_doctor_reads_approvals_under_home_with_dot_dot_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
+    counted: bool,
+) -> None:
+    """With `CODEX_HOME` unset, Codex removes `.` and `..` from
+    `$HOME/.codex` before it keys approvals by it."""
+    (tmp_path / "home" / ".codex").mkdir(parents=True)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home" / ".." / "home"))
+    written = tmp_path / "home" / ".." / "home" / ".codex"
+    config = _two_copies_in(written, tmp_path / "skills")
+    absolute = tmp_path / "home" / ".codex"
+    _approve_under(config, absolute if spelling == "made absolute" else written)
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    _check_approvals(rc, out, counted, absolute)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("where", "spelling", "counted"),
+    [
+        ("a symlink", "canonical", True),
+        ("a symlink", "as written", False),
+        ("/tmp", "canonical", True),
+        ("/tmp", "as written", False),
+    ],
+)
+def test_doctor_reads_approvals_under_codex_home_as_canonical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str,
+    spelling: str, counted: bool,
+) -> None:
+    """With `CODEX_HOME` set, Codex canonicalizes it, so for a
+    `CODEX_HOME` through a symlink, or under `/tmp`, which macOS links to
+    `/private/tmp`, it keys approvals by the canonical path."""
+    if where == "/tmp" and sys.platform != "darwin":
+        pytest.skip("only macOS links /tmp to /private/tmp")
+    if where == "/tmp":
+        written = Path(tempfile.mkdtemp(dir="/tmp"))
+    else:
+        (tmp_path / "real").mkdir()
+        written = tmp_path / "link"
+        written.symlink_to(tmp_path / "real", target_is_directory=True)
+    try:
+        real = Path(os.path.realpath(written))
+        assert real != written
+        monkeypatch.setenv("CODEX_HOME", str(written))
+        config = _two_copies_in(written, tmp_path / "skills")
+        _approve_under(config, real if spelling == "canonical" else written)
+        rc, out = _resolved_doctor(tmp_path / "skills")
+        _check_approvals(rc, out, counted, real)
+    finally:
+        if where == "/tmp":
+            shutil.rmtree(written)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS realpath(3)")
+@pytest.mark.parametrize(
+    ("spelling", "counted"), [("canonical", True), ("as written", False)],
+)
+def test_doctor_reads_approvals_under_codex_home_in_the_case_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
+    counted: bool,
+) -> None:
+    """Codex canonicalizes `CODEX_HOME` with realpath(3), which on macOS
+    corrects its letter case to the folder's, so for a `CODEX_HOME` in
+    another case it keys approvals by the case on disk."""
+    (tmp_path / "real").mkdir()
+    written = tmp_path / "REAL"
+    if not written.is_dir():
+        pytest.skip("this volume tells letter case apart")
+    real = Path(os.path.realpath(tmp_path / "real"))
+    monkeypatch.setenv("CODEX_HOME", str(written))
+    config = _two_copies_in(written, tmp_path / "skills")
+    _approve_under(
+        config,
+        real if spelling == "canonical"
+        else Path(os.path.realpath(tmp_path)) / "REAL",
+    )
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    _check_approvals(rc, out, counted, real)
+    assert "can't canonicalize" not in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS realpath(3)")
+def test_doctor_says_when_it_can_not_call_realpath(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the realpath(3) call fails, doctor keys approvals as
+    `os.path.realpath` spells the home and says the letter case can
+    differ from Codex's key."""
+    import aelfrice.host_codex as host_codex
+
+    def fail(path: str) -> str:
+        raise OSError(5, "Input/output error", path)
+
+    monkeypatch.setattr(host_codex, "_darwin_realpath", fail)
+    (tmp_path / "real").mkdir()
+    real = Path(os.path.realpath(tmp_path / "real"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "real"))
+    config = _two_copies_in(tmp_path / "real", tmp_path / "skills")
+    _approve_under(config, real)
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    _check_approvals(rc, out, True, real)
+    assert (
+        f"[warn] doctor can't canonicalize {tmp_path / 'real'} with "
+        "realpath(3), as Codex does ([Errno 5] Input/output error: "
+        f"'{tmp_path / 'real'}'), so it reads [hooks.state] keys under {real}, "
+        "which can differ in letter case from the key Codex reads\n"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("spelling", "disabled"), [("as written", True), ("canonical", False)],
+)
+def test_doctor_reads_enabled_through_a_symlinked_home_as_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str,
+    disabled: bool,
+) -> None:
+    """`enabled = false` names a handler by the key an approval does, so
+    through a symlinked `~/.codex` with `CODEX_HOME` unset, an entry under
+    the canonical path disables nothing."""
+    written, real = _symlinked_dot_codex(tmp_path, monkeypatch)
+    config = _two_copies_in(written, tmp_path / "skills")
+    _approve_under(config, written)
+    home = written if spelling == "as written" else real
+    # A leading space, which Codex trims, keeps the approval's key apart.
+    key = f" {home / 'config.toml'}:session_start:1:0"
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + f"[hooks.state.{json.dumps(key)}]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    rc, out = _resolved_doctor(tmp_path / "skills")
+    assert rc == (0 if disabled else 1), out
+    assert ("sets `enabled = false` for it" in out) is disabled, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_the_last_enabled_of_a_key(tmp_path: Path) -> None:
+    """Codex lets a later entry's `enabled` win, so `enabled = true` under
+    one spaced spelling of the key, after `enabled = false` under another,
+    leaves the copy enabled."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    _approve(config, 0, 1)
+    key = f"{config}:session_start:1:0"
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + f"[hooks.state.{json.dumps(chr(9) + key)}]\nenabled = false\n"
+        + f"[hooks.state.{json.dumps(' ' + key)}]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 1, out
+    assert "starts the aelf-session-start-hook command 2 times" in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_keeps_a_trusted_hash_key_codex_keeps_whole(
+    tmp_path: Path,
+) -> None:
+    """Rust's `str::trim` keeps U+001C to U+001F, which Python's
+    `str.strip()` removes, so an approval under a key that ends in U+001F
+    approves no handler, and neither copy counts a run."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    config.write_text(
+        config.read_text(encoding="utf-8") + "".join(
+            f'[hooks.state."{config}:session_start:{g}:0\\u001f"]\n'
+            f"trusted_hash = {json.dumps(_hash_of(config, g))}\n"
+            for g in (0, 1)
+        ),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 0, out
+    assert "times" not in out.replace("twice", ""), out
+    assert (
+        f"approves it under the key Codex reads, `{config}:session_start:1:0`"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_the_last_trusted_hash_of_a_key(tmp_path: Path) -> None:
+    """Codex trims each key and lets a later entry's `trusted_hash` win, so
+    a stale hash under a spaced spelling of the key, after the right one,
+    leaves the copy unapproved."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    _approve(config, 0, 1)
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + _state_entry(f" {config}:session_start:1:0\t", "sha256:" + "2" * 64),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 0, out
+    assert "isn't the hash of the handler as it is now" in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_keeps_a_state_key_codex_keeps_whole(tmp_path: Path) -> None:
+    """Rust's `str::trim` removes Unicode White_Space, which leaves out
+    U+001C to U+001F that Python's `str.strip()` removes. A `[hooks.state]`
+    key that ends in U+001F matches no handler, so its `enabled = false`
+    disables nothing and both approved copies run."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    _approve(config, 0, 1)
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + f'[hooks.state."{config}:session_start:1:0\\u001f"]\nenabled = false\n',
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 1, out
+    assert "starts the aelf-session-start-hook command 2 times" in out, out
+
+
+# --- a config.toml tomllib can't parse ---------------------------------------
+
+
+@pytest.mark.timeout(60)
+def test_doctor_names_programs_in_a_config_toml_tomllib_rejects(
+    tmp_path: Path,
+) -> None:
+    """Codex's toml reads TOML 1.1, such as a newline inside an inline
+    table, which `tomllib` rejects. Doctor can't read the file's approvals,
+    so it counts no run anywhere, and it names each line that names a
+    program, the way it reads a string."""
+    codex_dir, hooks, ours = _installed(tmp_path)
+    hooks.unlink()
+    config = codex_dir / "config.toml"
+    config.write_text(
+        '[mcp_servers.mem]\ncommand = "aelf-hook"\nenv = {\n  A = "1"\n}\n'
+        'notify = ["Aelf-Stop-Ho\\\nok"]\n'
+        + _toml_copy(ours) + _toml_copy(ours, "startup|resume"),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 0, out
+    assert "times" not in out, out
+    for number, key, line in (
+        (2, "aelf-hook", 'command = "aelf-hook"'),
+        (6, "aelf-stop-hook", 'notify = ["Aelf-Stop-Ho\\'),
+        (12, "aelf-session-start-hook", f"command = {json.dumps(ours)}"),
+        (17, "aelf-session-start-hook", f"command = {json.dumps(ours)}"),
+    ):
+        assert (
+            f"[warn] Line {number} of {config} names {key}, and doctor counts "
+            "no run from that file, because it can't parse it. Check what "
+            f"Codex runs from this line: {line}\n"
+        ) in out, out
+    assert (
+        f"[warn] doctor counts no duplicate run, because doctor can't parse "
+        f"{config}, which holds the [hooks] table and the [hooks.state] "
+        "approvals Codex reads\n"
+    ) in out, out
+    assert "no aelfrice hooks are installed" not in out, out
+    assert (
+        f"{hooks} does not exist; doctor can't parse {config}, so it can't "
+        "tell whether aelfrice hooks are installed"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_counts_no_run_in_hooks_json_beside_a_config_toml_it_can_not_parse(
+    tmp_path: Path,
+) -> None:
+    """The approvals of hooks.json handlers live in config.toml, so doctor
+    can't count them either."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    _two_in_hooks_json(hooks)
+    approve_codex_hooks(codex_dir)
+    config = codex_dir / "config.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + "x = { a = 1, }\n", encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 0, out
+    assert "times" not in out, out
+    assert (
+        "[warn] doctor counts no duplicate run, because doctor can't parse "
+        f"{config}, which holds the [hooks] table and the [hooks.state] "
+        "approvals Codex reads\n"
+    ) in out, out
+    # Codex may still load both copies, so each one gets a line.
+    for h in (0, 1):
+        assert (
+            f"[warn] SessionStart handler at `hooks.SessionStart[0].hooks[{h}]` "
+            "is a copy of the aelf-session-start-hook command `aelf setup "
+            "--host codex` writes, and doctor counts no run for it, because "
+            f"doctor can't parse {config}, which holds the [hooks] table and "
+            "the [hooks.state] approvals Codex reads. If Codex starts its "
+            "hooks, a fire that runs all 2 copies starts the command once for "
+            "each; keep one copy and delete the others: "
+        ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_names_programs_in_a_profile_file_tomllib_rejects(
+    tmp_path: Path,
+) -> None:
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    profile = codex_dir / "ci.config.toml"
+    profile.write_text('x = { a = 1, }\nnotify = ["aelf-hook"]\n', encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert (
+        f"[warn] Line 2 of the profile file {profile} names aelf-hook, and "
+        "doctor can't parse that file, which `codex --profile ci` reads. "
+        'Check what Codex runs from this line: notify = ["aelf-hook"]\n'
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_does_not_claim_no_hooks_when_config_toml_names_one(
+    tmp_path: Path,
+) -> None:
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    hooks.unlink()
+    config = codex_dir / "config.toml"
+    config.write_text('notify = ["aelf-transcript-logger"]\n', encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "no aelfrice hooks are installed" not in out, out
+    assert (
+        f"{hooks} does not exist; {config} names an aelfrice program, as the "
+        "lines above say, in no handler `aelf setup --host codex` writes"
+    ) in out, out
+
+
+# --- a byte order mark ---------------------------------------------------------
+
+#: The UTF-8 byte order mark, as bytes.
+_BOM_BYTES: Final[bytes] = b"\xef\xbb\xbf"
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("marks", [1, 2])
+def test_doctor_reads_a_config_toml_that_starts_with_a_byte_order_mark(
+    tmp_path: Path, marks: int,
+) -> None:
+    """Codex's TOML parser skips one UTF-8 byte order mark, so doctor reads
+    the approvals in a config.toml that starts with one and counts both
+    copies there. With a second mark, Codex refuses to start and `tomllib`
+    can't parse the file, so doctor counts no run."""
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    config = _two_copies_in(codex_dir, tmp_path / "skills")
+    approve_codex_hooks(codex_dir)
+    config.write_bytes(_BOM_BYTES * marks + config.read_bytes())
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    if marks == 1:
+        assert rc == 1, out
+        assert (
+            "[FAIL] SessionStart starts the aelf-session-start-hook command 2 "
+            "times"
+        ) in out, out
+        assert "parse" not in out, out
+    else:
+        assert rc == 0, out
+        assert "times" not in out, out
+        assert f"doctor can't parse {config}, which holds" in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_a_profile_file_that_starts_with_a_byte_order_mark(
+    tmp_path: Path,
+) -> None:
+    """A profile file goes through the same reader as config.toml."""
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    profile = codex_dir / "work.config.toml"
+    profile.write_bytes(_BOM_BYTES + b"[features]\nhooks = false\n")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert (
+        f"[warn] `codex --profile work` also reads the profile file {profile}, "
+        "and its [features] turns Codex's `hooks` feature off."
+    ) in out, out
+    assert "can't" not in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_rejects_a_hooks_json_that_starts_with_a_byte_order_mark(
+    tmp_path: Path,
+) -> None:
+    """serde_json reads no byte order mark, so Codex loads no hook from a
+    hooks.json that starts with one, and doctor exits 1 and counts neither
+    copy in it."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    _two_in_hooks_json(hooks)
+    approve_codex_hooks(codex_dir)
+    hooks.write_bytes(_BOM_BYTES + hooks.read_bytes())
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 1, out
+    assert f"[warn] {hooks} is unreadable as hooks config (" in out, out
+    assert "times" not in out, out
+
+
+# --- numbers and keys Codex rejects ------------------------------------------
+
+
+#: A decimal integer longer than Python's `int` reads.
+_LONG_INT = "1" * (sys.get_int_max_str_digits() + 1)
+
+
+#: Places in hooks.json for a value: the path of a field that two copies of
+#: setup's SessionStart handler hold, and the path doctor names, which for
+#: a value nested past serde_json's limit is the path of the value it cuts.
+_PLACES: dict[str, tuple[tuple[object, ...], str]] = {
+    "a key Codex skips": (("Foo",), "`hooks.Foo`"),
+    "a field Codex doesn't read": (
+        ("SessionStart", 0, "hooks", 1, "x"),
+        "`hooks.SessionStart[0].hooks[1].x`",
+    ),
+    "a timeout": (
+        ("SessionStart", 0, "hooks", 1, "timeout"),
+        "`hooks.SessionStart[0].hooks[1].timeout`",
+    ),
+    "an mcp_tool input": (
+        ("SessionStart", 0, "hooks", 2, "input", "x"),
+        "`hooks.SessionStart[0].hooks[2].input.x`",
+    ),
+    "a value nested deep under a key Codex skips": (
+        ("Foo",),
+        "`hooks.Foo[0][0][0][0]...`, in a value nested 128 levels deep",
+    ),
+}
+
+
+def _hooks_with(hooks: Path, place: str, value: str) -> None:
+    """Two copies of setup's SessionStart handler, and `value`, a JSON
+    token, at `place` (`_PLACES`)."""
+    _two_in_hooks_json(hooks)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["SessionStart"][0]["hooks"].append(
+        {"type": "mcp_tool", "server": "s", "tool": "t", "input": {}},
+    )
+    path, _shown = _PLACES[place]
+    parent: Any = doc["hooks"]
+    for part in path[:-1]:
+        parent = parent[part]
+    parent[path[-1]] = "@@VALUE@@"
+    if place.startswith("a value nested deep"):
+        value = "[" * 140 + value + "]" * 140
+    hooks.write_text(
+        json.dumps(doc).replace('"@@VALUE@@"', value), encoding="utf-8",
+    )
+
+
+#: Numbers a 64-bit float can't hold. The codex binary builds serde_json
+#: with `arbitrary_precision`, so none of them fails the parse.
+_WIDE_NUMBERS: Final[list[str]] = ["1e400", "-1e400", "1" + "0" * 400, _LONG_INT]
+_WIDE_IDS: Final[list[str]] = ["1e400", "-1e400", "401 digits", "past the digit limit"]
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "place", sorted(p for p in _PLACES if p != "a timeout"),
+)
+@pytest.mark.parametrize("value", _WIDE_NUMBERS, ids=_WIDE_IDS)
+def test_doctor_counts_runs_beside_a_number_a_float_can_not_hold(
+    tmp_path: Path, place: str, value: str,
+) -> None:
+    """Codex loads hooks.json with a number a 64-bit float can't hold in a
+    value it skips or doesn't read as a typed field, so doctor counts the
+    two copies there, and doesn't raise on an integer longer than Python's
+    `int` reads."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    _hooks_with(hooks, place, value)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert (
+        "[FAIL] SessionStart starts the aelf-session-start-hook command 2 "
+        "times"
+    ) in out, out
+    assert "Codex loads no hook" not in out, out
+    assert "float" not in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    [
+        ("timeout", "has a `timeout` that isn't a count of seconds"),
+        (
+            "additionalContextLimit",
+            "has an `additionalContextLimit` that isn't a count",
+        ),
+    ],
+)
+@pytest.mark.parametrize("value", _WIDE_NUMBERS, ids=_WIDE_IDS)
+def test_doctor_rejects_a_hooks_json_with_such_a_number_in_a_typed_field(
+    tmp_path: Path, field: str, reason: str, value: str,
+) -> None:
+    """Such a number reaches a typed field of a handler as a map, which the
+    field rejects, so Codex loads no hook from the file. Doctor exits 1
+    and names the handler, and counts neither copy."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    _two_in_hooks_json(hooks)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["SessionStart"][0]["hooks"][1][field] = "@@VALUE@@"
+    hooks.write_text(
+        json.dumps(doc).replace('"@@VALUE@@"', value), encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert (
+        f"[warn] Codex loads no hook from {hooks}, because it rejects the "
+        f"whole file: SessionStart group 1, handler 2 {reason}\n"
+    ) in out, out
+    assert "times" not in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("value", ["1e308", "-1e308", "1e-400", "1" * 308])
+def test_doctor_counts_runs_beside_a_number_a_float_holds(
+    tmp_path: Path, value: str,
+) -> None:
+    """A number a 64-bit float holds, or one that underflows to 0, which
+    serde_json reads, leaves the count as it is."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    _hooks_with(hooks, "a field Codex doesn't read", value)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "starts the aelf-session-start-hook command 2 times" in out, out
+    assert "64-bit float" not in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("place", sorted(_PLACES))
+@pytest.mark.parametrize("name", ["NaN", "Infinity", "-Infinity"])
+def test_doctor_rejects_a_hooks_json_with_a_json_constant(
+    tmp_path: Path, place: str, name: str,
+) -> None:
+    """serde_json rejects `NaN`, `Infinity`, and `-Infinity` at any place in
+    a file, in a value Codex skips or nested past its depth limit too, so
+    Codex loads no hook from it and the two copies in it never run."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    _hooks_with(hooks, place, name)
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 1, out
+    assert "times" not in out, out
+    assert (
+        f"[warn] Codex loads no hook from {hooks}, because it rejects the "
+        f"whole file: it holds `{name}` at {_PLACES[place][1]}, which "
+        "serde_json, which Codex reads the file with, rejects at any place "
+        "in a file\n"
+    ) in out, out
+
+
+# A top-level value in config.toml, and why Codex's TOML parser rejects
+# the file, or None when it reads it.
+_TOML_NUMBERS: dict[str, tuple[str, str | None]] = {
+    "the largest i64": ("9223372036854775807", None),
+    "the smallest i64": ("-9223372036854775808", None),
+    "past the largest i64": (
+        "9223372036854775808",
+        "the integer at `x` is outside the range of a 64-bit signed integer",
+    ),
+    "past the smallest i64": (
+        "-9223372036854775809",
+        "the integer at `x` is outside the range of a 64-bit signed integer",
+    ),
+    "a hex u64": (
+        "0xffffffffffffffff",
+        "the integer at `x` is outside the range of a 64-bit signed integer",
+    ),
+    "in a nested array": (
+        "[[1, 9223372036854775808]]",
+        "the integer at `x[0][1]` is outside the range of a 64-bit signed "
+        "integer",
+    ),
+    "in an inline table": (
+        "{ a = { b = -9223372036854775809 } }",
+        "the integer at `x.a.b` is outside the range of a 64-bit signed "
+        "integer",
+    ),
+    "a float that overflows": (
+        "1e400", "the float `1e400` overflows a 64-bit float",
+    ),
+    "a negative float that overflows": (
+        "-1_0e400", "the float `-1_0e400` overflows a 64-bit float",
+    ),
+    "inf": ("inf", None),
+    "-inf": ("-inf", None),
+    "a float that underflows": ("1e-400", None),
+    "a long integer": (
+        _LONG_INT,
+        "it holds an integer of more than "
+        f"{sys.get_int_max_str_digits()} digits, outside the range of a "
+        "64-bit signed integer",
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_TOML_NUMBERS))
+def test_doctor_reads_toml_numbers_as_codex_does(
+    tmp_path: Path, shape: str,
+) -> None:
+    """toml 0.9 rejects the whole config.toml over an integer an `i64`
+    can't hold or a float literal that overflows, so Codex refuses to
+    start and doctor counts no run. `inf` and an underflow are fine."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    value, why = _TOML_NUMBERS[shape]
+    _approve(config, 0, 1)
+    config.write_text(
+        f"x = {value}\n" + config.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    assert rc == 1, out
+    if why is None:
+        assert "starts the aelf-session-start-hook command 2 times" in out, out
+        assert "refuses to start" not in out, out
+    else:
+        assert "times" not in out, out
+        assert (
+            f"[warn] Codex refuses to start with {config}, because its TOML "
+            f"parser rejects the whole file: {why}\n"
+        ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_a_profile_file_with_a_long_integer(
+    tmp_path: Path,
+) -> None:
+    """A profile file `tomllib` can't read an integer of doesn't stop
+    doctor: the plain launch doesn't read it, and doctor names it."""
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    profile = codex_dir / "ci.config.toml"
+    profile.write_text(f"x = {_LONG_INT}\n", encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert (
+        f"[warn] doctor can't read the profile file {profile}, which `codex "
+        "--profile ci` reads: its TOML parser rejects the whole file: it "
+        f"holds an integer of more than {sys.get_int_max_str_digits()} digits"
+    ) in out, out
+
+
+# `[features]` tables, and what doctor makes of each: Codex reads it,
+# Codex refuses to start because of the key named, or doctor doesn't check
+# the value of the key named, in the table named.
+_FEATURES: dict[str, tuple[str, str, str, str]] = {
+    "a text value": (
+        '[features]\nweb_search = "live"\n', "refuses", "web_search",
+        "[features]",
+    ),
+    "a number": ("[features]\nshell_tool = 1\n", "refuses", "shell_tool", "[features]"),
+    "a table under a plain key": (
+        "[features.memories]\nx = 1\n", "refuses", "memories", "[features]",
+    ),
+    "a profile table's text value": (
+        '[profiles.ci.features]\nweb_search = "live"\n', "refuses",
+        "web_search", "[profiles.ci.features]",
+    ),
+    "true and false": (
+        "[features]\nweb_search = true\nx = false\n", "reads", "", "",
+    ),
+    "true under a structured key": (
+        "[features]\ncode_mode = true\nnetwork_proxy = false\n", "reads", "",
+        "",
+    ),
+    "a table under a structured key": (
+        "[features.code_mode]\nenabled = true\n", "unchecked", "code_mode",
+        "[features]",
+    ),
+    "a number under a structured key": (
+        "[features]\ntoken_budget = 100000\n", "unchecked", "token_budget",
+        "[features]",
+    ),
+    "a network_proxy table": (
+        "[features.network_proxy]\nenabled = true\n", "unchecked",
+        "network_proxy", "[features]",
+    ),
+    "a profile table's structured table": (
+        "[profiles.ci.features.code_mode]\nenabled = true\n", "unchecked",
+        "code_mode", "[profiles.ci.features]",
+    ),
+    "tool_registry set to true": (
+        "[features]\ntool_registry = true\n", "refuses", "tool_registry",
+        "[features]",
+    ),
+    "a tool_registry table": (
+        "[features.tool_registry]\nerror_on_tool_collisions = true\n",
+        "unchecked", "tool_registry", "[features]",
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("shape", sorted(_FEATURES))
+def test_doctor_reads_every_features_key_as_codex_does(
+    tmp_path: Path, shape: str,
+) -> None:
+    """`FeaturesToml` reads each `[features]` key outside its own fields as
+    true or false, and `tool_registry` as a table only, so another value
+    makes Codex refuse to start. It reads each other field of its own as
+    true, false, or a table, which doctor doesn't check. Doctor counts no
+    run when Codex refuses to start or when it doesn't check a value."""
+    codex_dir, config, _ours = _two_toml_copies(tmp_path)
+    table, kind, key, where = _FEATURES[shape]
+    _approve(config, 0, 1)
+    config.write_text(
+        config.read_text(encoding="utf-8") + table, encoding="utf-8",
+    )
+    rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    if kind == "reads":
+        assert rc == 1, out
+        assert "starts the aelf-session-start-hook command 2 times" in out, out
+        assert "refuses to start" not in out, out
+        assert "doesn't check the value" not in out, out
+        return
+    assert rc == 0, out
+    assert "times" not in out, out
+    # Codex may start both copies only when doctor can't tell.
+    copy_line = (
+        "is a copy of the aelf-session-start-hook command `aelf setup --host "
+        "codex` writes, and doctor counts no run for it, because "
+    )
+    assert (out.count(copy_line) == 2) is (kind == "unchecked"), out
+    if kind == "refuses":
+        assert (
+            f"[warn] doctor counts no duplicate run, because `{key}` in "
+            f"{where} in {config} "
+        ) in out, out
+        assert ", so Codex refuses to start\n" in out, out
+    else:
+        assert (
+            "[warn] doctor counts no duplicate run, because doctor doesn't "
+            f"check the value of `{key}` in {where} in {config} against the "
+            "type Codex reads it as, so it can't tell whether Codex starts\n"
+        ) in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+@pytest.mark.parametrize(
+    ("mode", "warns"),
+    [(0o311, True), (0o644, False)],
+    ids=["listed no", "searched no"],
+)
+def test_doctor_reads_a_codex_home_it_can_not_list_or_search(
+    tmp_path: Path, mode: int, warns: bool,
+) -> None:
+    """Doctor doesn't raise on a Codex home it can't list, which only
+    hides profile files, or can't search, where Python 3.12's
+    `Path.is_file` raises."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    codex_dir.chmod(mode)
+    try:
+        rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    finally:
+        codex_dir.chmod(0o755)
+    assert rc in (0, 1), out
+    listed = (
+        f"[warn] doctor can't list the files in {codex_dir}, so it reads no "
+        "profile file that `codex --profile NAME` reads: "
+    )
+    assert (listed in out) is warns, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+@pytest.mark.parametrize(
+    ("locked", "mode"), [("agents", 0), ("agents/skills", 0o444)],
+)
+def test_doctor_reads_a_skills_folder_it_can_not_search(
+    tmp_path: Path, locked: str, mode: int,
+) -> None:
+    """Doctor doesn't raise on a `~/.agents`, or a `~/.agents/skills`, it
+    can't search, where Python 3.12's `Path.is_dir` raises, and counts no
+    skill there."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    agents = tmp_path / "agents"
+    install_codex_skills(agents / "skills")
+    (tmp_path / locked).chmod(mode)
+    try:
+        rc, out = _doctor(codex_dir, agents / "skills")
+    finally:
+        (tmp_path / locked).chmod(0o755)
+    assert rc == 0, out
+    assert (
+        "[i] codex skills ($aelf-*): 0 installed (0 orphaned) in "
+        f"{agents / 'skills'}\n"
+    ) in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_a_skill_file_that_is_not_utf8(tmp_path: Path) -> None:
+    """A SKILL.md that isn't UTF-8 reads as a skill that isn't aelfrice's,
+    and doctor doesn't raise."""
+    codex_dir, _hooks, _ours = _installed(tmp_path)
+    skill = tmp_path / "skills" / "aelf-local"
+    skill.mkdir()
+    (skill / "SKILL.md").write_bytes(b"AELFRICE-CODEX-SKILL \xff\n")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "(0 orphaned)" in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+def test_doctor_reports_a_codex_home_under_a_folder_it_can_not_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `CODEX_HOME` under a folder doctor can't search is one Codex can't
+    read either, so doctor reports it and exits 1, where Python 3.12's
+    `Path.exists` raises."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    locked = tmp_path / "locked"
+    (locked / "codex").mkdir(parents=True)
+    monkeypatch.setenv("CODEX_HOME", str(locked / "codex"))
+    err = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", err)
+    locked.chmod(0)
+    try:
+        rc = _cmd_doctor_codex(
+            argparse.Namespace(host="codex"), io.StringIO(),
+            skills_dest=tmp_path / "skills",
+        )
+    finally:
+        locked.chmod(0o755)
+    assert rc == 1, err.getvalue()
+    assert (
+        f"doctor --host codex: $CODEX_HOME points to {locked / 'codex'}, "
+        "which aelfrice can't read ("
+    ) in err.getvalue(), err.getvalue()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+@pytest.mark.parametrize("mode", [0o644, 0], ids=["644", "000"])
+def test_setup_and_unsetup_refuse_a_codex_home_they_can_not_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], mode: int,
+) -> None:
+    """In a Codex home you can't search, setup and unsetup exit 1 with a
+    message that names hooks.json and the system error, where Python 3.12
+    and 3.13 raise `PermissionError`, and write nothing."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    hooks = codex_dir / "hooks.json"
+    install_codex_hooks(hooks)
+    before = (sorted(p.name for p in codex_dir.iterdir()), hooks.read_bytes())
+    monkeypatch.setenv("CODEX_HOME", str(codex_dir))
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=True,
+    )
+    codex_dir.chmod(mode)
+    try:
+        rcs = {
+            "setup": _cmd_setup_codex(
+                args, io.StringIO(), skills_dest=tmp_path / "skills",
+            ),
+            "unsetup": _cmd_unsetup_codex(
+                args, io.StringIO(), skills_dest=tmp_path / "skills",
+            ),
+        }
+    finally:
+        codex_dir.chmod(0o755)
+    err = capsys.readouterr().err
+    assert rcs == {"setup": 1, "unsetup": 1}, err
+    assert err == (
+        f"setup --host codex: can't read {hooks} ([Errno 13] Permission "
+        f"denied: '{hooks}'); nothing was written\n"
+        f"unsetup --host codex: can't read {hooks} ([Errno 13] Permission "
+        f"denied: '{hooks}'); nothing was changed\n"
+    ), err
+    assert (sorted(p.name for p in codex_dir.iterdir()), hooks.read_bytes()) == before
+    assert not (tmp_path / "skills").exists()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+@pytest.mark.parametrize("mode", [0o644, 0], ids=["644", "000"])
+def test_doctor_names_the_files_in_a_codex_home_it_can_not_search(
+    tmp_path: Path, mode: int,
+) -> None:
+    """Doctor can't tell whether hooks.json exists in a Codex home it can't
+    search, so it says so, names the file, and exits 1, and it reads
+    config.toml as a file Codex can't read and refuses to start with."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    approve_codex_hooks(codex_dir)
+    codex_dir.chmod(mode)
+    try:
+        rc, out = _doctor(codex_dir, tmp_path / "skills", approve=False)
+    finally:
+        codex_dir.chmod(0o755)
+    assert rc == 1, out
+    assert "[-] codex hooks.json: present=unknown valid=False " in out, out
+    assert (
+        f"[warn] {hooks} is unreadable as hooks config (doctor can't tell "
+        "whether the file exists, because a stat of it fails: [Errno 13] "
+        f"Permission denied: '{hooks}'); Codex will ignore or reject it\n"
+    ) in out, out
+    config = codex_dir / "config.toml"
+    assert (
+        f"[warn] Codex refuses to start with {config}, because Codex can't "
+        f"read the file: [Errno 13] Permission denied: '{config}'\n"
+    ) in out, out
+    assert "does not exist" not in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+def test_doctor_reports_a_default_codex_home_under_a_folder_it_can_not_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With `CODEX_HOME` unset, a `~/.codex` under a folder doctor can't
+    search is one Codex can't read either, so doctor names it and exits 1
+    instead of saying that Codex isn't installed."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    locked = tmp_path / "locked"
+    (locked / "home" / ".codex").mkdir(parents=True)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(locked / "home"))
+    out, err = io.StringIO(), io.StringIO()
+    monkeypatch.setattr(sys, "stderr", err)
+    locked.chmod(0)
+    try:
+        rc = _cmd_doctor_codex(
+            argparse.Namespace(host="codex"), out,
+            skills_dest=tmp_path / "skills",
+        )
+    finally:
+        locked.chmod(0o755)
+    assert rc == 1, out.getvalue() + err.getvalue()
+    assert err.getvalue().startswith(
+        "doctor --host codex: doctor can't tell whether "
+        f"{locked / 'home' / '.codex'} exists ([Errno 13] Permission denied",
+    ), err.getvalue()
+    assert "not found" not in out.getvalue(), out.getvalue()
+
+
+# --- the programs doctor names ----------------------------------------------
+
+
+def _package_scripts() -> list[str]:
+    """The console scripts in pyproject.toml's `[project.scripts]`."""
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    return sorted(data["project"]["scripts"])
+
+
+def test_doctor_names_every_program_the_package_installs() -> None:
+    """A script pyproject.toml adds is a program doctor must name."""
+    scripts = _package_scripts()
+    assert "aelf" in scripts and len(scripts) >= 11, scripts
+    assert sorted(set(scripts) - _PROGRAM_NAMES) == []
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("name", _package_scripts())
+def test_doctor_warns_about_a_handler_that_runs_any_package_program(
+    tmp_path: Path, name: str,
+) -> None:
+    """A handler of your own that runs any program the package installs
+    gets a `[warn]` line that names the program, and doctor exits 0."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["Stop"][0]["hooks"].append(
+        {"type": "command", "command": f"/usr/bin/env {name} --flag"},
+    )
+    hooks.write_text(json.dumps(doc), encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    lines = [
+        line for line in out.splitlines()
+        if line.startswith("[warn] Stop handler ")
+        and "`hooks.Stop[0].hooks[2]`" in line
+        and f" {name}. " in line
+    ]
+    assert len(lines) == 1, out
+
+
+@pytest.mark.parametrize(
+    ("text", "names"),
+    [
+        ("/opt/aelf/bin/aelf-hook", ["aelf-hook"]),
+        ("/home/me/aelfrice/.venv/bin/aelf-stop-hook", ["aelf-stop-hook"]),
+        ("aelf search x", ["aelf"]),
+        ("AELF.exe status", ["aelf"]),
+        ("uv run a'el'f session-delta", ["aelf"]),
+        ("python -m aelfrice.cli", []),
+        ("myaelf x_aelf aelf_x aelfx", []),
+    ],
+)
+def test_doctor_reads_the_bare_cli_as_a_word(
+    text: str, names: list[str],
+) -> None:
+    """The bare `aelf` counts only as a word, so a folder named `aelf`, the
+    package name, and the other programs don't name it."""
+    assert _names_in(text) == names
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("text", ["aelf memory", "aelf-hook memory"])
+def test_doctor_reads_no_name_in_the_status_message_of_setup_handlers(
+    tmp_path: Path, text: str,
+) -> None:
+    """`aelf setup --host codex --status-message TEXT` writes TEXT on its
+    own handlers. Doctor reads a handler whose command is byte-identical to
+    setup's as setup's, so a program name in TEXT gets no line."""
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    install_codex_hooks(codex_dir / "hooks.json", status_message=text)
+    install_codex_skills(tmp_path / "skills")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    assert "[warn]" not in out, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_reads_the_status_message_of_a_handler_of_your_own(
+    tmp_path: Path,
+) -> None:
+    """A handler whose command setup doesn't write keeps the line for a
+    program its `statusMessage` names."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["Stop"][0]["hooks"].append({
+        "type": "command", "command": "/usr/bin/true",
+        "statusMessage": "aelf memory",
+    })
+    hooks.write_text(json.dumps(doc), encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    lines = [
+        line for line in out.splitlines()
+        if line.startswith("[warn] Stop handler ")
+        and "`hooks.Stop[0].hooks[2]`" in line and " names aelf, " in line
+    ]
+    assert len(lines) == 1, out
+
+
+@pytest.mark.timeout(60)
+def test_doctor_keeps_the_command_of_a_setup_handler_with_a_status_message(
+    tmp_path: Path,
+) -> None:
+    """The exemption drops only the names in the `statusMessage` of setup's
+    handler. A copy of that handler under a key that isn't a Codex event
+    still gets the line that names the program its command runs."""
+    codex_dir = tmp_path / "codex"
+    codex_dir.mkdir()
+    hooks = codex_dir / "hooks.json"
+    install_codex_hooks(hooks, status_message="aelf memory")
+    install_codex_skills(tmp_path / "skills")
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["NotAnEvent"] = [doc["hooks"]["Stop"][0]]
+    hooks.write_text(json.dumps(doc), encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    lines = [
+        line for line in out.splitlines()
+        if line.startswith(
+            "[warn] 'NotAnEvent' handler at `hooks.NotAnEvent[0].hooks[",
+        )
+        and " but Codex reads no hook event by that name" in line
+    ]
+    named = sorted(
+        line.split(" names ", 1)[1].split(",", 1)[0] for line in lines
+    )
+    assert named == ["aelf-stop-hook", "aelf-transcript-logger"], out
+
+
+@pytest.mark.parametrize(
+    ("text", "names"),
+    [
+        ("C:\\Users\\me\\.local\\bin\\aelf.exe search", ["aelf"]),
+        ("C:\\tools\\aelf search", ["aelf"]),
+        ("aelf\\ x", ["aelf"]),
+        ("C:\\aelf\\bin\\tool.exe", []),
+        ("C:\\bin\\myaelf.exe", []),
+    ],
+)
+def test_doctor_reads_a_backslash_as_a_path_separator_for_the_bare_cli(
+    text: str, names: list[str],
+) -> None:
+    """A bare `aelf` counts as a word in the string with `\\` deleted or in
+    the string with `\\` read as `/`, so a Windows path to the CLI names it,
+    and a Windows folder named `aelf` doesn't."""
+    assert _names_in(text) == names
+
+
+def test_doctor_names_the_line_of_a_windows_path_to_the_bare_cli() -> None:
+    """In a file `tomllib` can't parse, the bare CLI in a Windows path
+    counts on the line it is on, after a line of backslashes that the
+    first reading deletes."""
+    text = (
+        'x = "' + "\\" * 12 + '"\n'
+        "y = = 1\n"
+        "notify = ['C:\\bin\\aelf.exe']\n"
+        "z = 2\n"
+    )
+    assert _names_by_line(text) == [
+        (3, "aelf", "notify = ['C:\\bin\\aelf.exe']"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "names"),
+    [
+        ("true\\naelf search", ["aelf"]),
+        ("x\\taelf", ["aelf"]),
+        ("bash -c $'\\raelf search'", ["aelf"]),
+        ("env -Saelf search", []),
+        ("C:\\aelf\\bin\\tool.exe", []),
+    ],
+)
+def test_doctor_reads_an_escape_before_the_bare_cli_as_a_space(
+    text: str, names: list[str],
+) -> None:
+    """A `\\` and the one character after it, such as the escape `\\n`,
+    leave a bare `aelf` after them a word, and doctor reads no other shell
+    syntax, so an option glued to the name hides it."""
+    assert _names_in(text) == names
+
+
+def test_doctor_names_the_line_of_an_escape_before_the_bare_cli() -> None:
+    """In a file `tomllib` can't parse, the bare CLI after an escape counts
+    on the line it is on, after a line that a backslash-newline joins and a
+    line of backslashes, which each reading shortens by its own count."""
+    text = (
+        'x = "a\\\nb"\n'
+        'w = "' + "\\" * 40 + '"\n'
+        "y = = 1\n"
+        "notify = ['true\\naelf']\n"
+        "z = 2\n"
+        "v = 3\n"
+    )
+    assert _names_by_line(text) == [
+        (5, "aelf", "notify = ['true\\naelf']"),
+    ]
+
+
+@pytest.mark.timeout(60)
+def test_doctor_warns_about_the_bare_cli_after_an_escape(
+    tmp_path: Path,
+) -> None:
+    """A handler whose command runs the CLI after an escape that a shell
+    reads as a newline gets the warning that names it."""
+    codex_dir, hooks, _ours = _installed(tmp_path)
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    doc["hooks"]["Stop"][0]["hooks"].append({
+        "type": "command", "command": "bash -c $'true\\naelf search'",
+    })
+    hooks.write_text(json.dumps(doc), encoding="utf-8")
+    rc, out = _doctor(codex_dir, tmp_path / "skills")
+    assert rc == 0, out
+    lines = [
+        line for line in out.splitlines()
+        if line.startswith("[warn] Stop handler ")
+        and "`hooks.Stop[0].hooks[2]`" in line and " names aelf, " in line
+    ]
+    assert len(lines) == 1, out
+
+
+# --- files setup reads before it writes --------------------------------------
+
+#: What setup says after the cause when you can fix or move the file.
+_FIX_OR_MOVE: Final[str] = "Fix or move it, and run setup again"
+#: What setup says after the cause when a folder's permissions stop it.
+_FIX_PERMS: Final[str] = "Fix its permissions, and run setup again"
+#: Whether a test can take a permission away and see setup refused: not on
+#: Windows, and not as root, who reads and writes in any folder.
+_CAN_CHMOD: Final[bool] = os.name != "nt" and os.geteuid() != 0
+_needs_chmod = pytest.mark.skipif(
+    not _CAN_CHMOD, reason="needs POSIX permissions and a user that isn't root",
+)
+#: Claude settings that aren't UTF-8: Latin-1 text, and UTF-16.
+_LATIN1_SETTINGS: Final[bytes] = b'{"hooks": {}, "x": "\xe9"}'
+_LATIN1_AT: Final[int] = _LATIN1_SETTINGS.index(b"\xe9")
+_UTF16_SETTINGS: Final[bytes] = '{"hooks": {}}'.encode("utf-16")
+#: An opt-out ledger that isn't UTF-8, and one that opts the claude host out.
+_LATIN1_LEDGER: Final[bytes] = b'{"opt_out": ["\xff"]}'
+_CLAUDE_OPTED_OUT: Final[str] = '{"opt_out": [], "opt_out_hosts": ["claude"]}\n'
+#: A ledger that opts the transcript-ingest hook out.
+_INGEST_OPTED_OUT: Final[str] = '{"opt_out": ["transcript_ingest"]}\n'
+
+
+def _nested(levels: int, top: bytes = b'{"hooks": {}, "x": ') -> bytes:
+    """A JSON object that nests arrays or objects `levels` levels deep, the
+    object itself at level 1, with its first members `top` (#1812)."""
+    return top + b"[" * (levels - 1) + b"]" * (levels - 1) + b"}"
+
+
+#: The cause setup names after a file nested deeper than it reads (#1812).
+_TOO_DEEP: Final[str] = (
+    "nests arrays or objects more than 256 levels deep, which setup can't "
+    "read"
+)
+#: JSON that setup doesn't read, or that holds a lone surrogate, with the
+#: cause setup names after the file (#1812), keyed by the name of the state
+#: that puts it in the Claude settings; the ledger states put the same text
+#: under `opt_out`. Python 3.12 reads 2,000 and 9,000 levels with
+#: `json.loads` and raises `RecursionError` when `json.dumps(indent=2)`
+#: writes them; 100,000 levels raise it in `json.loads` on 3.12 and 3.13.
+_UNREADABLE_JSON: Final[dict[str, tuple[bytes, str]]] = {
+    "deep": (_nested(100_000), _TOO_DEEP),
+    "deep 257": (_nested(257), _TOO_DEEP),
+    "deep 2000": (_nested(2000), _TOO_DEEP),
+    "deep 9000": (_nested(9000), _TOO_DEEP),
+    "long integer": (
+        b'{"hooks": {}, "x": ' + b"1" * 5000 + b"}",
+        f"holds an integer of more than {sys.get_int_max_str_digits()} "
+        "digits, which setup can't read",
+    ),
+    "lone surrogate": (
+        b'{"hooks": {}, "x": ["a", "b\\ud800"]}',
+        "holds a lone UTF-16 surrogate escape in the string at `x[1]`, which "
+        "setup can't write back as UTF-8 text",
+    ),
+    "surrogate key": (
+        b'{"hooks": {"\\udc00": []}}',
+        "holds a lone UTF-16 surrogate escape in a key in `hooks`, which "
+        "setup can't write back as UTF-8 text",
+    ),
+}
+_LEDGER_JSON: Final[dict[str, tuple[bytes, str]]] = {
+    "ledger deep": (_nested(100_000, b'{"opt_out": '), _TOO_DEEP),
+    "ledger deep 2000": (_nested(2000, b'{"opt_out": '), _TOO_DEEP),
+    "ledger deep 9000": (_nested(9000, b'{"opt_out": '), _TOO_DEEP),
+    "ledger long integer": (
+        b'{"opt_out": [' + b"1" * 5000 + b"]}", _UNREADABLE_JSON["long integer"][1],
+    ),
+    "ledger surrogate": (
+        b'{"opt_out": ["\\ud800"], "opt_out_hosts": []}',
+        "holds a lone UTF-16 surrogate escape in the string at `opt_out[0]`, "
+        "which setup can't write back as UTF-8 text",
+    ),
+}
+
+
+def _setup_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Path]:
+    """Point the files `aelf setup` reads at `tmp_path / "home"`: the
+    Claude settings, the slash-commands folder and the opt-out ledger. `HOME` itself stays the one
+    pin.sh sets. Returns those paths, the folders around them, a Codex
+    folder and a skills folder, with only `.aelfrice` and the Codex folder
+    made."""
+    import aelfrice.auto_install as auto_install
+    import aelfrice.setup as setup_mod
+
+    home = tmp_path / "home"
+    skills = home / ".agents" / "skills"
+    p = {
+        "home": home,
+        "claude": home / ".claude",
+        "settings": home / ".claude" / "settings.json",
+        "dotdir": home / ".aelfrice",
+        "ledger": home / ".aelfrice" / "opt-out-hooks.json",
+        "agents": home / ".agents",
+        "skills": skills,
+        "skill": skills / "aelf-onboard",
+        "md": skills / "aelf-onboard" / "SKILL.md",
+        "codex": tmp_path / "codex",
+        "commands": home / ".claude" / "commands",
+        "slash": home / ".claude" / "commands" / "aelf",
+    }
+    p["dotdir"].mkdir(parents=True)
+    p["codex"].mkdir()
+    monkeypatch.setattr(setup_mod, "USER_SETTINGS_PATH", p["settings"])
+    monkeypatch.setattr(setup_mod, "SLASH_COMMANDS_DIR_DEFAULT", p["slash"])
+    monkeypatch.setattr(auto_install, "AELFRICE_DOTDIR", p["dotdir"])
+    monkeypatch.setattr(auto_install, "OPT_OUT_PATH", p["ledger"])
+    return p
+
+
+def _tree(root: Path) -> dict[str, tuple[int, bytes | None]]:
+    """Each path under `root` that can be listed, with its mode, or -1 in a
+    folder you can't search, and, for a file that can be read, its bytes."""
+    out: dict[str, tuple[int, bytes | None]] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            path = os.path.join(dirpath, name)
+            try:
+                mode = os.lstat(path).st_mode
+            except OSError:
+                out[path] = (-1, None)
+                continue
+            data: bytes | None = None
+            if os.path.isfile(path) and not os.path.islink(path):
+                try:
+                    with open(path, "rb") as f:
+                        data = f.read()
+                except OSError:
+                    data = None
+            out[path] = (mode, data)
+    return out
+
+
+def _restore_modes(root: Path) -> None:
+    """Give back each permission a state took away under `root`, so pytest
+    can remove it."""
+    os.chmod(root, 0o700)
+    for name in os.listdir(root):
+        path = root / name
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            _restore_modes(path)
+        else:
+            os.chmod(path, 0o600)
+
+
+def _write_settings(p: dict[str, Path], data: bytes) -> None:
+    p["claude"].mkdir(parents=True, exist_ok=True)
+    p["settings"].write_bytes(data)
+
+
+def _skills_installed(p: dict[str, Path]) -> None:
+    install_codex_skills(p["skills"])
+
+
+def _codex_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
+    """Apply the Codex setup state `name`, and return the cause and the
+    remedy setup names for it."""
+    if name == "settings latin-1":
+        _write_settings(p, _LATIN1_SETTINGS)
+        return (
+            f"{p['settings']} isn't UTF-8 text: byte {_LATIN1_AT} is 0xe9",
+            _FIX_OR_MOVE,
+        )
+    if name == "settings utf-16":
+        _write_settings(p, _UTF16_SETTINGS)
+        return f"{p['settings']} isn't UTF-8 text: byte 0 is 0xff", _FIX_OR_MOVE
+    if name == "claude unsearchable":
+        _write_settings(p, b"{}")
+        os.chmod(p["claude"], 0o600)
+        return f"{p['settings']} can't be read (Permission denied)", _FIX_OR_MOVE
+    if name == "ledger latin-1":
+        p["ledger"].write_bytes(_LATIN1_LEDGER)
+        return f"{p['ledger']} isn't UTF-8 text: byte 14 is 0xff", _FIX_OR_MOVE
+    if name == "ledger folder":
+        p["ledger"].mkdir()
+        return f"{p['ledger']} is a folder, not a file", _FIX_OR_MOVE
+    if name == "aelfrice file":
+        p["dotdir"].rmdir()
+        p["dotdir"].write_text("x", encoding="utf-8")
+        return (
+            f"{p['ledger']} can't be read, because {p['dotdir']} isn't a "
+            "folder", _FIX_OR_MOVE,
+        )
+    if name == "aelfrice unsearchable":
+        os.chmod(p["dotdir"], 0o600)
+        return f"{p['ledger']} can't be read (Permission denied)", _FIX_OR_MOVE
+    if name == "aelfrice read-only":
+        os.chmod(p["dotdir"], 0o500)
+        return (
+            f"{p['dotdir']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
+    if name == "skill latin-1":
+        _skills_installed(p)
+        p["md"].write_bytes(b"x\xe9 aelfrice")
+        return f"{p['md']} isn't UTF-8 text: byte 1 is 0xe9", _FIX_OR_MOVE
+    if name == "skill utf-16":
+        _skills_installed(p)
+        p["md"].write_bytes(b"\xff\xfe junk")
+        return f"{p['md']} isn't UTF-8 text: byte 0 is 0xff", _FIX_OR_MOVE
+    if name == "skills file":
+        p["agents"].mkdir()
+        p["skills"].write_text("x", encoding="utf-8")
+        return f"{p['skills']} isn't a folder", _FIX_OR_MOVE
+    if name == "agents file":
+        p["agents"].write_text("x", encoding="utf-8")
+        return (
+            f"{p['agents']} isn't a folder, so setup can't create "
+            f"{p['skills']}", _FIX_OR_MOVE,
+        )
+    if name == "skill path file":
+        _skills_installed(p)
+        shutil.rmtree(p["skill"])
+        p["skill"].write_text("x", encoding="utf-8")
+        return f"{p['skill']} isn't a folder", _FIX_OR_MOVE
+    if name == "skill md folder":
+        _skills_installed(p)
+        p["md"].unlink()
+        p["md"].mkdir()
+        return f"{p['md']} is a folder, not a file", _FIX_OR_MOVE
+    if name == "skills unsearchable":
+        _skills_installed(p)
+        os.chmod(p["skills"], 0o600)
+        return f"{p['skills']} can't be read (Permission denied)", _FIX_PERMS
+    if name == "skills read-only":
+        p["skills"].mkdir(parents=True)
+        os.chmod(p["skills"], 0o500)
+        return (
+            f"{p['skills']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
+    if name == "skill read-only":
+        # Our onboard skill with other text, which setup rewrites.
+        _skills_installed(p)
+        p["md"].write_text(
+            p["md"].read_text(encoding="utf-8") + "\nstale\n",
+            encoding="utf-8",
+        )
+        os.chmod(p["skill"], 0o500)
+        return (
+            f"{p['skill']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
+    if name == "home read-only":
+        os.chmod(p["home"], 0o500)
+        return (
+            f"{p['home']} can't be written to (Permission denied), so setup "
+            f"can't create {p['skills']}", _FIX_PERMS,
+        )
+    if name == "aelfrice dangling":
+        p["dotdir"].rmdir()
+        os.symlink(p["home"] / "gone", p["dotdir"])
+        return (
+            f"{p['dotdir']} is a symbolic link to {p['home'] / 'gone'}, which "
+            "doesn't exist", _FIX_OR_MOVE,
+        )
+    if name == "aelfrice missing, home read-only":
+        # The skills are current, so only the ledger folder needs a write.
+        _skills_installed(p)
+        p["dotdir"].rmdir()
+        os.chmod(p["home"], 0o500)
+        return (
+            f"{p['home']} can't be written to (Permission denied), so setup "
+            f"can't create {p['dotdir']}", _FIX_PERMS,
+        )
+    if name in _SHARED_SETTINGS_STATES:
+        return _claude_state(name, p)
+    raise AssertionError(name)
+
+
+#: Codex setup states that don't depend on the skills, and those that do,
+#: which only `--codex-skills` reads.
+#: Claude settings states that both halves of setup refuse (2026-11-18
+#: ruling), and opt-out ledger states that both refuse, applied by
+#: `_claude_state`.
+_SHARED_SETTINGS_STATES: Final[tuple[str, ...]] = (
+    "bom", "not json", "array", "folder", "claude file", "fifo",
+    "hooks array", "hooks repeated", "event object", "event string",
+    "entry number", "inner number", "inner true", "inner object",
+    "inner string", "claude dangling", "claude loop", "settings loop",
+    "claude link to fifo", "settings link to fifo", "deep", "deep 257",
+    "deep 2000", "deep 9000", "long integer", "lone surrogate",
+    "surrogate key", "ledger deep", "ledger deep 2000", "ledger deep 9000",
+    "ledger long integer", "ledger surrogate",
+)
+_CODEX_STATES: Final[tuple[str, ...]] = (
+    "settings latin-1", "settings utf-16", "claude unsearchable",
+    "ledger latin-1", "ledger folder", "aelfrice file",
+    "aelfrice unsearchable", "aelfrice read-only", "aelfrice dangling",
+    "aelfrice missing, home read-only", *_SHARED_SETTINGS_STATES,
+)
+_CODEX_SKILL_STATES: Final[tuple[str, ...]] = (
+    "skill latin-1", "skill utf-16", "skills file", "agents file",
+    "skill path file", "skill md folder", "skills unsearchable",
+    "skills read-only", "skill read-only", "home read-only",
+)
+#: States that take a permission away.
+_CHMOD_STATES: Final[frozenset[str]] = frozenset({
+    "claude unsearchable", "aelfrice unsearchable", "aelfrice read-only",
+    "skills unsearchable", "skills read-only", "skill read-only",
+    "home read-only", "unreadable", "aelfrice missing, home read-only",
+    "commands read-only", "commands unsearchable", "claude read-only",
+})
+
+
+_needs_fifo = pytest.mark.skipif(
+    not hasattr(os, "mkfifo"), reason="needs os.mkfifo",
+)
+
+
+def _state_params(names: tuple[str, ...]) -> list[Any]:
+    return [
+        pytest.param(n, marks=_needs_chmod) if n in _CHMOD_STATES
+        else pytest.param(n, marks=_needs_fifo) if "fifo" in n
+        else n
+        for n in names
+    ]
+
+
+def _codex_args(*, force: bool, codex_skills: bool) -> argparse.Namespace:
+    return argparse.Namespace(
+        host="codex", force=force, status_message=None,
+        codex_skills=codex_skills,
+    )
+
+
+def _run_codex_setup(
+    p: dict[str, Path], *, force: bool = False, codex_skills: bool = True,
+) -> int:
+    return _cmd_setup_codex(
+        _codex_args(force=force, codex_skills=codex_skills), io.StringIO(),
+        hooks_path=p["codex"] / "hooks.json", skills_dest=p["skills"],
+    )
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "flags",
+    [
+        pytest.param((False, True), id="plain"),
+        pytest.param((True, True), id="force"),
+        pytest.param((False, False), id="no skills"),
+    ],
+)
+@pytest.mark.parametrize("state", _state_params(_CODEX_STATES))
+def test_setup_codex_refuses_a_claude_file_it_can_not_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str,
+    flags: tuple[bool, bool],
+) -> None:
+    """`aelf setup --host codex` reads the Claude settings and the opt-out
+    ledger before it writes hooks.json. For one it can't use, it exits 1
+    with a message that names the file and the cause, and changes nothing:
+    no hooks.json, no skill and no ledger."""
+    force, codex_skills = flags
+    p = _setup_files(tmp_path, monkeypatch)
+    try:
+        cause, remedy = _codex_state(state, p)
+        before = _tree(tmp_path)
+        rc = _run_codex_setup(p, force=force, codex_skills=codex_skills)
+        err = capsys.readouterr().err
+        after = _tree(tmp_path)
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 1, err
+    assert err == (
+        f"setup --host codex: {cause}; nothing was written. {remedy}\n"
+    ), err
+    assert after == before
+    assert not (p["codex"] / "hooks.json").exists()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("force", [False, True], ids=["plain", "force"])
+@pytest.mark.parametrize("state", _state_params(_CODEX_SKILL_STATES))
+def test_setup_codex_refuses_a_skills_folder_it_can_not_install_into(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str, force: bool,
+) -> None:
+    """Setup reads the skills folder before it writes hooks.json. For a
+    SKILL.md that isn't UTF-8 text, or a folder it would stop partway in,
+    it exits 1 with a message that names the path and the cause, and
+    changes nothing."""
+    p = _setup_files(tmp_path, monkeypatch)
+    try:
+        cause, remedy = _codex_state(state, p)
+        before = _tree(tmp_path)
+        rc = _run_codex_setup(p, force=force)
+        err = capsys.readouterr().err
+        after = _tree(tmp_path)
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 1, err
+    assert err == (
+        f"setup --host codex: {cause}; nothing was written. {remedy}\n"
+    ), err
+    assert after == before
+    assert not (p["codex"] / "hooks.json").exists()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("state", _state_params(_CODEX_SKILL_STATES))
+def test_setup_codex_without_skills_reads_no_skills_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str,
+) -> None:
+    """With `--no-codex-skills`, setup reads no skills folder, so a skills
+    state that stops a full setup doesn't stop it writing hooks.json."""
+    p = _setup_files(tmp_path, monkeypatch)
+    try:
+        _codex_state(state, p)
+        rc = _run_codex_setup(p, codex_skills=False)
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 0, err
+    assert (p["codex"] / "hooks.json").is_file()
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+def test_setup_codex_reads_a_ledger_that_names_claude_in_a_read_only_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When the ledger already opts the claude host out, setup doesn't
+    write it, so a `.aelfrice` that you can't write in doesn't stop setup."""
+    p = _setup_files(tmp_path, monkeypatch)
+    p["ledger"].write_text(_CLAUDE_OPTED_OUT, encoding="utf-8")
+    os.chmod(p["dotdir"], 0o500)
+    try:
+        rc = _run_codex_setup(p)
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 0, err
+    assert (p["codex"] / "hooks.json").is_file()
+    assert p["md"].is_file()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param(b"", id="empty"),
+        pytest.param(b'{"hooks": {}}', id="no hooks"),
+        pytest.param(
+            b'{"hooks": {"Stop": [{"hooks": [{"type": "command", '
+            b'"command": "/opt/other"}]}]}}', id="foreign hook",
+        ),
+    ],
+)
+def test_setup_codex_reads_claude_settings_without_aelfrice_hooks_as_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], data: bytes | None,
+) -> None:
+    """A missing or empty settings file, and one that holds an object with
+    no aelfrice hook, wire no Claude hook, so setup installs and opts the
+    claude host out of auto-install."""
+    p = _setup_files(tmp_path, monkeypatch)
+    if data is not None:
+        _write_settings(p, data)
+    rc = _run_codex_setup(p, codex_skills=False)
+    err = capsys.readouterr().err
+    assert rc == 0, err
+    assert (p["codex"] / "hooks.json").is_file()
+    assert json.loads(p["ledger"].read_text(encoding="utf-8")) == {
+        "opt_out": [], "opt_out_hosts": ["claude"],
+    }
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize("skill", ["current", "foreign"])
+def test_setup_codex_leaves_a_skill_it_would_not_write_in_a_read_only_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], skill: str,
+) -> None:
+    """Setup writes no skill that is already current or that another tool
+    wrote, so a folder that you can't write in around such a skill doesn't
+    stop it."""
+    p = _setup_files(tmp_path, monkeypatch)
+    _skills_installed(p)
+    if skill == "foreign":
+        p["md"].write_text("my own onboard skill\n", encoding="utf-8")
+    kept = p["md"].read_bytes()
+    os.chmod(p["skill"], 0o500)
+    try:
+        rc = _run_codex_setup(p)
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 0, err
+    assert (p["codex"] / "hooks.json").is_file()
+    assert p["md"].read_bytes() == kept
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize(
+    ("ledger", "kwargs", "refused"),
+    [
+        pytest.param(None, {"adding": "claude"}, True, id="add to none"),
+        pytest.param(
+            _CLAUDE_OPTED_OUT, {"adding": "claude"}, False, id="add to named",
+        ),
+        pytest.param(
+            None, {"removing": "claude"}, False, id="remove from none",
+        ),
+        pytest.param(
+            _CLAUDE_OPTED_OUT, {"removing": "claude"}, True,
+            id="remove from named",
+        ),
+        pytest.param(None, {}, False, id="read only"),
+        pytest.param(
+            None, {"add_hooks": ["transcript_ingest"]}, True,
+            id="add hook to none",
+        ),
+        pytest.param(
+            _INGEST_OPTED_OUT, {"add_hooks": ["transcript_ingest"]}, False,
+            id="add hook to named",
+        ),
+        pytest.param(
+            None, {"remove_hooks": ["transcript_ingest"]}, False,
+            id="remove hook from none",
+        ),
+        pytest.param(
+            _INGEST_OPTED_OUT, {"remove_hooks": ["transcript_ingest"]}, True,
+            id="remove hook from named",
+        ),
+    ],
+)
+def test_opt_out_ledger_check_refuses_a_read_only_folder_only_for_a_write(
+    tmp_path: Path, ledger: str | None, kwargs: dict[str, object],
+    refused: bool,
+) -> None:
+    """The ledger check refuses a `.aelfrice` that you can't write in only
+    when setup will rewrite the ledger: to add a host or a hook it doesn't
+    name, or to remove one it names."""
+    from aelfrice.auto_install import check_opt_out_ledger
+    from aelfrice.setup import SetupInputError
+
+    dotdir = tmp_path / ".aelfrice"
+    dotdir.mkdir()
+    path = dotdir / "opt-out-hooks.json"
+    if ledger is not None:
+        path.write_text(ledger, encoding="utf-8")
+    os.chmod(dotdir, 0o500)
+    try:
+        if refused:
+            with pytest.raises(SetupInputError) as caught:
+                check_opt_out_ledger(path, **kwargs)
+            assert caught.value.cause == (
+                f"{dotdir} can't be written to (Permission denied)"
+            )
+        else:
+            check_opt_out_ledger(path, **kwargs)
+    finally:
+        os.chmod(dotdir, 0o700)
+
+
+@pytest.mark.timeout(60)
+def test_setup_codex_refuses_before_the_update_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`aelf setup --host codex` reads these files ahead of the update
+    check, as it reads `$HOME`, so a refusal starts nothing."""
+    import aelfrice.cli as cli
+
+    p = _setup_files(tmp_path, monkeypatch)
+    p["ledger"].write_bytes(_LATIN1_LEDGER)
+    monkeypatch.setenv("CODEX_HOME", str(p["codex"]))
+    started: list[str] = []
+    monkeypatch.delenv("AELF_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        cli, "maybe_check_for_update_async",
+        lambda *_a, **_k: started.append("update check"),
+    )
+    before = _tree(tmp_path)
+    rc = main(["setup", "--host", "codex", "--no-codex-skills"])
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert err == (
+        f"setup --host codex: {p['ledger']} isn't UTF-8 text: byte 14 is "
+        f"0xff; nothing was written. {_FIX_OR_MOVE}\n"
+    ), err
+    assert started == []
+    assert _tree(tmp_path) == before
+
+
+@pytest.mark.timeout(60)
+def test_setup_codex_reports_an_opt_out_it_can_not_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When the ledger can't be written after setup read it, setup exits 1
+    with a message instead of a traceback."""
+    import aelfrice.auto_install as auto_install
+
+    p = _setup_files(tmp_path, monkeypatch)
+
+    def fail(_host: str, _path: Path | None = None) -> None:
+        raise PermissionError(13, "Permission denied", str(p["ledger"]))
+
+    monkeypatch.setattr(auto_install, "add_host_opt_out", fail)
+    rc = _run_codex_setup(p, codex_skills=False)
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert err == (
+        "setup --host codex: hooks written, but the Claude auto-install "
+        "opt-out couldn't be written: [Errno 13] Permission denied: "
+        f"'{p['ledger']}'\n"
+    ), err
+
+
+@pytest.mark.timeout(60)
+def test_setup_codex_reports_a_skill_that_is_not_utf8_at_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A SKILL.md that stops being UTF-8 after setup read the skills folder
+    stops the skills install with a message instead of a traceback."""
+    import aelfrice.host_codex as host_codex
+
+    p = _setup_files(tmp_path, monkeypatch)
+    _skills_installed(p)
+    p["md"].write_bytes(b"\xff")
+    monkeypatch.setattr(host_codex, "check_codex_skills_dest", lambda _d: None)
+    rc = _run_codex_setup(p)
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert err == (
+        "setup --host codex: hooks written, but the skills install failed: "
+        f"{p['md']} isn't UTF-8 text: byte 0 is 0xff; nothing was written. "
+        f"{_FIX_OR_MOVE}\n"
+    ), err
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("reader", ["read_opt_outs", "read_host_opt_outs"])
+def test_opt_out_readers_read_a_ledger_that_is_not_utf8_as_empty(
+    tmp_path: Path, reader: str,
+) -> None:
+    """The opt-out readers treat a ledger that isn't UTF-8 text as they
+    treat one they can't read: as empty, so no `aelf` command raises on
+    it."""
+    import aelfrice.auto_install as auto_install
+
+    ledger = tmp_path / "opt-out-hooks.json"
+    ledger.write_bytes(
+        b'{"opt_out": ["x"], "opt_out_hosts": ["claude"], "y": "\xff"}',
+    )
+    assert getattr(auto_install, reader)(ledger) == frozenset()
+
+
+#: Claude settings whose shape setup can't edit, with the cause it names.
+_SHAPE_STATES: Final[dict[str, tuple[bytes, str]]] = {
+    "hooks array": (b'{"hooks": []}', "has a non-object `hooks` value (array)"),
+    "hooks repeated": (
+        b'{"hooks": {}, "hooks": []}', "has a non-object `hooks` value (array)",
+    ),
+    "event object": (
+        b'{"hooks": {"UserPromptSubmit": {}}}',
+        "has a non-list value for the `UserPromptSubmit` event (object)",
+    ),
+    "event string": (
+        b'{"hooks": {"Stop": "aelf-hook"}}',
+        "has a non-list value for the `Stop` event (string)",
+    ),
+    "entry number": (
+        b'{"hooks": {"SessionStart": [1]}}',
+        "has a non-object entry at `hooks.SessionStart[0]` (number)",
+    ),
+    # #1812: the `hooks` list inside an entry, under any event.
+    "inner number": (
+        b'{"hooks": {"Notification": [{"hooks": 1}]}}',
+        "has a non-list `hooks` value in `hooks.Notification[0]` (number)",
+    ),
+    "inner true": (
+        b'{"hooks": {"UserPromptSubmit": [{"hooks": [], "x": 1}, '
+        b'{"hooks": true}]}}',
+        "has a non-list `hooks` value in `hooks.UserPromptSubmit[1]` "
+        "(boolean)",
+    ),
+    "inner object": (
+        b'{"hooks": {"Stop": [{"hooks": {"command": "aelf-hook"}}]}}',
+        "has a non-list `hooks` value in `hooks.Stop[0]` (object)",
+    ),
+    "inner string": (
+        b'{"hooks": {"PreCompact": [{"hooks": "x"}]}}',
+        "has a non-list `hooks` value in `hooks.PreCompact[0]` (string)",
+    ),
+}
+
+
+def _slash_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
+    """Apply the slash-commands state `name`, and return the cause and the
+    remedy setup names for it."""
+    md = p["slash"] / "setup.md"
+    if name == "commands file":
+        p["claude"].mkdir()
+        p["commands"].write_text("x", encoding="utf-8")
+        return (
+            f"{p['commands']} isn't a folder, so setup can't create "
+            f"{p['slash']}", _FIX_OR_MOVE,
+        )
+    if name == "commands aelf file":
+        p["commands"].mkdir(parents=True)
+        p["slash"].write_text("x", encoding="utf-8")
+        return f"{p['slash']} isn't a folder", _FIX_OR_MOVE
+    p["slash"].mkdir(parents=True)
+    if name == "command md latin-1":
+        md.write_bytes(b"x\xe9 aelfrice")
+        return f"{md} isn't UTF-8 text: byte 1 is 0xe9", _FIX_OR_MOVE
+    if name == "command md folder":
+        md.mkdir()
+        return f"{md} is a folder, not a file", _FIX_OR_MOVE
+    if name == "command md fifo":
+        os.mkfifo(md)
+        return f"{md} isn't a regular file", _FIX_OR_MOVE
+    if name == "commands read-only":
+        os.chmod(p["slash"], 0o500)
+        return (
+            f"{p['slash']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
+    if name == "commands unsearchable":
+        os.chmod(p["slash"], 0o600)
+        return f"{p['slash']} can't be read (Permission denied)", _FIX_PERMS
+    raise AssertionError(name)
+
+
+#: What `strerror` says for ELOOP, on macOS and Linux alike.
+_LOOP: Final[str] = "Too many levels of symbolic links"
+
+
+def _claude_link_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
+    """Apply a state in which `~/.claude` or the settings file is a
+    symbolic link, and return the cause and remedy setup names (#1812)."""
+    if name == "claude dangling":
+        os.symlink(p["home"] / "gone" / "dotfiles", p["claude"])
+        return (
+            f"{p['claude']} is a symbolic link to "
+            f"{p['home'] / 'gone' / 'dotfiles'}, which doesn't exist",
+            _FIX_OR_MOVE,
+        )
+    if name == "claude loop":
+        os.symlink(p["home"] / "loop", p["claude"])
+        os.symlink(p["claude"], p["home"] / "loop")
+        return f"{p['settings']} can't be read ({_LOOP})", _FIX_OR_MOVE
+    if name == "settings loop":
+        p["claude"].mkdir()
+        os.symlink(p["settings"], p["settings"])
+        return f"{p['settings']} can't be read ({_LOOP})", _FIX_OR_MOVE
+    if name == "claude link to fifo":
+        os.mkfifo(p["home"] / "fifo")
+        os.symlink(p["home"] / "fifo", p["claude"])
+        return (
+            f"{p['settings']} can't be read, because {p['claude']} isn't a "
+            "folder", _FIX_OR_MOVE,
+        )
+    if name == "settings link to fifo":
+        p["claude"].mkdir()
+        os.mkfifo(p["home"] / "fifo")
+        os.symlink(p["home"] / "fifo", p["settings"])
+        return f"{p['settings']} isn't a regular file", _FIX_OR_MOVE
+    raise AssertionError(name)
+
+
+def _claude_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
+    """Apply the Claude setup state `name`, and return the cause and the
+    remedy setup names for it."""
+    if name in ("bom", "bom, claude opted out"):
+        _write_settings(p, b'\xef\xbb\xbf{"hooks": {}}')
+        if name != "bom":
+            p["ledger"].write_text(_CLAUDE_OPTED_OUT, encoding="utf-8")
+        return (
+            f"{p['settings']} starts with a UTF-8 byte order mark (BOM)",
+            "Save it as UTF-8 without a BOM, and run setup again",
+        )
+    if name == "latin-1":
+        _write_settings(p, _LATIN1_SETTINGS)
+        return (
+            f"{p['settings']} isn't UTF-8 text: byte {_LATIN1_AT} is 0xe9",
+            _FIX_OR_MOVE,
+        )
+    if name == "utf-16":
+        _write_settings(p, _UTF16_SETTINGS)
+        return f"{p['settings']} isn't UTF-8 text: byte 0 is 0xff", _FIX_OR_MOVE
+    if name == "array":
+        _write_settings(p, b"[]")
+        return (
+            f"{p['settings']} doesn't hold a JSON object at the top level",
+            _FIX_OR_MOVE,
+        )
+    if name == "not json":
+        _write_settings(p, b'{"hooks":')
+        return (
+            f"{p['settings']} isn't valid JSON (Expecting value: line 1 "
+            "column 10 (char 9))", _FIX_OR_MOVE,
+        )
+    if name == "folder":
+        p["settings"].mkdir(parents=True)
+        return f"{p['settings']} is a folder, not a file", _FIX_OR_MOVE
+    if name in _SHAPE_STATES:
+        data, cause = _SHAPE_STATES[name]
+        _write_settings(p, data)
+        return f"{p['settings']} {cause}", _FIX_OR_MOVE
+    if name in _UNREADABLE_JSON:
+        data, cause = _UNREADABLE_JSON[name]
+        _write_settings(p, data)
+        return f"{p['settings']} {cause}", _FIX_OR_MOVE
+    if name in _LEDGER_JSON:
+        data, cause = _LEDGER_JSON[name]
+        p["ledger"].write_bytes(data)
+        return f"{p['ledger']} {cause}", _FIX_OR_MOVE
+    if name.startswith(("claude ", "settings ")) and (
+        "link" in name or "dangling" in name or "loop" in name
+    ):
+        return _claude_link_state(name, p)
+    if name.startswith("command"):
+        return _slash_state(name, p)
+    if name == "home read-only":
+        os.chmod(p["home"], 0o500)
+        return (
+            f"{p['home']} can't be written to (Permission denied), so setup "
+            f"can't create {p['claude']}", _FIX_PERMS,
+        )
+    if name == "claude read-only":
+        _write_settings(p, b"{}")
+        os.chmod(p["claude"], 0o500)
+        return (
+            f"{p['claude']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
+    if name == "unreadable":
+        _write_settings(p, b"{}")
+        os.chmod(p["settings"], 0)
+        return f"{p['settings']} can't be read (Permission denied)", _FIX_OR_MOVE
+    if name == "claude unsearchable":
+        _write_settings(p, b"{}")
+        os.chmod(p["claude"], 0o600)
+        return f"{p['settings']} can't be read (Permission denied)", _FIX_OR_MOVE
+    if name == "claude file":
+        p["claude"].write_text("x", encoding="utf-8")
+        return (
+            f"{p['settings']} can't be read, because {p['claude']} isn't a "
+            "folder", _FIX_OR_MOVE,
+        )
+    if name == "fifo":
+        p["claude"].mkdir(parents=True)
+        os.mkfifo(p["settings"])
+        return f"{p['settings']} isn't a regular file", _FIX_OR_MOVE
+    if name == "ledger latin-1":
+        p["ledger"].write_bytes(_LATIN1_LEDGER)
+        return f"{p['ledger']} isn't UTF-8 text: byte 14 is 0xff", _FIX_OR_MOVE
+    if name == "aelfrice file":
+        p["dotdir"].rmdir()
+        p["dotdir"].write_text("x", encoding="utf-8")
+        return (
+            f"{p['ledger']} can't be read, because {p['dotdir']} isn't a "
+            "folder", _FIX_OR_MOVE,
+        )
+    if name == "aelfrice read-only":
+        p["ledger"].write_text(_CLAUDE_OPTED_OUT, encoding="utf-8")
+        os.chmod(p["dotdir"], 0o500)
+        return (
+            f"{p['dotdir']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
+    raise AssertionError(name)
+
+
+_CLAUDE_STATES: Final[tuple[str, ...]] = (
+    "bom", "bom, claude opted out", "latin-1", "utf-16", "array",
+    "not json", "folder", "unreadable", "claude unsearchable",
+    "claude file", "fifo", "ledger latin-1", "aelfrice file",
+    "aelfrice read-only", "hooks array", "hooks repeated", "event object",
+    "event string", "entry number", "commands aelf file",
+    "command md latin-1", "command md folder", "command md fifo",
+    "commands read-only", "commands unsearchable", "commands file",
+    "home read-only", "claude read-only", "inner number", "inner true",
+    "inner object", "inner string", "claude dangling", "claude loop",
+    "settings loop", "claude link to fifo", "settings link to fifo", "deep",
+    "deep 257", "deep 2000", "deep 9000", "long integer", "lone surrogate",
+    "surrogate key", "ledger deep", "ledger deep 2000", "ledger deep 9000",
+    "ledger long integer", "ledger surrogate",
+)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("driver", ["main", "executor"])
+@pytest.mark.parametrize("state", _state_params(_CLAUDE_STATES))
+def test_setup_claude_refuses_a_file_it_can_not_use_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str, driver: str,
+) -> None:
+    """`aelf setup` for the claude host reads its settings file and the
+    opt-out ledger before it writes anything. For one it can't use, it
+    exits 1 with a message that names the file and the cause, starts no
+    update check, migration or later step, and changes nothing. It refuses
+    a settings file that starts with a UTF-8 byte order mark by name and
+    doesn't rewrite it without the mark. `main` refuses ahead of the update
+    check, and the executor refuses when it is called directly."""
+    import aelfrice.cli as cli
+
+    p = _setup_files(tmp_path, monkeypatch)
+    started: list[str] = []
+
+    def went_on(*_a: object, **_k: object) -> object:
+        started.append("migration")
+        raise AssertionError("setup went on past a file it can't use")
+
+    monkeypatch.setattr(cli, "maybe_migrate_to_uv", went_on)
+    monkeypatch.delenv("AELF_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        cli, "maybe_check_for_update_async",
+        lambda *_a, **_k: started.append("update check"),
+    )
+    argv = ["setup", "--scope", "user"]
+    try:
+        cause, remedy = _claude_state(state, p)
+        before = _tree(tmp_path)
+        if driver == "main":
+            rc = main(argv)
+        else:
+            args = cli.build_parser().parse_args(argv)
+            rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+        err = capsys.readouterr().err
+        after = _tree(tmp_path)
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 1, err
+    assert err == f"aelf setup: {cause}; nothing was written. {remedy}\n", err
+    assert started == []
+    assert after == before
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b'{"hooks": null}', id="hooks null"),
+        pytest.param(b'{"hooks": {"Stop": null}}', id="event null"),
+        pytest.param(b'{"hooks": {"Notification": "x"}}', id="other event"),
+        pytest.param(
+            b'{"hooks": {"Notification": [1, "x"]}}', id="other event entries",
+        ),
+        pytest.param(
+            b'{"hooks": {"Notification": [{"hooks": null}, {"x": 1}]}}',
+            id="inner null or missing",
+        ),
+        pytest.param(
+            b'{"hooks": {"Stop": [{"hooks": [1, "x", {"command": 2}]}]}}',
+            id="inner list of anything",
+        ),
+        pytest.param(b'{"hooks": [], "hooks": {}}', id="last hooks object"),
+        pytest.param(b'{"x": "\\ud83d\\ude00"}', id="surrogate pair"),
+        pytest.param(_nested(256), id="256 levels"),
+        pytest.param(
+            b'{"x": "' + b"[" * 300 + b'"}', id="brackets in a string",
+        ),
+        pytest.param(
+            b'{"x": "\\"' + b"{" * 300 + b'"}', id="brackets after an escape",
+        ),
+        pytest.param(
+            b'{"x": [' + b", ".join([b"{}"] * 300) + b"]}",
+            id="300 objects side by side",
+        ),
+    ],
+)
+def test_setup_reads_claude_settings_shapes_it_can_edit(
+    tmp_path: Path, data: bytes,
+) -> None:
+    """The settings check refuses only a shape setup would stop on: a
+    `null` it fills in, an event setup doesn't edit, and a list of any
+    values inside an entry pass, and the last of two `hooks` keys is the
+    one read. An escaped surrogate pair is one character and passes, and
+    so do 256 levels of nesting, 300 objects side by side, and brackets
+    inside a string, which the depth check skips past an escaped quote
+    too."""
+    from aelfrice.setup import check_settings_for_setup
+
+    path = tmp_path / "settings.json"
+    path.write_bytes(data)
+    assert check_settings_for_setup(path) == json.loads(data)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "state",
+    [
+        "missing", "link to folder", "folder",
+        pytest.param("missing under read-only", marks=_needs_chmod),
+        "missing under file", "dangling link", "file",
+        pytest.param("read-only", marks=_needs_chmod),
+    ],
+)
+def test_setup_write_check_refuses_a_folder_it_can_not_create_or_write_in(
+    tmp_path: Path, state: str,
+) -> None:
+    """`check_can_write_in` passes a folder setup can write a file in,
+    creating it if need be, and refuses, by name and cause, one that
+    `mkdir -p` can't create or stops on and one you can't write in."""
+    from aelfrice.setup import SetupInputError, check_can_write_in
+
+    base = tmp_path / "base"
+    base.mkdir()
+    folder = base / "f"
+    want: str | None = None
+    if state == "link to folder":
+        (base / "real").mkdir()
+        os.symlink(base / "real", folder)
+    elif state == "folder":
+        folder.mkdir()
+    elif state == "missing under read-only":
+        os.chmod(base, 0o500)
+        want = (
+            f"{base} can't be written to (Permission denied), so setup "
+            f"can't create {folder}"
+        )
+    elif state == "missing under file":
+        base.rmdir()
+        base.write_text("x", encoding="utf-8")
+        want = f"{base} isn't a folder, so setup can't create {folder}"
+    elif state == "dangling link":
+        os.symlink(base / "gone", folder)
+        want = f"{folder} is a symbolic link to {base / 'gone'}, which doesn't exist"
+    elif state == "file":
+        folder.write_text("x", encoding="utf-8")
+        want = f"{folder} isn't a folder"
+    elif state == "read-only":
+        folder.mkdir()
+        os.chmod(folder, 0o500)
+        want = f"{folder} can't be written to (Permission denied)"
+    try:
+        if want is None:
+            check_can_write_in(folder)
+        else:
+            with pytest.raises(SetupInputError) as caught:
+                check_can_write_in(folder)
+            assert caught.value.cause == want
+    finally:
+        _restore_modes(tmp_path)
+
+
+def _ledger_write_state(name: str, p: dict[str, Path]) -> tuple[str, str]:
+    """Apply the plain-setup ledger state `name`, and return the cause and
+    the remedy setup names for it."""
+    if name in ("read-only", "names ingest, read-only"):
+        if name != "read-only":
+            p["ledger"].write_text(_INGEST_OPTED_OUT, encoding="utf-8")
+        os.chmod(p["dotdir"], 0o500)
+        return (
+            f"{p['dotdir']} can't be written to (Permission denied)", _FIX_PERMS,
+        )
+    if name == "dangling":
+        p["dotdir"].rmdir()
+        os.symlink(p["home"] / "gone", p["dotdir"])
+        return (
+            f"{p['dotdir']} is a symbolic link to {p['home'] / 'gone'}, which "
+            "doesn't exist", _FIX_OR_MOVE,
+        )
+    if name == "missing, home read-only":
+        p["dotdir"].rmdir()
+        p["claude"].mkdir()
+        os.chmod(p["home"], 0o500)
+        return (
+            f"{p['home']} can't be written to (Permission denied), so setup "
+            f"can't create {p['dotdir']}", _FIX_PERMS,
+        )
+    raise AssertionError(name)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("driver", ["main", "executor"])
+@pytest.mark.parametrize(
+    ("state", "flags"),
+    [
+        pytest.param(
+            "read-only", ["--no-transcript-ingest"], marks=_needs_chmod,
+            id="read-only, ingest off",
+        ),
+        pytest.param(
+            "dangling", ["--no-transcript-ingest"], id="dangling, ingest off",
+        ),
+        pytest.param(
+            "missing, home read-only", ["--no-transcript-ingest"],
+            marks=_needs_chmod, id="missing, home read-only, ingest off",
+        ),
+        pytest.param(
+            "names ingest, read-only", [], marks=_needs_chmod,
+            id="names ingest, read-only, ingest on",
+        ),
+    ],
+)
+def test_setup_claude_refuses_a_ledger_write_it_can_not_make(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str, flags: list[str],
+    driver: str,
+) -> None:
+    """`aelf setup` records a `--no-X` flag in the opt-out ledger, and
+    rescinds one the ledger names when the flag is on. When it will write
+    the ledger and can't create or write in its folder, it exits 1 before
+    its first write, names the folder and the cause, and changes nothing."""
+    import aelfrice.cli as cli
+
+    p = _setup_files(tmp_path, monkeypatch)
+    started: list[str] = []
+
+    def went_on(*_a: object, **_k: object) -> object:
+        started.append("migration")
+        raise AssertionError("setup went on past a ledger it can't write")
+
+    monkeypatch.setattr(cli, "maybe_migrate_to_uv", went_on)
+    monkeypatch.delenv("AELF_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(
+        cli, "maybe_check_for_update_async",
+        lambda *_a, **_k: started.append("update check"),
+    )
+    argv = ["setup", "--scope", "user", *flags]
+    try:
+        cause, remedy = _ledger_write_state(state, p)
+        before = _tree(tmp_path)
+        if driver == "main":
+            rc = main(argv)
+        else:
+            args = cli.build_parser().parse_args(argv)
+            rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+        err = capsys.readouterr().err
+        after = _tree(tmp_path)
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 1, err
+    assert err == f"aelf setup: {cause}; nothing was written. {remedy}\n", err
+    assert started == []
+    assert after == before
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize("newlines", ["lf", "crlf"])
+def test_setup_slash_check_reads_current_commands_in_a_read_only_folder(
+    tmp_path: Path, newlines: str,
+) -> None:
+    """Setup writes no slash command that is already current, with
+    newlines read as `install_slash_commands` reads them, so the check
+    passes a read-only folder of current commands, and the install writes
+    nothing there."""
+    from aelfrice.setup import check_slash_commands_dest, install_slash_commands
+
+    target = tmp_path / "aelf"
+    install_slash_commands(target)
+    if newlines == "crlf":
+        md = target / "setup.md"
+        md.write_bytes(md.read_bytes().replace(b"\n", b"\r\n"))
+    os.chmod(target, 0o500)
+    try:
+        check_slash_commands_dest(target)
+        result = install_slash_commands(target)
+    finally:
+        os.chmod(target, 0o700)
+    assert result.written == ()
+
+
+#: A Claude settings document that wires one aelfrice hook.
+_WIRED_SETTINGS: Final[bytes] = (
+    b'{"hooks": {"Stop": [{"hooks": [{"type": "command", '
+    b'"command": "/opt/aelf/bin/aelf-stop-hook"}]}]}}'
+)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "state", ["settings dangling", "claude link to folder", "settings link to file"],
+)
+def test_both_halves_read_a_settings_link_they_can_follow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    """Both halves of setup read the Claude settings through a symbolic
+    link the same way. A settings file that is a link to a path that
+    doesn't exist reads as no file, as Claude reads it, and a `~/.claude`
+    or settings link to a folder or file that exists reads as its target,
+    so neither half refuses."""
+    import aelfrice.cli as cli
+    from aelfrice.host_codex import claude_host_has_aelfrice_hooks
+    from aelfrice.setup import check_settings_for_setup
+
+    p = _setup_files(tmp_path, monkeypatch)
+    want: object = json.loads(_WIRED_SETTINGS)
+    if state == "settings dangling":
+        p["claude"].mkdir()
+        os.symlink(p["home"] / "gone.json", p["settings"])
+        want = None
+    elif state == "claude link to folder":
+        real = p["home"] / "dotfiles"
+        real.mkdir()
+        (real / "settings.json").write_bytes(_WIRED_SETTINGS)
+        os.symlink(real, p["claude"])
+    else:
+        p["claude"].mkdir()
+        (p["home"] / "s.json").write_bytes(_WIRED_SETTINGS)
+        os.symlink(p["home"] / "s.json", p["settings"])
+    assert check_settings_for_setup(p["settings"]) == want
+    assert claude_host_has_aelfrice_hooks(p["settings"]) is (want is not None)
+    args = cli.build_parser().parse_args(["setup", "--scope", "user"])
+    assert cli._setup_input_refusal(args) is None  # noqa: SLF001
+
+
+#: hooks.json contents that are JSON Python's `json` can't read, with the
+#: cause setup and unsetup name after the file (#1812).
+_HOOKS_UNREADABLE: Final[dict[str, tuple[bytes, str]]] = {
+    "deep": (_nested(100_000, b'{"hooks": '), _TOO_DEEP),
+    "deep 257": (_nested(257), _TOO_DEEP),
+    "deep 2000": (_nested(2000), _TOO_DEEP),
+    "deep 9000": (_nested(9000), _TOO_DEEP),
+    "long integer": (
+        b'{"hooks": {"x": ' + b"1" * 5000 + b"}}",
+        f"holds an integer of more than {sys.get_int_max_str_digits()} "
+        "digits, which setup can't read",
+    ),
+}
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("case", sorted(_HOOKS_UNREADABLE))
+def test_setup_and_unsetup_treat_a_hooks_json_python_can_not_read_as_invalid(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    """Setup and unsetup treat a hooks.json that setup doesn't read,
+    nested more than 256 levels deep, under `hooks` or a key Codex doesn't
+    read, or holding an integer too long, as one that isn't JSON: they
+    exit 1, name the cause and leave the file as it is, and `setup
+    --force` replaces it."""
+    data, cause = _HOOKS_UNREADABLE[case]
+    hooks = tmp_path / "codex" / "hooks.json"
+    hooks.parent.mkdir()
+    hooks.write_bytes(data)
+    args = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=False,
+    )
+    assert _cmd_setup_codex(args, io.StringIO(), hooks_path=hooks) == 1
+    assert _cmd_unsetup_codex(
+        args, io.StringIO(), hooks_path=hooks, skills_dest=tmp_path / "s",
+    ) == 1
+    assert capsys.readouterr().err == (
+        f"setup --host codex: existing hooks.json {cause}; re-run with "
+        "--force to replace it\n"
+        f"unsetup --host codex: hooks.json {cause}; not modified\n"
+    )
+    assert hooks.read_bytes() == data
+    args.force = True
+    assert _cmd_setup_codex(args, io.StringIO(), hooks_path=hooks) == 0
+    doc = json.loads(hooks.read_text(encoding="utf-8"))
+    assert sorted(doc) == ["hooks"], doc
+    assert "SessionStart" in doc["hooks"], doc
+
+
+def _depth(value: object) -> int:
+    """How many levels of arrays and objects `value` nests, itself at
+    level 1, counted with a loop."""
+    deepest, stack = 0, [(value, 1)]
+    while stack:
+        item, level = stack.pop()
+        if isinstance(item, dict):
+            stack.extend((v, level + 1) for v in cast(dict[str, object], item).values())
+        elif isinstance(item, list):
+            stack.extend((v, level + 1) for v in cast(list[object], item))
+        else:
+            continue
+        deepest = max(deepest, level)
+    return deepest
+
+
+@pytest.mark.timeout(60)
+def test_both_halves_write_files_nested_as_deep_as_setup_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup reads and writes back files that nest 256 levels deep, the
+    deepest it reads: plain setup's preflight passes such Claude settings
+    and its settings commit writes them, and `setup --host codex` and
+    `unsetup --host codex` rewrite such a hooks.json and keep the key
+    Codex doesn't read. On Python 3.12 `json.dumps(indent=2)` takes one
+    Python frame per level, so this runs the writers at that depth below
+    pytest's own frames."""
+    import aelfrice.cli as cli
+
+    p = _setup_files(tmp_path, monkeypatch)
+    _write_settings(p, _nested(256))
+    args = _setup_parse([])
+    assert cli._setup_input_refusal(args) is None  # noqa: SLF001
+    _wire_claude(p, args)
+    doc = json.loads(p["settings"].read_bytes())
+    assert _depth(doc["x"]) == 255
+    assert "UserPromptSubmit" in doc["hooks"], doc["hooks"]
+    hooks = p["codex"] / "hooks.json"
+    hooks.write_bytes(_nested(256))
+    codex = argparse.Namespace(
+        host="codex", force=False, status_message=None, codex_skills=False,
+    )
+    assert _cmd_setup_codex(codex, io.StringIO(), hooks_path=hooks) == 0
+    doc = json.loads(hooks.read_bytes())
+    assert _depth(doc["x"]) == 255
+    assert "SessionStart" in doc["hooks"], doc["hooks"]
+    assert _cmd_unsetup_codex(
+        codex, io.StringIO(), hooks_path=hooks, skills_dest=tmp_path / "s",
+    ) == 0
+    doc = json.loads(hooks.read_bytes())
+    assert _depth(doc["x"]) == 255
+    assert doc["hooks"] == {}, doc["hooks"]
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("reader", ["read_opt_outs", "read_host_opt_outs"])
+@pytest.mark.parametrize("case", ["ledger deep", "ledger long integer"])
+def test_opt_out_readers_read_a_ledger_python_can_not_read_as_empty(
+    tmp_path: Path, reader: str, case: str,
+) -> None:
+    """The opt-out readers read a ledger that is JSON Python's `json`
+    can't read as they read one that isn't JSON: as empty, so no `aelf`
+    command raises on it. Setup refuses it by name instead
+    (`check_opt_out_ledger`)."""
+    import aelfrice.auto_install as auto_install
+
+    ledger = tmp_path / "opt-out-hooks.json"
+    ledger.write_bytes(_LEDGER_JSON[case][0])
+    assert getattr(auto_install, reader)(ledger) == frozenset()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "data", [b'{"opt_out": [', b"[1,]", b"\xef\xbb\xbf{}"], ids=["cut", "comma", "bom"],
+)
+def test_opt_out_ledger_check_reads_a_ledger_that_is_not_json_as_empty(
+    tmp_path: Path, data: bytes,
+) -> None:
+    """The ledger check reads a ledger that isn't JSON at all as empty, as
+    the readers read it, so setup rewrites it instead of refusing; only
+    JSON that setup doesn't read, or a lone surrogate, is refused."""
+    from aelfrice.auto_install import check_opt_out_ledger
+
+    ledger = tmp_path / "opt-out-hooks.json"
+    ledger.write_bytes(data)
+    check_opt_out_ledger(ledger, adding="claude")
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize(
+    ("ledger", "flags"),
+    [
+        pytest.param(None, [], id="no ledger, every hook on"),
+        pytest.param('{"opt_out": [], "opt_out_hosts": []}\n', [], id="empty"),
+        pytest.param(
+            _INGEST_OPTED_OUT, ["--no-transcript-ingest"],
+            id="names ingest, ingest off",
+        ),
+    ],
+)
+def test_setup_claude_reads_a_ledger_it_would_not_change_in_a_read_only_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ledger: str | None,
+    flags: list[str],
+) -> None:
+    """Plain setup records each `--no-X` flag in the opt-out ledger and
+    rescinds each hook the ledger names whose flag is on. When the ledger
+    already says what the flags say, setup has no ledger write to make, so
+    a `~/.aelfrice` you can't write in doesn't stop it."""
+    import aelfrice.cli as cli
+
+    p = _setup_files(tmp_path, monkeypatch)
+    if ledger is not None:
+        p["ledger"].write_text(ledger, encoding="utf-8")
+    args = _setup_parse(flags)
+    os.chmod(p["dotdir"], 0o500)
+    try:
+        refusal = cli._setup_input_refusal(args)  # noqa: SLF001
+    finally:
+        _restore_modes(tmp_path)
+    assert refusal is None
+
+
+def _setup_parse(flags: list[str]) -> argparse.Namespace:
+    import aelfrice.cli as cli
+
+    return cli.build_parser().parse_args(["setup", "--scope", "user", *flags])
+
+
+def _wire_claude(p: dict[str, Path], args: argparse.Namespace) -> None:
+    """Write the Claude settings and slash commands as `aelf setup` with
+    `args` leaves them, by running its settings edits in a transaction."""
+    import aelfrice.cli as cli
+    from aelfrice.setup import install_slash_commands, settings_transaction
+
+    scope = cli._effective_scope(args)  # noqa: SLF001
+    command = cli.resolve_hook_command(scope)
+    p["claude"].mkdir(parents=True, exist_ok=True)
+    with settings_transaction(p["settings"]):
+        cli._reconcile_claude_settings(  # noqa: SLF001
+            args, p["settings"], scope, command,
+            cli._setup_timeouts(args), io.StringIO(),  # noqa: SLF001
+            lambda: None,
+        )
+    install_slash_commands(p["slash"])
+
+
+def _contents(root: Path) -> dict[str, bytes | None]:
+    return {path: data for path, (_mode, data) in _tree(root).items()}
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize(
+    ("state", "refused"),
+    [
+        pytest.param("current", False, id="current"),
+        pytest.param("current, no lock file", False, id="current, no lock"),
+        pytest.param("old commit-ingest entry", True, id="old commit ingest"),
+        pytest.param("one hook missing", True, id="one hook missing"),
+        pytest.param("statusline missing", True, id="statusline missing"),
+        pytest.param("migration pending", False, id="migration pending"),
+    ],
+)
+def test_setup_claude_refuses_a_read_only_claude_folder_only_for_a_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
+    refused: bool,
+) -> None:
+    """Plain setup refuses a `~/.claude` you can't write in only when it
+    would change the settings file there, as its settings edits, run
+    without a write, show. Settings that are current pass, with or
+    without the lock file setup takes; an old commit-ingest entry setup
+    removes, a hook it adds, and a statusline it adds are refused. A
+    pending uv migration that installs the hook programs in a folder that
+    isn't on PATH moves no hook command, so current settings pass with one
+    pending. The check writes nothing."""
+    import aelfrice.cli as cli
+    from aelfrice.setup import install_commit_ingest_hook
+
+    p = _setup_files(tmp_path, monkeypatch)
+    args = _setup_parse([])
+    _wire_claude(p, args)
+    lock = p["settings"].with_name("settings.json.lock")
+    assert lock.is_file()
+    if state == "current, no lock file":
+        lock.unlink()
+    elif state == "migration pending":
+        _pend_migration(tmp_path, monkeypatch)
+    elif state == "old commit-ingest entry":
+        # A program that exists, so the prune of entries whose program is
+        # gone leaves the entry, and only the commit-ingest step drops it.
+        program = tmp_path / "bin" / "aelf-commit-ingest"
+        program.parent.mkdir()
+        program.write_text("#!/bin/sh\n", encoding="utf-8")
+        program.chmod(0o755)
+        install_commit_ingest_hook(p["settings"], command=str(program))
+    elif state != "current":
+        doc = json.loads(p["settings"].read_bytes())
+        if state == "one hook missing":
+            del doc["hooks"]["Stop"]
+        else:
+            del doc["statusLine"]
+        p["settings"].write_text(json.dumps(doc), encoding="utf-8")
+    before = _contents(tmp_path)
+    os.chmod(p["claude"], 0o500)
+    try:
+        refusal = cli._setup_input_refusal(args)  # noqa: SLF001
+    finally:
+        _restore_modes(tmp_path)
+    if refused:
+        assert refusal == (
+            f"aelf setup: {p['claude']} can't be written to (Permission "
+            f"denied); nothing was written. {_FIX_PERMS}"
+        ), refusal
+    else:
+        assert refusal is None, refusal
+    assert _contents(tmp_path) == before
+
+
+@pytest.mark.timeout(60)
+def test_setup_claude_settings_dry_run_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run of setup's settings edits that tells whether setup would
+    write the settings file takes no lock and writes nothing, in a folder
+    you can write in too."""
+    import aelfrice.cli as cli
+
+    p = _setup_files(tmp_path, monkeypatch)
+    _write_settings(p, b"{}")
+    before = _contents(tmp_path)
+    changes = cli._claude_settings_would_change(  # noqa: SLF001
+        _setup_parse([]), p["settings"],
+    )
+    assert changes is True
+    assert _contents(tmp_path) == before
+
+
+def _pend_migration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make `maybe_migrate_to_uv` see a migration to run: no marker, a
+    pipx install, and a fake `uv` first on `PATH` whose programs folder
+    isn't on `PATH`, so the migration setup predicts moves no hook
+    command. The conftest sandbox creates the marker so no test runs a
+    real `uv tool install`; a test that uses this replaces
+    `cli.maybe_migrate_to_uv` or never reaches it."""
+    from aelfrice import lifecycle
+
+    monkeypatch.setattr(
+        lifecycle, "MIGRATED_TO_UV_SENTINEL", tmp_path / "no-marker",
+    )
+    monkeypatch.setattr(
+        lifecycle, "upgrade_advice", lambda: argparse.Namespace(context="pipx"),
+    )
+    uv_dir = Path(tempfile.mkdtemp(prefix="fake-uv-", dir=tmp_path.parent))
+    _write_fake_uv(uv_dir)
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv_dir / "off-path-bin"))
+    monkeypatch.setenv("PATH", f"{uv_dir}{os.pathsep}{os.environ['PATH']}")
+
+
+#: The programs a fake `uv tool install aelfrice` writes: every
+#: [project.scripts] name in pyproject.toml, as a real install writes them.
+_UV_PROGRAMS: Final[str] = " ".join(sorted(tomllib.loads(
+    (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8",
+    ),
+)["project"]["scripts"]))
+
+
+def _write_fake_uv(folder: Path) -> Path:
+    """Write a fake `uv` in `folder` (#1812). It appends its arguments to
+    `folder / "uv.log"`. `uv tool dir --bin` prints the programs folder in
+    the order uv's docs give, UV_TOOL_BIN_DIR, XDG_BIN_HOME, then
+    XDG_DATA_HOME/../bin, then HOME/.local/bin, or, under FAKE_UV_MODE,
+    fails (exit 2), hangs, prints a relative path, two lines, or nothing.
+    `uv tool install` writes each aelfrice program in that folder, or in
+    FAKE_UV_INSTALL_DIR when it is set, or, when FAKE_UV_INSTALL_FAILS is
+    1, writes nothing and exits 1. It never runs a real uv."""
+    uv = folder / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> "{folder / "uv.log"}"\n'
+        "bindir() {\n"
+        '  if [ -n "$UV_TOOL_BIN_DIR" ]; then echo "$UV_TOOL_BIN_DIR"\n'
+        '  elif [ -n "$XDG_BIN_HOME" ]; then echo "$XDG_BIN_HOME"\n'
+        '  elif [ -n "$XDG_DATA_HOME" ]; then echo "$XDG_DATA_HOME/../bin"\n'
+        '  else echo "$HOME/.local/bin"; fi\n'
+        "}\n"
+        'if [ "$1 $2 $3" = "tool dir --bin" ]; then\n'
+        '  case "$FAKE_UV_MODE" in\n'
+        '    fail) echo "error: no tool dir" >&2; exit 2;;\n'
+        "    hang) exec sleep 30;;\n"
+        "    relative) echo rel-bin; exit 0;;\n"
+        "    two-lines) bindir; bindir; exit 0;;\n"
+        "    empty) exit 0;;\n"
+        "  esac\n"
+        "  bindir; exit 0\n"
+        "fi\n"
+        'if [ "$1 $2" = "tool install" ]; then\n'
+        '  [ "$FAKE_UV_INSTALL_FAILS" = 1 ] && { echo "error: offline" >&2; exit 1; }\n'
+        '  d="${FAKE_UV_INSTALL_DIR:-$(bindir)}"\n'
+        '  mkdir -p "$d"\n'
+        f"  for n in {_UV_PROGRAMS}; do\n"
+        "    printf '#!/bin/sh\\nexit 0\\n' > \"$d/$n\"; chmod 755 \"$d/$n\"\n"
+        "  done\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+    return uv
+
+
+def _uv_log(uv: Path) -> list[str]:
+    log = uv.parent / "uv.log"
+    return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+
+def _hook_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put an `aelf-hook` program in a new folder ahead of the others on
+    `PATH`, as a uv migration can, so setup resolves the hook command to
+    it."""
+    folder = tmp_path / "uv-bin"
+    folder.mkdir()
+    program = folder / "aelf-hook"
+    program.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    program.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{folder}{os.pathsep}{os.environ['PATH']}")
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize(
+    ("attempted", "moves", "read_only", "refused"),
+    [
+        pytest.param(True, False, True, False, id="ran, same programs"),
+        pytest.param(True, True, True, True, id="ran, moved the hook"),
+        pytest.param(False, True, True, False, id="did not run"),
+        pytest.param(True, True, False, False, id="ran, moved, writable"),
+    ],
+)
+def test_setup_claude_rereads_the_hook_programs_after_a_uv_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attempted: bool,
+    moves: bool, read_only: bool, refused: bool,
+) -> None:
+    """The preflight's prediction of where a uv migration puts the hook
+    programs assumes the install succeeds and puts them where uv said, so
+    it can be wrong, for example when the install fails or writes them
+    somewhere else. So setup runs its settings edits again
+    after a migration it started: it refuses, naming the folder and the
+    migration, only when those edits would now change the settings in a
+    folder it can't write in. In a folder it can write in, setup goes on
+    and writes them. The check writes nothing."""
+    import aelfrice.cli as cli
+    from aelfrice.lifecycle import MigrationResult
+
+    p = _setup_files(tmp_path, monkeypatch)
+    args = _setup_parse([])
+    _wire_claude(p, args)
+    if moves:
+        _hook_on_path(tmp_path, monkeypatch)
+    before = _contents(tmp_path)
+    if read_only:
+        os.chmod(p["claude"], 0o500)
+    try:
+        refusal = cli._settings_change_after_migration(  # noqa: SLF001
+            args, MigrationResult(attempted, attempted, "migrated to uv tool"),
+        )
+    finally:
+        _restore_modes(tmp_path)
+    if refused:
+        assert refusal == (
+            f"aelf setup: {p['claude']} can't be written to (Permission "
+            "denied), and with the hook programs on PATH after the uv "
+            f"migration it just ran, setup would change {p['settings']}; the "
+            f"settings weren't changed. {_FIX_PERMS}"
+        ), refusal
+    else:
+        assert refusal is None, refusal
+    assert _contents(tmp_path) == before
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize("moves", [False, True], ids=["same", "moved"])
+def test_setup_claude_runs_a_pending_uv_migration_past_a_read_only_claude_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], moves: bool,
+) -> None:
+    """With current settings in a `~/.claude` you can't write in and a
+    pending uv migration predicted to move no hook command, plain setup's
+    preflight passes, so the migration runs, as on main, instead of every
+    run refusing before it. When the migration moved the hook programs
+    after all, setup exits 1 after it with the refusal that names the
+    migration, before any later step, and changes no settings."""
+    import aelfrice.cli as cli
+    from aelfrice.lifecycle import MigrationResult
+
+    p = _setup_files(tmp_path, monkeypatch)
+    args = _setup_parse([])
+    _wire_claude(p, args)
+    ran: list[str] = []
+
+    def migrate(*_a: object, **_k: object) -> MigrationResult:
+        ran.append("migration")
+        if moves:
+            _hook_on_path(tmp_path, monkeypatch)
+        return MigrationResult(True, True, "migrated to uv tool")
+
+    def went_on() -> None:
+        ran.append("past the migration")
+        raise AssertionError("setup went on past the refusal")
+
+    monkeypatch.setattr(cli, "maybe_migrate_to_uv", migrate)
+    _pend_migration(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "_maybe_reconcile_claude_memory_at_setup", went_on)
+    monkeypatch.setattr(cli, "_open_store", went_on)
+    import aelfrice.mcp_cleanup as mcp_cleanup
+
+    monkeypatch.setattr(mcp_cleanup, "maybe_clean_up_mcp", went_on)
+    settings = p["settings"].read_bytes()
+    os.chmod(p["claude"], 0o500)
+    try:
+        if moves:
+            rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+        else:
+            with pytest.raises(AssertionError, match="past the refusal"):
+                cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+            rc = None
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    assert p["settings"].read_bytes() == settings
+    if moves:
+        assert rc == 1, err
+        assert ran == ["migration"], ran
+        assert err.endswith(
+            f"aelf setup: {p['claude']} can't be written to (Permission "
+            "denied), and with the hook programs on PATH after the uv "
+            f"migration it just ran, setup would change {p['settings']}; the "
+            f"settings weren't changed. {_FIX_PERMS}\n"
+        ), err
+    else:
+        assert ran[:2] == ["migration", "past the migration"], ran
+
+
+def _fake_uv_dir(tmp_path: Path) -> Path:
+    """A folder beside `tmp_path` for a fake `uv` and the programs folders
+    it names, so `tmp_path` holds only the files setup reads and writes."""
+    return Path(tempfile.mkdtemp(prefix="fake-uv-", dir=tmp_path.parent))
+
+
+def _clear_uv_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "UV_TOOL_BIN_DIR", "XDG_BIN_HOME", "XDG_DATA_HOME", "FAKE_UV_MODE",
+        "FAKE_UV_INSTALL_DIR", "FAKE_UV_INSTALL_FAILS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+_needs_sh = pytest.mark.skipif(
+    os.name == "nt", reason="the fake uv is a POSIX sh script",
+)
+
+
+@pytest.mark.timeout(20)
+@_needs_sh
+@pytest.mark.parametrize(
+    ("mode", "env", "want"),
+    [
+        pytest.param(
+            "", {"UV_TOOL_BIN_DIR": "tool-bin"}, "tool-bin", id="UV_TOOL_BIN_DIR",
+        ),
+        pytest.param(
+            "", {"UV_TOOL_BIN_DIR": "tool-bin", "XDG_BIN_HOME": "xdg-bin"},
+            "tool-bin", id="UV_TOOL_BIN_DIR over XDG_BIN_HOME",
+        ),
+        pytest.param("", {"XDG_BIN_HOME": "xdg-bin"}, "xdg-bin", id="XDG_BIN_HOME"),
+        pytest.param(
+            "fail", {"UV_TOOL_BIN_DIR": "tool-bin"},
+            "`{uv} tool dir --bin` exited 2", id="fails",
+        ),
+        pytest.param(
+            "hang", {"UV_TOOL_BIN_DIR": "tool-bin"},
+            "`{uv} tool dir --bin` timed out after 1s", id="times out",
+        ),
+        pytest.param(
+            "relative", {"UV_TOOL_BIN_DIR": "tool-bin"},
+            "`{uv} tool dir --bin` printed 'rel-bin', not one absolute path",
+            id="relative",
+        ),
+        pytest.param(
+            "two-lines", {"UV_TOOL_BIN_DIR": "tool-bin"},
+            "`{uv} tool dir --bin` printed '{d}/tool-bin\\n{d}/tool-bin', not "
+            "one absolute path",
+            id="two lines",
+        ),
+        pytest.param(
+            "empty", {"UV_TOOL_BIN_DIR": "tool-bin"},
+            "`{uv} tool dir --bin` printed '', not one absolute path", id="empty",
+        ),
+        pytest.param(
+            "missing", {}, "`{uv} tool dir --bin` failed to start: ", id="missing",
+        ),
+    ],
+)
+def test_uv_tool_bin_dir_reads_one_absolute_path_from_uv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+    env: dict[str, str], want: str,
+) -> None:
+    """Setup asks uv where `uv tool install` puts programs with `uv tool dir
+    --bin`, in this process's environment, so uv's own order of
+    UV_TOOL_BIN_DIR over XDG_BIN_HOME holds. It takes the folder only when
+    uv exits 0 within the timeout and prints one absolute path; otherwise
+    it says why and gives no folder (#1812)."""
+    from aelfrice import lifecycle
+
+    d = _fake_uv_dir(tmp_path)
+    uv = d / "no-uv-here" if mode == "missing" else _write_fake_uv(d)
+    _clear_uv_env(monkeypatch)
+    for name, value in env.items():
+        monkeypatch.setenv(name, str(d / value))
+    if mode:
+        monkeypatch.setenv("FAKE_UV_MODE", mode)
+    if mode == "hang":
+        # Only the hang case gets the short limit, so a loaded machine
+        # that starts the fake slowly doesn't time the other cases out.
+        monkeypatch.setattr(lifecycle, "UV_TOOL_DIR_TIMEOUT_SECONDS", 1)
+    found = lifecycle.uv_tool_bin_dir(str(uv))
+    if "`" not in want:
+        assert found == lifecycle.UvToolBinDir(d / want, ""), found
+    else:
+        assert found.path is None, found
+        assert found.reason.startswith(want.format(uv=uv, d=d)), found.reason
+
+
+@pytest.mark.timeout(20)
+@_needs_sh
+@pytest.mark.parametrize(
+    "state", ["pending", "marker", "uv tool install", "no uv"],
+)
+def test_pending_uv_migration_follows_the_migration_short_circuits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    """Setup predicts a migration only when `maybe_migrate_to_uv` would run
+    one: no marker, an install that isn't a uv tool, and `uv` on `PATH`,
+    whose path it returns (#1812)."""
+    from aelfrice import lifecycle
+
+    d = _fake_uv_dir(tmp_path)
+    uv = _write_fake_uv(d)
+    marker = tmp_path / "migrated-to-uv"
+    if state == "marker":
+        marker.write_text("x\n", encoding="utf-8")
+    context = "uv_tool" if state == "uv tool install" else "pipx"
+    monkeypatch.setattr(lifecycle, "MIGRATED_TO_UV_SENTINEL", marker)
+    monkeypatch.setattr(
+        lifecycle, "upgrade_advice", lambda: argparse.Namespace(context=context),
+    )
+    folders = [] if state == "no uv" else [str(d)]
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([*folders, str(tmp_path / "empty")]),
+    )
+    got = lifecycle.pending_uv_migration()
+    assert got == (str(uv) if state == "pending" else None), got
+
+
+def _program(folder: Path, name: str = "aelf-hook") -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    program = folder / name
+    program.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    program.chmod(0o755)
+    return program
+
+
+@pytest.mark.timeout(20)
+@pytest.mark.skipif(os.name == "nt", reason="setup predicts a POSIX PATH search only")
+@pytest.mark.parametrize(
+    ("entries", "want"),
+    [
+        pytest.param(["old", "uv"], "old", id="uv folder after the program"),
+        pytest.param(["uv", "old"], "uv", id="uv folder ahead"),
+        pytest.param(["old"], "old", id="uv folder not on PATH"),
+        pytest.param(["link", "old"], "link", id="a link to the uv folder ahead"),
+        pytest.param(["none", "uv"], "uv", id="no program yet"),
+        pytest.param(["none"], None, id="no program at all"),
+        pytest.param(["", "uv"], None, id="an empty entry, the program in the cwd"),
+    ],
+)
+def test_which_on_path_predicts_a_program_installed_in_a_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entries: list[str],
+    want: str | None,
+) -> None:
+    """With `installed_in`, the PATH search answers as it will once a
+    program is in that folder: the first PATH entry that holds the program
+    or resolves to the folder wins, in PATH order, and a link to the
+    folder counts as the folder. An empty entry searches the working
+    directory, and a hit there is dropped as the search without a folder
+    drops it. The folder needn't exist yet, and nothing is written
+    (#1812)."""
+    from aelfrice import launcher
+
+    _program(tmp_path / "old")
+    (tmp_path / "none").mkdir()
+    uv = tmp_path / "uv"
+    if "link" in entries:
+        uv.mkdir()
+        os.symlink(uv, tmp_path / "link")
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join(str(tmp_path / e) if e else "" for e in entries),
+    )
+    if "" in entries:
+        monkeypatch.chdir(tmp_path / "old")
+        assert launcher.which_on_path("aelf-hook") is None
+    got = launcher.which_on_path("aelf-hook", installed_in=uv)
+    assert got == (None if want is None else tmp_path / want / "aelf-hook"), got
+    assert not (uv / "aelf-hook").exists()
+
+
+def _predict_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str],
+) -> tuple[dict[str, Path], argparse.Namespace, Path, Path]:
+    """Wire the Claude settings as `aelf setup FLAGS` leaves them, then make
+    a uv migration pending, with the marker under `tmp_path`, a pipx
+    install, and a fake `uv` whose folder the caller puts on PATH. Returns
+    the files, the parsed args, the fake uv, and the folder of the
+    `aelf-hook` the settings name now."""
+    import aelfrice.cli as cli
+    from aelfrice import lifecycle
+
+    p = _setup_files(tmp_path, monkeypatch)
+    args = _setup_parse(flags)
+    _wire_claude(p, args)
+    uv = _write_fake_uv(_fake_uv_dir(tmp_path))
+    _clear_uv_env(monkeypatch)
+    monkeypatch.setattr(
+        lifecycle, "MIGRATED_TO_UV_SENTINEL", p["dotdir"] / "migrated-to-uv",
+    )
+    monkeypatch.setattr(
+        lifecycle, "upgrade_advice", lambda: argparse.Namespace(context="pipx"),
+    )
+    scope = cli._effective_scope(args)  # noqa: SLF001
+    current = Path(cli.resolve_hook_command(scope)).parent
+    return p, args, uv, current
+
+
+def _migration_refusal(p: dict[str, Path], uv_bin: Path, old: Path) -> str:
+    """The refusal of a migration that would move setup's 8 hook commands,
+    `aelf-hook` first, out of `old` into `uv_bin`."""
+    return (
+        f"aelf setup: {p['claude']} can't be written to (Permission denied), "
+        "and the uv migration setup runs first (`uv tool install --force "
+        f"aelfrice`) would install the hook programs in {uv_bin}, so setup "
+        f"would change {p['settings']}: {old / 'aelf-hook'} to "
+        f"{uv_bin / 'aelf-hook'}, and 7 other hook commands the same way; "
+        f"nothing was written. {_FIX_PERMS}"
+    )
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize(
+    ("state", "refused"),
+    [
+        pytest.param("behind", False, id="uv folder later on PATH"),
+        pytest.param("behind, hook missing", True, id="uv folder later, hook missing"),
+        pytest.param("ahead", True, id="uv folder ahead"),
+        pytest.param("not on PATH", False, id="uv folder not on PATH"),
+        pytest.param("XDG_BIN_HOME ahead", True, id="XDG_BIN_HOME ahead"),
+        pytest.param(
+            "UV_TOOL_BIN_DIR behind, XDG_BIN_HOME ahead", False,
+            id="UV_TOOL_BIN_DIR over XDG_BIN_HOME",
+        ),
+        pytest.param("writable, ahead", False, id="writable"),
+        pytest.param("project, venv program", False, id="project scope"),
+        pytest.param(
+            "project, no venv program", True, id="project scope, no venv program",
+        ),
+    ],
+)
+def test_setup_claude_predicts_where_a_uv_migration_puts_the_hook_programs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str, refused: bool,
+) -> None:
+    """Before its first write, plain setup asks uv where a pending
+    migration installs the hook programs and runs its settings edits with
+    them there, in PATH order. It refuses a `~/.claude` you can't write in
+    only when those settings differ from the file, naming the folder, the
+    migration and the command that would change, or with the plain folder
+    refusal when no command moves but another edit changes the file, and
+    passes when uv's
+    folder comes later on PATH or isn't on it. That holds in the user
+    scope and in the project scope, where the running install's program
+    comes first. A writable folder asks uv nothing. Nothing is written
+    (#1812)."""
+    import aelfrice.cli as cli
+    import aelfrice.setup as setup_mod
+
+    flags: list[str] = []
+    if state.startswith("project"):
+        flags = [
+            "--scope", "project",
+            "--settings-path", str(tmp_path / "home" / ".claude" / "settings.json"),
+        ]
+        if state == "project, no venv program":
+            monkeypatch.setattr(
+                setup_mod, "_venv_bin_dir", lambda: tmp_path / "no-venv",
+            )
+    p, args, uv, current = _predict_setup(tmp_path, monkeypatch, flags)
+    if state == "behind, hook missing":
+        doc = json.loads(p["settings"].read_bytes())
+        del doc["hooks"]["Stop"]
+        p["settings"].write_text(json.dumps(doc), encoding="utf-8")
+    d = uv.parent
+    uv_bin = d / "uv-bin"
+    xdg = d / "xdg-bin"
+    order = {
+        "behind": [current, uv_bin],
+        "behind, hook missing": [current, uv_bin],
+        "not on PATH": [current],
+        "XDG_BIN_HOME ahead": [xdg, current],
+        "UV_TOOL_BIN_DIR behind, XDG_BIN_HOME ahead": [xdg, current, uv_bin],
+    }.get(state, [uv_bin, current])
+    if state != "XDG_BIN_HOME ahead":
+        monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv_bin))
+    if "XDG_BIN_HOME" in state:
+        monkeypatch.setenv("XDG_BIN_HOME", str(xdg))
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([str(d), *map(str, order), os.environ["PATH"]]),
+    )
+    before = _contents(tmp_path)
+    if not state.startswith("writable"):
+        os.chmod(p["claude"], 0o500)
+    try:
+        refusal = cli._setup_input_refusal(args)  # noqa: SLF001
+    finally:
+        _restore_modes(tmp_path)
+    if state == "behind, hook missing":
+        assert refusal == (
+            f"aelf setup: {p['claude']} can't be written to (Permission "
+            f"denied); nothing was written. {_FIX_PERMS}"
+        ), refusal
+    elif refused:
+        folder = xdg if state.startswith("XDG") else uv_bin
+        assert refusal == _migration_refusal(p, folder, current), refusal
+    else:
+        assert refusal is None, refusal
+    assert _contents(tmp_path) == before
+    want_calls = [] if state.startswith("writable") else ["tool dir --bin"]
+    assert _uv_log(uv) == want_calls
+
+
+@pytest.mark.timeout(20)
+@_needs_sh
+def test_setup_claude_asks_uv_nothing_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup doesn't predict a PATH search on Windows, where a program's
+    file name takes a PATHEXT suffix, so it asks uv nothing there and
+    answers that it can't tell where the migration puts the programs,
+    which skips the migration in a folder it can't write in (#1812)."""
+    import aelfrice.cli as cli
+    from aelfrice.lifecycle import UvToolBinDir
+
+    _p, _args, uv, _current = _predict_setup(tmp_path, monkeypatch, [])
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv.parent / "uv-bin"))
+    monkeypatch.setenv("PATH", f"{uv.parent}{os.pathsep}{os.environ['PATH']}")
+    got = cli._uv_migration_programs_folder()  # noqa: SLF001
+    assert got == UvToolBinDir(uv.parent / "uv-bin", ""), got
+    assert _uv_log(uv) == ["tool dir --bin"]
+    with monkeypatch.context() as m:
+        m.setattr(cli, "_setup_predicts_path_search", lambda: False)
+        got = cli._uv_migration_programs_folder()  # noqa: SLF001
+    assert got == UvToolBinDir(
+        None, "setup doesn't predict a program search on Windows",
+    ), got
+    assert _uv_log(uv) == ["tool dir --bin"]
+    for platform, predicts in (("win32", False), ("darwin", True), ("linux", True)):
+        with monkeypatch.context() as m:
+            m.setattr(cli.sys, "platform", platform)
+            got_predicts = cli._setup_predicts_path_search()  # noqa: SLF001
+        assert got_predicts is predicts, platform
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@pytest.mark.parametrize("ahead", [True, False], ids=["ahead", "behind"])
+def test_setup_claude_refuses_a_migration_that_moves_the_hooks_before_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], ahead: bool,
+) -> None:
+    """With current settings in a `~/.claude` you can't write in and uv's
+    programs folder ahead on PATH, plain setup exits 1 before its first
+    write: the migration doesn't run, so no marker is written, the Claude
+    auto-install opt-out stays, and nothing under `tmp_path` changes. With
+    uv's folder later on PATH, the migration runs, as on main, and setup
+    goes on past the check after it (#1812)."""
+    import aelfrice.cli as cli
+    import aelfrice.mcp_cleanup as mcp_cleanup
+
+    p, args, uv, current = _predict_setup(tmp_path, monkeypatch, [])
+    uv_bin = uv.parent / "uv-bin"
+    order = [uv_bin, current] if ahead else [current, uv_bin]
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv_bin))
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([str(uv.parent), *map(str, order), os.environ["PATH"]]),
+    )
+    p["ledger"].write_text(_CLAUDE_OPTED_OUT, encoding="utf-8")
+
+    def went_on() -> None:
+        raise AssertionError("setup went on past the migration check")
+
+    monkeypatch.setattr(cli, "_maybe_reconcile_claude_memory_at_setup", went_on)
+    monkeypatch.setattr(cli, "_open_store", went_on)
+    monkeypatch.setattr(mcp_cleanup, "maybe_clean_up_mcp", went_on)
+    before = _contents(tmp_path)
+    os.chmod(p["claude"], 0o500)
+    try:
+        if ahead:
+            rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+        else:
+            with pytest.raises(AssertionError, match="past the migration check"):
+                cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+            rc = None
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    marker = p["dotdir"] / "migrated-to-uv"
+    if ahead:
+        assert rc == 1, err
+        assert err == _migration_refusal(p, uv_bin, current) + "\n", err
+        assert _contents(tmp_path) == before
+        assert not marker.exists()
+        assert _uv_log(uv) == ["tool dir --bin"]
+    else:
+        assert marker.is_file()
+        assert _uv_log(uv)[-1] == "tool install --force aelfrice", _uv_log(uv)
+        assert (uv_bin / "aelf-hook").is_file()
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@_needs_sh
+@pytest.mark.parametrize(
+    "state", ["install fails", "lands elsewhere", "goes on"],
+)
+def test_setup_claude_clears_the_opt_out_only_after_the_migration_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str,
+) -> None:
+    """With a `~/.claude` you can't write in, a pending uv migration and
+    uv naming its folder, plain setup clears the Claude auto-install
+    opt-out only after the check after the migration passes. When that
+    check refuses, because the install failed while the settings already
+    name uv's programs or the install wrote them in a folder ahead of
+    uv's, setup exits 1 and the ledger is byte-identical; nothing under
+    `tmp_path` changes but the marker a successful install writes. When
+    the check passes, setup clears the opt-out before its next step
+    (#1812)."""
+    import aelfrice.cli as cli
+    import aelfrice.mcp_cleanup as mcp_cleanup
+    from aelfrice import lifecycle
+
+    p = _setup_files(tmp_path, monkeypatch)
+    args = _setup_parse([])
+    uv = _write_fake_uv(_fake_uv_dir(tmp_path))
+    _clear_uv_env(monkeypatch)
+    uv_bin = uv.parent / "uv-bin"
+    other = uv.parent / "other-bin"
+    current = Path(cli.resolve_hook_command(cli._effective_scope(args))).parent  # noqa: SLF001
+    if state == "install fails":
+        uv_bin.mkdir()
+        for name in _UV_PROGRAMS.split():
+            program = uv_bin / name
+            program.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            program.chmod(0o755)
+        order = [uv_bin, current]
+    elif state == "lands elsewhere":
+        order = [other, current, uv_bin]
+    else:
+        order = [current, uv_bin]
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([str(uv.parent), *map(str, order), os.environ["PATH"]]),
+    )
+    _wire_claude(p, args)
+    if state == "install fails":
+        assert str(uv_bin / "aelf-hook") in p["settings"].read_text("utf-8")
+        shutil.rmtree(uv_bin)
+        monkeypatch.setenv("FAKE_UV_INSTALL_FAILS", "1")
+    elif state == "lands elsewhere":
+        monkeypatch.setenv("FAKE_UV_INSTALL_DIR", str(other))
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv_bin))
+    monkeypatch.setattr(
+        lifecycle, "MIGRATED_TO_UV_SENTINEL", p["dotdir"] / "migrated-to-uv",
+    )
+    monkeypatch.setattr(
+        lifecycle, "upgrade_advice", lambda: argparse.Namespace(context="pipx"),
+    )
+    p["ledger"].write_text(_CLAUDE_OPTED_OUT, encoding="utf-8")
+    seen: list[bytes] = []
+
+    def went_on() -> None:
+        seen.append(p["ledger"].read_bytes())
+        raise AssertionError("setup went on past the migration check")
+
+    monkeypatch.setattr(mcp_cleanup, "maybe_clean_up_mcp", went_on)
+    monkeypatch.setattr(cli, "_maybe_reconcile_claude_memory_at_setup", went_on)
+    monkeypatch.setattr(cli, "_open_store", went_on)
+    ledger = p["ledger"].read_bytes()
+    before = _contents(tmp_path)
+    out = io.StringIO()
+    os.chmod(p["claude"], 0o500)
+    try:
+        if state == "goes on":
+            with pytest.raises(AssertionError, match="past the migration check"):
+                cli._cmd_setup_claude(args, out)  # noqa: SLF001
+            rc = None
+        else:
+            rc = cli._cmd_setup_claude(args, out)  # noqa: SLF001
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    assert _uv_log(uv)[-1] == "tool install --force aelfrice", _uv_log(uv)
+    marker = p["dotdir"] / "migrated-to-uv"
+    if state == "goes on":
+        # The first step after the check is the MCP cleanup, which setup
+        # runs under `except Exception`, so the later stubs run too.
+        assert seen, seen
+        assert "claude" not in json.loads(seen[0]).get("opt_out_hosts", [])
+        assert out.getvalue().startswith(
+            "cleared claude host auto-install opt-out (#1053)\n"
+        ), out.getvalue()
+        return
+    assert rc == 1, err
+    assert err.endswith(
+        f"aelf setup: {p['claude']} can't be written to (Permission "
+        "denied), and with the hook programs on PATH after the uv "
+        f"migration it just ran, setup would change {p['settings']}; the "
+        f"settings weren't changed. {_FIX_PERMS}\n"
+    ), err
+    assert p["ledger"].read_bytes() == ledger
+    assert "cleared claude" not in out.getvalue(), out.getvalue()
+    assert seen == []
+    after = _contents(tmp_path)
+    changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+    if state == "install fails":
+        assert changed == [], changed
+        assert not marker.exists()
+    else:
+        assert changed == [str(marker)], changed
+        assert (other / "aelf-hook").is_file()
+
+
+@pytest.mark.timeout(20)
+@pytest.mark.parametrize("state", ["unsearchable", "file above", "link loop"])
+def test_pending_uv_migration_reads_a_marker_it_can_not_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    """A migration marker that can't be checked, under a folder you can't
+    search, raises, so setup can name it, also where `Path.exists` would
+    read it as missing. A file where a folder goes and a symbolic link
+    loop read as no marker, as `Path.exists` reads them on Python 3.12 and
+    3.13, so a migration is pending (#1812)."""
+    from aelfrice import lifecycle
+
+    if state == "unsearchable" and not _CAN_CHMOD:
+        pytest.skip("needs POSIX permissions and a user that isn't root")
+    folder = tmp_path / "dotdir"
+    if state == "file above":
+        folder.write_text("x\n", encoding="utf-8")
+    elif state == "link loop":
+        os.symlink(folder.name, folder)
+    else:
+        folder.mkdir()
+    monkeypatch.setattr(
+        lifecycle, "MIGRATED_TO_UV_SENTINEL", folder / "migrated-to-uv",
+    )
+    monkeypatch.setattr(
+        lifecycle, "upgrade_advice", lambda: argparse.Namespace(context="pipx"),
+    )
+    uv = tmp_path / "bin" / "uv"
+    uv.parent.mkdir()
+    uv.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    uv.chmod(0o755)
+    monkeypatch.setenv("PATH", str(uv.parent))
+    if state != "unsearchable":
+        assert lifecycle.pending_uv_migration() == str(uv)
+        return
+    os.chmod(folder, 0o600)
+    try:
+        with pytest.raises(PermissionError):
+            lifecycle.pending_uv_migration()
+        # As on a Python whose `Path.exists` reads every error as False.
+        with monkeypatch.context() as m:
+            m.setattr(Path, "exists", lambda self, **_k: os.path.exists(self))
+            with pytest.raises(PermissionError):
+                lifecycle.pending_uv_migration()
+    finally:
+        _restore_modes(tmp_path)
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@_needs_sh
+@pytest.mark.parametrize("mode", [0o600, 0o000, 0o200], ids=["600", "000", "200"])
+def test_setup_claude_refuses_a_migration_marker_it_can_not_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], mode: int,
+) -> None:
+    """With a `~/.aelfrice` you can't search and a `~/.claude` you can't
+    write in, plain setup can't tell whether a uv migration is pending.
+    The check `main` runs and the executor's both exit 1 naming the
+    marker and the cause, ask uv nothing, and write nothing (#1812)."""
+    import aelfrice.cli as cli
+
+    p, args, uv, _current = _predict_setup(tmp_path, monkeypatch, [])
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv.parent / "uv-bin"))
+    monkeypatch.setenv("PATH", f"{uv.parent}{os.pathsep}{os.environ['PATH']}")
+    before = _contents(tmp_path)
+    os.chmod(p["claude"], 0o500)
+    os.chmod(p["dotdir"], mode)
+    try:
+        refusal = cli._setup_input_refusal(args)  # noqa: SLF001
+        rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    want = (
+        f"aelf setup: {p['dotdir'] / 'migrated-to-uv'} can't be read "
+        f"(Permission denied); nothing was written. {_FIX_OR_MOVE}"
+    )
+    assert refusal == want, refusal
+    assert rc == 1, err
+    assert err == want + "\n", err
+    assert _contents(tmp_path) == before
+    assert _uv_log(uv) == []
+
+
+#: Why setup can't tell where a uv migration puts the hook programs, for
+#: each way `uv tool dir --bin` gives no folder, and on Windows.
+_UV_CANT_SAY: Final[dict[str, str]] = {
+    "fail": "`{uv} tool dir --bin` exited 2",
+    "hang": "`{uv} tool dir --bin` timed out after 1s",
+    "relative": "`{uv} tool dir --bin` printed 'rel-bin', not one absolute path",
+    "two-lines": (
+        "`{uv} tool dir --bin` printed '{bin}\\n{bin}', not one absolute path"
+    ),
+    "empty": "`{uv} tool dir --bin` printed '', not one absolute path",
+    "no start": "`{uv} tool dir --bin` failed to start: ",
+    "windows": "setup doesn't predict a program search on Windows",
+}
+
+
+def _skip_notice(folder: Path, reason: str) -> str:
+    return (
+        "aelf setup: skipped the uv migration (`uv tool install --force "
+        f"aelfrice`), because {folder} can't be written to (Permission "
+        "denied) and setup can't tell where the migration would put the "
+        f"hook programs: {reason}. The settings need no other change, so "
+        "nothing was written. Setup runs the migration on a later run, once "
+        "uv answers or the folder can be written to"
+    )
+
+
+def _uv_cant_say(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str],
+    mode: str,
+) -> tuple[dict[str, Path], argparse.Namespace, Path, str]:
+    """Wire the Claude settings, make a uv migration pending with uv's
+    programs folder ahead on PATH, so a prediction would move the hook
+    commands, and make `uv tool dir --bin` give no folder as `mode` says.
+    Returns the files, the args, the uv on PATH and the reason setup
+    gives, up to the OS error for a uv that can't start."""
+    p, args, uv, current = _predict_setup(tmp_path, monkeypatch, flags)
+    uv_bin = uv.parent / "uv-bin"
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv_bin))
+    first = uv.parent
+    if mode == "no start":
+        first = _fake_uv_dir(tmp_path)
+        broken = first / "uv"
+        broken.write_text("#!/nonexistent-interpreter/sh\n", encoding="utf-8")
+        broken.chmod(0o755)
+        uv = broken
+    elif mode != "windows":
+        monkeypatch.setenv("FAKE_UV_MODE", mode)
+    if mode == "hang":
+        from aelfrice import lifecycle
+
+        monkeypatch.setattr(lifecycle, "UV_TOOL_DIR_TIMEOUT_SECONDS", 1)
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([str(first), str(uv_bin), str(current), os.environ["PATH"]]),
+    )
+    return p, args, uv, _UV_CANT_SAY[mode].format(uv=uv, bin=uv_bin)
+
+
+def _setup_flags(tmp_path: Path, scope: str) -> list[str]:
+    if scope == "user":
+        return []
+    return [
+        "--scope", "project",
+        "--settings-path", str(tmp_path / "home" / ".claude" / "settings.json"),
+    ]
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@_needs_sh
+@pytest.mark.parametrize("scope", ["user", "project"])
+@pytest.mark.parametrize("stale", [False, True], ids=["current", "stale"])
+@pytest.mark.parametrize("mode", list(_UV_CANT_SAY))
+def test_setup_claude_skips_a_migration_uv_can_not_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], scope: str, stale: bool, mode: str,
+) -> None:
+    """With a uv migration pending, a `~/.claude` you can't write in, and
+    no answer from uv on where the install puts the programs (it fails,
+    times out, can't start, prints a relative path, two lines or nothing,
+    or the platform is Windows), plain setup doesn't run the migration.
+    With settings that need no other change, `aelf setup` and the
+    executor exit 0 with a notice that names the folder and the reason;
+    with settings that would change anyway, they exit 1 with the plain
+    folder refusal. Either way nothing under `tmp_path` changes: no
+    marker, no settings, and the Claude opt-out stays, and `aelf setup`
+    stops before the update check (#1812)."""
+    import aelfrice.cli as cli
+    from aelfrice import lifecycle
+
+    flags = _setup_flags(tmp_path, scope)
+    p, args, uv, reason = _uv_cant_say(tmp_path, monkeypatch, flags, mode)
+    if stale:
+        doc = json.loads(p["settings"].read_bytes())
+        del doc["hooks"]["Stop"]
+        p["settings"].write_text(json.dumps(doc), encoding="utf-8")
+    p["ledger"].write_text(_CLAUDE_OPTED_OUT, encoding="utf-8")
+
+    def migrate(*_a: object, **_k: object) -> object:
+        raise AssertionError("setup ran the migration")
+
+    def update_check() -> None:
+        raise AssertionError("setup went on to the update check")
+
+    monkeypatch.setattr(cli, "maybe_migrate_to_uv", migrate)
+    monkeypatch.setattr(lifecycle, "maybe_migrate_to_uv", migrate)
+    # `main` would start the update check, which writes its cache, next.
+    monkeypatch.setattr(cli, "_update_check_disabled", lambda: False)
+    monkeypatch.setattr(cli, "maybe_check_for_update_async", update_check)
+    before = _contents(tmp_path)
+    os.chmod(p["claude"], 0o500)
+    try:
+        with monkeypatch.context() as m:
+            if mode == "windows":
+                m.setattr(cli, "_setup_predicts_path_search", lambda: False)
+            rc_main = main(["setup", "--scope", "user", *flags])
+            err_main = capsys.readouterr().err
+            rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+            err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    if stale:
+        want = (
+            f"aelf setup: {p['claude']} can't be written to (Permission "
+            f"denied); nothing was written. {_FIX_PERMS}"
+        )
+        assert (rc_main, rc) == (1, 1), err_main + err
+        assert err_main == err == want + "\n", err_main + err
+    else:
+        assert (rc_main, rc) == (0, 0), err_main + err
+        head, _, tail = _skip_notice(p["claude"], reason).partition(reason)
+        for text in (err_main, err):
+            assert text.startswith(head + reason), text
+            assert text.endswith(tail + "\n"), text
+            assert text.count("\n") == 1, text
+    assert _contents(tmp_path) == before
+    assert not (p["dotdir"] / "migrated-to-uv").exists()
+    calls = _uv_log(uv)
+    assert "tool install --force aelfrice" not in calls, calls
+    if mode == "windows":
+        assert calls == [], calls
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@_needs_sh
+def test_setup_claude_refuses_a_ledger_before_it_skips_a_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Setup decides to skip a migration uv can't place only after every
+    other check passes, so a ledger it can't use is still refused, exit 1
+    with the ledger named, and nothing written (#1812)."""
+    import aelfrice.cli as cli
+
+    p, args, _uv, _reason = _uv_cant_say(tmp_path, monkeypatch, [], "fail")
+    p["ledger"].write_bytes(b'{"opt_out": ["\xff"]}')
+    before = _contents(tmp_path)
+    os.chmod(p["claude"], 0o500)
+    try:
+        rc = cli._cmd_setup_claude(args, io.StringIO())  # noqa: SLF001
+        err = capsys.readouterr().err
+    finally:
+        _restore_modes(tmp_path)
+    assert rc == 1, err
+    assert err.startswith(f"aelf setup: {p['ledger']} isn't UTF-8 text"), err
+    assert _contents(tmp_path) == before
+
+
+def _hook_entry(command: str) -> dict[str, object]:
+    return {"hooks": [{"type": "command", "command": command}]}
+
+
+@pytest.mark.timeout(20)
+@pytest.mark.skipif(os.name == "nt", reason="setup predicts a POSIX PATH search only")
+def test_prune_keeps_the_programs_a_uv_migration_would_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside setup's prediction of a uv migration, the prune of broken
+    `aelf-*` hooks counts each program the package installs as present in
+    uv's folder, as it will be after the install: a path in the folder,
+    whose name has a space in it, one through a link to the folder, and a
+    bare name PATH finds there. It still removes a name the package
+    doesn't install and a program in another missing folder. Outside the
+    prediction every one of them is broken. Nothing is written (#1812)."""
+    from aelfrice.doctor import prune_broken_aelf_hooks
+    from aelfrice.setup import programs_installed_in
+
+    uv = tmp_path / "uv bin"
+    link = tmp_path / "uv-link"
+    os.symlink(uv.name, link)
+    gone = tmp_path / "gone"
+    doc = {"hooks": {
+        "UserPromptSubmit": [_hook_entry(f"{uv}/aelf-hook")],
+        "Stop": [_hook_entry(f"{link}/aelf-stop-hook")],
+        "SessionStart": [_hook_entry("aelf-session-start-hook")],
+        "PreToolUse": [_hook_entry(f"{link}/aelf-not-a-program")],
+        "PostToolUse": [_hook_entry(f"{gone}/aelf-commit-ingest")],
+    }}
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(doc), encoding="utf-8")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(link), str(tmp_path / "empty")]))
+    before = settings.read_bytes()
+    with programs_installed_in(uv):
+        kept = prune_broken_aelf_hooks(settings, dry_run=True)
+    plain = prune_broken_aelf_hooks(settings, dry_run=True)
+    assert kept.removed_per_event == {"PreToolUse": 1, "PostToolUse": 1}, kept
+    assert plain.total_removed == 5, plain
+    assert settings.read_bytes() == before
+    assert not uv.exists()
+
+
+@pytest.mark.timeout(60)
+@_needs_chmod
+@_needs_sh
+def test_setup_claude_passes_settings_that_already_name_uv_programs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Settings an earlier setup wired to programs in uv's folder, which
+    are gone now, are what the pending migration's install leaves, so a
+    `~/.claude` you can't write in passes the preflight, asks uv once and
+    writes nothing, as the migration then changes no setting (#1812)."""
+    import aelfrice.cli as cli
+
+    p, args, uv, current = _predict_setup(tmp_path, monkeypatch, [])
+    uv_bin = uv.parent / "uv-bin"
+    for name in _UV_PROGRAMS.split():
+        _program(uv_bin, name)
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(uv_bin))
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([str(uv.parent), str(uv_bin), str(current), os.environ["PATH"]]),
+    )
+    _wire_claude(p, args)
+    assert str(uv_bin / "aelf-hook") in p["settings"].read_text(encoding="utf-8")
+    shutil.rmtree(uv_bin)
+    assert cli._claude_settings_would_change(args, p["settings"])  # noqa: SLF001
+    before = _contents(tmp_path)
+    os.chmod(p["claude"], 0o500)
+    try:
+        refusal = cli._setup_input_refusal(args)  # noqa: SLF001
+    finally:
+        _restore_modes(tmp_path)
+    assert refusal is None, refusal
+    assert _contents(tmp_path) == before
+    assert _uv_log(uv) == ["tool dir --bin"]
+
+
+def test_setup_names_every_program_the_package_installs() -> None:
+    """The programs setup counts as installed by a uv migration are the
+    console scripts in pyproject.toml's `[project.scripts]` (#1812)."""
+    from aelfrice.setup import PACKAGE_PROGRAM_NAMES
+
+    assert sorted(PACKAGE_PROGRAM_NAMES) == _package_scripts()

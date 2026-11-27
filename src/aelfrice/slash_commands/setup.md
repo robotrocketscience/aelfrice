@@ -33,11 +33,13 @@ On the `claude` host, each default-on lane is opt-out through its own
 rest. `--rebuilder` adds the opt-in `PreCompact` bookkeeping entry. Run
 `aelf setup --help` for the full claude-host flag list.
 
-On the `codex` host, `aelf setup --host codex` accepts only `--force` and
-`--codex-skills` / `--no-codex-skills`. It reads none of the claude-host
-flags above, so it refuses any of them with exit 2 and changes nothing
-(#1429). `aelf unsetup --host codex` accepts no flag but `--host`. Run
-both commands with no other options on this host.
+On the `codex` host, `aelf setup --host codex` accepts only `--force`,
+`--codex-skills` / `--no-codex-skills`, and `--status-message TEXT`,
+which writes TEXT as the Codex `statusMessage` of the retrieval,
+SessionStart, and stop handlers (#1812). It reads none of the other
+claude-host flags above, so it refuses any of them with exit 2 and
+changes nothing (#1429). `aelf unsetup --host codex` accepts no flag but
+`--host`. Pass no other options to either command on this host.
 </objective>
 
 <process>

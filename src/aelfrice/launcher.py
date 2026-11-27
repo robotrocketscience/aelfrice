@@ -38,6 +38,7 @@ import shlex
 import shutil
 import sys
 import sysconfig
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final
 
@@ -285,6 +286,7 @@ def program_exists(command: str, *, windows: bool | None = None) -> bool:
 
 def existing_program_path(
     command: str, *, windows: bool | None = None,
+    present: Callable[[Path], bool] | None = None,
 ) -> Path | None:
     """The reading of this command's program that names a file, else None.
 
@@ -292,6 +294,10 @@ def existing_program_path(
     *something* about the file — whether it is executable, or where it is.
     Same scan, same switch-shaped stop; the shortest prefix wins, so an
     argument can never displace a program that already resolved.
+
+    `present` counts a reading that doesn't exist as one that does when
+    it returns True: `aelf setup` passes the programs a pending uv
+    migration would install (#1812).
     """
     win = _resolve_windows(windows)
     tokens = command_tokens(command, windows=win)
@@ -305,7 +311,9 @@ def existing_program_path(
             if candidate.exists():
                 return candidate
         except OSError:  # a path the platform cannot even stat
-            continue
+            pass
+        if present is not None and present(candidate):
+            return candidate
     return None
 
 
@@ -390,7 +398,26 @@ def which_in(directory: Path, name: str) -> Path | None:
     return None
 
 
-def which_on_path(name: str) -> Path | None:
+def _which_with_program_in(name: str, raw: str, folder: Path) -> str | None:
+    """`shutil.which(name, path=raw)` as it will answer once `folder`
+    holds a program `name` (#1812).
+
+    Each entry is searched on its own, in `PATH` order. An empty entry
+    searches the working directory, as it does in the full search. POSIX
+    only: `aelf setup` asks for no prediction on Windows, where the file
+    name would also need a `PATHEXT` suffix.
+    """
+    target = os.path.realpath(folder)
+    for entry in raw.split(os.pathsep):
+        if os.path.realpath(entry) == target:
+            return os.path.join(entry, name)
+        found = shutil.which(name, path=entry or os.curdir)
+        if found is not None:
+            return found
+    return None
+
+
+def which_on_path(name: str, *, installed_in: Path | None = None) -> Path | None:
     """Resolve `name` on `PATH`, without the win32 current-directory search.
 
     CPython's `shutil.which` prepends `os.curdir` to the search path on win32
@@ -407,9 +434,19 @@ def which_on_path(name: str) -> Path | None:
     hit is kept only if its parent is one of the directories actually named
     on `PATH`. If the working directory is itself on `PATH`, it is a
     legitimate hit and survives.
+
+    With `installed_in`, it answers as it will once a program `name` has
+    been written in that folder (#1812): the `PATH` entries are searched
+    in order, as `shutil.which` searches them, and an entry that resolves
+    to `installed_in` holds `name` whether or not it does yet. `aelf
+    setup` uses it to learn which hook programs a uv migration would put
+    ahead of the ones on `PATH` now.
     """
     raw = os.environ.get("PATH", os.defpath)
-    found = shutil.which(name, path=raw)
+    found = (
+        shutil.which(name, path=raw) if installed_in is None
+        else _which_with_program_in(name, raw, installed_in)
+    )
     if found is None:
         return None
     resolved = Path(found)
