@@ -10,6 +10,14 @@ lane** was flipped default-ON with the `retrieve_v2` production cutover
 that passes the lane through resolver-driven, so a fresh install both
 writes the spine and reads it on the live `retrieve()` hook path.
 
+> **Correction ([#2003](https://github.com/robotrocketscience/aelfrice/issues/2003)).** The coverage figures in this document, including
+> +12.7pp on LongMemEval, +14.6pp on LoCoMo, and +19.45pp on LoCoMo at the
+> 1,500-token hook budget, are benchmark results. They aren't evidence that
+> the spine improves retrieval on a real store, and aelfrice claims no gain
+> for it. The lane stays on because its latency cost on the G3 benchmark
+> below is inside that gate's limits. The writer stays on too, and adds at
+> most one edge for each belief that a turn adds.
+
 ## Mechanism
 
 Three components, all deterministic and embeddings-free (#605):
@@ -48,15 +56,16 @@ Three components, all deterministic and embeddings-free (#605):
    surface — the confirmatory evidence ran depth-1 append-after-L1
    with BFS untouched).
 
-## Why this works — and why it's a lane, not a gate change
+## Benchmark results, and why it's a lane, not a gate change
 
 Metric: gold-set coverage = |gold ∩ retrieved| / |gold| per question
 (the lens that matters for aggregation/temporal questions with diffuse
 gold; single-hit recall stays saturated and misses this). Prior rounds
 established that ~84% of the gold missing at wide config shares **zero**
-salient terms with the question — unreachable by any lexical means. The
-spine reaches that gold through chronological adjacency to beliefs that
-*do* match.
+salient terms with the question, so no lexical match reaches it. On
+the benchmarks below, the spine reaches that gold through chronological
+adjacency to beliefs that *do* match. These are benchmark figures only;
+see the correction at the top of this document.
 
 - **Dev (LongMemEval, 475 questions, l1=200/budget=8000):** overall
   coverage 0.531 → 0.658 (+12.7pp); temporal-reasoning +13.6pp;
@@ -68,8 +77,8 @@ spine reaches that gold through chronological adjacency to beliefs that
   temporal +17.2pp; multi-hop +10.4pp; 10× the shuffled control;
   all-evidence rate 0.133 → 0.260. Out-of-sample gain exceeded dev.
   Expansion-node budget curve is monotone (0.605 / 0.631 / 0.659 at
-  32/64/128, ~+2.5pp per doubling, no plateau) — the effect is
-  budget-limited, not substrate-limited.
+  32/64/128, ~+2.5pp per doubling, no plateau) on LoCoMo. No measurement on a
+  real store shows a gain at any budget.
 
 The permanent ablation for this lane is
 `benchmarks/temporal_spine_ablation.py` (gold-evidence coverage on
@@ -80,8 +89,7 @@ correct *for generic BFS* and stays untouched; #741 explicitly
 out-scoped per-edge-type gating; and the default BFS knobs structurally
 suppress temporal traversal (`BFS_EDGE_WEIGHTS[TEMPORAL_NEXT] = 0.25` ×
 `min_path_score = 0.10` prunes ≥2-hop chains, and temporal ranks last
-per hop). The measured gains happened under depth-1-only traversal —
-they are a floor.
+per hop). The benchmark gains came from depth-1-only traversal.
 
 Distinct from the #998 A4 ratified decline: A4 declined token-Jaccard
 *co-occurrence* edges fed through the #981 HRR-expand lane ("density is
