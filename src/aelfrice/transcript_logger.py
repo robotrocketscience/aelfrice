@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import subprocess  # noqa: F401 — used by _spawn_background_ingest
 import sys
@@ -46,6 +47,7 @@ from pathlib import Path
 from typing import IO, Callable, Final, cast
 
 from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
+from aelfrice.hook_payload import payload_prompt_id
 
 # Imported lazily to keep module import fast for the hook hot path.
 # `_git_common_dir` is reused from cli.py; if that import is ever
@@ -101,6 +103,8 @@ _HARNESS_RECORD_PREFIXES: Final[tuple[str, ...]] = (
 # re-fire of one event (duplicated hook registration produces N identical
 # lines ~20ms apart) and dropped. Wide enough to absorb a burst, narrow
 # enough that a deliberate resend of the same prompt seconds later still logs.
+# A resend inside the window still logs when the two lines carry different
+# host prompt ids (#1954).
 DUP_WINDOW_SECONDS: Final[float] = 2.0
 # Bytes scanned from the tail of turns.jsonl to find the previous line.
 # Bounds the dedup read at O(1) in file size, holding the per-append cost
@@ -193,6 +197,12 @@ def _new_turn_id() -> str:
     return f"{_utc_compact_ts()}-{secrets.token_hex(4)}"
 
 
+_MINTED_TURN_ID_RE: Final[re.Pattern[str]] = re.compile(
+    r"\d{8}T\d{12}Z-[0-9a-f]{8}",
+)
+"""The shape of an id `_new_turn_id` mints, which no host UUID has."""
+
+
 def _read_payload(
     stdin: IO[str],
     stderr: IO[str] | None = None,
@@ -277,21 +287,53 @@ def _read_last_turn_line(path: Path) -> dict[str, object] | None:
     return None
 
 
+def _is_host_prompt_id(value: object) -> bool:
+    """True when a line's `turn_id` is the host's prompt id (#1954).
+
+    A line carries either the validated prompt id or an id `_new_turn_id`
+    minted, so any string that doesn't have the minted shape is a prompt id.
+    """
+    if not isinstance(value, str):
+        return False
+    return _MINTED_TURN_ID_RE.fullmatch(value) is None
+
+
+def _distinct_prompt_ids(
+    last: dict[str, object], candidate: dict[str, object],
+) -> bool:
+    """True when both lines carry a host prompt id and the ids differ (#1954).
+
+    A duplicated registration re-fires one payload, so its copies share a
+    prompt id. Two different prompt ids are two prompts, even with one text.
+    """
+    last_id = last.get("turn_id")
+    cand_id = candidate.get("turn_id")
+    return (
+        last_id != cand_id
+        and _is_host_prompt_id(last_id)
+        and _is_host_prompt_id(cand_id)
+    )
+
+
 def _is_consecutive_duplicate(
     last: dict[str, object] | None, candidate: dict[str, object],
 ) -> bool:
     """True when `candidate` repeats `last` within DUP_WINDOW_SECONDS.
 
-    Match key is (session_id, role, text); turn_id is deliberately not in
-    the key — the burst that motivates this guard carries distinct
-    turn_ids (#968). Compaction markers (no role/text) and any record
-    missing a parseable `ts` compare unequal, so they never trigger a skip.
+    Match key is (session_id, role, text). A minted turn_id is not in the
+    key, because the burst that motivates this guard carries distinct
+    minted turn_ids (#968). When both lines carry the host's prompt id and
+    the ids differ, they are two prompts and never match (#1954).
+    Compaction markers (no role/text) and any record missing a parseable
+    `ts` compare unequal, so they never trigger a skip.
     """
     if last is None:
         return False
     for field in ("role", "text", "session_id"):
         if last.get(field) != candidate.get(field):
             return False
+    if _distinct_prompt_ids(last, candidate):
+        return False
     last_ts = _parse_iso(last.get("ts"))
     cand_ts = _parse_iso(candidate.get("ts"))
     if last_ts is None or cand_ts is None:
@@ -363,15 +405,27 @@ def _append_turn(line: dict[str, object]) -> None:
 
 
 def _build_turn_line(
-    *, role: str, text: str, session_id: str | None, ctx: dict[str, str | None],
+    *,
+    role: str,
+    text: str,
+    session_id: str | None,
+    ctx: dict[str, str | None],
+    prompt_id: str | None = None,
 ) -> dict[str, object]:
+    """One turn line. `turn_id` is `prompt_id` when given, else a fresh id.
+
+    #1954: the caller passes the payload's validated `prompt_id`
+    (`aelfrice.hook_payload.payload_prompt_id`), which the retrieval hook also
+    writes as `injection_events.turn_id`, so the two join exactly. Without
+    one the line gets its own random id, as it did before.
+    """
     return {
         "schema_version": SCHEMA_VERSION,
         "ts": _now_iso(),
         "role": role,
         "text": text,
         "session_id": session_id,
-        "turn_id": _new_turn_id(),
+        "turn_id": prompt_id or _new_turn_id(),
         "context": ctx,
     }
 
@@ -786,6 +840,7 @@ def _handle_user_prompt_submit(
     sid = session_id if isinstance(session_id, str) else None
     line = _build_turn_line(
         role="user", text=prompt, session_id=sid, ctx=_turn_context(),
+        prompt_id=payload_prompt_id(payload),
     )
     # #1955: integer counts only, so the line says how much of its text
     # was pasted without keeping anything new, by ingest's own reading of
@@ -852,8 +907,12 @@ def _handle_stop(payload: dict[str, object]) -> None:
     # #1634: a headless session's reply is not recorded either. The flush
     # below still runs: it folds turns other sessions already logged.
     if not _skip_headless(payload):
+        # #1954: in a live probe the host sent each turn's Stop the same
+        # `prompt_id` as its UserPromptSubmit (7 of 7), so the answer's line
+        # carries its prompt's id.
         line = _build_turn_line(
             role="assistant", text=text, session_id=sid, ctx=_turn_context(),
+            prompt_id=payload_prompt_id(payload),
         )
         _append_turn(line)
     # #1011: fold accumulated turns into beliefs without waiting for a
@@ -949,10 +1008,12 @@ def _count_turn_lines_and_identity(path: Path) -> tuple[int, str | None] | None:
     (compaction_start, etc.) carry no `role` key, so they are excluded.
 
     The identity is a digest of the file's first line (#1749). Every line
-    this logger writes carries a timestamp, and turn lines a random
-    `turn_id`, so a new turns.jsonl starts with a line no earlier file
-    had. Unlike an inode, the first line reads the same from a host and a
-    container that share the file, and a recreated file doesn't inherit
+    this logger writes carries a microsecond timestamp, so a new
+    turns.jsonl starts with a line no earlier file had. (A turn line's
+    `turn_id` can repeat across files since #1954, when it is the host's
+    prompt id; the timestamp alone keeps the first line unique.) Unlike an
+    inode, the first line reads the same from a host and a container that
+    share the file, and a recreated file doesn't inherit
     it. The identity is None for an empty file; the whole result is None
     when the file can't be opened.
 

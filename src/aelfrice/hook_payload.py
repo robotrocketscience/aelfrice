@@ -15,9 +15,15 @@ They are pure string substitution with no hook state, so they belong with
 the other things every hook fire's output shares. `aelfrice.hook` still
 binds them under their old private names. Check the cycles with
 `scripts/import_cycles.py`.
+
+The host's prompt id lives here too (#1954). The retrieval hook and the
+transcript logger both read it as the turn id, and the logger must not
+import `aelfrice.hook`.
 """
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from typing import Final
 
 HOOK_PAYLOAD_CHAR_LIMIT: Final[int] = 9_500
@@ -113,3 +119,56 @@ def escape_attr(value: str) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+PROMPT_ID_KEY: Final[str] = "prompt_id"
+"""The payload field that names the user prompt being processed (#1954).
+
+`aelf-hook` and `aelf-transcript-logger` run as separate processes on one
+UserPromptSubmit, and each used to mint its own random turn id, so
+`injection_events.turn_id` never equalled the logged turn's `turn_id`.
+The host sends this field on its UserPromptSubmit, Stop and PostToolUse
+payloads: "UUID identifying the user prompt currently being processed"
+(https://code.claude.com/docs/en/hooks, common input fields). When a
+payload carries a valid one, both writers use it as the turn id, so the
+two records join exactly. When it is absent or invalid, each writer mints
+its own id as before. There is no content-key fallback: on the measured
+turn logs, most records shared their text with another record of the same
+session.
+"""
+
+PROMPT_ID_MAX_CHARS: Final[int] = 128
+"""Longest `prompt_id` accepted as a turn id (#1954).
+
+The host sends a UUID, 36 characters. The bound keeps a malformed value
+from writing an unbounded string into every turn line and every
+`injection_events` row; a longer value counts as absent.
+"""
+
+
+_PROMPT_ID_RE: Final[re.Pattern[str]] = re.compile(
+    r"[0-9A-Za-z_-]{1,%d}" % PROMPT_ID_MAX_CHARS,
+)
+"""A usable `prompt_id`: ASCII letters, digits, `_` and `-` only.
+
+An allowlist, so a value the writers can't store never gets through. A
+lone surrogate passed a deny list of control characters, and then the
+logger's UTF-8 write raised and lost the user line, and the hook lost its
+whole `injection_events` batch. Padding and non-ASCII letters are refused
+the same way.
+"""
+
+
+def payload_prompt_id(payload: Mapping[str, object]) -> str | None:
+    """The payload's `prompt_id` when it is usable as a turn id, else None.
+
+    Usable means a string of 1 to `PROMPT_ID_MAX_CHARS` ASCII letters,
+    digits, `_` or `-`. Any other value, including a missing key, reads as
+    absent, and the caller mints its own id.
+    """
+    value = payload.get(PROMPT_ID_KEY)
+    if not isinstance(value, str):
+        return None
+    if _PROMPT_ID_RE.fullmatch(value) is None:
+        return None
+    return value

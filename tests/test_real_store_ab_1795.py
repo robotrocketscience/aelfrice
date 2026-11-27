@@ -2320,6 +2320,17 @@ def test_the_proxy_finds_the_prompt_by_session_turn_id_or_timestamp_and_text() -
     assert find(turns, {"session_id": "s2", "ts": "t0", "text": "go"}) is None
 
 
+def test_the_proxy_matches_a_turn_id_on_user_lines_only() -> None:
+    """An assistant line with its prompt's turn id (#1954) is not the prompt."""
+    find = bench._find_turn  # pyright: ignore[reportPrivateUsage]
+    turns = [
+        bench.Turn(seq=0, role="assistant", text="ok", session_id="s1", ts="t0", turn_id="P1"),
+        bench.Turn(seq=1, role="user", text="hi", session_id="s1", ts="t1", turn_id="P1"),
+    ]
+    assert find(turns, {"turn_id": "P1", "session_id": "s1"}) == 1
+    assert find(turns[:1], {"turn_id": "P1", "session_id": "s1"}) is None
+
+
 def test_proxy_overlap_bar() -> None:
     stems = frozenset({"a", "b", "c", "d", "e"})
     assert bench.proxy_used("x1", stems, [("no", frozenset({"a", "b", "c"}))]) is True
