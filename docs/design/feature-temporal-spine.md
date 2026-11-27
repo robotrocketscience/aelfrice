@@ -75,9 +75,10 @@ see the correction at the top of this document.
 - **Confirmatory (LoCoMo, 1,979 QA with evidence-belief gold sets, one
   shot, criteria pre-registered):** overall **+14.6pp** (0.460 → 0.606);
   temporal +17.2pp; multi-hop +10.4pp; 10× the shuffled control;
-  all-evidence rate 0.133 → 0.260. Out-of-sample gain exceeded dev.
-  Expansion-node budget curve is monotone (0.605 / 0.631 / 0.659 at
-  32/64/128, ~+2.5pp per doubling, no plateau) on LoCoMo. No measurement on a
+  all-evidence rate from 0.133 to 0.260. On this benchmark the gain was
+  larger than on the LongMemEval dev set. On LoCoMo, coverage rose at each
+  expansion-node budget tested (0.605 / 0.631 / 0.659 at 32/64/128, about
+  +2.5pp per doubling) and was still rising at 128. No measurement on a
   real store shows a gain at any budget.
 
 The permanent ablation for this lane is
@@ -96,8 +97,8 @@ Distinct from the #998 A4 ratified decline: A4 declined token-Jaccard
 a liability"). Different edge class (similarity vs chronology),
 different consumer. The shuffled control is the direct answer to the
 density concern: identical density with scrambled endpoints recovers
-+1.5pp vs the spine's +14.6pp — the value is the chronology, not the
-density.
++1.5pp vs the spine's +14.6pp, so on that benchmark the gain came from
+the chronology, not the density.
 
 ## Flip gate — pre-registered default-ON criteria
 
@@ -119,8 +120,9 @@ which is what exposes it on the live `retrieve()` hook path:
   - **Bench-pool half: DONE.** `temporal_spine_ablation.py
     --budget 1500 --l1-limit 50 --rank-invariance` on LoCoMo10 (1,986
     questions): coverage **+19.45pp** (0.346 → 0.540; seeded shuffled
-    control +0.47pp) — survives the trim, gain *exceeds* the wide-budget
-    dev figure. Top-rank invariance: **1,986/1,986 questions
+    control +0.47pp). On this benchmark the gain held at the production
+    budget and was larger than the wide-budget dev figure. Top-rank
+    invariance: **1,986/1,986 questions
     core-prefix invariant, 0 top-rank displacements, 0 core-length
     mismatches** — the lane never displaces or reorders a
     `[locked, l25, l1, hrr]` belief; it only appends its own hits below
