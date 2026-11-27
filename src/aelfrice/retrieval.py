@@ -2644,9 +2644,9 @@ def resolve_temporal_spine_budget(
       3. ``[retrieval] temporal_spine_budget`` in ``.aelfrice.toml``.
       4. Default: ``temporal_spine.DEFAULT_SPINE_NODE_BUDGET`` (32).
 
-    The confirmatory budget curve is monotone (~+2.5pp coverage per
-    doubling at 32/64/128 with no plateau) — the effect is
-    budget-limited, so this is the knob the flip release revisits.
+    The #1064 budget curve is a benchmark result, not evidence of a
+    retrieval gain on a real store, and aelfrice claims no gain for the
+    spine at any budget (#2003).
     """
     from aelfrice.temporal_spine import DEFAULT_SPINE_NODE_BUDGET
 

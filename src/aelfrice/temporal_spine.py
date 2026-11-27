@@ -536,9 +536,9 @@ def spine_neighbors(
     successors (edges whose ``dst`` is the belief) and its predecessor
     (edges whose ``src`` is the belief) are visited. Traversal is
     breadth-first to ``depth`` hops, emitting at most ``node_budget``
-    beliefs. The #1064 confirmatory evidence ran depth-1; the monotone
-    budget curve (~+2.5pp per doubling at 32/64/128) says the budget
-    knob is the one to revisit at flip time.
+    beliefs. The #1064 benchmark runs chose depth 1 and the default
+    budget. Those runs aren't evidence of a retrieval gain on a real
+    store, and aelfrice claims no gain for the spine (#2003).
 
     Deterministic: seeds are processed in input order; within one
     frontier belief, successors come before the predecessor and each
