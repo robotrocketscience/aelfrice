@@ -127,8 +127,7 @@ which is what exposes it on the live `retrieve()` hook path:
     hook-ingested store (25,971 beliefs, 24 L0 locks), driven by the real
     turn log (41 deduped user queries), aggregate-only. Coverage-vs-gold is
     undefined on an unlabelled real store, so this half is top-rank
-    invariance + operational aggregates; the `≥ +3pp` coverage criterion is
-    carried by the bench-pool half above.
+    invariance + operational aggregates.
     - **Chain-length distribution (open question 1 — resolved).** Backfill
       built the spine over **528 sessions / 22,007 chained beliefs**
       (21,479 `TEMPORAL_NEXT` edges; 3,964 null-`session_id` beliefs are
