@@ -74,10 +74,8 @@ see the correction at the top of this document.
   shot, criteria pre-registered):** overall **+14.6pp** (0.460 → 0.606);
   temporal +17.2pp; multi-hop +10.4pp; 10× the shuffled control;
   all-evidence rate from 0.133 to 0.260. On this benchmark the gain was
-  larger than on the LongMemEval dev set. On LoCoMo, coverage rose at each
-  expansion-node budget tested (0.605 / 0.631 / 0.659 at 32/64/128, about
-  +2.5pp per doubling) and was still rising at 128. No measurement on a
-  real store shows a gain at any budget.
+  larger than on the LongMemEval dev set. No measurement on a real store
+  shows a gain at any budget.
 
 The permanent ablation for this lane is
 `benchmarks/temporal_spine_ablation.py` (gold-evidence coverage on
