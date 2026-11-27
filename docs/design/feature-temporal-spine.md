@@ -115,13 +115,11 @@ which is what exposes it on the live `retrieve()` hook path:
   temporal_spine` for the per-call trim loss.)
   - **Bench-pool half: DONE.** `temporal_spine_ablation.py
     --budget 1500 --l1-limit 50 --rank-invariance` on LoCoMo10 (1,986
-    questions): coverage **+19.45pp** (0.346 → 0.540; seeded shuffled
-    control +0.47pp). Top-rank invariance: **1,986/1,986 questions
+    questions): top-rank invariance: **1,986/1,986 questions
     core-prefix invariant, 0 top-rank displacements, 0 core-length
     mismatches** — the lane never displaces or reorders a
     `[locked, l25, l1, hrr]` belief; it only appends its own hits below
-    the core (17,110 spine beliefs added across all questions, every
-    one below the core). The `--rank-invariance` pass reads
+    the core. The `--rank-invariance` pass reads
     `last_lane_telemetry()` to locate the core boundary exactly, so the
     invariant is checked against the real lane structure, not an
     inferred one.
