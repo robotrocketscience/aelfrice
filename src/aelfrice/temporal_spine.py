@@ -7,11 +7,14 @@ successor, dst = the predecessor (matching the ``models.py`` edge
 semantics), weight ``TEMPORAL_SPINE_EDGE_WEIGHT``. One edge per belief,
 O(1) per insert — the chain grows at the tail as the session grows.
 
-The mechanism is complementary to lexical matching: gold beliefs that
-share zero salient terms with a question are unreachable by any lexical
-means, but become reachable through chronological adjacency to beliefs
-that *do* match. A shuffled control (identical edge count, permuted
-endpoints) isolates the cause as the chronology, not the connectivity.
+The mechanism is complementary to lexical matching: a belief that shares
+no salient term with a question is unreachable by any lexical means, but
+becomes reachable through chronological adjacency to a belief that does
+match. On the LoCoMo benchmark, a shuffled control (identical edge count,
+permuted endpoints) recovered little of the coverage the spine added, so
+on that benchmark the gain came from the chronology. That is a benchmark
+result, and aelfrice claims no retrieval gain for the spine on a real
+store (#2003).
 
 Default-ON (``is_temporal_spine_write_enabled``): since the #1111 writer
 flip a fresh install chains ``TEMPORAL_NEXT`` edges at ingest by default —
