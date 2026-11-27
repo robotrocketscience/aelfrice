@@ -2610,9 +2610,10 @@ def is_temporal_spine_enabled(
       3. `[retrieval] use_temporal_spine` in `.aelfrice.toml`.
       4. Default: **True** — the lane is default-ON since the #1064 lane
          flip (v4.0, #1107 Phase 2). Every pre-registered gate cleared
-         (G1 +14.6pp LoCoMo coverage, G2 trim survival + top-rank
-         invariance, G3 latency delta_p95 in-band, G5 determinism); the
-         production `retrieve()` hook path exposes it via the #1107 shim.
+         on benchmarks (G1 LoCoMo coverage, G2 trim survival + top-rank
+         invariance, G3 latency delta_p95 in-band, G5 determinism).
+         aelfrice claims no retrieval gain for the spine on a real store
+         (#2003). The production `retrieve()` hook path exposes it via the #1107 shim.
          Opt out with `AELFRICE_TEMPORAL_SPINE=0` or `[retrieval]
          use_temporal_spine = false`. Distinct from
          `AELFRICE_TEMPORAL_SPINE_WRITE` (the ingest-time writer flag in

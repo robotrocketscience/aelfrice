@@ -127,10 +127,11 @@ def is_temporal_spine_write_enabled(
       4. Default: True (default-ON since v4.0, #1064 writer flip).
 
     Default-ON is the shipped posture: every pre-registered flip-gate
-    criterion passed (G1 +14.6pp LoCoMo coverage, G2 production-budget
-    trim survival + top-rank invariance, G3 latency in-band, G5
-    determinism) and the G4 auto-once backfill (#1090) is on `main`, so
-    fresh ingests chain `TEMPORAL_NEXT` edges by default and existing
+    criterion passed on benchmarks (G1 LoCoMo coverage, G2
+    production-budget trim survival + top-rank invariance, G3 latency
+    in-band, G5 determinism), and aelfrice claims no retrieval gain for
+    the spine on a real store (#2003). The G4 auto-once backfill (#1090)
+    is on `main`, so fresh ingests chain `TEMPORAL_NEXT` edges by default and existing
     stores backfill on first ``aelf setup`` after upgrade. Opt out with
     ``AELFRICE_TEMPORAL_SPINE_WRITE=0`` or ``[ingest] write_temporal_spine
     = false``. The *retrieval* lane (``is_temporal_spine_enabled``) is
