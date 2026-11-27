@@ -1,0 +1,3 @@
+### Documentation
+
+- **The temporal spine no longer claims a retrieval gain ([#2003](https://github.com/robotrocketscience/aelfrice/issues/2003)).** The 4.0.0 entries called the spine "the largest retrieval-coverage gain measured on this codebase" and said that "the +14.6pp-coverage spine is live on every host's `retrieve()`". The +14.6pp figure is gold-set coverage on the LoCoMo benchmark. The +12.7pp LongMemEval figure is a benchmark result too. Benchmark figures aren't evidence of a gain on a real store, and aelfrice claims no gain for the spine. `docs/concepts/BENCHMARKS.md`, `docs/user/CONFIG.md`, and `docs/design/feature-temporal-spine.md` now say so. The `TEMPORAL_NEXT` writer and the spine lane stay on.

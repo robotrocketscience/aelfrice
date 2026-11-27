@@ -10,6 +10,11 @@ lane** was flipped default-ON with the `retrieve_v2` production cutover
 that passes the lane through resolver-driven, so a fresh install both
 writes the spine and reads it on the live `retrieve()` hook path.
 
+> **Correction ([#2003](https://github.com/robotrocketscience/aelfrice/issues/2003)).** The coverage figures in this document, including
+> +12.7pp on LongMemEval and +14.6pp on LoCoMo, are benchmark results. They aren't evidence that
+> the spine improves retrieval on a real store, and aelfrice claims no gain
+> for it. The writer and the lane stay on.
+
 ## Mechanism
 
 Three components, all deterministic and embeddings-free (#605):
@@ -48,15 +53,16 @@ Three components, all deterministic and embeddings-free (#605):
    surface — the confirmatory evidence ran depth-1 append-after-L1
    with BFS untouched).
 
-## Why this works — and why it's a lane, not a gate change
+## Benchmark results, and why it's a lane, not a gate change
 
 Metric: gold-set coverage = |gold ∩ retrieved| / |gold| per question
 (the lens that matters for aggregation/temporal questions with diffuse
 gold; single-hit recall stays saturated and misses this). Prior rounds
 established that ~84% of the gold missing at wide config shares **zero**
-salient terms with the question — unreachable by any lexical means. The
-spine reaches that gold through chronological adjacency to beliefs that
-*do* match.
+salient terms with the question, so no lexical match reaches it. On
+the benchmarks below, the spine reaches that gold through chronological
+adjacency to beliefs that *do* match. These are benchmark figures only;
+see the correction at the top of this document.
 
 - **Dev (LongMemEval, 475 questions, l1=200/budget=8000):** overall
   coverage 0.531 → 0.658 (+12.7pp); temporal-reasoning +13.6pp;
@@ -66,10 +72,9 @@ spine reaches that gold through chronological adjacency to beliefs that
 - **Confirmatory (LoCoMo, 1,979 QA with evidence-belief gold sets, one
   shot, criteria pre-registered):** overall **+14.6pp** (0.460 → 0.606);
   temporal +17.2pp; multi-hop +10.4pp; 10× the shuffled control;
-  all-evidence rate 0.133 → 0.260. Out-of-sample gain exceeded dev.
-  Expansion-node budget curve is monotone (0.605 / 0.631 / 0.659 at
-  32/64/128, ~+2.5pp per doubling, no plateau) — the effect is
-  budget-limited, not substrate-limited.
+  all-evidence rate from 0.133 to 0.260. On this benchmark the gain was
+  larger than on the LongMemEval dev set. No measurement on a real store
+  shows a gain at any budget.
 
 The permanent ablation for this lane is
 `benchmarks/temporal_spine_ablation.py` (gold-evidence coverage on
@@ -80,16 +85,15 @@ correct *for generic BFS* and stays untouched; #741 explicitly
 out-scoped per-edge-type gating; and the default BFS knobs structurally
 suppress temporal traversal (`BFS_EDGE_WEIGHTS[TEMPORAL_NEXT] = 0.25` ×
 `min_path_score = 0.10` prunes ≥2-hop chains, and temporal ranks last
-per hop). The measured gains happened under depth-1-only traversal —
-they are a floor.
+per hop). The benchmark gains came from depth-1-only traversal.
 
 Distinct from the #998 A4 ratified decline: A4 declined token-Jaccard
 *co-occurrence* edges fed through the #981 HRR-expand lane ("density is
 a liability"). Different edge class (similarity vs chronology),
 different consumer. The shuffled control is the direct answer to the
 density concern: identical density with scrambled endpoints recovers
-+1.5pp vs the spine's +14.6pp — the value is the chronology, not the
-density.
++1.5pp vs the spine's +14.6pp, so on that benchmark the gain came from
+the chronology, not the density.
 
 ## Flip gate — pre-registered default-ON criteria
 
@@ -110,14 +114,11 @@ which is what exposes it on the live `retrieve()` hook path:
   temporal_spine` for the per-call trim loss.)
   - **Bench-pool half: DONE.** `temporal_spine_ablation.py
     --budget 1500 --l1-limit 50 --rank-invariance` on LoCoMo10 (1,986
-    questions): coverage **+19.45pp** (0.346 → 0.540; seeded shuffled
-    control +0.47pp) — survives the trim, gain *exceeds* the wide-budget
-    dev figure. Top-rank invariance: **1,986/1,986 questions
+    questions): top-rank invariance: **1,986/1,986 questions
     core-prefix invariant, 0 top-rank displacements, 0 core-length
     mismatches** — the lane never displaces or reorders a
     `[locked, l25, l1, hrr]` belief; it only appends its own hits below
-    the core (17,110 spine beliefs added across all questions, every
-    one below the core). The `--rank-invariance` pass reads
+    the core. The `--rank-invariance` pass reads
     `last_lane_telemetry()` to locate the core boundary exactly, so the
     invariant is checked against the real lane structure, not an
     inferred one.
@@ -126,8 +127,7 @@ which is what exposes it on the live `retrieve()` hook path:
     hook-ingested store (25,971 beliefs, 24 L0 locks), driven by the real
     turn log (41 deduped user queries), aggregate-only. Coverage-vs-gold is
     undefined on an unlabelled real store, so this half is top-rank
-    invariance + operational aggregates; the `≥ +3pp` coverage criterion is
-    carried by the bench-pool half above.
+    invariance + operational aggregates.
     - **Chain-length distribution (open question 1 — resolved).** Backfill
       built the spine over **528 sessions / 22,007 chained beliefs**
       (21,479 `TEMPORAL_NEXT` edges; 3,964 null-`session_id` beliefs are
@@ -166,12 +166,8 @@ which is what exposes it on the live `retrieve()` hook path:
   measured +1.0 ms p50 / +35.6 ms p95; this lane is narrower.)
   - **DONE.** `temporal_spine_latency.py` on a 10,000-belief / 200-session
     store carrying a real 9,800-edge spine, at the production operating
-    point (budget 1500 / l1-limit 50), paired lane-off vs lane-on: **Δp50
-    ≤ +0.8 ms, Δp95 +25–28 ms** (3 runs: +0.78/+0.04/+0.83 p50, worst
-    +28.4 p95), tail ratio ~2.1× — inside the +5 ms / +50 ms / 10× band.
-    The lane fires on 30/30 queries (109 candidates → 82 packed
-    survivors), byte-identical across runs, so the delta is real work,
-    not a vacuous null. Absolute latencies are machine/load-dependent
+    point (budget 1500 / l1-limit 50), paired lane-off vs lane-on.
+    Absolute latencies are machine/load-dependent
     (dev-run baseline p50 ~64 ms); the gate is a same-corpus *delta*, as
     reframed for #739 in PR #754. Pure-logic + lane-fires unit tests run
     in the CI matrix; the timed bench is run-on-demand (no wall-clock

@@ -275,9 +275,9 @@ use_intentional_clustering = true
 # v4.0.0+ (#1064). When true, the
 # temporal-spine lane traverses TEMPORAL_NEXT chronological chains from
 # the top-5 packed L1 seeds (both directions, depth 1) and appends the
-# neighbours after the L1 candidates. Reaches gold that shares zero
-# salient terms with the question through chronological adjacency —
-# confirmed +14.6pp gold-coverage on LoCoMo, 10x its shuffled control.
+# neighbours after the L1 candidates. aelfrice claims no retrieval gain
+# for this lane (#2003). It stays on. Benchmark coverage figures aren't
+# evidence of a gain on a real store.
 # Default `true` since the v4.0 lane flip (#1064, #1107 Phase 2) — live
 # on the production retrieve() hook path. No-op on stores with zero
 # TEMPORAL_NEXT edges (run `aelf spine backfill` to build the spine on an
@@ -286,10 +286,10 @@ use_intentional_clustering = true
 use_temporal_spine = true
 
 # v4.0.0+ (#1064). Node budget for the temporal-spine lane traversal
-# (default 32). The confirmatory budget curve is monotone (~+2.5pp
-# coverage per doubling at 32/64/128, no plateau) — this is the knob to
-# raise for retrieval-heavy callers with the token budget to hold the
-# extra candidates. AELFRICE_TEMPORAL_SPINE_BUDGET env var overrides.
+# (default 32). The budget caps how many chronological neighbors one
+# call returns. No measurement on a real store shows a gain from a
+# higher budget.
+# AELFRICE_TEMPORAL_SPINE_BUDGET env var overrides.
 temporal_spine_budget = 32
 
 # Placeholder flags reserved by #154 — recognised so callers can
