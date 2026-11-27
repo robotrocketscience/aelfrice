@@ -14,9 +14,8 @@ writes the spine and reads it on the live `retrieve()` hook path.
 > +12.7pp on LongMemEval, +14.6pp on LoCoMo, and +19.45pp on LoCoMo at the
 > 1,500-token hook budget, are benchmark results. They aren't evidence that
 > the spine improves retrieval on a real store, and aelfrice claims no gain
-> for it. The lane stays on because its latency cost on the G3 benchmark
-> below is inside that gate's limits. The writer stays on too, and adds at
-> most one edge for each belief that a turn adds.
+> for it. The writer and the lane stay on. The lane's latency cost on the
+> G3 benchmark below is inside that gate's limits.
 
 ## Mechanism
 
