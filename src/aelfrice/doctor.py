@@ -754,6 +754,12 @@ class DoctorReport:
     duplicate_hook_entries: list[DuplicateHookEntry] = field(
         default_factory=lambda: cast(list["DuplicateHookEntry"], [])
     )
+    # #1956: transcript-logger events wired in both the user and the
+    # project settings file. The per-file check above sees one entry in
+    # each, so it reports nothing, but both copies fire on every event.
+    cross_scope_logger_entries: list[CrossScopeLoggerEntry] = field(
+        default_factory=lambda: cast(list["CrossScopeLoggerEntry"], [])
+    )
     # Per-project DBs under ~/.aelfrice/projects/*/memory.db that use
     # the pre-v1.x schema (no `origin` column on the `beliefs` table)
     # and have at least one row. These DBs cannot participate in the
@@ -904,6 +910,9 @@ def diagnose(
         report.duplicate_hook_entries.extend(
             find_duplicate_hook_entries(project_path)
         )
+    report.cross_scope_logger_entries = find_cross_scope_logger_entries(
+        user_path, project_path,
+    )
     log_path = (
         hook_failures_log if hook_failures_log is not None else HOOK_FAILURES_LOG
     )
@@ -1579,6 +1588,89 @@ def find_duplicate_hook_entries(
     return dupes
 
 
+@dataclass(frozen=True)
+class CrossScopeLoggerEntry:
+    """One transcript-logger event wired in both settings files (#1956)."""
+
+    event: str
+    user_path: Path
+    project_path: Path
+
+
+def _commands_by_event(settings_path: Path, basename: str) -> dict[str, set[str]]:
+    """Map each hook event in `settings_path` to its `basename` commands.
+
+    Commands are kept as written, so two spellings of one path count as
+    two handlers, as they would to the host.
+    """
+    try:
+        data = _load_settings_json(settings_path)
+    except (ValueError, OSError):
+        return {}
+    hooks_obj = data.get(_HOOKS_KEY)
+    if not isinstance(hooks_obj, dict):
+        return {}
+    found: dict[str, set[str]] = {}
+    for event_name, event_list in cast(dict[str, object], hooks_obj).items():
+        if not isinstance(event_list, list):
+            continue
+        for entry in cast(list[object], event_list):
+            if not isinstance(entry, dict):
+                continue
+            inner = cast(dict[str, object], entry).get(_INNER_HOOKS_KEY)
+            if not isinstance(inner, list):
+                continue
+            for hook in cast(list[object], inner):
+                if not isinstance(hook, dict):
+                    continue
+                hook_dict = cast(dict[str, object], hook)
+                cmd = hook_dict.get(_COMMAND_KEY)
+                if hook_dict.get(_TYPE_KEY) != _HOOK_TYPE_COMMAND:
+                    continue
+                if not isinstance(cmd, str) or not cmd.strip():
+                    continue
+                if basename in launcher.command_program_keys(cmd.strip()):
+                    found.setdefault(event_name, set()).add(cmd)
+    return found
+
+
+def find_cross_scope_logger_entries(
+    user_path: Path, project_path: Path,
+) -> list[CrossScopeLoggerEntry]:
+    """Report transcript-logger events wired in both settings files.
+
+    #1956: the host runs matching hooks in parallel, and runs a handler
+    once only when the same handler appears in several settings files.
+    Setup writes an absolute logger path per scope, so a user-scope and a
+    project-scope install are two handlers, and each turn is logged by
+    both. `find_duplicate_hook_entries` counts per file and misses this.
+
+    An event is reported when both files wire the logger on it and the two
+    files hold more than one distinct logger command between them. Both
+    files holding the same command is one handler, so it is not reported.
+
+    Read-only. Quiet when either file is missing, or when both names
+    resolve to one file, as they do for a doctor run from the home folder.
+    """
+    if not user_path.exists() or not project_path.exists():
+        return []
+    try:
+        if os.path.samefile(user_path, project_path):
+            return []
+    except OSError:
+        return []
+    name = _setup.TRANSCRIPT_LOGGER_SCRIPT_NAME
+    user_cmds = _commands_by_event(user_path, name)
+    project_cmds = _commands_by_event(project_path, name)
+    return [
+        CrossScopeLoggerEntry(
+            event=event, user_path=user_path, project_path=project_path,
+        )
+        for event in sorted(user_cmds.keys() & project_cmds.keys())
+        if len(user_cmds[event] | project_cmds[event]) > 1
+    ]
+
+
 def prune_broken_aelf_hooks(
     settings_path: Path, *, dry_run: bool = False,
 ) -> HookPruneResult:
@@ -1855,6 +1947,7 @@ def format_report(report: DoctorReport) -> str:
     _format_missing_runtime_deps_section(report, lines)
     _format_missing_auto_capture_section(report, lines)
     _format_duplicate_hook_entries_section(report, lines)
+    _format_cross_scope_logger_section(report, lines)
     _format_legacy_schema_section(report, lines)
     _format_failed_migrations_section(report, lines)
     _format_dangling_edges_section(report, lines)
@@ -2031,6 +2124,31 @@ def _format_duplicate_hook_entries_section(
     ):
         lines.append(f"  {dupe.describe()}  [{dupe.settings_path}]")
     lines.append("fix: run 'aelf doctor --prune' to collapse them.")
+
+
+def _format_cross_scope_logger_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the #1956 cross-scope logger block to `lines`.
+
+    Quiet when no event is wired in both settings files.
+    """
+    entries = report.cross_scope_logger_entries
+    if not entries:
+        return
+    first = entries[0]
+    lines.append("")
+    lines.append(
+        f"{_setup.TRANSCRIPT_LOGGER_SCRIPT_NAME} is wired in both the user "
+        "and the project settings file (#1956), so both copies run on "
+        "every event: " + ", ".join(e.event for e in entries)
+    )
+    lines.append(f"  user:    {first.user_path}")
+    lines.append(f"  project: {first.project_path}")
+    lines.append(
+        f"fix: remove the {_setup.TRANSCRIPT_LOGGER_SCRIPT_NAME} entries "
+        "from one of the two files."
+    )
 
 
 def _read_failed_store_migrations(store_path: str) -> dict[str, str]:
