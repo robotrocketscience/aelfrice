@@ -36,8 +36,8 @@ see [`benchmarks/README.md`](../../benchmarks/README.md).
 >
 > A benchmark run of these lanes therefore runs the production code path. A
 > benchmark score still isn't evidence of a gain on a real store. aelfrice claims
-> no retrieval gain for the temporal spine ([#2003](https://github.com/robotrocketscience/aelfrice/issues/2003)). The spine lane stays on,
-> and its latency cost on the #1064 G3 benchmark is inside that gate's limits. Three lanes are **exposed on `retrieve_v2` but held OFF by
+> no retrieval gain for the temporal spine ([#2003](https://github.com/robotrocketscience/aelfrice/issues/2003)). The spine lane stays on.
+> Three lanes are **exposed on `retrieve_v2` but held OFF by
 > default**, so they do **not** affect a default install, apart from the
 > `aelf wonder` exception that the BFS item describes:
 >

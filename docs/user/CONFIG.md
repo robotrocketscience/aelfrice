@@ -276,9 +276,8 @@ use_intentional_clustering = true
 # temporal-spine lane traverses TEMPORAL_NEXT chronological chains from
 # the top-5 packed L1 seeds (both directions, depth 1) and appends the
 # neighbours after the L1 candidates. aelfrice claims no retrieval gain
-# for this lane (#2003). It stays on, and its latency cost on the #1064
-# G3 benchmark is inside that gate's limits. Benchmark coverage figures
-# aren't evidence of a gain on a real store.
+# for this lane (#2003). It stays on. Benchmark coverage figures aren't
+# evidence of a gain on a real store.
 # Default `true` since the v4.0 lane flip (#1064, #1107 Phase 2) — live
 # on the production retrieve() hook path. No-op on stores with zero
 # TEMPORAL_NEXT edges (run `aelf spine backfill` to build the spine on an
